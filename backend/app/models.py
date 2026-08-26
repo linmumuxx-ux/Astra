@@ -1,0 +1,128 @@
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class DigitalEmployee(Base):
+    __tablename__ = "digital_employees"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="OFFLINE", index=True)
+    capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    current_task_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    online_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    tasks: Mapped[list["Task"]] = relationship(back_populates="employee")
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint("source", "external_task_id", name="uq_task_source_external"),
+        Index("ix_tasks_dispatch", "status", "priority_weight", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), default="manual")
+    external_task_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    task_type: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    description: Mapped[str] = mapped_column(Text, default="")
+    input: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    definition_of_done: Mapped[list[str]] = mapped_column(JSON, default=list)
+    priority: Mapped[str] = mapped_column(String(8), default="P2")
+    priority_weight: Mapped[int] = mapped_column(Integer, default=2)
+    status: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
+    employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
+    workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    current_phase: Mapped[str] = mapped_column(String(80), default="created")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_retry_count: Mapped[int] = mapped_column(Integer, default=3)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
+    runs: Mapped[list["Run"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    events: Mapped[list["Event"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    evidence: Mapped[list["Evidence"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+
+
+class Run(Base):
+    __tablename__ = "runs"
+    __table_args__ = (UniqueConstraint("task_id", "run_number", name="uq_task_run_number"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
+    run_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="RUNNING")
+    executor_type: Mapped[str] = mapped_column(String(64), default="opencode_cli")
+    opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="runs")
+    events: Mapped[list["Event"]] = relationship(back_populates="run")
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    phase: Mapped[str] = mapped_column(String(80), default="system")
+    message: Mapped[str] = mapped_column(Text)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    task: Mapped[Task | None] = relationship(back_populates="events")
+    run: Mapped[Run | None] = relationship(back_populates="events")
+
+
+class Evidence(Base):
+    __tablename__ = "evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(180))
+    kind: Mapped[str] = mapped_column(String(64))
+    path: Mapped[str] = mapped_column(Text)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="evidence")

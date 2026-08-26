@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: astra
+      POSTGRES_USER: astra
+      POSTGRES_PASSWORD: ${ASTRA_POSTGRES_PASSWORD:-astra}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U astra"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - astra-postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  astra-backend:
+    build: ./backend
+    restart: unless-stopped
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8100"
+    environment: &backend-env
+      ASTRA_DATABASE_URL: postgresql+asyncpg://astra:${ASTRA_POSTGRES_PASSWORD:-astra}@postgres:5432/astra
+      ASTRA_REDIS_URL: redis://redis:6379/0
+      ASTRA_WORKSPACE_ROOT: /workspaces
+      ASTRA_CONFIG_DIR: /configs
+      ASTRA_SEED_DEMO: ${ASTRA_SEED_DEMO:-true}
+      ASTRA_NR_TEST_SYSTEM_ENDPOINT: ${ASTRA_NR_TEST_SYSTEM_ENDPOINT:-http://host.docker.internal:8000}
+      ASTRA_NR_TEST_SYSTEM_TOKEN: ${ASTRA_NR_TEST_SYSTEM_TOKEN:-}
+    ports:
+      - "${ASTRA_BACKEND_PORT:-8100}:8100"
+    volumes:
+      - astra-workspaces:/workspaces
+      - ./configs:/configs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  astra-worker:
+    build: ./backend
+    restart: unless-stopped
+    command: celery -A app.runtime.celery_app:celery worker --beat --loglevel=INFO
+    environment: *backend-env
+    volumes:
+      - astra-workspaces:/workspaces
+      - ./configs:/configs:ro
+    depends_on:
+      astra-backend:
+        condition: service_started
+
+  astra-frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${ASTRA_FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - astra-backend
+
+volumes:
+  astra-postgres:
+  astra-workspaces:

@@ -1,0 +1,15 @@
+employees:
+  - id: astra-01
+    name: Astra-01
+    role: 测试执行员工
+    enabled: true
+    max_concurrency: 1
+    capabilities:
+      - script_generate
+      - script_review
+      - script_execute
+      - script_repair
+      - result_verify
+    sources:
+      - nr_test_system
+      - manual

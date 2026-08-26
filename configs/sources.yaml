@@ -1,0 +1,8 @@
+sources:
+  - id: nr_test_system
+    type: nr_test_system
+    enabled: true
+    endpoint: http://localhost:8000
+    discover_path: /api/astra/tasks
+    result_path: /api/astra/tasks/{external_task_id}/result
+    poll_interval: 30

@@ -1,0 +1,11 @@
+runtime:
+  scout_interval: 30
+  heartbeat_interval: 10
+  heartbeat_timeout: 60
+  dispatcher_interval: 5
+
+task:
+  default_max_retry_count: 3
+
+executor:
+  type: opencode_cli

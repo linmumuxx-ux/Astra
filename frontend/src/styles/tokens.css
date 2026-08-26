@@ -1,0 +1,28 @@
+:root {
+  --astra-bg-base: #07101d;
+  --astra-bg-sidebar: #081321;
+  --astra-bg-panel: #0b1726;
+  --astra-bg-card: #0f1d2f;
+  --astra-bg-elevated: #132238;
+  --astra-border: #1b3049;
+  --astra-border-hover: #2e5279;
+  --astra-primary: #4c8dff;
+  --astra-primary-bright: #76a9ff;
+  --astra-primary-soft: rgba(76, 141, 255, .12);
+  --astra-primary-border: rgba(76, 141, 255, .38);
+  --astra-primary-glow: rgba(41, 116, 255, .22);
+  --astra-secondary: #9b7cff;
+  --astra-success: #32d69b;
+  --astra-success-soft: rgba(50, 214, 155, .1);
+  --astra-warning: #ffad5b;
+  --astra-warning-soft: rgba(255, 173, 91, .11);
+  --astra-danger: #ff6f7d;
+  --astra-danger-soft: rgba(255, 111, 125, .11);
+  --astra-info: #5da7ff;
+  --astra-text-primary: #e9f2ff;
+  --astra-text-secondary: #9db0c8;
+  --astra-text-muted: #657991;
+  --astra-font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --astra-font-display: "Avenir Next", Inter, ui-sans-serif, sans-serif;
+  --astra-shadow-panel: 0 18px 50px rgba(0, 0, 0, .18);
+}
