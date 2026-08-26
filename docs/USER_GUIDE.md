@@ -1,18 +1,21 @@
-# Astra V0.1 操作使用指南
+# Astra V0.2 操作使用指南
 
 ## 1. 平台用途
 
-Astra 是测试业务的常驻型数字员工平台。平台把任务发现、调度、OpenCode 执行、独立验证、失败修复和人工介入放在同一条可追踪链路中。任务只有在 Verifier 真实执行验证命令并通过后，才能进入“已完成”。
+Astra 是面向测试业务的常驻型数字员工平台。它把任务发现、员工调度、OpenCode 执行、独立验证、自动修复和人工介入串成可恢复、可追踪的工作闭环。任务只有通过独立 Verifier，才能进入“已完成”。
 
-管理台默认地址：
+V0.2 新增两项核心能力：
 
-- 本地开发：`http://localhost:5173`
-- Docker Compose：`http://localhost:8080`
+- 每名数字员工固定关联一个默认 OpenCode 执行环境，可选择本地或 Linux 远程环境；
+- 从 OpenCode 实际返回中采集 Token、LLM 调用和工具调用，并按 Run、任务、员工和平台聚合。
+
+默认地址：
+
+- 本地管理台：`http://localhost:5173`
+- Docker Compose 管理台：`http://localhost:8080`
 - API 文档：`http://localhost:8100/docs`
 
 ## 2. 首次启动
-
-### 本地开发
 
 后端需要 Python 3.11+，前端需要 Node.js 20+。
 
@@ -21,6 +24,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
+alembic upgrade head
 uvicorn app.main:app --reload --port 8100
 ```
 
@@ -32,84 +36,149 @@ npm ci
 npm run dev
 ```
 
-打开 `http://localhost:5173`。默认 `ASTRA_SEED_DEMO=true`，首次启动会生成演示员工、任务、运行记录和事件。
+打开 `http://localhost:5173`。默认 `ASTRA_SEED_DEMO=true`，首次启动会生成演示员工、任务、环境、Run 和使用量数据。正式环境必须将该变量设为 `false`。
 
-## 3. 页面说明
+## 3. 推荐的首次配置顺序
+
+1. 进入“配置中心 → 数字员工配置”。
+2. 新建员工，填写基本信息、能力/技能和自主策略。
+3. 在“执行环境”中选择“本地执行”或“Linux 远程”。
+4. 保存配置，然后点击“测试连接”。
+5. 确认环境状态为“正常”。只有环境正常、员工启用且允许自动领取时，Dispatcher 才会分配新任务。
+6. 创建一条包含真实验证命令的受控测试任务，观察 Run、Token、工具调用和 Verifier 证据。
+
+员工运行状态与环境状态互相独立。例如，员工可以处于“空闲”，但环境为“不可用”；此时不会自动领取任务。
+
+## 4. 配置数字员工
+
+### 基本信息
+
+- 员工 ID：创建后不可修改，建议使用稳定标识，如 `astra-04`。
+- 显示名称、岗位、描述：用于说明职责和业务边界。
+- 任务来源范围：以英文逗号分隔，例如 `manual, nr_test_system`。
+- 启用员工：关闭后不参与调度，但历史任务和使用量仍保留。
+
+### 能力与技能
+
+能力标签参与 Dispatcher 的确定性匹配，常用值包括：
+
+- `script_generate`
+- `script_review`
+- `script_execute`
+- `script_repair`
+- `result_verify`
+
+技能标签用于描述员工擅长的技术栈，不替代任务类型匹配。
+
+### 自主策略
+
+- 自动领取：允许 Dispatcher 分配匹配任务。
+- 自动执行：领取后立即进入 Worker；关闭时任务停留在“已领取”，可从 API 手工启动。
+- 自动修复：执行或验证失败后继续原 OpenCode Session 修复。
+- 最大自动重试：限制自动修复次数。
+- 最大并发任务：限制该员工的同时工作数量。
+
+## 5. 配置 OpenCode 执行环境
+
+### 本地执行
+
+本地指 Astra 后端/Worker 所在主机或容器。需填写：
+
+- 环境名称；
+- OpenCode 命令或绝对路径，例如 `opencode` 或 `/usr/local/bin/opencode`；
+- Workspace 根目录，例如 `./workspaces`。
+
+“测试连接”会分项检查 OpenCode 是否存在、能否启动，以及 Workspace 是否可创建和写入。
+
+### Linux 远程
+
+Linux 远程环境通过系统 `ssh` 命令执行。需填写：
+
+- Host、Port、Username；
+- SSH Agent 或 SSH Key 路径；
+- 远程 OpenCode 路径；
+- 远程绝对 Workspace 根目录，例如 `/srv/astra/workspaces`。
+
+“测试连接”会分项检查 SSH、远程 Workspace、OpenCode 文件和启动命令。Astra 不接受 SSH 密码，也不保存私钥内容；SSH Key 字段只保存 Worker 可访问的文件路径。
+
+修改正在工作的员工环境时，当前任务继续使用领取时保存的环境快照，新配置只影响后续新任务。
+
+## 6. 页面说明
 
 ### 总览
 
-“总览”展示在线员工、运行中任务、等待人工、今日完成、任务趋势、活跃任务和最新事件。顶部 `LIVE` 表示 SSE 事件流已连接；`RECONNECT` 表示实时流暂时断开，此时仍可手工刷新。
+展示在线员工、运行中任务、等待人工、今日完成、今日 Token 和今日工具调用。Token 无法从 OpenCode 获取时显示 `—`，不会估算。
 
 ### 数字员工
 
-“数字员工”展示岗位、状态、能力边界、并发上限和当前任务。进入员工详情后可以查看任务负载，并暂停或恢复员工。暂停员工不会删除已生成的 Workspace、Session 或证据。
+员工卡片展示员工状态、默认环境、环境状态、当前任务、今日 Token、工具调用和完成数。列表可按员工状态与环境模式筛选。
 
-### 任务中心
+员工详情包含：
 
-任务可按关键词、来源、状态和优先级筛选。点击任务行或详情图标进入任务详情。常用状态：
+- 默认 OpenCode 执行环境与检测结果；
+- 当前任务和环境快照；
+- 今日工作消耗；
+- 近 7 天/30 天 Token 趋势；
+- 自主完成率、人工介入率、成功率、平均重试和平均耗时；
+- 工具调用 Top 与处理记录。
 
-- `待领取`：任务已持久化，等待 Dispatcher 分配。
-- `运行中`：Worker 正在使用任务独立 Workspace 和 OpenCode Session 执行。
-- `验证中`：Verifier 正在检查产物并执行真实验证命令。
-- `修复重试`：失败可修复，继续使用原 Session 进行最小修复。
-- `等待人工`：缺少环境、权限、信息或业务判断。
-- `已完成`：独立验证已经通过。
-- `失败/已终止`：终态，保留运行记录与证据。
+### 任务中心与任务详情
+
+任务中心支持关键词、来源、状态和优先级筛选。常见状态：
+
+- 待领取：等待 Dispatcher；
+- 已领取：已分配员工，等待自动或手工启动；
+- 运行中：OpenCode 正在工作；
+- 验证中：Verifier 正在执行确定性检查；
+- 修复重试：恢复原 Session 进行最小修复；
+- 等待人工：缺少环境、权限、信息或业务判断；
+- 已完成：Verifier 已通过；
+- 失败/已终止：终态，但消耗和证据仍保留。
+
+任务详情中的“本任务工作消耗”汇总所有 Run，展示 Input、Output、Cache Read、Cache Write、总 Token、模型、LLM 调用、工具调用和总耗时。环境字段来自任务领取时的快照。
 
 ### 运行记录
 
-每次 OpenCode 调用形成一条 Run。这里可查看运行序号、执行器、退出码、耗时和 Session ID。点击 Run 可回到关联任务，检查完整事件和证据。
+每次 OpenCode 调用形成一个 Run。列表展示员工、环境、状态、Token、工具调用、时间和 Session。点击 Run 进入独立详情，可查看模型、环境快照、各 Token 字段和工具汇总。
 
 ### 人工介入
 
-这里只显示 `WAIT_HUMAN` 任务。处理人应：
+这里只显示 `WAIT_HUMAN` 任务。处理人应阅读阻塞原因，补充处理说明和继续执行所需上下文，再选择继续或终止。操作会持久化为 Event，失败前产生的 Token 和工具记录不会丢失。
 
-1. 阅读阻塞原因、当前阶段、Workspace 和 Session。
-2. 在“处理说明”中写明已完成的外部处理或判断。
-3. 可在“补充信息”中加入继续执行所需上下文。
-4. 点击“补充并继续”，任务恢复原现场；或确认无法继续后终止任务。
+## 7. 创建手工任务
 
-所有操作都会持久化为 Event，补充信息会写入任务 `input.human_input`。
+在“任务中心”点击“创建任务”，填写标题、任务类型、优先级、描述、工程路径、验证命令、必需产物和完成标准。
 
-### 配置中心
+本地环境的 `project_path` 必须是 Worker 可访问的本地目录。Linux 远程环境的 `project_path` 指远程服务器上的目录；Astra 会在远程 Workspace 中复制该目录作为任务独立源码区。
 
-配置中心只展示非秘密运行参数。Token、密码等秘密必须通过环境变量注入，不得写入 YAML、数据库、任务描述或日志。
+示例验证配置：
 
-## 4. 创建手工任务
+```json
+{
+  "project_path": "/srv/projects/nr_test_system",
+  "verification": {
+    "test_command": ["pytest", "tests/test_login.py", "-q"],
+    "required_files": ["tests/test_login.py"],
+    "expected_exit_code": 0,
+    "timeout_seconds": 900
+  }
+}
+```
 
-在“任务中心”点击“创建任务”，填写：
+不要仅凭 OpenCode 输出中的“完成”判断成功；应以任务为“已完成”且验证结果为“通过”为准。
 
-- 任务标题：简短、可检索的业务目标。
-- 任务类型：脚本生成、代码检视、脚本执行或故障修复。
-- 优先级：P0 最高，P3 最低。
-- 任务描述：范围、背景、边界条件和禁止事项。
-- 工程路径：Worker 能访问的绝对工程路径。
-- 真实验证命令：Verifier 在工程目录中独立执行的命令，例如 `pytest tests/test_login.py -q`。
-- 必需产物：每行一个相对工程路径，例如 `tests/test_login.py`。
-- 完成标准：每行一条可检查的 Definition of Done。
+## 8. 使用量口径
 
-创建后任务进入“待领取”。生产环境需要后端、Redis、Worker 和 OpenCode 均正常，任务才会被自动领取执行。
+- Token 仅取 OpenCode JSON 事件中的实际字段，不根据字符数或模型规则估算。
+- 总 Token 按 Input、Output、Cache Read 和 Cache Write 的实际返回值求和。
+- 工具调用按 OpenCode 工具事件聚合名称、次数、成功、失败和耗时。
+- 使用量先归属 Run，再聚合到任务、员工和平台。
+- 执行失败、等待人工、暂停和终止前已产生的用量都会保留。
+- OpenCode 未返回某项数据时显示 `—`；这与数值 `0` 含义不同。
 
-## 5. 任务控制与证据判读
+V0.2 不计算费用、模型单价、绩效分或跨员工排名。
 
-任务详情提供以下操作：
-
-- 暂停：停止继续推进，保留现场。
-- 继续：从暂停或人工介入状态恢复；已分配任务会重新进入运行队列。
-- 转人工：为需要人工判断的运行中任务记录原因并转入介入中心。
-- 终止：进入不可恢复的终态，操作前页面会再次确认。
-
-详情页证据分为三层：
-
-1. 执行时间线：由数据库 Event 渲染，是状态变化的权威记录。
-2. 实时运行日志：用于观察执行过程，不替代状态机结果。
-3. 验证结果与证据产物：包含必需文件检查、测试命令退出码、执行日志和验证报告。
-
-不要仅凭 OpenCode 输出中的“完成”判断任务成功；应以任务状态为“已完成”且验证结果为“通过”为准。
-
-## 6. 接入 nr_test_system
-
-设置以下环境变量并重启后端、Worker：
+## 9. 接入 nr_test_system
 
 ```bash
 ASTRA_NR_TEST_SYSTEM_ENDPOINT=https://nr-test.example.internal
@@ -118,49 +187,32 @@ ASTRA_NR_TEST_SYSTEM_RESULT_PATH=/api/astra/tasks/{external_task_id}/result
 ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 ```
 
-Task Scout 会按来源 Adapter 契约发现任务，`source + external_task_id` 用于幂等去重。目标系统当前仍需提供或映射对应的发现与结果回填接口。
+Task Scout 以 `source + external_task_id` 幂等去重。正式联调前需由目标系统确认字段、认证和结果回填语义。
 
-## 7. E2E 验收
-
-首次安装浏览器依赖：
-
-```bash
-cd frontend
-npm ci
-npx playwright install chromium
-```
-
-运行全量质量门禁：
+## 10. 验收与常见问题
 
 ```bash
 ./scripts/verify.sh
 ```
 
-只运行浏览器端到端验收：
+只运行隔离浏览器验收：
 
 ```bash
 ./scripts/e2e.sh
 ```
 
-E2E 会启动独立后端和前端，使用临时 SQLite 数据库，完成健康检查、页面导航、任务创建、暂停/继续、事件核对和人工介入恢复。结束后自动停止临时服务，不修改日常开发数据库。
+结果位于 `artifacts/playwright-report/index.html` 和 `artifacts/test-results/results.json`。
 
-结果位置：
+- 页面显示 `RECONNECT`：检查 `/api/health`、前端代理与 SSE 网关配置。
+- 员工不领取任务：检查员工是否启用、自动领取、能力/来源匹配、并发上限和环境是否“正常”。
+- 本地环境不可用：使用 Worker 运行账号执行 `<opencode_path> --version`，并检查 Workspace 权限。
+- 远程环境不可用：从 Astra 运行主机使用相同账号、密钥和 Host 执行批处理 SSH，检查 `known_hosts`、网络、防火墙和远程目录权限。
+- Token 显示 `—`：当前 OpenCode 事件没有提供该字段；Astra 按设计不做估算。
+- 任务无法完成：检查 `input.verification.test_command`、必需文件和测试退出码。
 
-- HTML：`artifacts/playwright-report/index.html`
-- JSON：`artifacts/test-results/results.json`
-- 失败截图、视频和 Trace：`artifacts/test-results/`
+## 11. 版本边界
 
-## 8. 常见问题
-
-- 页面出现 `RECONNECT`：先请求 `http://localhost:8100/api/health`，再检查前端代理和后端日志。
-- 任务恢复后立即等待人工：通常是 Redis/Celery 队列不可用，事件中会保存具体错误。
-- 任务无法完成：检查是否提供了 `input.verification.test_command`，以及 Worker 是否能访问工程路径和必需产物。
-- OpenCode 启动失败：检查 `ASTRA_OPENCODE_BINARY`、执行权限、模型/Agent 配置和 Worker 运行用户的环境。
-- E2E 提示缺少 Chromium：执行 `cd frontend && npx playwright install chromium`。
-
-## 9. V0.1 边界
-
-- `nr_test_system` 的正式接口需要对端联调。
-- Docker Worker 镜像不内置公司分发的 OpenCode，部署时必须按实际渠道安装或挂载 Linux 可执行文件。
-- 暂停与终止采用阶段边界上的协作式控制，不保证能中断任意第三方 CLI 的单条原子操作。
-- V0.1 管理台没有内置登录和 RBAC，必须部署在可信内网或由外部网关提供认证。
+- 不提供节点资源池、动态故障迁移、Kubernetes/Docker 环境编排或远程节点自动安装。
+- 不提供密码认证、私钥托管、成本核算或员工绩效排名。
+- 管理台没有内置登录/RBAC，必须放在可信内网或企业认证网关之后。
+- CLI 暂停/终止采用阶段边界上的协作式控制，不保证中断第三方 CLI 的单条原子操作。

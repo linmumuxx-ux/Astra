@@ -1,4 +1,4 @@
-# Astra V0.1
+# Astra V0.2
 
 Astra 是面向测试业务的常驻型数字员工平台。它用确定性程序发现和调度任务，以每任务独立的 Workspace 与 OpenCode Session 执行工作，并在独立 Verifier 通过后才完成任务。
 
@@ -11,6 +11,8 @@ Astra 是面向测试业务的常驻型数字员工平台。它用确定性程�
 - Vue 3 + TypeScript 管理台：总览、数字员工、任务中心、任务详情、运行记录、人工介入和配置中心；
 - PostgreSQL、Redis 与 Docker Compose 部署；
 - SQLite 本地开发模式和演示数据。
+- 每名数字员工唯一绑定的 `LOCAL` 或 `LINUX_REMOTE` OpenCode 执行环境、分项连接检测与任务级不可变环境快照；
+- OpenCode 实际 Token、LLM 调用与工具调用采集，以及 Run → Task → Employee → Platform 聚合展示。
 
 ## 快速启动（本地开发）
 
@@ -48,7 +50,8 @@ docker compose up --build
 
 1. 按 `.env.example` 配置 `nr_test_system` 的正式发现/回填地址；目前目标仓库尚未提供附件约定的 Astra 任务接口，因此 Adapter 契约已实现，但需要对端补齐接口或调整路径映射。
 2. 确认本机 `opencode run --format json` 可用，并把任务输入中的 `project_path` 指向允许执行的工程。
-3. 任务必须提供 `input.verification.test_command`；没有可程序化验证命令时，Verifier 会拒绝把任务标为完成并转入人工介入。
+3. 在“配置中心 → 数字员工配置 → 执行环境”保存并测试环境；只有状态为“正常”的环境才参与自动调度。
+4. 任务必须提供 `input.verification.test_command`；没有可程序化验证命令时，Verifier 会拒绝把任务标为完成并转入人工介入。
 
 任务输入示例：
 
@@ -90,6 +93,6 @@ npx playwright install chromium
 - [操作使用指南](docs/USER_GUIDE.md)
 - [部署手册](docs/DEPLOYMENT.md)
 - [E2E 验收报告](docs/verification/E2E-2026-08-27.md)
-- [实现与需求映射](docs/implementation-brief.md)
+- [V0.2 实现与需求映射](docs/implementation-brief.md)
 
 原始需求和原型已保存在 [docs/requirements](docs/requirements) 与 [docs/references](docs/references)。实现边界和验收映射见 [docs/implementation-brief.md](docs/implementation-brief.md)。

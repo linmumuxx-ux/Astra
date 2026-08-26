@@ -4,6 +4,9 @@ employees:
     role: 测试执行员工
     enabled: true
     max_concurrency: 1
+    skills:
+      - test-automation
+      - debugging
     capabilities:
       - script_generate
       - script_review
@@ -13,3 +16,13 @@ employees:
     sources:
       - nr_test_system
       - manual
+    execution_environment:
+      mode: LOCAL
+      name: 本地 OpenCode
+      opencode_path: opencode
+      workspace_root: ./workspaces
+    policy:
+      auto_claim: true
+      auto_execute: true
+      auto_repair: true
+      max_auto_retries: 3

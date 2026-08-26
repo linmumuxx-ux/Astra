@@ -26,7 +26,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Astra API",
-    version="0.1.0",
+    version="0.2.0",
     description="常驻型数字员工平台 API",
     lifespan=lifespan,
 )

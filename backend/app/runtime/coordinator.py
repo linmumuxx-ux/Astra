@@ -5,12 +5,20 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
 from app.database import SessionLocal
-from app.domain import EmployeeStatus, RunStatus, TaskStatus
+from app.domain import EmployeeStatus, EnvironmentStatus, ExecutionMode, RunStatus, TaskStatus
 from app.executors.opencode_cli import OpenCodeCLIExecutor
-from app.models import DigitalEmployee, Evidence, Run, Task
+from app.executors.opencode_remote import RemoteOpenCodeExecutor
+from app.models import DigitalEmployee, Evidence, Run, Task, ToolUsage
+from app.runtime.environment import (
+    ExecutionEnvironmentRuntime,
+    environment_from_snapshot,
+    environment_snapshot,
+)
+from app.runtime.remote_verifier import RemoteTaskVerifier
 from app.runtime.verifier import TaskVerifier
 from app.runtime.workspace import WorkspaceManager
 from app.services import TaskService
@@ -22,8 +30,9 @@ class TaskCoordinator:
     def __init__(self, *, executor=None, verifier=None, workspace_manager=None, source=None) -> None:
         self.settings = get_settings()
         self.workspace_manager = workspace_manager or WorkspaceManager(self.settings)
-        self.executor = executor or OpenCodeCLIExecutor(self.settings)
-        self.verifier = verifier or TaskVerifier()
+        self.executor = executor
+        self.verifier = verifier
+        self.environment_runtime = ExecutionEnvironmentRuntime(self.settings)
         self.source = source or NrTestSystemSource(self.settings)
 
     async def process(self, task_id: str) -> None:
@@ -31,7 +40,11 @@ class TaskCoordinator:
             task = await session.get(Task, task_id)
             if not task or not task.employee_id:
                 return
-            employee = await session.get(DigitalEmployee, task.employee_id)
+            employee = await session.scalar(
+                select(DigitalEmployee)
+                .where(DigitalEmployee.id == task.employee_id)
+                .options(selectinload(DigitalEmployee.execution_environment))
+            )
             if not employee or task.status not in {TaskStatus.CLAIMED, TaskStatus.RUNNING}:
                 return
             service = TaskService(session)
@@ -43,10 +56,23 @@ class TaskCoordinator:
                 phase=task.current_phase,
             )
             try:
+                if task.execution_environment_snapshot:
+                    environment = environment_from_snapshot(task.execution_environment_snapshot, employee.id)
+                elif (
+                    employee.execution_environment
+                    and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+                ):
+                    environment = employee.execution_environment
+                    task.execution_environment_snapshot = environment_snapshot(environment)
+                else:
+                    raise RuntimeError("员工 OpenCode 执行环境不可用或尚未测试")
+
+                is_remote = environment.mode == ExecutionMode.LINUX_REMOTE
+                control_workspace = await self.workspace_manager.create(task, copy_source=not is_remote)
                 workspace = (
-                    Path(task.workspace)
-                    if task.workspace
-                    else await self.workspace_manager.create(task)
+                    await self.environment_runtime.prepare_remote_workspace(task, environment)
+                    if is_remote
+                    else control_workspace
                 )
                 task.workspace = str(workspace)
                 await service.add_event(
@@ -54,7 +80,10 @@ class TaskCoordinator:
                     "WORKSPACE_CREATED",
                     "workspace",
                     "任务独立 Workspace 已就绪",
-                    {"workspace": str(workspace)},
+                    {
+                        "workspace": str(workspace),
+                        "execution_environment": task.execution_environment_snapshot,
+                    },
                 )
                 if task.status == TaskStatus.CLAIMED:
                     await service.transition(
@@ -64,7 +93,20 @@ class TaskCoordinator:
                         progress=15,
                         message="OpenCode 执行即将开始",
                     )
-                await self._run_until_terminal(task, employee, workspace, session)
+                executor = self.executor or (
+                    RemoteOpenCodeExecutor(environment, self.settings, self.environment_runtime)
+                    if is_remote
+                    else OpenCodeCLIExecutor(self.settings, opencode_binary=environment.opencode_path)
+                )
+                await self._run_until_terminal(
+                    task,
+                    employee,
+                    workspace,
+                    control_workspace,
+                    environment,
+                    executor,
+                    session,
+                )
             except Exception as exc:
                 runtime_log(
                     logging.ERROR,
@@ -93,7 +135,16 @@ class TaskCoordinator:
                 employee.status = EmployeeStatus.WAIT_HUMAN
                 await session.commit()
 
-    async def _run_until_terminal(self, task, employee, workspace, session) -> None:
+    async def _run_until_terminal(
+        self,
+        task,
+        employee,
+        workspace,
+        control_workspace,
+        environment,
+        executor,
+        session,
+    ) -> None:
         service = TaskService(session)
         while True:
             run_number = (
@@ -105,8 +156,13 @@ class TaskCoordinator:
                 employee_id=employee.id,
                 run_number=run_number,
                 status=RunStatus.RUNNING,
-                executor_type=self.settings.executor_type,
+                executor_type=(
+                    "opencode_ssh"
+                    if environment.mode == ExecutionMode.LINUX_REMOTE
+                    else self.settings.executor_type
+                ),
                 opencode_session_id=task.opencode_session_id,
+                execution_environment_snapshot=task.execution_environment_snapshot or {},
             )
             session.add(run)
             await session.commit()
@@ -127,31 +183,46 @@ class TaskCoordinator:
                 phase="executing",
             )
             result = (
-                await self.executor.resume(task, run, workspace)
+                await executor.resume(task, run, workspace)
                 if task.opencode_session_id
-                else await self.executor.start(task, workspace)
+                else await executor.start(task, workspace)
             )
             await session.refresh(task)
-            if task.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED, TaskStatus.WAIT_HUMAN}:
-                run.status = (
-                    RunStatus.CANCELLED
-                    if task.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}
-                    else RunStatus.BLOCKED
-                )
-                run.finished_at = datetime.now(UTC)
-                await session.commit()
-                return
             task.opencode_session_id = result.session_id or task.opencode_session_id
             run.opencode_session_id = task.opencode_session_id
             run.exit_code = result.exit_code
+            run.model_name = result.model_name or self.settings.opencode_model
+            run.input_tokens = result.token_usage.input_tokens
+            run.output_tokens = result.token_usage.output_tokens
+            run.cache_read_tokens = result.token_usage.cache_read_tokens
+            run.cache_write_tokens = result.token_usage.cache_write_tokens
+            run.total_tokens = result.token_usage.total_tokens
+            run.llm_call_count = result.token_usage.llm_call_count
+            run.tool_call_count = (
+                sum(item.call_count for item in result.tool_usage) if result.tool_usage else None
+            )
             run.result = {
                 "status": result.status,
                 "session_id": result.session_id,
                 "stderr": result.stderr[-4000:],
+                "usage_source": "opencode_json_events",
             }
             run.finished_at = datetime.now(UTC)
+            session.add_all(
+                [
+                    ToolUsage(
+                        run_id=run.id,
+                        tool_name=item.name,
+                        call_count=item.call_count,
+                        success_count=item.success_count,
+                        failure_count=item.failure_count,
+                        duration_ms=item.duration_ms,
+                    )
+                    for item in result.tool_usage
+                ]
+            )
 
-            output_path = workspace / "evidence" / "opencode_output.json"
+            output_path = control_workspace / "evidence" / "opencode_output.json"
             output_path.write_text(
                 json.dumps(
                     {
@@ -160,6 +231,26 @@ class TaskCoordinator:
                         "session_id": result.session_id,
                         "events": result.output,
                         "stderr": result.stderr,
+                        "usage": {
+                            "model": run.model_name,
+                            "input_tokens": run.input_tokens,
+                            "output_tokens": run.output_tokens,
+                            "cache_read_tokens": run.cache_read_tokens,
+                            "cache_write_tokens": run.cache_write_tokens,
+                            "total_tokens": run.total_tokens,
+                            "llm_call_count": run.llm_call_count,
+                            "tool_call_count": run.tool_call_count,
+                            "tools": [
+                                {
+                                    "name": item.name,
+                                    "call_count": item.call_count,
+                                    "success_count": item.success_count,
+                                    "failure_count": item.failure_count,
+                                    "duration_ms": item.duration_ms,
+                                }
+                                for item in result.tool_usage
+                            ],
+                        },
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -167,6 +258,15 @@ class TaskCoordinator:
                 encoding="utf-8",
             )
             await self._add_evidence(session, task, run, output_path, "opencode_output")
+
+            if task.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED, TaskStatus.WAIT_HUMAN}:
+                run.status = (
+                    RunStatus.CANCELLED
+                    if task.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}
+                    else RunStatus.BLOCKED
+                )
+                await session.commit()
+                return
 
             if result.status == "BLOCKED":
                 run.status = RunStatus.BLOCKED
@@ -187,7 +287,7 @@ class TaskCoordinator:
             if result.exit_code != 0:
                 run.status = RunStatus.FAILED
                 await session.commit()
-                if not await self._retry_or_handoff(task, service, run.id):
+                if not await self._retry_or_handoff(task, employee, service, run.id):
                     employee.status = EmployeeStatus.WAIT_HUMAN
                     await session.commit()
                     return
@@ -201,7 +301,16 @@ class TaskCoordinator:
                 message="OpenCode 执行结束，开始独立验证",
                 run_id=run.id,
             )
-            verification = await self.verifier.verify(task, workspace)
+            verifier = self.verifier or (
+                RemoteTaskVerifier(
+                    environment,
+                    self.environment_runtime,
+                    control_workspace / "evidence",
+                )
+                if environment.mode == ExecutionMode.LINUX_REMOTE
+                else TaskVerifier()
+            )
+            verification = await verifier.verify(task, workspace)
             runtime_log(
                 logging.INFO if verification.passed else logging.WARNING,
                 "独立验证完成",
@@ -272,12 +381,25 @@ class TaskCoordinator:
                 employee.status = EmployeeStatus.WAIT_HUMAN
                 await session.commit()
                 return
-            if not await self._retry_or_handoff(task, service, run.id):
+            if not await self._retry_or_handoff(task, employee, service, run.id):
                 employee.status = EmployeeStatus.WAIT_HUMAN
                 await session.commit()
                 return
 
-    async def _retry_or_handoff(self, task: Task, service: TaskService, run_id: str) -> bool:
+    async def _retry_or_handoff(
+        self, task: Task, employee: DigitalEmployee, service: TaskService, run_id: str
+    ) -> bool:
+        if not employee.auto_repair:
+            task.human_required_reason = "员工工作策略未启用自动修复"
+            await service.transition(
+                task,
+                TaskStatus.WAIT_HUMAN,
+                phase="repair_disabled",
+                progress=task.progress,
+                message="自动修复未启用，等待人工处理",
+                run_id=run_id,
+            )
+            return False
         if task.retry_count >= task.max_retry_count:
             task.human_required_reason = "已达到最大自动修复次数"
             await service.transition(

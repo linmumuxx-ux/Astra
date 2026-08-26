@@ -12,7 +12,7 @@ class WorkspaceManager:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
-    async def create(self, task: Task) -> Path:
+    async def create(self, task: Task, *, copy_source: bool = True) -> Path:
         root = self.settings.workspace_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
         workspace = (root / task.id).resolve()
@@ -23,7 +23,7 @@ class WorkspaceManager:
 
         project_path = task.input.get("project_path")
         source_dir = workspace / "source"
-        if project_path and not any(source_dir.iterdir()):
+        if copy_source and project_path and not any(source_dir.iterdir()):
             project = Path(project_path).expanduser().resolve()
             if not project.is_dir():
                 raise FileNotFoundError(f"任务工程不存在: {project}")

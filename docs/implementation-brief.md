@@ -1,38 +1,70 @@
-# Astra V0.1 实施简报
+# Astra V0.2 实现与需求映射
 
-## 目标
+## 交付结论
 
-交付一个可独立运行的最小闭环：任务创建/发现 → Astra-01 原子领取 → 独立 Workspace → OpenCode CLI 执行与同 Session 重试 → 独立验证 → 证据保存 → 结果回填 → 员工恢复 IDLE。
+V0.2 在 V0.1 任务闭环上补齐了“员工固定执行环境”和“真实工作量采集”两条链路。实现保持 Task 为核心对象、状态机为唯一状态入口、OpenCode 只负责执行、Verifier 独立判定完成。
 
-## 已核实现场
+## 默认执行环境
 
-- 本机存在 OpenCode CLI，支持 `opencode run --format json`、`--session`、`--dir` 和 `--agent`。
-- `nr_test_system` 当前工程包含 Vue/Django/Celery 和 OpenCode 维护能力，但尚未出现需求附件约定的 READY 测试任务发现/结果回填接口。
-- 因此 Astra 实现可配置 `NrTestSystemSource` 契约；对端接口未就绪时不伪造“已打通”的结论。
+| 需求 | 实现 |
+| --- | --- |
+| 每员工一个默认环境 | `opencode_execution_environments.employee_id` 唯一约束和一对一关系 |
+| 本地或 Linux 远程 | `ExecutionMode.LOCAL / LINUX_REMOTE` |
+| 环境状态独立 | `UNKNOWN / CHECKING / AVAILABLE / UNAVAILABLE`，不复用员工状态 |
+| 分项检测 | 本地：二进制、启动、Workspace；远程：SSH、Workspace、二进制、启动 |
+| 远程认证安全 | 仅 SSH Agent 或 Key 路径，不接受密码，不保存私钥内容 |
+| 任务选择环境 | Dispatcher 先匹配员工，再使用其唯一默认环境；环境非正常不领取 |
+| 历史可追溯 | 领取时保存 Task 环境快照，创建 Run 时再次固化；后续配置更新不覆盖历史 |
+| 远程执行 | 系统 SSH + BatchMode，远程创建任务目录、复制远程工程、运行 OpenCode 和 Verifier |
+| 自主策略 | 自动领取、自动执行、自动修复、最大重试和最大并发 |
 
-## V0.1 范围
+V0.2 没有引入节点池、资源调度、动态故障迁移、Kubernetes/Docker 环境编排或远程节点自动安装。
 
-- Task 是核心对象；状态只能由 `TaskStateMachine` 和 `TaskService` 改变。
-- 每次状态变化写入 Event；页面从数据库恢复真实状态，SSE 只负责增量刷新。
-- `source + external_task_id` 唯一，PostgreSQL 领取使用事务和行锁。
-- 一个任务一个 Workspace，一个 Task 保留一个 OpenCode Session；重试使用 `--session` 恢复。
-- OpenCode 只负责执行；任务发现、调度、状态判断、Heartbeat 和验证均为确定性程序。
-- Verifier 至少检查必需文件、真实命令退出码、有效测试结果和证据文件。
-- V0.1 不加入多 Agent、复杂权限、Temporal/LangGraph、模型 API 或工作流设计器。
-- CLI 执行中的暂停/终止采用协作式阶段边界：API 立即持久化控制状态，Worker 在当前 OpenCode 调用返回后停止后续验证或重试；恢复时继续原 Workspace 与 Session。跨进程即时杀进程需后续引入可持久化执行句柄。
+## 工作量采集
 
-## 外部契约缺口
+| 需求 | 实现 |
+| --- | --- |
+| Token 来源真实 | 解析 `opencode run --format json` 返回事件，不做字符数或模型估算 |
+| Token 字段 | Input、Output、Cache Read、Cache Write、Total |
+| 模型与 LLM 调用 | Run 保存 `model_name` 与实际包含 usage 的调用次数 |
+| 工具调用 | 解析工具名、调用 ID、状态和时间；按 Run/工具聚合次数、成功、失败、耗时 |
+| 数据归属 | 原始数据落 Run/ToolUsage，再聚合 Task、Employee、Platform |
+| 异常保留 | Run 在暂停、终止、失败或等待人工判断前先持久化已产生的用量 |
+| 缺失语义 | OpenCode 未提供的字段为 `NULL`，前端显示 `—`，与 `0` 区分 |
+| 展示 | 总览、员工列表/详情、任务详情、Run 列表/详情、7/30 天趋势和工具 Top |
 
-默认 Adapter 约定：
+总 Token 使用 OpenCode 实际返回的 Input、Output、Cache Read 和 Cache Write 之和。V0.2 不计算费用、模型单价、员工绩效分或排名。
 
-- `GET /api/astra/tasks?status=READY` 返回数组或 `{ "items": [...] }`；
-- `POST /api/astra/tasks/{external_task_id}/result` 接收 Astra 结果、证据摘要和最终状态；
-- Bearer Token 仅从 `ASTRA_NR_TEST_SYSTEM_TOKEN` 环境变量读取。
+## 数据库升级
 
-路径均可由环境变量覆盖。正式联调前需由 `nr_test_system` 确认字段映射、认证和幂等语义。
+Alembic `0002_astra_v02` 支持 V0.1 → V0.2：
 
-## 验收证据
+- 为员工补充技能和自主策略；
+- 为存量员工回填默认本地环境；
+- 为 Task/Run 补充环境快照；
+- 为 Run 补充模型和用量字段；
+- 新建工具使用量表。
 
-- 状态机、任务创建/操作、Scout 去重、Dispatcher 匹配、Workspace 隔离和 Verifier 具备单元/集成测试。
-- 后端测试、前端类型检查与生产构建必须通过。
-- 浏览器检查四个核心页面，并验证搜索、筛选、导航和任务操作的关键交互。
+迁移已使用临时 V0.1 SQLite 数据库验证，存量员工成功回填 `LOCAL / UNKNOWN` 环境，最终版本为 `0002_astra_v02`。
+
+## API 与管理台
+
+新增或扩展的主要接口：
+
+- `POST /api/employees`
+- `PATCH /api/employees/{id}`
+- `PUT /api/employees/{id}/environment`
+- `POST /api/employees/{id}/environment/test`
+- `GET /api/employees/{id}/usage?days=7|30`
+- `GET /api/tasks/{id}/usage`
+- `GET /api/runs/{id}`
+- `GET /api/runs/{id}/usage`
+
+配置变更通过 Event 留痕。环境快照只保存非秘密执行参数。
+
+## 已验证边界
+
+- 后端测试覆盖状态机、来源幂等、环境调度、真实 Verifier、同 Session 修复、使用量解析和远程 Workspace 路由。
+- 浏览器 E2E 覆盖核心导航、任务控制、人工介入、员工环境创建/检测、任务用量与 Run 详情。
+- 远程 SSH 的真实目标机连通性依赖部署现场，需按《部署手册》在目标 Linux 环境验收。
+- `nr_test_system` 正式接口仍需对端确认字段映射、认证与回填契约。

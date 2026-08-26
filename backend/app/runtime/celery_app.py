@@ -4,6 +4,7 @@ from celery import Celery
 
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
+from app.models import DigitalEmployee
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
@@ -52,12 +53,15 @@ def dispatch() -> str | None:
         await init_database()
         async with SessionLocal() as session:
             task = await Dispatcher(session).claim_once()
-            return task.id if task else None
+            if not task or not task.employee_id:
+                return None
+            employee = await session.get(DigitalEmployee, task.employee_id)
+            return {"task_id": task.id, "auto_execute": bool(employee and employee.auto_execute)}
 
-    task_id = run_async(execute())
-    if task_id:
-        process_task.delay(task_id)
-    return task_id
+    claimed = run_async(execute())
+    if claimed and claimed["auto_execute"]:
+        process_task.delay(claimed["task_id"])
+    return claimed["task_id"] if claimed else None
 
 
 @celery.task(name="astra.process-task")

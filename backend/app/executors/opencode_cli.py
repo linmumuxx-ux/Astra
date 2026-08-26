@@ -5,19 +5,23 @@ from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.executors.base import ExecutorResult, OpenCodeExecutor
+from app.executors.usage import parse_opencode_usage
 from app.models import Run, Task
 
 
 class OpenCodeCLIExecutor(OpenCodeExecutor):
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, *, opencode_binary: str | None = None):
         self.settings = settings or get_settings()
+        self.opencode_binary = opencode_binary or self.settings.opencode_binary
         self._processes: dict[str, asyncio.subprocess.Process] = {}
 
     def _prompt(self, task: Task, workspace: Path, *, retry: bool = False) -> str:
         dod = "\n".join(f"{index + 1}. {item}" for index, item in enumerate(task.definition_of_done))
         retry_text = (
             "\n这是同一任务的修复重试。请基于当前 Workspace 和原 OpenCode Session 分析失败证据，"
-            "做最小修复并重新执行。" if retry else ""
+            "做最小修复并重新执行。"
+            if retry
+            else ""
         )
         return f"""当前任务：
 {task.id}
@@ -38,7 +42,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 {workspace}
 
 完成标准：
-{dod or '按任务输入中的验证契约完成并产生真实执行证据。'}
+{dod or "按任务输入中的验证契约完成并产生真实执行证据。"}
 
 请优先使用项目已有 Skill、Command 和工具完成实际操作。不要只输出分析或建议。
 不得自行把任务标记为完成；Astra Verifier 会独立执行确定性验证。
@@ -48,7 +52,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
     def _command(self, task: Task, workspace: Path, session_id: str | None = None) -> list[str]:
         source_dir = workspace / "source"
         command = [
-            self.settings.opencode_binary,
+            self.opencode_binary,
             "run",
             "--format",
             "json",
@@ -83,14 +87,13 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
                     return found
         return None
 
-    async def _execute(
-        self, task: Task, workspace: Path, *, session_id: str | None = None
+    async def _communicate(
+        self,
+        task: Task,
+        process: asyncio.subprocess.Process,
+        *,
+        session_id: str | None = None,
     ) -> ExecutorResult:
-        process = await asyncio.create_subprocess_exec(
-            *self._command(task, workspace, session_id),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         self._processes[task.id] = process
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -117,10 +120,9 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 
         combined = f"{stdout}\n{stderr}".upper()
         status = (
-            "BLOCKED"
-            if "BLOCKED" in combined
-            else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
+            "BLOCKED" if "BLOCKED" in combined else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
         )
+        token_usage, tool_usage, model_name = parse_opencode_usage(output)
         return ExecutorResult(
             status=status,
             exit_code=process.returncode or 0,
@@ -128,7 +130,18 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
             output=output,
             stdout=stdout,
             stderr=stderr,
+            model_name=model_name,
+            token_usage=token_usage,
+            tool_usage=tool_usage,
         )
+
+    async def _execute(self, task: Task, workspace: Path, *, session_id: str | None = None) -> ExecutorResult:
+        process = await asyncio.create_subprocess_exec(
+            *self._command(task, workspace, session_id),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return await self._communicate(task, process, session_id=session_id)
 
     async def start(self, task: Task, workspace: Path) -> ExecutorResult:
         return await self._execute(task, workspace)

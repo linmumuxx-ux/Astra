@@ -28,8 +28,7 @@ class VerificationResult:
             "passed": self.passed,
             "repairable": self.repairable,
             "items": [
-                {"name": item.name, "passed": item.passed, "detail": item.detail}
-                for item in self.items
+                {"name": item.name, "passed": item.passed, "detail": item.detail} for item in self.items
             ],
             "evidence": [str(path) for path in self.evidence],
             "verified_at": datetime.now(UTC).isoformat(),
@@ -112,9 +111,7 @@ class TaskVerifier:
             "executed_at": datetime.now(UTC).isoformat(),
         }
         test_result = evidence_dir / "test_result.json"
-        test_result.write_text(
-            json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        test_result.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         evidence.append(test_result)
 
         required_evidence = ["opencode_output.json", *config.get("required_evidence", [])]

@@ -5,11 +5,13 @@
       <div class="intro-state"><span>系统状态</span><strong><i /> 全部服务正常</strong><small>上次同步 {{ lastSync }}</small></div>
     </section>
 
-    <section class="metrics-grid">
+    <section class="metrics-grid metrics-grid--six" data-testid="dashboard-v02-metrics">
       <AstraMetricCard label="在线员工" :value="store.metrics?.online_employees ?? '—'" unit="人" hint="Astra-01 心跳正常" :icon="Bot" />
       <AstraMetricCard label="运行中任务" :value="store.metrics?.running_tasks ?? '—'" unit="项" hint="任务闭环持续推进" :icon="Workflow" />
       <AstraMetricCard label="等待人工" :value="store.metrics?.wait_human_tasks ?? '—'" unit="项" hint="需要业务或环境输入" :icon="Hand" tone="warning" />
       <AstraMetricCard label="今日完成" :value="store.metrics?.completed_today ?? '—'" unit="项" hint="均经过独立验证" :icon="BadgeCheck" tone="success" />
+      <AstraMetricCard label="今日 Token" :value="formatTokens(store.metrics?.today_tokens)" hint="仅统计 OpenCode 实际返回值" :icon="Binary" />
+      <AstraMetricCard label="工具调用" :value="store.metrics?.today_tool_calls ?? '—'" unit="次" hint="成功与失败均保留" :icon="Wrench" />
     </section>
 
     <section class="dashboard-grid">
@@ -22,7 +24,7 @@
         <template #action><RouterLink class="text-link" to="/employees">查看全部 <ArrowUpRight :size="13" /></RouterLink></template>
         <article v-for="employee in store.employees" :key="employee.id" class="employee-summary">
           <div class="employee-avatar"><Bot :size="25" /><i /></div>
-          <div class="employee-copy"><div><strong>{{ employee.name }}</strong><AstraStatusBadge :status="employee.status" pulse /></div><p>{{ employee.role }}</p><small>在线 {{ formatDuration(employee.online_since) }} · {{ employee.capabilities.length }} 项能力</small></div>
+          <div class="employee-copy"><div><strong>{{ employee.name }}</strong><AstraStatusBadge :status="employee.status" pulse /></div><p>{{ employee.role }} · {{ environmentLabel(employee.execution_environment) }}</p><small>环境 {{ statusLabel(employee.execution_environment?.status ?? 'UNKNOWN') }} · Token {{ formatTokens(employee.today_usage.total_tokens) }} · 工具 {{ employee.today_usage.tool_call_count ?? '—' }}</small></div>
           <RouterLink :to="`/employees/${employee.id}`" aria-label="查看员工"><ChevronRight :size="18" /></RouterLink>
         </article>
       </AstraPanel>
@@ -52,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, ArrowUpRight, BadgeCheck, Bot, Check, ChevronRight, CircleAlert, Hand, Play, RotateCcw, Workflow } from 'lucide-vue-next'
+import { Activity, ArrowUpRight, BadgeCheck, Binary, Bot, Check, ChevronRight, CircleAlert, Hand, Play, RotateCcw, Workflow, Wrench } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
@@ -61,7 +63,7 @@ import AstraProgress from '@/components/astra/AstraProgress.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import TrendChart from '@/components/runtime/TrendChart.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatDuration, formatTime, phaseLabel, sourceLabel } from '@/utils/format'
+import { environmentLabel, formatTime, formatTokens, phaseLabel, sourceLabel, statusLabel } from '@/utils/format'
 
 const store = useAstraStore()
 const lastSync = computed(() => store.lastUpdated ? store.lastUpdated.toLocaleTimeString('zh-CN', { hour12: false }) : '连接中')

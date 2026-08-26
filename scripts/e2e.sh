@@ -63,6 +63,7 @@ test -d "$ROOT_DIR/frontend/node_modules/@playwright/test" || {
 echo "启动隔离的 Astra E2E 环境..."
 (
   cd "$ROOT_DIR/backend"
+  PATH="$ROOT_DIR/scripts/fixtures:$PATH" \
   ASTRA_DATABASE_URL="sqlite+aiosqlite:///$RUN_DIR/astra-e2e.db" \
   ASTRA_WORKSPACE_ROOT="$RUN_DIR/workspaces" \
   ASTRA_SEED_DEMO="true" \

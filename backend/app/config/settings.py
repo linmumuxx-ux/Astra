@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     workspace_root: Path = Path("./workspaces")
     config_dir: Path = Path("../configs")
     seed_demo: bool = True
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://localhost:8080"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://localhost:8080"]
+    )
 
     scout_interval: int = 30
     dispatcher_interval: int = 5
@@ -31,6 +33,8 @@ class Settings(BaseSettings):
     opencode_agent: str = "maintainer"
     opencode_model: str | None = None
     opencode_timeout_seconds: int = 3600
+    ssh_binary: str = "ssh"
+    ssh_connect_timeout_seconds: int = 10
 
     nr_test_system_endpoint: str = "http://localhost:8000"
     nr_test_system_discover_path: str = "/api/astra/tasks"

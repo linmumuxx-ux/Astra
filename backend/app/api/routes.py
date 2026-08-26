@@ -7,16 +7,21 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import SessionLocal, get_session
-from app.domain import EmployeeStatus, TaskStatus
-from app.models import DigitalEmployee, Event, Evidence, Run, Task
+from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
+from app.models import DigitalEmployee, Event, Evidence, OpenCodeExecutionEnvironment, Run, Task
+from app.runtime.environment import CheckItem, ExecutionEnvironmentRuntime, checks_status
 from app.schemas import (
     EmployeeCreate,
     EmployeePatch,
     EmployeeRead,
+    EnvironmentCheckResult,
     EventRead,
     EvidenceRead,
+    ExecutionEnvironmentRead,
+    ExecutionEnvironmentWrite,
     RunRead,
     TaskAction,
     TaskCreate,
@@ -24,6 +29,15 @@ from app.schemas import (
 )
 from app.services import EmployeeService, TaskService, dashboard_metrics
 from app.state_machine import InvalidTransition
+from app.usage import (
+    day_bounds,
+    employee_performance,
+    employee_usage,
+    load_runs,
+    summarize_runs,
+    task_usage,
+    tool_breakdown,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -36,10 +50,30 @@ async def require_task(task_id: str, session: AsyncSession) -> Task:
 
 
 async def require_employee(employee_id: str, session: AsyncSession) -> DigitalEmployee:
-    employee = await session.get(DigitalEmployee, employee_id)
+    employee = await session.scalar(
+        select(DigitalEmployee)
+        .where(DigitalEmployee.id == employee_id)
+        .options(selectinload(DigitalEmployee.execution_environment))
+    )
     if not employee:
         raise HTTPException(status_code=404, detail="数字员工不存在")
     return employee
+
+
+async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> EmployeeRead:
+    start, end = day_bounds()
+    runs = await load_runs(session, employee_id=employee.id, start=start, end=end)
+    usage = await summarize_runs(session, runs)
+    performance = await employee_performance(session, employee.id)
+    base = EmployeeRead.model_validate(employee)
+    return EmployeeRead.model_validate(
+        {
+            **base.model_dump(),
+            "today_usage": usage,
+            "today_completed": usage["completed_tasks"],
+            "success_rate": performance["success_rate"],
+        }
+    )
 
 
 @router.get("/health")
@@ -55,30 +89,50 @@ async def metrics(session: AsyncSession = Depends(get_session)) -> dict:
 
 @router.get("/employees", response_model=list[EmployeeRead])
 async def list_employees(session: AsyncSession = Depends(get_session)):
-    return (await session.execute(select(DigitalEmployee).order_by(DigitalEmployee.id))).scalars().all()
+    employees = (
+        (
+            await session.execute(
+                select(DigitalEmployee)
+                .options(selectinload(DigitalEmployee.execution_environment))
+                .order_by(DigitalEmployee.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [await employee_read(employee, session) for employee in employees]
 
 
 @router.post("/employees", response_model=EmployeeRead, status_code=status.HTTP_201_CREATED)
 async def create_employee(payload: EmployeeCreate, session: AsyncSession = Depends(get_session)):
+    environment_payload = payload.execution_environment.model_dump()
+    employee_payload = payload.model_dump(exclude={"execution_environment"})
     employee = DigitalEmployee(
-        **payload.model_dump(),
+        **employee_payload,
         status=EmployeeStatus.IDLE,
         online_since=datetime.now(UTC),
         last_heartbeat=datetime.now(UTC),
     )
     session.add(employee)
     try:
+        await session.flush()
+        session.add(
+            OpenCodeExecutionEnvironment(
+                employee_id=employee.id,
+                **environment_payload,
+                status=EnvironmentStatus.UNKNOWN,
+            )
+        )
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="员工 ID 已存在") from exc
-    await session.refresh(employee)
-    return employee
+    return await employee_read(await require_employee(employee.id, session), session)
 
 
 @router.get("/employees/{employee_id}", response_model=EmployeeRead)
 async def get_employee(employee_id: str, session: AsyncSession = Depends(get_session)):
-    return await require_employee(employee_id, session)
+    return await employee_read(await require_employee(employee_id, session), session)
 
 
 @router.patch("/employees/{employee_id}", response_model=EmployeeRead)
@@ -89,8 +143,89 @@ async def patch_employee(
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(employee, key, value)
     await session.commit()
-    await session.refresh(employee)
-    return employee
+    return await employee_read(await require_employee(employee.id, session), session)
+
+
+@router.put("/employees/{employee_id}/environment", response_model=ExecutionEnvironmentRead)
+async def update_employee_environment(
+    employee_id: str,
+    payload: ExecutionEnvironmentWrite,
+    session: AsyncSession = Depends(get_session),
+):
+    employee = await require_employee(employee_id, session)
+    environment = employee.execution_environment
+    if environment is None:
+        environment = OpenCodeExecutionEnvironment(employee_id=employee.id)
+        session.add(environment)
+    for key, value in payload.model_dump().items():
+        setattr(environment, key, value)
+    environment.status = EnvironmentStatus.UNKNOWN
+    environment.status_detail = {
+        "message": "配置已更新，等待测试连接",
+        "applies_to": "future_tasks" if employee.current_task_count else "all_new_runs",
+    }
+    await session.commit()
+    await session.refresh(environment)
+    session.add(
+        Event(
+            employee_id=employee.id,
+            event_type="ENVIRONMENT_UPDATED",
+            phase="environment",
+            message="OpenCode 执行环境已更新",
+            detail={
+                "mode": environment.mode,
+                "name": environment.name,
+                "applies_to_future_tasks": bool(employee.current_task_count),
+            },
+        )
+    )
+    await session.commit()
+    return environment
+
+
+@router.post("/employees/{employee_id}/environment/test", response_model=EnvironmentCheckResult)
+async def test_employee_environment(employee_id: str, session: AsyncSession = Depends(get_session)):
+    employee = await require_employee(employee_id, session)
+    environment = employee.execution_environment
+    if not environment:
+        raise HTTPException(status_code=409, detail="员工尚未配置 OpenCode 执行环境")
+    environment.status = EnvironmentStatus.CHECKING
+    await session.commit()
+    checked_at = datetime.now(UTC)
+    try:
+        checks = await ExecutionEnvironmentRuntime().test(environment)
+    except Exception as exc:
+        checks = [CheckItem("环境检查", False, str(exc))]
+    environment.status = checks_status(checks)
+    environment.last_checked_at = checked_at
+    environment.status_detail = {
+        "checks": [{"name": item.name, "passed": item.passed, "detail": item.detail} for item in checks]
+    }
+    session.add(
+        Event(
+            employee_id=employee.id,
+            event_type="ENVIRONMENT_CHECKED",
+            phase="environment",
+            message="OpenCode 执行环境检查完成",
+            detail={"status": environment.status, **environment.status_detail},
+        )
+    )
+    await session.commit()
+    return {
+        "status": environment.status,
+        "checked_at": checked_at,
+        "checks": environment.status_detail["checks"],
+    }
+
+
+@router.get("/employees/{employee_id}/usage")
+async def get_employee_usage(
+    employee_id: str,
+    days: int = Query(default=7, ge=1, le=30),
+    session: AsyncSession = Depends(get_session),
+):
+    await require_employee(employee_id, session)
+    return await employee_usage(session, employee_id, days)
 
 
 @router.post("/employees/{employee_id}/pause", response_model=EmployeeRead)
@@ -129,9 +264,7 @@ async def list_tasks(
         query = query.where(Task.priority == priority)
     if employee_id:
         query = query.where(Task.employee_id == employee_id)
-    return (
-        (await session.execute(query.order_by(desc(Task.created_at)).limit(limit))).scalars().all()
-    )
+    return (await session.execute(query.order_by(desc(Task.created_at)).limit(limit))).scalars().all()
 
 
 @router.post("/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
@@ -199,9 +332,7 @@ async def pause_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
     task = await require_task(task_id, session)
-    result = await transition_task(
-        task, TaskStatus.PAUSED, "paused", "任务已由人工暂停", session, payload
-    )
+    result = await transition_task(task, TaskStatus.PAUSED, "paused", "任务已由人工暂停", session, payload)
     if task.employee_id:
         employee = await session.get(DigitalEmployee, task.employee_id)
         if employee:
@@ -273,23 +404,32 @@ async def retry_task(
     else:
         target = TaskStatus.RUNNING
     task.human_required_reason = None
-    result = await transition_task(
-        task, target, "manual_retry", "任务已进入人工重试流程", session, payload
-    )
+    result = await transition_task(task, target, "manual_retry", "任务已进入人工重试流程", session, payload)
     if target is TaskStatus.RUNNING:
         result = await enqueue_running_task(task, session)
     return result
+
+
+@router.post("/tasks/{task_id}/start", response_model=TaskRead)
+async def start_task(task_id: str, session: AsyncSession = Depends(get_session)):
+    task = await require_task(task_id, session)
+    if task.status != TaskStatus.CLAIMED or not task.employee_id:
+        raise HTTPException(status_code=409, detail="只有已领取任务可以手工启动")
+    employee = await require_employee(task.employee_id, session)
+    if (
+        not employee.execution_environment
+        or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
+    ):
+        raise HTTPException(status_code=409, detail="员工 OpenCode 执行环境不可用")
+    result = await transition_task(task, TaskStatus.RUNNING, "manual_start", "任务已由人工启动", session)
+    return await enqueue_running_task(result, session)
 
 
 @router.get("/tasks/{task_id}/runs", response_model=list[RunRead])
 async def task_runs(task_id: str, session: AsyncSession = Depends(get_session)):
     await require_task(task_id, session)
     return (
-        (
-            await session.execute(
-                select(Run).where(Run.task_id == task_id).order_by(Run.run_number.desc())
-            )
-        )
+        (await session.execute(select(Run).where(Run.task_id == task_id).order_by(Run.run_number.desc())))
         .scalars()
         .all()
     )
@@ -297,9 +437,7 @@ async def task_runs(task_id: str, session: AsyncSession = Depends(get_session)):
 
 @router.get("/runs", response_model=list[RunRead])
 async def list_runs(session: AsyncSession = Depends(get_session)):
-    return (
-        (await session.execute(select(Run).order_by(Run.created_at.desc()).limit(200))).scalars().all()
-    )
+    return (await session.execute(select(Run).order_by(Run.created_at.desc()).limit(200))).scalars().all()
 
 
 @router.get("/runs/{run_id}", response_model=RunRead)
@@ -310,15 +448,28 @@ async def get_run(run_id: str, session: AsyncSession = Depends(get_session)):
     return run
 
 
+@router.get("/runs/{run_id}/usage")
+async def get_run_usage(run_id: str, session: AsyncSession = Depends(get_session)):
+    run = await session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    return {
+        "summary": await summarize_runs(session, [run]),
+        "tools": await tool_breakdown(session, [run]),
+    }
+
+
+@router.get("/tasks/{task_id}/usage")
+async def get_task_usage(task_id: str, session: AsyncSession = Depends(get_session)):
+    await require_task(task_id, session)
+    return await task_usage(session, task_id)
+
+
 @router.get("/tasks/{task_id}/events", response_model=list[EventRead])
 async def task_events(task_id: str, session: AsyncSession = Depends(get_session)):
     await require_task(task_id, session)
     return (
-        (
-            await session.execute(
-                select(Event).where(Event.task_id == task_id).order_by(Event.created_at)
-            )
-        )
+        (await session.execute(select(Event).where(Event.task_id == task_id).order_by(Event.created_at)))
         .scalars()
         .all()
     )
@@ -355,11 +506,7 @@ async def event_stream() -> StreamingResponse:
             while True:
                 await asyncio.sleep(1)
                 rows = (
-                    (
-                        await stream_session.execute(
-                            select(Event).where(Event.id > last_id).order_by(Event.id)
-                        )
-                    )
+                    (await stream_session.execute(select(Event).where(Event.id > last_id).order_by(Event.id)))
                     .scalars()
                     .all()
                 )

@@ -12,6 +12,7 @@ from app.event_bus import event_bus
 from app.models import DigitalEmployee, Event, Task
 from app.schemas import TaskCreate
 from app.state_machine import TaskStateMachine
+from app.usage import load_runs, summarize_runs
 
 STATUS_EVENT = {
     TaskStatus.READY: "TASK_READY",
@@ -177,9 +178,7 @@ class EmployeeService:
 
 async def dashboard_metrics(session: AsyncSession) -> dict:
     task_counts = dict(
-        (
-            await session.execute(select(Task.status, func.count(Task.id)).group_by(Task.status))
-        ).all()
+        (await session.execute(select(Task.status, func.count(Task.id)).group_by(Task.status))).all()
     )
     employee_counts = dict(
         (
@@ -214,6 +213,8 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
         )
         or 0
     )
+    usage_runs = await load_runs(session, start=day_start, end=day_end)
+    usage = await summarize_runs(session, usage_runs)
     return {
         "online_employees": sum(
             count
@@ -228,6 +229,8 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
         "wait_human_tasks": task_counts.get(TaskStatus.WAIT_HUMAN, 0),
         "completed_today": completed_today,
         "failed_today": failed_today,
+        "today_tokens": usage["total_tokens"],
+        "today_tool_calls": usage["tool_call_count"],
         "task_status_distribution": task_counts,
         "employee_status_distribution": employee_counts,
     }

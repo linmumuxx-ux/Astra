@@ -3,6 +3,7 @@ const STATUS_LABEL: Record<string, string> = {
   CREATED: '已创建', READY: '待领取', CLAIMED: '已领取', RUNNING: '运行中', VERIFYING: '验证中',
   RETRY: '修复重试', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已终止',
   PASSED: '通过', BLOCKED: '阻塞',
+  AVAILABLE: '正常', CHECKING: '检查中', UNAVAILABLE: '不可用', UNKNOWN: '未检查',
 }
 
 const PHASE_LABEL: Record<string, string> = {
@@ -16,10 +17,10 @@ export const statusLabel = (value: string) => STATUS_LABEL[value] ?? value
 export const phaseLabel = (value: string) => PHASE_LABEL[value] ?? value.replaceAll('_', ' ')
 
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
-  if (['COMPLETED', 'PASSED', 'IDLE'].includes(status)) return 'success'
+  if (['COMPLETED', 'PASSED', 'IDLE', 'AVAILABLE'].includes(status)) return 'success'
   if (['WAIT_HUMAN', 'PAUSED', 'BLOCKED'].includes(status)) return 'warning'
-  if (['FAILED', 'ERROR', 'CANCELLED', 'OFFLINE'].includes(status)) return 'danger'
-  if (['RUNNING', 'WORKING', 'VERIFYING', 'RETRY', 'CLAIMED'].includes(status)) return 'info'
+  if (['FAILED', 'ERROR', 'CANCELLED', 'OFFLINE', 'UNAVAILABLE'].includes(status)) return 'danger'
+  if (['RUNNING', 'WORKING', 'VERIFYING', 'RETRY', 'CLAIMED', 'CHECKING'].includes(status)) return 'info'
   return 'neutral'
 }
 
@@ -32,6 +33,25 @@ export const formatDuration = (from: string | null, to?: string | null) => {
   const minutes = Math.max(0, Math.floor(milliseconds / 60_000))
   if (minutes < 60) return `${minutes}m`
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+export const formatTokens = (value: number | null | undefined) => {
+  if (value === null || value === undefined) return '—'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 2)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return String(value)
+}
+
+export const formatDurationSeconds = (seconds: number | null | undefined) => {
+  if (seconds === null || seconds === undefined) return '—'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+export const environmentLabel = (snapshot: { mode?: unknown; name?: unknown; host?: unknown } | null | undefined) => {
+  if (!snapshot) return '未配置'
+  return snapshot.mode === 'LINUX_REMOTE' ? `Linux · ${snapshot.name ?? snapshot.host ?? '远程'}` : '本地'
 }
 
 export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : source

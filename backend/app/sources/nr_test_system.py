@@ -59,9 +59,7 @@ class NrTestSystemSource(TaskSource):
         return self._map(response.json())
 
     async def update_task(self, external_task_id: str, result: dict[str, Any]) -> None:
-        path = self.settings.nr_test_system_result_path.format(
-            external_task_id=external_task_id
-        )
+        path = self.settings.nr_test_system_result_path.format(external_task_id=external_task_id)
         await self._request("POST", path, json=result)
 
     async def heartbeat(self) -> bool:

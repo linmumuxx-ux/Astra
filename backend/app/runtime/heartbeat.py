@@ -31,9 +31,7 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
     return [employee.id for employee in employees]
 
 
-async def mark_stale_employees_offline(
-    session: AsyncSession, settings: Settings | None = None
-) -> list[str]:
+async def mark_stale_employees_offline(session: AsyncSession, settings: Settings | None = None) -> list[str]:
     settings = settings or get_settings()
     threshold = datetime.now(UTC) - timedelta(seconds=settings.heartbeat_timeout)
     employees = (

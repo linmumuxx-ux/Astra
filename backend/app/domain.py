@@ -32,6 +32,18 @@ class RunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class ExecutionMode(StrEnum):
+    LOCAL = "LOCAL"
+    LINUX_REMOTE = "LINUX_REMOTE"
+
+
+class EnvironmentStatus(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    CHECKING = "CHECKING"
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 class Priority(StrEnum):
     P0 = "P0"
     P1 = "P1"

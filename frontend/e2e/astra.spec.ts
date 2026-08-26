@@ -14,6 +14,8 @@ test('总览加载真实 API 数据且无错误横幅', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '数字员工运行态势' })).toBeVisible()
   await expect(page.getByText('全部服务正常')).toBeVisible()
   await expect(page.locator('.metrics-grid')).toContainText('在线员工')
+  await expect(page.getByTestId('dashboard-v02-metrics')).toContainText('今日 Token')
+  await expect(page.getByTestId('dashboard-v02-metrics')).toContainText('工具调用')
   await expect(page.locator('.error-banner')).toHaveCount(0)
 })
 
@@ -76,6 +78,54 @@ test('手工任务可创建、暂停、继续并留下事件证据', async ({ pa
     'TASK_PAUSED',
     'TASK_READY',
   ])
+})
+
+test('V0.2 可追溯员工环境、任务消耗与 Run 使用明细', async ({ page }) => {
+  await page.goto('/employees')
+  await expect(page.getByText('Linux · Linux Server A', { exact: true })).toBeVisible()
+  await page.getByRole('link', { name: /Astra-01/ }).click()
+  await expect(page.getByTestId('employee-detail-page')).toBeVisible()
+  await expect(page.getByText('默认 OpenCode 执行环境')).toBeVisible()
+  await expect(page.getByText('160.8K').first()).toBeVisible()
+  await expect(page.getByText('工具调用 Top')).toBeVisible()
+
+  await page.goto('/tasks/T-20260827-001')
+  await expect(page.getByText('本任务工作消耗')).toBeVisible()
+  await expect(page.locator('.usage-panel')).toContainText('160.8K')
+  await expect(page.locator('.usage-panel')).toContainText('internal/test-model')
+  await expect(page.locator('.usage-panel')).toContainText('Bash')
+
+  await page.goto('/runs')
+  await page.getByText('RUN-DEMO-001', { exact: true }).click()
+  await expect(page.getByTestId('run-detail-page')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'OpenCode 执行详情' })).toBeVisible()
+  await expect(page.getByText('internal/test-model')).toBeVisible()
+  await expect(page.locator('.run-summary').getByText('32', { exact: true })).toBeVisible()
+})
+
+test('V0.2 可创建员工并检测本地 OpenCode 环境', async ({ page, request }) => {
+  await page.goto('/settings?create=1')
+  await expect(page.getByTestId('settings-page')).toBeVisible()
+  await page.getByLabel('员工 ID').fill('astra-e2e')
+  await page.getByLabel('显示名称').fill('Astra-E2E')
+  await page.getByLabel('岗位').fill('端到端测试员工')
+  await page.getByRole('button', { name: '执行环境' }).click()
+  await expect(page.getByTestId('environment-form')).toBeVisible()
+  await page.getByLabel('环境名称').fill('E2E 本地 OpenCode')
+  await page.getByLabel('Workspace 根目录').fill('./workspaces/astra-e2e')
+  await page.getByRole('button', { name: '创建员工' }).click()
+  await expect(page.getByText('员工已创建')).toBeVisible()
+
+  await page.getByRole('button', { name: '测试连接' }).click()
+  await expect(page.getByText('环境检测通过，可以领取新任务。')).toBeVisible()
+  await expect(page.locator('.environment-checks')).toContainText('OpenCode')
+
+  const response = await request.get('/api/employees/astra-e2e')
+  expect(response.ok()).toBeTruthy()
+  const employee = (await response.json()) as {
+    execution_environment: { mode: string; status: string }
+  }
+  expect(employee.execution_environment).toMatchObject({ mode: 'LOCAL', status: 'AVAILABLE' })
 })
 
 test('人工介入可补充上下文并恢复待调度状态', async ({ page, request }) => {
