@@ -54,4 +54,4 @@ OpenCode CLI JSON 输出被流式观察，不等待整次 Run 结束：
 
 `0004_astra_v04` 在 V0.3 数据上增量添加完成策略、挂起/异常/退回、活跃度和提交/确认时间，并将旧 `PAUSED` 转为 `SUSPENDED`。
 
-V0.4 已通过 Ruff、28 个后端单元/集成测试、前端类型检查、生产构建和 8 条 Chromium E2E。另使用本地 OpenCode 1.18.23 与 `deepseek/deepseek-v4-flash`，经真实 `TaskCoordinator` 完成 Task、Run、Session、Token、Tool 和文件产物闭环。详细证据见 `docs/verification/E2E-V0.4-2026-08-27.md`；`docs/verification/E2E-2026-08-27.md` 仅保留为 V0.2 历史记录。
+V0.4 已通过 Ruff、32 个后端单元/集成测试、前端类型检查、生产构建和 9 条 Chromium E2E。另使用本地 OpenCode 1.18.23 与 `deepseek/deepseek-v4-flash`，经真实 `TaskCoordinator` 完成 Task、Run、Session、Token、Tool 和文件产物闭环。详细证据见 `docs/verification/E2E-V0.4-2026-08-27.md`；`docs/verification/E2E-2026-08-27.md` 仅保留为 V0.2 历史记录。

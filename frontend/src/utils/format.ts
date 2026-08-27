@@ -5,10 +5,10 @@ const STATUS_LABEL: Record<string, string> = {
   AVAILABLE: '正常', CHECKING: '检查中', UNAVAILABLE: '不可用', UNKNOWN: '未检查',
 }
 
-export const statusLabel = (value: string) => STATUS_LABEL[value] ?? value
-export const taskTypeLabel = (value: string) => value === 'ISSUE' ? '问题' : value === 'REQUIREMENT' ? '需求' : value
-export const priorityLabel = (value: string) => ({ VERY_HIGH: '很高', HIGH: '高', MEDIUM: '中', LOW: '低' }[value] ?? value)
-export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', UNSATISFIED: '未满足', UNCONFIRMED: '无法确认' }[value] ?? value)
+export const statusLabel = (value: string) => STATUS_LABEL[value] ?? '未知状态'
+export const taskTypeLabel = (value: string) => value === 'ISSUE' ? '问题' : value === 'REQUIREMENT' ? '需求' : '未知类型'
+export const priorityLabel = (value: string) => ({ VERY_HIGH: '很高', HIGH: '高', MEDIUM: '中', LOW: '低' }[value] ?? '未设置')
+export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', UNSATISFIED: '未满足', UNCONFIRMED: '无法确认' }[value] ?? '无法确认')
 
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
   if (['COMPLETED', 'PASSED', 'IDLE', 'AVAILABLE'].includes(status)) return 'success'
@@ -27,8 +27,10 @@ export const formatDuration = (from: string | null, to?: string | null) => {
   if (!from) return '—'
   const milliseconds = (to ? parseApiTime(to) : new Date()).getTime() - parseApiTime(from).getTime()
   const minutes = Math.max(0, Math.floor(milliseconds / 60_000))
-  if (minutes < 60) return `${minutes}m`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  if (minutes === 0) return '不足 1 分钟'
+  if (minutes < 60) return `${minutes} 分钟`
+  const remainingMinutes = minutes % 60
+  return `${Math.floor(minutes / 60)} 小时${remainingMinutes ? ` ${remainingMinutes} 分钟` : ''}`
 }
 
 export const formatTaskDuration = (task: { status: string; started_at: string | null; finished_at: string | null; last_activity_at: string | null }) =>
@@ -44,8 +46,15 @@ export const formatTokens = (value: number | null | undefined) => {
 export const formatDurationSeconds = (seconds: number | null | undefined) => {
   if (seconds === null || seconds === undefined) return '—'
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  if (minutes === 0) return '不足 1 分钟'
+  if (minutes < 60) return `${minutes} 分钟`
+  const remainingMinutes = minutes % 60
+  return `${Math.floor(minutes / 60)} 小时${remainingMinutes ? ` ${remainingMinutes} 分钟` : ''}`
+}
+
+export const formatMilliseconds = (milliseconds: number | null | undefined) => {
+  if (milliseconds === null || milliseconds === undefined) return '—'
+  return milliseconds < 1000 ? `${milliseconds} 毫秒` : `${(milliseconds / 1000).toFixed(1)} 秒`
 }
 
 export const environmentLabel = (snapshot: { mode?: unknown; name?: unknown; host?: unknown } | null | undefined) => {
@@ -57,6 +66,9 @@ export const executionModeLabel = (value: unknown) =>
   value === 'LINUX_REMOTE' ? 'Linux 远程' : value === 'LOCAL' ? '本地' : '—'
 
 export const executorLabel = (value: string) =>
-  value === 'opencode_ssh' ? 'Linux 远程 OpenCode' : value === 'opencode_cli' ? '本地 OpenCode' : value
+  value === 'opencode_ssh' ? 'Linux 远程 OpenCode' : value === 'opencode_cli' ? '本地 OpenCode' : '未知执行方式'
 
-export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : source
+export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : '其他来源'
+
+export const evidenceKindLabel = (value: string) =>
+  value === 'work_record' ? 'OpenCode 工作记录' : value === 'log' ? '运行日志' : value === 'attachment' ? '结果附件' : '其他证据'

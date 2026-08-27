@@ -117,6 +117,19 @@ test('完成任务展示结果、逐项验收和实际工作消耗', async ({ pa
   await expect(detail.locator('.usage-panel')).toContainText('160.8K')
   await expect(detail.locator('.usage-panel')).toContainText('bash')
   await expect(detail.getByRole('link', { name: 'RUN-DEMO-003' })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
+  await expect(detail.getByText('OpenCode 工作记录')).toBeVisible()
+})
+
+test('业务枚举和时间单位统一显示为中文', async ({ page }) => {
+  const rawEnums = /\b(?:READY|RUNNING|WAIT_HUMAN|SUSPENDED|PENDING_CONFIRMATION|EXECUTION_ERROR|COMPLETED|FAILED|CANCELLED|PASSED|BLOCKED|AVAILABLE|CHECKING|UNAVAILABLE|UNKNOWN|WORKING|IDLE|OFFLINE|ERROR|VERY_HIGH|HIGH|MEDIUM|LOW|ISSUE|REQUIREMENT|SATISFIED|UNSATISFIED|UNCONFIRMED)\b/
+  for (const route of ['/tasks', '/tasks/T-20260827-003', '/employees', '/employees/astra-01', '/runs', '/runs/RUN-DEMO-003', '/interventions', '/settings']) {
+    await page.goto(route)
+    await expect(page.locator('body')).not.toContainText(rawEnums)
+  }
+  await page.goto('/runs/RUN-DEMO-003')
+  await expect(page.getByText('36 分钟')).toBeVisible()
+  await expect(page.getByText('18.4 秒')).toBeVisible()
+  await expect(page.getByText('OpenCode 会话', { exact: true })).toBeVisible()
 })
 
 test('员工配置只管理工作范围、工作环境和简单策略', async ({ page }) => {

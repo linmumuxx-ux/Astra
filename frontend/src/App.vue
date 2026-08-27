@@ -10,7 +10,7 @@
       </nav>
       <div class="sidebar__foot">
         <div class="system-live" :class="{ 'connection--offline': store.error }"><i />{{ store.error ? '数据连接异常' : '系统运行中' }}</div>
-        <div class="admin"><span>NR</span><div><strong>Admin</strong><small>平台管理员</small></div></div>
+        <div class="admin"><span>NR</span><div><strong>管理员</strong><small>平台管理端</small></div></div>
       </div>
     </aside>
     <div v-if="navOpen" class="sidebar-backdrop" @click="navOpen = false" />

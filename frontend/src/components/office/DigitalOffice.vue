@@ -25,7 +25,7 @@
     </button>
     <aside v-if="selected" class="office-inspector">
       <div><small>{{ selected.id }}</small><strong>{{ selected.name }}</strong><span>{{ selected.role }}</span></div>
-      <dl><div><dt>当前任务</dt><dd>{{ selectedTask?.title ?? '暂无' }}</dd></div><div><dt>最新进展</dt><dd>{{ selectedTask?.current_progress ?? statusCopy(selected.status) }}</dd></div><div><dt>最近活动</dt><dd>{{ formatTime(selectedTask?.last_activity_at ?? selected.last_heartbeat) }}</dd></div><div><dt>工作时长</dt><dd>{{ formatDuration(selectedTask?.started_at ?? null) }}</dd></div><div><dt>Token</dt><dd>{{ formatTokens(selected.today_usage.total_tokens) }}</dd></div><div><dt>Tool 调用</dt><dd>{{ selected.today_usage.tool_call_count ?? '—' }}</dd></div></dl>
+      <dl><div><dt>当前任务</dt><dd>{{ selectedTask?.title ?? '暂无' }}</dd></div><div><dt>最新进展</dt><dd>{{ selectedTask?.current_progress ?? statusCopy(selected.status) }}</dd></div><div><dt>最近活动</dt><dd>{{ formatTime(selectedTask?.last_activity_at ?? selected.last_heartbeat) }}</dd></div><div><dt>工作时长</dt><dd>{{ formatDuration(selectedTask?.started_at ?? null) }}</dd></div><div><dt>Token</dt><dd>{{ formatTokens(selected.today_usage.total_tokens) }}</dd></div><div><dt>工具调用</dt><dd>{{ selected.today_usage.tool_call_count ?? '—' }}</dd></div></dl>
       <nav><RouterLink class="button" :to="`/employees/${selected.id}`">员工详情</RouterLink><RouterLink v-if="selectedTask" class="button button--primary" :to="`/tasks/${selectedTask.id}`">任务详情</RouterLink></nav>
     </aside>
     <AstraEmptyState v-if="!employees.length" :icon="Bot" title="办公室暂无员工" description="在配置中心创建并启用数字员工。" />

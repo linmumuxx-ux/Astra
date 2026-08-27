@@ -10,7 +10,6 @@ from sqlalchemy.orm import selectinload
 from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.domain import (
-    AcceptanceStatus,
     CompletionPolicy,
     EmployeeStatus,
     ExecutionMode,
@@ -26,6 +25,7 @@ from app.runtime.environment import (
     environment_from_snapshot,
     environment_snapshot,
 )
+from app.runtime.result_parser import build_work_result, human_readable_result
 from app.services import TaskService
 from app.sources.nr_test_system import NrTestSystemSource
 from app.structured_logging import runtime_log
@@ -148,7 +148,7 @@ class TaskCoordinator:
             task,
             "OPENCODE_STARTED",
             "work",
-            "OpenCode Session 已启动" if run_number == 1 else "OpenCode Session 已继续",
+            "OpenCode 会话已启动" if run_number == 1 else "OpenCode 会话已继续",
             {"run_number": run_number, "resume_session": bool(task.opencode_session_id)},
             run.id,
         )
@@ -190,7 +190,8 @@ class TaskCoordinator:
                 for item in result.tool_usage
             ]
         )
-        summary = self._last_text(result.output) or result.stderr.strip() or "OpenCode 执行已结束"
+        raw_summary = self._last_text(result.output) or result.stderr.strip()
+        summary = human_readable_result(raw_summary) or "OpenCode 执行已结束"
         run.result = {
             "status": result.status,
             "session_id": result.session_id,
@@ -253,7 +254,7 @@ class TaskCoordinator:
             run.status = RunStatus.FAILED
             if resumed_session and self._session_unavailable(result.stderr, result.stdout):
                 task.opencode_session_id = None
-                task.current_progress = "原 OpenCode Session 不可用，携带现有上下文创建新 Session"
+                task.current_progress = "原 OpenCode 会话不可用，携带现有上下文创建新会话"
                 await service.add_event(
                     task,
                     "SESSION_RECOVERY",
@@ -266,7 +267,7 @@ class TaskCoordinator:
                 return
             if run_number <= employee.max_auto_retries:
                 task.current_progress = (
-                    f"OpenCode 执行异常，正在恢复同一任务 Session（{run_number}/{employee.max_auto_retries}）"
+                    f"OpenCode 执行异常，正在恢复同一任务会话（{run_number}/{employee.max_auto_retries}）"
                 )
                 await service.add_event(
                     task,
@@ -299,25 +300,11 @@ class TaskCoordinator:
             await session.commit()
             return
 
-        acceptance_results = [
-            {
-                "criterion_id": item["id"],
-                "status": AcceptanceStatus.UNCONFIRMED,
-                "description": "员工已完成工作，该项未返回结构化确认",
-                "evidence": [str(evidence_path)],
-            }
-            for item in task.acceptance_criteria
-        ]
-        task.result = {
-            "summary": summary,
-            "changes": [],
-            "files": [],
-            "commits": [],
-            "logs": [],
-            "attachments": [],
-            "other": {},
-            "acceptance_results": acceptance_results,
-        }
+        task.result = build_work_result(
+            raw_summary,
+            task.acceptance_criteria,
+            str(evidence_path),
+        )
         task.human_required_reason = None
         run.result = {**run.result, "work_result": task.result}
         run.status = RunStatus.PASSED
@@ -392,7 +379,7 @@ class TaskCoordinator:
                 continue
             part = event.get("part", {})
             raw_text = part.get("text") if isinstance(part, dict) else None
-            text = str(raw_text or event.get("text", "")).strip()
+            text = human_readable_result(str(raw_text or event.get("text", ""))).strip()
             if text and text not in messages:
                 messages.append(text)
         for message in messages[-10:]:
@@ -407,7 +394,7 @@ class TaskCoordinator:
         event_type = str(event.get("type", part.get("type", ""))).lower()
         run_id = run.id if run else None
         if event_type == "text" or str(part.get("type", "")).lower() == "text":
-            message = str(part.get("text") or event.get("text") or "").strip()
+            message = human_readable_result(str(part.get("text") or event.get("text") or "")).strip()
             if message:
                 task.current_progress = message[:500]
                 await service.add_event(task, "WORK_PROGRESS", "work", message[:2000], run_id=run_id)

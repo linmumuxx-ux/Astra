@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
-from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment, Run, Task, ToolUsage
+from app.models import DigitalEmployee, Event, Evidence, OpenCodeExecutionEnvironment, Run, Task, ToolUsage
 from app.runtime.environment import environment_snapshot
 
 
@@ -339,6 +339,18 @@ async def seed_demo_data(session: AsyncSession) -> None:
     )
     session.add_all([active_run, run])
     await session.flush()
+    session.add(
+        Evidence(
+            task_id="T-20260827-003",
+            run_id=run.id,
+            name="RUN-DEMO-003-opencode.json",
+            kind="work_record",
+            path="/workspaces/records/T-20260827-003/RUN-DEMO-003-opencode.json",
+            size=2048,
+            content_type="application/json",
+            created_at=now - timedelta(hours=1, minutes=24),
+        )
+    )
     session.add_all(
         [
             ToolUsage(

@@ -272,6 +272,7 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 - Linux 远程环境异常：检查 SSH 网络、`known_hosts`、账号、密钥路径、远程 OpenCode 和工作空间权限。
 - Token 显示 `—`：当前 OpenCode 事件未提供该字段，Astra 不做估算。
 - 任务等待人工：进入“待处理”查看完整阻塞说明，补充信息后继续同一 Session。
+- 验收项显示“无法确认”：表示员工最终回复里没有可识别的该项结论，不等于执行失败或“未满足”。请结合工作记录人工判断；新运行会要求员工回传结构化逐项结论，并兼容清晰的 Markdown 验收表。
 - 自动分配没有候选人：至少启用一名同时支持该任务类型和任务分类、环境正常且空闲的员工。
 
 ## 14. 验证与自检
@@ -282,7 +283,7 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 ./scripts/verify.sh
 ```
 
-该命令会使用隔离的临时数据库与端口依次运行后端检查、28 个测试、前端类型检查、生产构建和 8 条 Chromium E2E，不会写入日常开发数据库。
+该命令会使用隔离的临时数据库与端口依次运行后端检查、32 个测试、前端类型检查、生产构建和 9 条 Chromium E2E，不会写入日常开发数据库。
 
 需要验证 Astra 到真实本地 OpenCode 的简单闭环时运行：
 

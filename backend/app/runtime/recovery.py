@@ -109,7 +109,7 @@ async def recover_available_tasks(session: AsyncSession) -> list[str]:
             task,
             TaskStatus.RUNNING,
             current_progress="执行环境已恢复，正在继续原任务",
-            message="执行环境恢复，自动继续原 OpenCode Session",
+            message="执行环境恢复，自动继续原 OpenCode 会话",
         )
         resumed.append(task.id)
     return resumed

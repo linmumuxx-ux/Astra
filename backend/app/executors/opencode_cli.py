@@ -33,7 +33,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         review = (task.review_history or [])[-1] if task.review_history else {}
         retry_text = ""
         if retry:
-            retry_text = "\n这是同一任务继续处理，请使用当前 OpenCode Session 中的已有上下文。"
+            retry_text = "\n这是同一任务继续处理，请使用当前 OpenCode 会话中的已有上下文。"
             if human_input:
                 retry_text += f"\n人工补充信息：\n{human_input}"
         context_text = ""
@@ -65,7 +65,14 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 
 请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
 检查方式或内部步骤。请在完成后如实说明处理结果，并逐项说明验收标准是否满足及相关证据。
-无法继续时，请明确返回 BLOCKED，说明阻塞原因、已完成工作和需要人工提供的内容。{context_text}{retry_text}
+无法继续时，请明确返回 BLOCKED，说明阻塞原因、已完成工作和需要人工提供的内容。
+
+最终回复末尾必须追加以下 JSON；ASTRA_RESULT_JSON 标记与 JSON 开头
+保持在同一行，且每个验收项都必须选择一个确切结论：
+ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"files":[],"commits":[],
+"logs":[],"attachments":[],"other":{{}},"acceptance_results":[{{"criterion_id":"AC-01",
+"status":"SATISFIED 或 UNSATISFIED 或 UNCONFIRMED","description":"结论说明","evidence":[]}}]}}
+不要省略或改写 ASTRA_RESULT_JSON 标记。{context_text}{retry_text}
 """
 
     def _command(self, task: Task, workspace: Path, session_id: str | None = None) -> list[str]:

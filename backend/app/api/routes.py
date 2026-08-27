@@ -782,7 +782,7 @@ async def recover_task(task_id: str, session: AsyncSession = Depends(get_session
         TaskStatus.RUNNING,
         "执行环境已恢复，继续原任务",
         session,
-        current_progress="正在恢复原 OpenCode Session",
+        current_progress="正在恢复原 OpenCode 会话",
     )
     return await enqueue_running_task(result, session)
 

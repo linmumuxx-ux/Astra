@@ -1,7 +1,7 @@
 <template>
   <div class="logo" aria-label="Astra">
     <span class="logo-mark">A</span>
-    <span v-if="!compact" class="logo-copy"><strong>Astra</strong><small>runtime console</small></span>
+    <span v-if="!compact" class="logo-copy"><strong>Astra</strong><small>运行控制台</small></span>
   </div>
 </template>
 

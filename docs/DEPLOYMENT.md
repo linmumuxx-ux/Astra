@@ -199,7 +199,7 @@ Worker 应连接 Redis 并注册任务发现、分配、心跳、恢复扫描和
 ./scripts/verify.sh
 ```
 
-它会运行 Ruff、28 个后端测试、前端类型检查、生产构建和 8 条隔离的 Chromium E2E。生产 Compose 启动后，再检查健康状态和版本一致性：
+它会运行 Ruff、32 个后端测试、前端类型检查、生产构建和 9 条隔离的 Chromium E2E。生产 Compose 启动后，再检查健康状态和版本一致性：
 
 ```bash
 curl --fail http://127.0.0.1:${ASTRA_BACKEND_PORT:-8100}/api/health
@@ -280,7 +280,7 @@ Backend 启动和 Celery Beat 会扫描 `RUNNING` / `WAIT_HUMAN` / `SUSPENDED` /
 
 ### 任务完成但验收项显示“无法确认”
 
-表示员工最终回复没有返回可结构化识别的逐项结论。Astra 不会运行独立 Verifier 或伪造确认结果，应由员工或人工补充验收说明。
+表示员工最终回复没有返回可识别的逐项结论，不等于执行失败或“未满足”。Astra 优先解析 `ASTRA_RESULT_JSON`，并兼容清晰的 Markdown 验收表；两者都无法确认时才保留“无法确认”，由人工结合工作记录判断。Astra 不运行独立 Verifier，也不伪造验收结果。
 
 ## 13. 停止服务
 
