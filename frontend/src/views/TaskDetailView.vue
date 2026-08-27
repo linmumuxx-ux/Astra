@@ -7,7 +7,7 @@
     </section>
 
     <section class="task-facts task-facts--v03">
-      <div><span>执行员工</span><strong>{{ employeeName }}</strong></div><div><span>完成策略</span><strong>{{ task.completion_policy === 'MANUAL_CONFIRM' ? '人工确认' : '自动完成' }}</strong></div><div><span>创建时间</span><strong>{{ formatTime(task.created_at) }}</strong></div><div><span>最后活动</span><strong>{{ formatTime(task.last_activity_at) }}</strong></div><div><span>完成时间</span><strong>{{ formatTime(task.finished_at) }}</strong></div><div><span>运行时长</span><strong>{{ formatDuration(task.started_at, task.finished_at) }}</strong></div>
+      <div><span>执行员工</span><strong>{{ employeeName }}</strong></div><div><span>完成策略</span><strong>{{ task.completion_policy === 'MANUAL_CONFIRM' ? '人工确认' : '自动完成' }}</strong></div><div><span>创建时间</span><strong>{{ formatTime(task.created_at) }}</strong></div><div><span>最后活动</span><strong>{{ formatTime(task.last_activity_at) }}</strong></div><div><span>完成时间</span><strong>{{ formatTime(task.finished_at) }}</strong></div><div><span>运行时长</span><strong>{{ formatTaskDuration(task) }}</strong></div>
     </section>
 
     <div v-if="task.status === 'WAIT_HUMAN' && task.human_intervention" class="human-alert human-alert--detail"><TriangleAlert :size="20" /><div><strong>等待人工处理</strong><p>{{ task.human_intervention.blocking_reason }}</p><small>已完成：{{ task.human_intervention.completed_work || '—' }}<br />需要人工：{{ task.human_intervention.requested_input }}</small></div><RouterLink class="button button--primary" to="/interventions">处理</RouterLink></div>
@@ -53,7 +53,7 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { acceptanceStatusLabel, environmentLabel, formatDuration, formatTime, formatTokens, priorityLabel, taskTypeLabel } from '@/utils/format'
+import { acceptanceStatusLabel, environmentLabel, formatTaskDuration, formatTime, formatTokens, priorityLabel, taskTypeLabel } from '@/utils/format'
 
 const route = useRoute(); const store = useAstraStore(); const task = ref<Task | null>(null); const events = ref<AstraEvent[]>([]); const evidence = ref<Evidence[]>([]); const runs = ref<Run[]>([]); const usage = ref<TaskUsage | null>(null)
 const latestRun = computed(() => runs.value[0] ?? null)

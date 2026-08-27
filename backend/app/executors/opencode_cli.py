@@ -158,8 +158,16 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
         combined = f"{stdout}\n{stderr}".upper()
+        blocked_markers = (
+            "BLOCKED",
+            "PERMISSION REQUESTED",
+            "PERMISSION DENIED",
+            "AUTO-REJECTING",
+        )
         status = (
-            "BLOCKED" if "BLOCKED" in combined else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
+            "BLOCKED"
+            if any(marker in combined for marker in blocked_markers)
+            else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
         )
         token_usage, tool_usage, model_name = parse_opencode_usage(output)
         return ExecutorResult(

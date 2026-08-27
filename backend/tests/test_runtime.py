@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.database import SessionLocal, init_database
 from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus, TaskType
 from app.executors.base import ExecutorResult, OpenCodeExecutor, TokenUsage, ToolUsageResult
+from app.executors.opencode_cli import OpenCodeCLIExecutor
 from app.executors.usage import parse_opencode_usage
 from app.models import (
     Base,
@@ -91,14 +92,18 @@ async def test_dispatcher_matches_type_and_category_and_limits_one_task(session,
     )
     await session.commit()
     first = await TaskService(session).create(new_task(title="匹配任务"))
+    first_id = first.id
     await TaskService(session).create(new_task(title="第二个任务"))
 
     claimed = await Dispatcher(session).claim_once()
+    claimed_id = claimed.id if claimed else None
     second_claim = await Dispatcher(session).claim_once()
+    if claimed:
+        await session.refresh(claimed)
 
-    assert claimed and claimed.id == first.id
+    assert claimed_id == first_id
     assert claimed.status == TaskStatus.READY
-    assert claimed.employee_id == employee.id
+    assert claimed.employee_id == "astra-test"
     assert claimed.claimed_at is not None
     assert claimed.execution_environment_snapshot["workspace_root"] == str(workspace)
     assert second_claim is None
@@ -312,3 +317,32 @@ async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Pa
         "Workspace 可用",
     ]
     assert all(item.passed for item in checks)
+
+
+async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_path: Path):
+    binary = tmp_path / "permission-rejected-opencode"
+    binary.write_text(
+        "#!/bin/sh\n"
+        'echo \'{"type":"text","part":{"text":"无法写入目标文件"}}\'\n'
+        "echo 'permission requested: external_directory; auto-rejecting' >&2\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    task = Task(
+        id="T-PERMISSION-REJECTED",
+        source="manual",
+        task_type="ISSUE",
+        category_id="testing-platform",
+        title="验证权限拒绝识别",
+        description="创建文件",
+        acceptance_criteria=[{"id": "AC-01", "content": "文件已创建"}],
+        priority="LOW",
+        completion_policy="AUTO",
+        status=TaskStatus.RUNNING,
+    )
+
+    result = await OpenCodeCLIExecutor(opencode_binary=str(binary)).start(task, tmp_path)
+
+    assert result.exit_code == 0
+    assert result.status == "BLOCKED"

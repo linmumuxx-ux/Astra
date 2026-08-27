@@ -18,16 +18,21 @@ export function statusTone(status: string): 'info' | 'success' | 'warning' | 'da
   return 'neutral'
 }
 
+const parseApiTime = (value: string) => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
+
 export const formatTime = (value: string | null | undefined) =>
-  value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '—'
+  value ? new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(parseApiTime(value)) : '—'
 
 export const formatDuration = (from: string | null, to?: string | null) => {
   if (!from) return '—'
-  const milliseconds = new Date(to ?? Date.now()).getTime() - new Date(from).getTime()
+  const milliseconds = (to ? parseApiTime(to) : new Date()).getTime() - parseApiTime(from).getTime()
   const minutes = Math.max(0, Math.floor(milliseconds / 60_000))
   if (minutes < 60) return `${minutes}m`
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
+
+export const formatTaskDuration = (task: { status: string; started_at: string | null; finished_at: string | null; last_activity_at: string | null }) =>
+  formatDuration(task.started_at, task.finished_at ?? (task.status === 'RUNNING' ? undefined : task.last_activity_at))
 
 export const formatTokens = (value: number | null | undefined) => {
   if (value === null || value === undefined) return '—'

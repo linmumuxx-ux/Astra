@@ -79,6 +79,7 @@ docker compose up --build
 - [V0.4 操作使用指南](docs/USER_GUIDE.md)
 - [V0.4 部署手册](docs/DEPLOYMENT.md)
 - [V0.4 实现与需求映射](docs/implementation-brief.md)
+- [V0.4 功能、E2E 与真实 OpenCode 验收报告](docs/verification/E2E-V0.4-2026-08-27.md)
 - [原始需求资料](docs/requirements/README.md)
 
-V0.1–V0.4 原始需求及原型资料均保存在仓库中。V0.2 E2E 报告仅作为历史记录；按用户最新指示，V0.4 未执行功能或 E2E 验收。
+V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前 V0.4 已通过 28 个后端测试、前端类型检查与生产构建、8 条 Chromium E2E，以及本地 OpenCode + `deepseek/deepseek-v4-flash` 的真实简单闭环验证。V0.2 E2E 报告仅作为历史记录。

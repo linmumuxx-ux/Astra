@@ -185,13 +185,18 @@ main { min-width: 0; }
 /* Astra V0.4 continuous work and digital office */
 
 .pending-tabs { margin-bottom: 14px; }
-.pending-tabs button span { margin-left: 5px; color: var(--muted); font-size: 11px; }
-.pending-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.pending-tabs button span { margin-left: 5px; color: var(--astra-text-muted); font-size: 11px; }
+.pending-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--astra-border); }
 .operation-list { display: grid; gap: 8px; }
-.operation-list details { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: rgba(5, 15, 29, .48); }
+.operation-list details { overflow: hidden; border: 1px solid var(--astra-border); border-radius: 8px; background: rgba(5, 15, 29, .48); }
 .operation-list summary { display: flex; justify-content: space-between; gap: 12px; padding: 11px 13px; cursor: pointer; }
-.operation-list summary time { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.operation-list pre { overflow: auto; max-height: 260px; margin: 0; padding: 12px; border-top: 1px solid var(--border); color: #a9c1dd; font-size: 11px; white-space: pre-wrap; }
+.operation-list summary time { color: var(--astra-text-muted); font-size: 11px; white-space: nowrap; }
+.operation-list pre { overflow: auto; max-height: 260px; margin: 0; padding: 12px; border-top: 1px solid var(--astra-border); color: #a9c1dd; font-size: 11px; white-space: pre-wrap; }
+
+.table-primary-link { display: grid; color: inherit; text-decoration: none; }
+.table-primary-link:hover strong { color: var(--astra-primary-bright); }
+.row-detail-link { display: inline-grid; place-items: center; width: 28px; height: 28px; color: var(--astra-text-muted); border-radius: 6px; }
+.row-detail-link:hover, .row-detail-link:focus-visible { color: var(--astra-primary-bright); background: var(--astra-primary-soft); outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }

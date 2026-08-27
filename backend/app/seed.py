@@ -132,6 +132,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
             current_progress="已定位权限缓存问题，正在检查影响范围",
             opencode_session_id="session-task-001",
             execution_environment_snapshot=snapshots["astra-01"],
+            created_at=now - timedelta(minutes=34),
+            updated_at=now - timedelta(minutes=8),
             claimed_at=now - timedelta(minutes=31),
             started_at=now - timedelta(minutes=30),
             last_activity_at=now - timedelta(minutes=8),
@@ -161,6 +163,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
                 "requested_input": "请提供可操作该环境的账号，或完成对应配置",
             },
             execution_environment_snapshot=snapshots["astra-02"],
+            created_at=now - timedelta(minutes=60),
+            updated_at=now - timedelta(minutes=47),
             claimed_at=now - timedelta(minutes=58),
             started_at=now - timedelta(minutes=56),
             last_activity_at=now - timedelta(minutes=47),
@@ -208,6 +212,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
             },
             opencode_session_id="session-task-003",
             execution_environment_snapshot=snapshots["astra-03"],
+            created_at=now - timedelta(hours=2, minutes=10),
+            updated_at=now - timedelta(hours=1, minutes=24),
             claimed_at=now - timedelta(hours=2),
             started_at=now - timedelta(hours=2),
             finished_at=now - timedelta(hours=1, minutes=24),
@@ -229,6 +235,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
             completion_policy="AUTO",
             status=TaskStatus.READY,
             current_progress="等待领取",
+            created_at=now - timedelta(minutes=20),
+            updated_at=now - timedelta(minutes=20),
             last_activity_at=now - timedelta(minutes=20),
         ),
         Task(
@@ -262,6 +270,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
                     }
                 ],
             },
+            created_at=now - timedelta(minutes=20),
+            updated_at=now - timedelta(minutes=12),
             submitted_at=now - timedelta(minutes=12),
             last_activity_at=now - timedelta(minutes=12),
         ),
@@ -285,12 +295,26 @@ async def seed_demo_data(session: AsyncSession) -> None:
                 "scene_context": "已排除本地配置问题",
                 "suspended_at": (now - timedelta(minutes=25)).isoformat(),
             },
+            created_at=now - timedelta(minutes=40),
+            updated_at=now - timedelta(minutes=25),
+            started_at=now - timedelta(minutes=36),
             last_activity_at=now - timedelta(minutes=25),
         ),
     ]
     session.add_all(tasks)
     await session.flush()
 
+    active_run = Run(
+        id="RUN-DEMO-001",
+        task_id="T-20260827-001",
+        employee_id="astra-01",
+        run_number=1,
+        status=RunStatus.RUNNING,
+        executor_type="opencode_cli",
+        opencode_session_id="session-task-001",
+        started_at=now - timedelta(minutes=30),
+        execution_environment_snapshot=snapshots["astra-01"],
+    )
     run = Run(
         id="RUN-DEMO-003",
         task_id="T-20260827-003",
@@ -313,7 +337,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
         llm_call_count=7,
         tool_call_count=32,
     )
-    session.add(run)
+    session.add_all([active_run, run])
     await session.flush()
     session.add_all(
         [

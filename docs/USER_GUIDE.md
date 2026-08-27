@@ -266,7 +266,29 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 - 任务等待人工：进入“待处理”查看完整阻塞说明，补充信息后继续同一 Session。
 - 自动分配没有候选人：至少启用一名同时支持该任务类型和任务分类、环境正常且空闲的员工。
 
-## 14. 版本边界
+## 14. 验证与自检
+
+代码升级或修改配置后，应让前后端来自同一个版本，再执行全量质量门禁：
+
+```bash
+./scripts/verify.sh
+```
+
+该命令会使用隔离的临时数据库与端口依次运行后端检查、28 个测试、前端类型检查、生产构建和 8 条 Chromium E2E，不会写入日常开发数据库。
+
+需要验证 Astra 到真实本地 OpenCode 的简单闭环时运行：
+
+```bash
+.venv/bin/python scripts/real_opencode_smoke.py \
+  --model deepseek/deepseek-v4-flash \
+  --opencode "$(command -v opencode)"
+```
+
+脚本会在 Astra 仓库内临时创建员工工作空间和 SQLite 数据库，通过真实 `TaskCoordinator` 让 OpenCode 写入一个固定验收文件，并校验 Task、Run、Session、Token、Tool 和产物。工作空间位于仓库内是为了满足 OpenCode 的目录权限边界；成功后自动删除，失败时保留路径用于排查。该命令会真实调用模型并消耗 Token，运行前应确认本机 OpenCode 已登录且有权使用指定模型。
+
+当前通过结果和已知环境边界见 `docs/verification/E2E-V0.4-2026-08-27.md`。
+
+## 15. 版本边界
 
 - Astra 不是 Coding Agent、工作流编排器、测试流程引擎、Skill 管理平台或 Tool 管理平台。
 - 不提供一名员工多个并行工作空间、Git Worktree 调度、节点资源池或动态故障迁移。

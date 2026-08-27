@@ -191,7 +191,36 @@ Worker 应连接 Redis 并注册任务发现、分配、心跳、恢复扫描和
 
 任务中不再传入 `project_path`、验证脚本或执行命令。若外部任务源仍使用 V0.2 契约，应先在 Adapter 中完成字段映射。
 
-## 9. 生产安全
+## 9. 上线验收
+
+在源码构建环境先执行完整质量门禁：
+
+```bash
+./scripts/verify.sh
+```
+
+它会运行 Ruff、28 个后端测试、前端类型检查、生产构建和 8 条隔离的 Chromium E2E。生产 Compose 启动后，再检查健康状态和版本一致性：
+
+```bash
+curl --fail http://127.0.0.1:${ASTRA_BACKEND_PORT:-8100}/api/health
+curl --fail http://127.0.0.1:${ASTRA_FRONTEND_PORT:-8080}/
+docker compose exec astra-backend alembic current
+docker compose exec astra-worker opencode --version
+```
+
+在能访问真实模型的目标 Worker 环境，使用一个受控工程副本执行真实 OpenCode 冒烟验证。源码环境可直接使用仓库脚本：
+
+```bash
+.venv/bin/python scripts/real_opencode_smoke.py \
+  --model deepseek/deepseek-v4-flash \
+  --opencode "$(command -v opencode)"
+```
+
+该验证会调用真实模型并消耗 Token。它必须使用员工实际运行账号、同类 OpenCode 配置与可写工作空间；不要把凭据写入命令、日志或仓库。脚本成功时会自动清理临时现场，失败时会保留诊断目录。当前本地验收基线见 `docs/verification/E2E-V0.4-2026-08-27.md`。
+
+自动化测试不能替代生产的 Linux、SSH、模型网络、工作空间权限、企业认证网关和外部任务源联调；这些项目应在目标环境单独签收。
+
+## 10. 生产安全
 
 - 入口网关提供 HTTPS、SSO/OIDC、管理员授权、速率限制与审计；
 - `/api/events/stream` 关闭代理缓冲并允许长连接；
@@ -202,7 +231,7 @@ Worker 应连接 Redis 并注册任务发现、分配、心跳、恢复扫描和
 - PostgreSQL、Redis、管理台和 API 均限制在受控网络；
 - OpenCode 输出记录可能包含工程信息，`ASTRA_WORKSPACE_ROOT/records` 应加密备份并限制访问。
 
-## 10. 备份与恢复
+## 11. 备份与恢复
 
 PostgreSQL 备份：
 
@@ -219,7 +248,7 @@ docker compose exec -T postgres pg_dump -U astra -Fc astra > astra-backup.dump
 
 数据库与文件尽量使用同一维护窗口。回滚前在隔离环境验证迁移兼容性，不要直接覆盖唯一生产副本。
 
-## 11. 运维排查
+## 12. 运维排查
 
 ### 员工不领取任务
 
@@ -253,7 +282,7 @@ Backend 启动和 Celery Beat 会扫描 `RUNNING` / `WAIT_HUMAN` / `SUSPENDED` /
 
 表示员工最终回复没有返回可结构化识别的逐项结论。Astra 不会运行独立 Verifier 或伪造确认结果，应由员工或人工补充验收说明。
 
-## 12. 停止服务
+## 13. 停止服务
 
 ```bash
 docker compose down

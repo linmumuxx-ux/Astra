@@ -2,7 +2,7 @@
   <div class="page dashboard-page" data-testid="dashboard-page">
     <section class="page-intro">
       <div><h2>总览</h2><p>查看数字员工当前工作、任务状态与今日消耗。</p></div>
-      <div class="intro-state"><span>数据状态</span><strong :class="{ 'connection--offline': !store.realtimeConnected }"><i /> {{ store.realtimeConnected ? '实时连接正常' : '正在重连' }}</strong><small>更新于 {{ lastSync }}</small></div>
+      <div class="intro-state"><span>数据状态</span><strong :class="{ 'connection--offline': !dataHealthy }"><i /> {{ store.error ? '业务数据异常' : store.realtimeConnected ? '实时连接正常' : '正在重连' }}</strong><small>更新于 {{ lastSync }}</small></div>
     </section>
 
     <section class="metrics-grid metrics-grid--seven" data-testid="dashboard-v03-metrics">
@@ -42,6 +42,7 @@ import { useAstraStore } from '@/stores/astra'
 import { formatTime, formatTokens } from '@/utils/format'
 
 const store = useAstraStore()
+const dataHealthy = computed(() => store.realtimeConnected && !store.error)
 const lastSync = computed(() => store.lastUpdated?.toLocaleTimeString('zh-CN', { hour12: false }) ?? '连接中')
 const eventIcon = (type: string) => type === 'WAIT_HUMAN' ? CircleAlert : type === 'TASK_COMPLETED' ? Check : Play
 </script>
