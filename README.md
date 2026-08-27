@@ -31,7 +31,15 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8100
 ```
 
-另开终端：
+另开一个终端启动 Redis、任务分配器和 OpenCode Worker：
+
+```bash
+./scripts/runtime.sh
+```
+
+该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。
+
+再开一个终端启动管理台：
 
 ```bash
 cd frontend

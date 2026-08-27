@@ -23,7 +23,15 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8100
 ```
 
-另开终端：
+另开一个终端启动任务调度运行时：
+
+```bash
+./scripts/runtime.sh
+```
+
+这个常驻进程包含 Celery Worker 与 Beat，并连接 Redis。Beat 定期领取任务，Worker 调用员工的 OpenCode；它未运行时，管理台和 API 虽然可以打开，新任务却不会离开“待领取”。本地默认 Redis 未运行时，脚本会尝试启动临时 Redis，并在退出时一并关闭。
+
+再开一个终端：
 
 ```bash
 cd frontend
@@ -259,7 +267,7 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 
 ## 13. 常见问题
 
-- 员工不领取任务：检查员工是否启用、空闲、允许自动领取，工作环境是否正常，以及类型和分类是否匹配。
+- 任务一直待领取：先确认 `./scripts/runtime.sh` 正在运行且日志出现 `ready`；再检查员工是否启用、空闲、允许自动领取，工作环境是否正常，以及类型和分类是否匹配。
 - 本地环境异常：以 Worker 账号执行 `<opencode_path> --version`，并检查员工工作空间是否存在且可写。
 - Linux 远程环境异常：检查 SSH 网络、`known_hosts`、账号、密钥路径、远程 OpenCode 和工作空间权限。
 - Token 显示 `—`：当前 OpenCode 事件未提供该字段，Astra 不做估算。
