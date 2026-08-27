@@ -265,7 +265,7 @@ async def update_employee_environment(
             employee_id=employee.id,
             event_type="ENVIRONMENT_UPDATED",
             phase="environment",
-            message="OpenCode 执行环境已更新",
+            message="Agent 工作环境已更新",
             detail={
                 "mode": environment.mode,
                 "name": environment.name,
@@ -282,7 +282,7 @@ async def test_employee_environment(employee_id: str, session: AsyncSession = De
     employee = await require_employee(employee_id, session)
     environment = employee.execution_environment
     if not environment:
-        raise HTTPException(status_code=409, detail="员工尚未配置 OpenCode 执行环境")
+        raise HTTPException(status_code=409, detail="员工尚未配置 Agent 工作环境")
     environment.status = EnvironmentStatus.CHECKING
     await session.commit()
     checked_at = datetime.now(UTC)
@@ -300,7 +300,7 @@ async def test_employee_environment(employee_id: str, session: AsyncSession = De
             employee_id=employee.id,
             event_type="ENVIRONMENT_CHECKED",
             phase="environment",
-            message="OpenCode 执行环境检查完成",
+            message="Agent 工作环境检查完成",
             detail={"status": environment.status, **environment.status_detail},
         )
     )
@@ -595,7 +595,7 @@ async def start_task(task_id: str, session: AsyncSession = Depends(get_session))
         not employee.execution_environment
         or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
     ):
-        raise HTTPException(status_code=409, detail="员工 OpenCode 执行环境不可用")
+        raise HTTPException(status_code=409, detail="员工 Agent 工作环境不可用")
     employee.status = EmployeeStatus.WORKING
     employee.current_task_count = 1
     result = await transition_task(
@@ -782,7 +782,7 @@ async def recover_task(task_id: str, session: AsyncSession = Depends(get_session
         TaskStatus.RUNNING,
         "执行环境已恢复，继续原任务",
         session,
-        current_progress="正在恢复原 OpenCode 会话",
+        current_progress="正在恢复原 Agent 会话",
     )
     return await enqueue_running_task(result, session)
 

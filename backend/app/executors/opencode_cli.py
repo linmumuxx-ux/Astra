@@ -16,10 +16,12 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         settings: Settings | None = None,
         *,
         opencode_binary: str | None = None,
+        model_name: str | None = None,
         event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ):
         self.settings = settings or get_settings()
         self.opencode_binary = opencode_binary or self.settings.opencode_binary
+        self.model_name = model_name or self.settings.opencode_model
         self.event_callback = event_callback
         self._processes: dict[str, asyncio.subprocess.Process] = {}
 
@@ -33,7 +35,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         review = (task.review_history or [])[-1] if task.review_history else {}
         retry_text = ""
         if retry:
-            retry_text = "\n这是同一任务继续处理，请使用当前 OpenCode 会话中的已有上下文。"
+            retry_text = "\n这是同一任务继续处理，请使用当前执行会话中的已有上下文。"
             if human_input:
                 retry_text += f"\n人工补充信息：\n{human_input}"
         context_text = ""
@@ -65,7 +67,12 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 
 请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
 检查方式或内部步骤。请在完成后如实说明处理结果，并逐项说明验收标准是否满足及相关证据。
-无法继续时，请明确返回 BLOCKED，说明阻塞原因、已完成工作和需要人工提供的内容。
+当任务必须询问使用者、等待业务答案、权限或其他人工输入时，不要猜测或自行跳过。
+请在可读说明后返回以下结构，`requested_input` 必须是一个可直接回答的具体问题：
+ASTRA_INTERVENTION_JSON: {{"blocking_reason":"为什么需要人工输入",
+"completed_work":"已完成的工作","current_state":"当前保留状态",
+"requested_input":"需要请使用者回答的具体问题"}}
+不要同时返回完成结果。其他无法继续的场景也使用该结构说明阻塞原因和所需输入。
 
 最终回复末尾必须追加以下 JSON；ASTRA_RESULT_JSON 标记与 JSON 开头
 保持在同一行，且每个验收项都必须选择一个确切结论：
@@ -88,8 +95,8 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         ]
         if self.settings.opencode_agent:
             command.extend(["--agent", self.settings.opencode_agent])
-        if self.settings.opencode_model:
-            command.extend(["--model", self.settings.opencode_model])
+        if self.model_name:
+            command.extend(["--model", self.model_name])
         if session_id:
             command.extend(["--session", session_id])
         command.append(self._prompt(task, workspace, retry=bool(session_id)))
@@ -157,7 +164,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         except TimeoutError:
             process.kill()
             await process.wait()
-            return ExecutorResult(status="BLOCKED", exit_code=124, stderr="OpenCode execution timeout")
+            return ExecutorResult(status="BLOCKED", exit_code=124, stderr="Agent execution timeout")
         finally:
             self._processes.pop(task.id, None)
 
@@ -167,6 +174,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         combined = f"{stdout}\n{stderr}".upper()
         blocked_markers = (
             "BLOCKED",
+            "ASTRA_INTERVENTION_JSON:",
             "PERMISSION REQUESTED",
             "PERMISSION DENIED",
             "AUTO-REJECTING",

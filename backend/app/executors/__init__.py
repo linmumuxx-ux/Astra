@@ -1,1 +1,1 @@
-"""OpenCode executor adapters."""
+"""CLI executor adapters."""

@@ -4,8 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import Settings, get_settings
-from app.domain import EmployeeStatus
-from app.models import DigitalEmployee
+from app.domain import EmployeeStatus, TaskStatus
+from app.models import DigitalEmployee, Task
 
 
 async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
@@ -14,7 +14,7 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
             await session.execute(
                 select(DigitalEmployee).where(
                     DigitalEmployee.status.not_in(
-                        [EmployeeStatus.OFFLINE, EmployeeStatus.PAUSED, EmployeeStatus.ERROR]
+                        [EmployeeStatus.PAUSED, EmployeeStatus.ERROR]
                     )
                 )
             )
@@ -24,6 +24,25 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
     )
     now = datetime.now(UTC)
     for employee in employees:
+        if employee.status == EmployeeStatus.OFFLINE:
+            active_task_status = await session.scalar(
+                select(Task.status)
+                .where(
+                    Task.employee_id == employee.id,
+                    Task.status.in_(
+                        [TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN, TaskStatus.EXECUTION_ERROR]
+                    ),
+                )
+                .order_by(Task.updated_at.desc())
+                .limit(1)
+            )
+            employee.status = (
+                EmployeeStatus.WAIT_HUMAN
+                if active_task_status == TaskStatus.WAIT_HUMAN
+                else EmployeeStatus.WORKING
+                if employee.current_task_count
+                else EmployeeStatus.IDLE
+            )
         employee.last_heartbeat = now
         employee.online_since = employee.online_since or now
     if employees:

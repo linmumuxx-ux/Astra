@@ -22,6 +22,7 @@ class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
         super().__init__(
             settings,
             opencode_binary=environment.opencode_path,
+            model_name=environment.model_name,
             event_callback=event_callback,
         )
         self.environment = environment

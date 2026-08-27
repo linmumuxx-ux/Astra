@@ -7,7 +7,7 @@
 ## 验收环境
 
 - macOS arm64
-- Python 3.14.3（生产镜像固定 Python 3.12）
+- Python 3.14.3
 - Node.js 25.4.0
 - OpenCode 1.18.23：`/opt/homebrew/bin/opencode`
 - 真实验证模型：`deepseek/deepseek-v4-flash`
@@ -82,7 +82,6 @@
 
 ## 未纳入本机通过结论的边界
 
-- 当前主机没有 Docker CLI，因此没有实际构建或启动生产 Compose。
 - Linux 远程 SSH/OpenCode 只有自动化回归，仍需在目标 Linux 主机验收。
 - 正式 `nr_test_system` 发现与结果回填接口仍需对端提供真实契约和环境后联调。
 - 管理台没有内置认证/RBAC，生产必须放在可信内网或企业认证网关之后。

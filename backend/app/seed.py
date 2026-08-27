@@ -73,6 +73,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             name="本地开发工作空间",
             description="测试平台工程",
             opencode_path="opencode",
+            model_name="deepseek/deepseek-v4-flash",
             workspace_root="./workspaces/astra-01",
             status=EnvironmentStatus.AVAILABLE,
             status_detail={"message": "演示环境"},

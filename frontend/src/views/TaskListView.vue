@@ -24,7 +24,7 @@
     <AstraPanel flush>
       <template #title><div class="table-title"><h2>任务列表</h2><span>{{ filtered.length }} 项</span></div></template>
       <div class="table-wrap task-table"><table><thead><tr><th>任务</th><th>类型</th><th>分类</th><th>优先级</th><th>状态</th><th>执行员工</th><th>当前进展</th><th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="task in filtered" :key="task.id"><td @click="openTask(task.id)"><strong>{{ task.title }}</strong><small>{{ task.id }}</small></td><td>{{ taskTypeLabel(task.task_type) }}</td><td>{{ categoryName(task.category_id) }}</td><td><span class="priority" :data-priority="task.priority">{{ priorityLabel(task.priority) }}</span></td><td><AstraStatusBadge :status="task.status" :pulse="task.status === 'RUNNING'" /></td><td>{{ employeeName(task.employee_id) }}</td><td class="progress-copy">{{ task.current_progress || '—' }}</td><td>{{ formatTime(task.created_at) }}</td><td>{{ formatTime(task.updated_at) }}</td><td><div class="row-actions"><button title="查看详情" @click="openTask(task.id)"><Eye :size="14" /></button><button v-if="task.status === 'RUNNING'" title="安全挂起" @click="action(task, 'pause')"><Pause :size="14" /></button><button v-if="['WAIT_HUMAN','SUSPENDED'].includes(task.status)" title="继续" @click="action(task, 'resume')"><Play :size="14" /></button></div></td></tr>
+        <tr v-for="task in filtered" :key="task.id"><td @click="openTask(task.id)"><strong>{{ task.title }}</strong><small>{{ task.id }}</small></td><td>{{ taskTypeLabel(task.task_type) }}</td><td>{{ categoryName(task.category_id) }}</td><td><span class="priority" :data-priority="task.priority">{{ priorityLabel(task.priority) }}</span></td><td><AstraStatusBadge :status="task.status" :pulse="task.status === 'RUNNING'" /></td><td>{{ employeeName(task.employee_id) }}</td><td class="progress-copy">{{ platformCopy(task.current_progress) || '—' }}</td><td>{{ formatTime(task.created_at) }}</td><td>{{ formatTime(task.updated_at) }}</td><td><div class="row-actions"><button title="查看详情" @click="openTask(task.id)"><Eye :size="14" /></button><button v-if="task.status === 'RUNNING'" title="安全挂起" @click="action(task, 'pause')"><Pause :size="14" /></button><button v-if="['WAIT_HUMAN','SUSPENDED'].includes(task.status)" title="继续" @click="action(task, 'resume')"><Play :size="14" /></button></div></td></tr>
         <tr v-if="!filtered.length"><td colspan="10"><AstraEmptyState :icon="SearchX" title="没有匹配任务" description="调整筛选条件后重试。" /></td></tr>
       </tbody></table></div>
     </AstraPanel>
@@ -53,7 +53,7 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatTime, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
+import { formatTime, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore(); const router = useRouter(); const dialogOpen = ref(false); const submitting = ref(false); const createError = ref('')
 const statuses: TaskStatus[] = ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'COMPLETED', 'FAILED', 'EXECUTION_ERROR', 'CANCELLED']

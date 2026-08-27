@@ -70,7 +70,7 @@ async def bootstrap_employees(session: AsyncSession, config_path) -> None:
             OpenCodeExecutionEnvironment(
                 employee_id=employee.id,
                 mode=environment.get("mode", "LOCAL"),
-                name=environment.get("name", "本地 OpenCode"),
+                name=environment.get("name", "本地 Agent 工作环境"),
                 description=environment.get("description", ""),
                 host=environment.get("host"),
                 port=environment.get("port", 22),
@@ -78,6 +78,7 @@ async def bootstrap_employees(session: AsyncSession, config_path) -> None:
                 auth_method=environment.get("auth_method", "SSH_AGENT"),
                 ssh_key_path=environment.get("ssh_key_path"),
                 opencode_path=environment.get("opencode_path", "opencode"),
+                model_name=environment.get("model_name"),
                 workspace_root=environment.get("workspace_root", "./workspaces"),
                 labels=environment.get("labels", []),
                 status=EnvironmentStatus.UNKNOWN,

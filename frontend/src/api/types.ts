@@ -26,6 +26,7 @@ export interface ExecutionEnvironment {
   auth_method: 'SSH_AGENT' | 'SSH_KEY'
   ssh_key_path: string | null
   opencode_path: string
+  model_name: string | null
   workspace_root: string
   status: 'UNKNOWN' | 'CHECKING' | 'AVAILABLE' | 'UNAVAILABLE'
   status_detail: Record<string, unknown>

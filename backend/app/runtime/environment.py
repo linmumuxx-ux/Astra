@@ -29,6 +29,7 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "auth_method": environment.auth_method,
         "ssh_key_path": environment.ssh_key_path,
         "opencode_path": environment.opencode_path,
+        "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
         "labels": list(environment.labels or []),
     }
@@ -46,6 +47,7 @@ def environment_from_snapshot(snapshot: dict, employee_id: str) -> OpenCodeExecu
         auth_method=snapshot.get("auth_method", "SSH_AGENT"),
         ssh_key_path=snapshot.get("ssh_key_path"),
         opencode_path=snapshot["opencode_path"],
+        model_name=snapshot.get("model_name"),
         workspace_root=snapshot["workspace_root"],
         labels=snapshot.get("labels", []),
         status=EnvironmentStatus.AVAILABLE,
@@ -110,7 +112,7 @@ class ExecutionEnvironmentRuntime:
         exists = bool(resolved and Path(resolved).expanduser().is_file())
         checks = [
             CheckItem(
-                "OpenCode 存在",
+                "Agent 命令存在",
                 exists,
                 f"已找到 {resolved}" if exists else f"未找到 {binary}",
             )
@@ -128,9 +130,9 @@ class ExecutionEnvironmentRuntime:
                 detail = output.decode("utf-8", errors="replace").strip() or "命令执行完成"
             except (OSError, TimeoutError) as exc:
                 started, detail = False, str(exc)
-            checks.append(CheckItem("OpenCode 可启动", started, detail[:500]))
+            checks.append(CheckItem("Agent 命令可启动", started, detail[:500]))
         else:
-            checks.append(CheckItem("OpenCode 可启动", False, "未执行：OpenCode 不存在"))
+            checks.append(CheckItem("Agent 命令可启动", False, "未执行：Agent 命令不存在"))
 
         root = Path(environment.workspace_root).expanduser()
         try:
@@ -158,8 +160,8 @@ class ExecutionEnvironmentRuntime:
             checks.extend(
                 [
                     CheckItem("Workspace 可用", False, "未执行：SSH 连接失败"),
-                    CheckItem("OpenCode 存在", False, "未执行：SSH 连接失败"),
-                    CheckItem("OpenCode 可启动", False, "未执行：SSH 连接失败"),
+                    CheckItem("Agent 命令存在", False, "未执行：SSH 连接失败"),
+                    CheckItem("Agent 命令可启动", False, "未执行：SSH 连接失败"),
                 ]
             )
             return checks
@@ -182,19 +184,19 @@ class ExecutionEnvironmentRuntime:
         code, _, stderr = await self.run_remote(environment, exists_command, timeout=20)
         checks.append(
             CheckItem(
-                "OpenCode 存在",
+                "Agent 命令存在",
                 code == 0,
                 f"已找到 {environment.opencode_path}"
                 if code == 0
-                else (stderr.strip() or "远程 OpenCode 不存在"),
+                else (stderr.strip() or "远程 Agent 命令不存在"),
             )
         )
         if code == 0:
             code, stdout, stderr = await self.run_remote(environment, f"{binary} --version", timeout=20)
             detail = stdout.strip() or stderr.strip() or f"退出码 {code}"
-            checks.append(CheckItem("OpenCode 可启动", code == 0, detail[:500]))
+            checks.append(CheckItem("Agent 命令可启动", code == 0, detail[:500]))
         else:
-            checks.append(CheckItem("OpenCode 可启动", False, "未执行：OpenCode 不存在"))
+            checks.append(CheckItem("Agent 命令可启动", False, "未执行：Agent 命令不存在"))
         return checks
 
 

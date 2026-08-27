@@ -11,8 +11,8 @@
       <AstraMetricCard label="等待人工" :value="store.metrics?.wait_human_tasks ?? '—'" unit="项" hint="需要补充信息" :icon="Hand" tone="warning" />
       <AstraMetricCard label="执行异常" :value="store.metrics?.execution_error_tasks ?? '—'" unit="项" hint="工作现场已保留" :icon="CircleAlert" tone="warning" />
       <AstraMetricCard label="今日完成" :value="store.metrics?.completed_today ?? '—'" unit="项" hint="员工已提交结果" :icon="BadgeCheck" tone="success" />
-      <AstraMetricCard label="今日模型用量" :value="formatTokens(store.metrics?.today_tokens)" hint="OpenCode 实际 Token" :icon="Binary" />
-      <AstraMetricCard label="今日工具调用" :value="store.metrics?.today_tool_calls ?? '—'" unit="次" hint="OpenCode 实际记录" :icon="Wrench" />
+      <AstraMetricCard label="今日模型用量" :value="formatTokens(store.metrics?.today_tokens)" hint="Agent 实际 Token" :icon="Binary" />
+      <AstraMetricCard label="今日工具调用" :value="store.metrics?.today_tool_calls ?? '—'" unit="次" hint="Agent 实际记录" :icon="Wrench" />
     </section>
 
     <section class="dashboard-grid">
@@ -22,7 +22,7 @@
         <div class="event-feed">
           <article v-for="event in store.events.slice(0, 7)" :key="event.id">
             <span class="event-dot" :data-tone="event.event_type === 'WAIT_HUMAN' ? 'warning' : event.event_type === 'TASK_COMPLETED' ? 'success' : 'info'"><component :is="eventIcon(event.event_type)" :size="13" /></span>
-            <div><strong>{{ event.message }}</strong><p>{{ event.employee_id ?? event.task_id ?? '平台事件' }}</p></div><time>{{ formatTime(event.created_at) }}</time>
+            <div><strong>{{ platformCopy(event.message) }}</strong><p>{{ event.employee_id ?? event.task_id ?? '平台事件' }}</p></div><time>{{ formatTime(event.created_at) }}</time>
           </article>
           <AstraEmptyState v-if="!store.events.length" :icon="Activity" title="暂无动态" description="员工领取、更新或完成任务后会显示在这里。" />
         </div>
@@ -39,7 +39,7 @@ import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import DigitalOffice from '@/components/office/DigitalOffice.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatTime, formatTokens } from '@/utils/format'
+import { formatTime, formatTokens, platformCopy } from '@/utils/format'
 
 const store = useAstraStore()
 const dataHealthy = computed(() => store.realtimeConnected && !store.error)

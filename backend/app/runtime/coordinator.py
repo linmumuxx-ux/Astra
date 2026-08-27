@@ -25,14 +25,14 @@ from app.runtime.environment import (
     environment_from_snapshot,
     environment_snapshot,
 )
-from app.runtime.result_parser import build_work_result, human_readable_result
+from app.runtime.result_parser import build_work_result, human_readable_result, parse_human_intervention
 from app.services import TaskService
 from app.sources.nr_test_system import NrTestSystemSource
 from app.structured_logging import runtime_log
 
 
 class TaskCoordinator:
-    """Observe one autonomous OpenCode execution without prescribing its workflow."""
+    """Observe one autonomous Agent execution without prescribing its workflow."""
 
     def __init__(self, *, executor=None, source=None) -> None:
         self.settings = get_settings()
@@ -63,7 +63,7 @@ class TaskCoordinator:
                     workspace = workspace.resolve()
                     if not workspace.is_dir():
                         raise RuntimeError(f"员工工作空间不存在: {workspace}")
-                task.current_progress = "OpenCode 正在自主处理任务"
+                task.current_progress = "Agent 正在自主处理任务"
                 await service.add_event(
                     task,
                     "WORK_STARTED",
@@ -82,6 +82,7 @@ class TaskCoordinator:
                     else OpenCodeCLIExecutor(
                         self.settings,
                         opencode_binary=environment.opencode_path,
+                        model_name=environment.model_name,
                         event_callback=lambda event: self._observe_event(task, None, event, service),
                     )
                 )
@@ -120,10 +121,16 @@ class TaskCoordinator:
     @staticmethod
     def _resolve_environment(task: Task, employee: DigitalEmployee):
         if task.execution_environment_snapshot:
-            return environment_from_snapshot(task.execution_environment_snapshot, employee.id)
+            environment = environment_from_snapshot(task.execution_environment_snapshot, employee.id)
+            # Tasks claimed before employee-level model configuration was added do not
+            # have a model in their immutable snapshot. Let those tasks inherit the
+            # employee's current model once; new tasks already carry it in the snapshot.
+            if not environment.model_name and employee.execution_environment:
+                environment.model_name = employee.execution_environment.model_name
+            return environment
         if employee.execution_environment:
             return employee.execution_environment
-        raise RuntimeError("员工尚未配置 OpenCode 工作环境")
+        raise RuntimeError("员工尚未配置 Agent 工作环境")
 
     async def _execute_once(self, task, employee, environment, workspace, executor, session) -> None:
         service = TaskService(session)
@@ -148,7 +155,7 @@ class TaskCoordinator:
             task,
             "OPENCODE_STARTED",
             "work",
-            "OpenCode 会话已启动" if run_number == 1 else "OpenCode 会话已继续",
+            "Agent 会话已启动" if run_number == 1 else "Agent 会话已继续",
             {"run_number": run_number, "resume_session": bool(task.opencode_session_id)},
             run.id,
         )
@@ -166,7 +173,7 @@ class TaskCoordinator:
         task.opencode_session_id = result.session_id or task.opencode_session_id
         run.opencode_session_id = task.opencode_session_id
         run.exit_code = result.exit_code
-        run.model_name = result.model_name or self.settings.opencode_model
+        run.model_name = result.model_name or environment.model_name or self.settings.opencode_model
         run.input_tokens = result.token_usage.input_tokens
         run.output_tokens = result.token_usage.output_tokens
         run.cache_read_tokens = result.token_usage.cache_read_tokens
@@ -191,7 +198,7 @@ class TaskCoordinator:
             ]
         )
         raw_summary = self._last_text(result.output) or result.stderr.strip()
-        summary = human_readable_result(raw_summary) or "OpenCode 执行已结束"
+        summary = human_readable_result(raw_summary) or "Agent 执行已结束"
         run.result = {
             "status": result.status,
             "session_id": result.session_id,
@@ -222,7 +229,7 @@ class TaskCoordinator:
                 task,
                 "WORK_STOPPED",
                 "work",
-                f"{stopped_status}，本次 OpenCode 返回结果仅作为工作记录保留",
+                f"{stopped_status}，本次 Agent 返回结果仅作为工作记录保留",
                 {"run_number": run_number, "exit_code": result.exit_code},
                 run.id,
             )
@@ -232,17 +239,18 @@ class TaskCoordinator:
 
         if result.status == "BLOCKED":
             run.status = RunStatus.BLOCKED
-            task.human_required_reason = summary
-            task.human_intervention = {
+            intervention = parse_human_intervention(raw_summary) or {
                 "blocking_reason": summary,
-                "completed_work": "详见工作记录与 OpenCode 输出",
+                "completed_work": "详见工作记录与 Agent 输出",
                 "current_state": task.current_progress,
                 "requested_input": "请根据员工说明补充必要信息或权限",
             }
+            task.human_required_reason = intervention["blocking_reason"]
+            task.human_intervention = intervention
             await service.transition(
                 task,
                 TaskStatus.WAIT_HUMAN,
-                current_progress="已阻塞，等待人工补充信息",
+                current_progress=f"等待回复：{intervention['requested_input']}",
                 message=f"{employee.name} 请求人工协助",
                 run_id=run.id,
             )
@@ -254,7 +262,7 @@ class TaskCoordinator:
             run.status = RunStatus.FAILED
             if resumed_session and self._session_unavailable(result.stderr, result.stdout):
                 task.opencode_session_id = None
-                task.current_progress = "原 OpenCode 会话不可用，携带现有上下文创建新会话"
+                task.current_progress = "原 Agent 会话不可用，携带现有上下文创建新会话"
                 await service.add_event(
                     task,
                     "SESSION_RECOVERY",
@@ -267,7 +275,7 @@ class TaskCoordinator:
                 return
             if run_number <= employee.max_auto_retries:
                 task.current_progress = (
-                    f"OpenCode 执行异常，正在恢复同一任务会话（{run_number}/{employee.max_auto_retries}）"
+                    f"Agent 执行异常，正在恢复同一任务会话（{run_number}/{employee.max_auto_retries}）"
                 )
                 await service.add_event(
                     task,
@@ -328,7 +336,7 @@ class TaskCoordinator:
     def _save_observation(self, task: Task, run: Run, result) -> Path:
         record_dir = (self.settings.workspace_root / "records" / task.id).resolve()
         record_dir.mkdir(parents=True, exist_ok=True)
-        path = record_dir / f"{run.id}-opencode.json"
+        path = record_dir / f"{run.id}-agent.json"
         path.write_text(
             json.dumps(
                 {
@@ -405,7 +413,7 @@ class TaskCoordinator:
                 or part.get("toolName")
                 or part.get("tool_name")
                 or part.get("name")
-                or "OpenCode Tool"
+                or "Agent Tool"
             )
             state = part.get("state") if isinstance(part.get("state"), dict) else {}
             operation_input = state.get("input") or part.get("input")
@@ -413,7 +421,7 @@ class TaskCoordinator:
                 task,
                 "TOOL_ACTIVITY",
                 "operation",
-                f"OpenCode 调用 {tool}",
+                f"Agent 调用 {tool}",
                 {
                     "tool": tool,
                     "status": state.get("status") or part.get("status"),
@@ -443,7 +451,7 @@ class TaskCoordinator:
                 task,
                 "MODEL_ACTIVITY",
                 "operation",
-                "OpenCode 返回模型用量事件",
+                "Agent 返回模型用量事件",
                 {
                     "event": event_type,
                     "total_tokens": usage.total_tokens,

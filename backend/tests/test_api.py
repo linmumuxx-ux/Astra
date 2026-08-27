@@ -76,6 +76,7 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
                     "mode": "LOCAL",
                     "name": "API 本地工作空间",
                     "opencode_path": sys.executable,
+                    "model_name": "deepseek/deepseek-v4-flash",
                     "workspace_root": str(tmp_path / "employee-workspace"),
                 },
             },
@@ -85,6 +86,7 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
         assert employee["task_types"] == ["ISSUE", "REQUIREMENT"]
         assert employee["category_ids"] == [category_id]
         assert employee["execution_environment"]["workspace_root"].endswith("employee-workspace")
+        assert employee["execution_environment"]["model_name"] == "deepseek/deepseek-v4-flash"
         assert "skills" not in employee
         assert "capabilities" not in employee
 

@@ -19,7 +19,7 @@ class ORMModel(BaseModel):
 
 class ExecutionEnvironmentWrite(BaseModel):
     mode: ExecutionMode = ExecutionMode.LOCAL
-    name: str = "本地 OpenCode"
+    name: str = "本地 Agent 工作环境"
     description: str = ""
     host: str | None = None
     port: int = Field(default=22, ge=1, le=65535)
@@ -27,6 +27,7 @@ class ExecutionEnvironmentWrite(BaseModel):
     auth_method: str = "SSH_AGENT"
     ssh_key_path: str | None = None
     opencode_path: str = Field(default="opencode", min_length=1)
+    model_name: str | None = Field(default=None, max_length=255)
     workspace_root: str = Field(default="./workspaces", min_length=1)
     labels: list[str] = Field(default_factory=list)
 
@@ -65,6 +66,7 @@ class ExecutionEnvironmentRead(ORMModel):
     auth_method: str
     ssh_key_path: str | None
     opencode_path: str
+    model_name: str | None
     workspace_root: str
     status: str
     status_detail: dict[str, Any]

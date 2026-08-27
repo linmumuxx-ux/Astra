@@ -23,6 +23,7 @@ from app.models import (
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.environment import ExecutionEnvironmentRuntime
+from app.runtime.heartbeat import heartbeat_active_employees
 from app.runtime.scout import TaskScout
 from app.schemas import TaskCreate
 from app.services import TaskService
@@ -86,6 +87,7 @@ async def test_dispatcher_matches_type_and_category_and_limits_one_task(session,
             mode="LOCAL",
             name="员工固定工作空间",
             opencode_path="opencode",
+            model_name="deepseek/deepseek-v4-flash",
             workspace_root=str(workspace),
             status=EnvironmentStatus.AVAILABLE,
         )
@@ -106,9 +108,71 @@ async def test_dispatcher_matches_type_and_category_and_limits_one_task(session,
     assert claimed.employee_id == "astra-test"
     assert claimed.claimed_at is not None
     assert claimed.execution_environment_snapshot["workspace_root"] == str(workspace)
+    assert claimed.execution_environment_snapshot["model_name"] == "deepseek/deepseek-v4-flash"
     assert second_claim is None
     await session.refresh(employee)
     assert employee.current_task_count == 1
+
+
+async def test_heartbeat_recovers_offline_employee_then_dispatches_ready_task(session, tmp_path):
+    workspace = tmp_path / "recoverable-workspace"
+    workspace.mkdir()
+    employee = DigitalEmployee(
+        id="astra-recovered",
+        name="Astra Recovered",
+        role="测试员工",
+        status=EmployeeStatus.OFFLINE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+        auto_claim=True,
+        auto_execute=True,
+    )
+    session.add(employee)
+    session.add(
+        OpenCodeExecutionEnvironment(
+            employee_id=employee.id,
+            mode="LOCAL",
+            name="可恢复环境",
+            opencode_path="opencode",
+            workspace_root=str(workspace),
+            status=EnvironmentStatus.AVAILABLE,
+        )
+    )
+    await session.commit()
+    task = await TaskService(session).create(new_task(title="重启后应被领取"))
+
+    heartbeat_ids = await heartbeat_active_employees(session)
+    await session.refresh(employee)
+    assert employee.status == EmployeeStatus.IDLE
+    claimed = await Dispatcher(session).claim_once()
+
+    await session.refresh(employee)
+    assert heartbeat_ids == [employee.id]
+    assert employee.status == EmployeeStatus.WORKING
+    assert claimed and claimed.id == task.id
+    assert claimed.employee_id == employee.id
+
+
+async def test_heartbeat_restores_waiting_employee_from_active_task(session, tmp_path):
+    employee = DigitalEmployee(
+        id="astra-waiting-recovered",
+        name="Astra Waiting",
+        role="测试员工",
+        status=EmployeeStatus.OFFLINE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+        current_task_count=1,
+    )
+    session.add(employee)
+    await session.commit()
+    task = await TaskService(session).create(new_task(employee_id=employee.id))
+    await TaskService(session).transition(task, TaskStatus.RUNNING)
+    await TaskService(session).transition(task, TaskStatus.WAIT_HUMAN)
+
+    await heartbeat_active_employees(session)
+
+    await session.refresh(employee)
+    assert employee.status == EmployeeStatus.WAIT_HUMAN
 
 
 class FakeSource(TaskSource):
@@ -312,8 +376,8 @@ async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Pa
     checks = await ExecutionEnvironmentRuntime().test(environment)
 
     assert [item.name for item in checks] == [
-        "OpenCode 存在",
-        "OpenCode 可启动",
+        "Agent 命令存在",
+        "Agent 命令可启动",
         "Workspace 可用",
     ]
     assert all(item.passed for item in checks)
@@ -346,3 +410,68 @@ async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_
 
     assert result.exit_code == 0
     assert result.status == "BLOCKED"
+
+
+def test_employee_model_is_passed_to_agent_command(tmp_path: Path):
+    task = Task(
+        id="T-EMPLOYEE-MODEL",
+        source="manual",
+        task_type="REQUIREMENT",
+        category_id="testing-platform",
+        title="验证员工模型配置",
+        description="模型应作为 Agent 启动参数",
+        acceptance_criteria=[{"id": "AC-01", "content": "使用指定模型"}],
+        priority="LOW",
+        completion_policy="AUTO",
+        status=TaskStatus.RUNNING,
+    )
+    executor = OpenCodeCLIExecutor(
+        opencode_binary="opencode",
+        model_name="deepseek/deepseek-v4-flash",
+    )
+
+    command = executor._command(task, tmp_path)
+
+    model_index = command.index("--model")
+    assert command[model_index + 1] == "deepseek/deepseek-v4-flash"
+
+
+def test_legacy_task_snapshot_inherits_employee_model():
+    employee = DigitalEmployee(
+        id="astra-legacy-model",
+        name="Astra Legacy",
+        role="测试员工",
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    employee.execution_environment = OpenCodeExecutionEnvironment(
+        employee_id=employee.id,
+        mode="LOCAL",
+        name="员工 Agent 环境",
+        opencode_path="opencode",
+        model_name="deepseek/deepseek-v4-flash",
+        workspace_root="/tmp/astra-legacy-model",
+    )
+    task = Task(
+        id="T-LEGACY-MODEL",
+        source="manual",
+        task_type="ISSUE",
+        category_id="testing-platform",
+        title="旧任务快照",
+        description="快照创建时尚无模型字段",
+        acceptance_criteria=[],
+        priority="LOW",
+        completion_policy="AUTO",
+        status=TaskStatus.RUNNING,
+        execution_environment_snapshot={
+            "environment_id": 1,
+            "mode": "LOCAL",
+            "name": "旧 Agent 环境",
+            "opencode_path": "opencode",
+            "workspace_root": "/tmp/astra-legacy-model",
+        },
+    )
+
+    environment = TaskCoordinator._resolve_environment(task, employee)
+
+    assert environment.model_name == "deepseek/deepseek-v4-flash"

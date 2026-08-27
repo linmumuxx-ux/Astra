@@ -66,9 +66,20 @@ export const executionModeLabel = (value: unknown) =>
   value === 'LINUX_REMOTE' ? 'Linux 远程' : value === 'LOCAL' ? '本地' : '—'
 
 export const executorLabel = (value: string) =>
-  value === 'opencode_ssh' ? 'Linux 远程 OpenCode' : value === 'opencode_cli' ? '本地 OpenCode' : '未知执行方式'
+  value === 'opencode_ssh' ? 'Linux 远程 Agent' : value === 'opencode_cli' ? '本地 Agent' : '未知执行方式'
 
 export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : '其他来源'
 
 export const evidenceKindLabel = (value: string) =>
-  value === 'work_record' ? 'OpenCode 工作记录' : value === 'log' ? '运行日志' : value === 'attachment' ? '结果附件' : '其他证据'
+  value === 'work_record' ? 'Agent 工作记录' : value === 'log' ? '运行日志' : value === 'attachment' ? '结果附件' : '其他证据'
+
+export const platformCopy = (value: string | null | undefined) =>
+  String(value ?? '')
+    .replaceAll('OpenCode Session', 'Agent 会话')
+    .replaceAll('OpenCode 会话', 'Agent 会话')
+    .replaceAll('CLI 执行会话', 'Agent 会话')
+    .replaceAll('CLI 会话', 'Agent 会话')
+    .replaceAll('-opencode.json', '-agent.json')
+    .replaceAll('-cli.json', '-agent.json')
+    .replaceAll('OpenCode', 'Agent')
+    .replaceAll('CLI', 'Agent')

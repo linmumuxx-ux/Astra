@@ -9,14 +9,15 @@ from typing import Any
 from app.domain import AcceptanceStatus
 
 RESULT_MARKER = "ASTRA_RESULT_JSON:"
+INTERVENTION_MARKER = "ASTRA_INTERVENTION_JSON:"
 _FENCED_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
-def _structured_result(raw_text: str) -> dict[str, Any] | None:
-    marker_index = raw_text.rfind(RESULT_MARKER)
+def _marked_object(raw_text: str, marker: str) -> dict[str, Any] | None:
+    marker_index = raw_text.rfind(marker)
     candidates: list[str] = []
     if marker_index >= 0:
-        candidates.append(raw_text[marker_index + len(RESULT_MARKER) :].strip())
+        candidates.append(raw_text[marker_index + len(marker) :].strip())
     candidates.extend(match.group(1).strip() for match in _FENCED_BLOCK.finditer(raw_text))
     for candidate in candidates:
         try:
@@ -25,19 +26,50 @@ def _structured_result(raw_text: str) -> dict[str, Any] | None:
             continue
         if not isinstance(payload, dict):
             continue
-        nested = payload.get("astra_result")
-        return nested if isinstance(nested, dict) else payload
+        return payload
     return None
+
+
+def _structured_result(raw_text: str) -> dict[str, Any] | None:
+    payload = _marked_object(raw_text, RESULT_MARKER)
+    if not payload:
+        return None
+    nested = payload.get("astra_result")
+    return nested if isinstance(nested, dict) else payload
+
+
+def parse_human_intervention(raw_text: str) -> dict[str, str] | None:
+    """Parse an explicit request for human input from an Agent employee."""
+    payload = _marked_object(raw_text, INTERVENTION_MARKER)
+    if not payload:
+        return None
+    nested = payload.get("astra_intervention")
+    if isinstance(nested, dict):
+        payload = nested
+    requested_input = str(payload.get("requested_input") or "").strip()
+    if not requested_input:
+        return None
+    return {
+        "blocking_reason": str(payload.get("blocking_reason") or "需要人工补充信息").strip(),
+        "completed_work": str(payload.get("completed_work") or "尚未开始后续处理").strip(),
+        "current_state": str(payload.get("current_state") or "等待人工回复").strip(),
+        "requested_input": requested_input,
+    }
 
 
 def human_readable_result(raw_text: str) -> str:
     """Remove Astra's machine-readable suffix from text shown to managers."""
-    marker_index = raw_text.rfind(RESULT_MARKER)
-    visible = raw_text[:marker_index] if marker_index >= 0 else raw_text
+    marker_indexes = [
+        index
+        for marker in (RESULT_MARKER, INTERVENTION_MARKER)
+        if (index := raw_text.rfind(marker)) >= 0
+    ]
+    visible = raw_text[: min(marker_indexes)] if marker_indexes else raw_text
 
     def remove_result_block(match: re.Match[str]) -> str:
         block = match.group(1)
-        return "" if "acceptance_results" in block or "astra_result" in block else match.group(0)
+        machine_keys = ("acceptance_results", "astra_result", "requested_input", "astra_intervention")
+        return "" if any(key in block for key in machine_keys) else match.group(0)
 
     visible = _FENCED_BLOCK.sub(remove_result_block, visible).strip()
     if visible:

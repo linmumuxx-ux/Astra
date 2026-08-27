@@ -117,7 +117,7 @@ test('完成任务展示结果、逐项验收和实际工作消耗', async ({ pa
   await expect(detail.locator('.usage-panel')).toContainText('160.8K')
   await expect(detail.locator('.usage-panel')).toContainText('bash')
   await expect(detail.getByRole('link', { name: 'RUN-DEMO-003' })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
-  await expect(detail.getByText('OpenCode 工作记录')).toBeVisible()
+  await expect(detail.getByText('Agent 工作记录')).toBeVisible()
 })
 
 test('业务枚举和时间单位统一显示为中文', async ({ page }) => {
@@ -129,7 +129,7 @@ test('业务枚举和时间单位统一显示为中文', async ({ page }) => {
   await page.goto('/runs/RUN-DEMO-003')
   await expect(page.getByText('36 分钟')).toBeVisible()
   await expect(page.getByText('18.4 秒')).toBeVisible()
-  await expect(page.getByText('OpenCode 会话', { exact: true })).toBeVisible()
+  await expect(page.getByText('执行会话', { exact: true })).toBeVisible()
 })
 
 test('员工配置只管理工作范围、工作环境和简单策略', async ({ page }) => {
@@ -143,4 +143,110 @@ test('员工配置只管理工作范围、工作环境和简单策略', async ({
   await expect(settings.getByText('技能标签')).toHaveCount(0)
   await settings.getByRole('button', { name: '工作环境' }).click()
   await expect(settings.getByLabel('工作空间')).toHaveValue('./workspaces/astra-01')
+  await expect(settings.getByLabel('Agent 模型')).toHaveValue('deepseek/deepseek-v4-flash')
+})
+
+test('配置保存保持环境可用且询问任务可由真实运行时等待并继续完成', async ({ page, request }) => {
+  const suffix = Date.now()
+  const employeeId = `astra-inquiry-${suffix}`
+  const employeeName = `询问测试员工 ${suffix}`
+  const createEmployee = await request.post('/api/employees', {
+    data: {
+      id: employeeId,
+      name: employeeName,
+      role: '询问场景自动化员工',
+      description: '创建后等待配置中心保存验证',
+      task_types: ['REQUIREMENT'],
+      category_ids: ['testing-platform'],
+      enabled: true,
+      auto_claim: true,
+      auto_execute: true,
+      max_auto_retries: 1,
+      execution_environment: {
+        mode: 'LOCAL',
+        name: '隔离 Agent 工作环境',
+        description: '系统级 E2E',
+        port: 22,
+        auth_method: 'SSH_AGENT',
+        opencode_path: 'opencode',
+        model_name: 'e2e/original-model',
+        workspace_root: `./workspaces/${employeeId}`,
+        labels: [],
+      },
+    },
+  })
+  expect(createEmployee.ok()).toBeTruthy()
+  const checked = await request.post(`/api/employees/${employeeId}/environment/test`)
+  expect(checked.ok()).toBeTruthy()
+  expect((await checked.json()).status).toBe('AVAILABLE')
+
+  await page.goto(`/settings?employee=${employeeId}`)
+  const settings = page.getByTestId('settings-page')
+  const employeeButton = settings.locator('.settings-employee').filter({ hasText: employeeName })
+  await expect(employeeButton).toContainText('空闲')
+  await settings.getByRole('button', { name: '工作环境' }).click()
+  await expect(settings.getByLabel('Agent 模型')).toHaveValue('e2e/original-model')
+  await settings.getByLabel('Agent 模型').fill('deepseek/deepseek-v4-flash')
+  await settings.getByRole('button', { name: '保存配置' }).click()
+  await expect(settings.getByText('配置已保存，工作环境检测正常。')).toBeVisible()
+
+  await settings.getByRole('button', { name: '基本信息' }).click()
+  await settings.getByLabel('说明').fill('配置中心保存已经通过自动化验证')
+  await settings.getByRole('button', { name: '保存配置' }).click()
+  await expect(settings.getByText('配置已保存，工作环境状态保持不变。')).toBeVisible()
+
+  const afterSave = await request.get(`/api/employees/${employeeId}`)
+  expect(afterSave.ok()).toBeTruthy()
+  const savedEmployee = await afterSave.json()
+  expect(savedEmployee.description).toBe('配置中心保存已经通过自动化验证')
+  expect(savedEmployee.execution_environment.status).toBe('AVAILABLE')
+  expect(savedEmployee.execution_environment.model_name).toBe('deepseek/deepseek-v4-flash')
+
+  await page.goto('/tasks')
+  await page.getByRole('button', { name: '创建任务', exact: true }).click()
+  const modal = page.getByTestId('task-create-modal')
+  const title = `E2E 询问场景 ${suffix}`
+  await modal.getByLabel('任务标题 *').fill(title)
+  await modal.getByLabel('任务类型 *').selectOption('REQUIREMENT')
+  await modal.getByLabel('任务分类 *').selectOption('testing-platform')
+  await modal.getByLabel('任务描述 *').fill('先向使用者询问要打印的答案，收到回答后打印该答案。')
+  await modal.getByPlaceholder('验收标准 1').fill('打印使用者回答的具体答案')
+  await modal.getByLabel('分配方式').selectOption(employeeId)
+  await modal.getByRole('button', { name: '创建任务', exact: true }).click()
+  await page.waitForURL(/\/tasks\/T-[A-Z0-9-]+$/)
+  const taskId = new URL(page.url()).pathname.split('/').at(-1)!
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${taskId}`)
+    return (await response.json()).status
+  }, { timeout: 30_000 }).toBe('WAIT_HUMAN')
+
+  await page.goto('/interventions')
+  const intervention = page.getByTestId('intervention-page')
+  await intervention.getByRole('button', { name: new RegExp(title) }).click()
+  await expect(intervention.getByText('请告诉我这次需要打印的具体答案是什么？')).toBeVisible()
+  await intervention.getByLabel('补充信息').fill('自动化验收答案')
+  await intervention.getByRole('button', { name: '补充并继续' }).click()
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${taskId}`)
+    return (await response.json()).status
+  }, { timeout: 30_000 }).toBe('COMPLETED')
+
+  const completedResponse = await request.get(`/api/tasks/${taskId}`)
+  const completed = await completedResponse.json()
+  expect(completed.human_intervention.response).toBe('自动化验收答案')
+  expect(completed.result.summary).toContain('已打印用户答案：自动化验收答案')
+  expect(completed.result.acceptance_results[0].status).toBe('SATISFIED')
+
+  const runsResponse = await request.get(`/api/tasks/${taskId}/runs`)
+  const runs = await runsResponse.json()
+  expect(runs).toHaveLength(2)
+  expect(runs.map((run: { status: string }) => run.status).sort()).toEqual(['BLOCKED', 'PASSED'])
+  expect(new Set(runs.map((run: { opencode_session_id: string }) => run.opencode_session_id))).toEqual(new Set(['ses_e2e_fixture']))
+
+  await page.goto(`/tasks/${taskId}`)
+  const detail = page.getByTestId('task-detail-page')
+  await expect(detail.getByRole('paragraph').filter({ hasText: '已打印用户答案：自动化验收答案' })).toBeVisible()
+  await expect(detail.getByText('满足 · 已按使用者回答打印自动化验收答案')).toBeVisible()
 })

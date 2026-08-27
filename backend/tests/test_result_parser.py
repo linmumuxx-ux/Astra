@@ -1,5 +1,9 @@
 from app.domain import AcceptanceStatus
-from app.runtime.result_parser import build_work_result, human_readable_result
+from app.runtime.result_parser import (
+    build_work_result,
+    human_readable_result,
+    parse_human_intervention,
+)
 
 CRITERIA = [{"id": "AC-01", "content": "打印 helloword"}]
 
@@ -42,6 +46,25 @@ def test_structured_result_is_preferred_and_hidden_from_human_summary():
     assert result["summary"] == "处理成功"
     assert result["files"] == ["result.txt"]
     assert result["acceptance_results"][0]["status"] == AcceptanceStatus.SATISFIED
+
+
+def test_structured_human_intervention_preserves_question_and_hides_payload():
+    raw = (
+        "需要你补充一个信息后才能继续。\n"
+        'ASTRA_INTERVENTION_JSON: {"blocking_reason":"缺少业务答案",'
+        '"completed_work":"已准备输出脚本","current_state":"等待回答",'
+        '"requested_input":"请告诉我需要打印的具体内容是什么？"}'
+    )
+
+    intervention = parse_human_intervention(raw)
+
+    assert intervention == {
+        "blocking_reason": "缺少业务答案",
+        "completed_work": "已准备输出脚本",
+        "current_state": "等待回答",
+        "requested_input": "请告诉我需要打印的具体内容是什么？",
+    }
+    assert human_readable_result(raw) == "需要你补充一个信息后才能继续。"
 
 
 def test_missing_per_criterion_conclusion_remains_unconfirmed():

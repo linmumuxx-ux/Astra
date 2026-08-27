@@ -1,11 +1,97 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
+#!/usr/bin/env python3
+"""Deterministic Agent fixture used by Astra's isolated system E2E."""
 
-if [[ "${1:-}" == "--version" ]]; then
-  echo "OpenCode E2E 0.0.1"
-  exit 0
-fi
+from __future__ import annotations
 
-echo '{"type":"message","model":"e2e/test-model","usage":{"input_tokens":120,"output_tokens":30,"cache_read_tokens":50,"cache_write_tokens":0}}'
-echo '{"type":"tool","tool":"Bash","status":"completed","duration_ms":12}'
-echo '{"type":"result","session_id":"ses_e2e_fixture"}'
+import json
+import sys
+
+
+def emit(payload: dict) -> None:
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+if "--version" in sys.argv[1:]:
+    print("Astra Agent E2E fixture 0.0.2")
+    raise SystemExit(0)
+
+args = sys.argv[1:]
+prompt = args[-1] if args else ""
+resuming = "--session" in args
+
+emit(
+    {
+        "type": "step_finish",
+        "part": {
+            "modelID": "e2e/test-model",
+            "tokens": {"input": 120, "output": 30, "cache": {"read": 50, "write": 0}},
+        },
+    }
+)
+emit(
+    {
+        "type": "tool",
+        "part": {
+            "id": "call-e2e",
+            "tool": "bash",
+            "state": {"status": "completed", "time": {"start": 100, "end": 112}},
+        },
+    }
+)
+emit({"type": "result", "session_id": "ses_e2e_fixture"})
+
+if "E2E 询问场景" in prompt and not resuming:
+    intervention = {
+        "blocking_reason": "任务要求先取得使用者的业务答案",
+        "completed_work": "已准备好打印步骤并保留执行会话",
+        "current_state": "等待使用者回答后继续",
+        "requested_input": "请告诉我这次需要打印的具体答案是什么？",
+    }
+    text = "需要你的回答后才能继续。\nASTRA_INTERVENTION_JSON: " + json.dumps(
+        intervention, ensure_ascii=False
+    )
+elif "E2E 询问场景" in prompt and "自动化验收答案" in prompt:
+    result = {
+        "summary": "已打印用户答案：自动化验收答案",
+        "changes": ["接收人工补充信息并完成打印"],
+        "files": [],
+        "commits": [],
+        "logs": ["自动化验收答案"],
+        "attachments": [],
+        "other": {"printed_answer": "自动化验收答案"},
+        "acceptance_results": [
+            {
+                "criterion_id": "AC-01",
+                "status": "SATISFIED",
+                "description": "已按使用者回答打印自动化验收答案",
+                "evidence": ["Agent E2E 输出：自动化验收答案"],
+            }
+        ],
+    }
+    text = "已打印用户答案：自动化验收答案\nASTRA_RESULT_JSON: " + json.dumps(
+        result, ensure_ascii=False
+    )
+elif "E2E 询问场景" in prompt:
+    print("人工补充信息没有传入恢复会话", file=sys.stderr)
+    raise SystemExit(2)
+else:
+    result = {
+        "summary": "E2E Agent 任务已完成",
+        "changes": [],
+        "files": [],
+        "commits": [],
+        "logs": [],
+        "attachments": [],
+        "other": {},
+        "acceptance_results": [
+            {
+                "criterion_id": "AC-01",
+                "status": "SATISFIED",
+                "description": "E2E Agent 已完成任务",
+                "evidence": ["可控 Agent 输出"],
+            }
+        ],
+    }
+    text = "E2E Agent 任务已完成\nASTRA_RESULT_JSON: " + json.dumps(result, ensure_ascii=False)
+
+emit({"type": "text", "part": {"text": text}})

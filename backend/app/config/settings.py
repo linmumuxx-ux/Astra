@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     config_dir: Path = Path("../configs")
     seed_demo: bool = True
     cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:5173", "http://localhost:8080"]
+        default_factory=lambda: ["http://localhost:5173"]
     )
 
     scout_interval: int = 30

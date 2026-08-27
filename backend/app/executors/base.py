@@ -38,7 +38,7 @@ class ExecutorResult:
     tool_usage: list[ToolUsageResult] = field(default_factory=list)
 
 
-class OpenCodeExecutor(ABC):
+class CLIExecutor(ABC):
     @abstractmethod
     async def start(self, task: Task, workspace: Path) -> ExecutorResult: ...
 
@@ -53,3 +53,8 @@ class OpenCodeExecutor(ABC):
 
     @abstractmethod
     async def collect_result(self, run: Run) -> dict[str, Any]: ...
+
+
+# Backward-compatible import for the current OpenCode adapter. New CLI adapters
+# should implement the neutral CLIExecutor contract.
+OpenCodeExecutor = CLIExecutor
