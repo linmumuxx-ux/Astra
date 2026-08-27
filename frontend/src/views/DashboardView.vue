@@ -16,7 +16,7 @@
     </section>
 
     <section class="dashboard-grid">
-      <AstraPanel class="active-panel" title="数字办公室" subtitle="员工工位与当前工作状态" flush><DigitalOffice :employees="store.employees" :tasks="store.tasks" /></AstraPanel>
+      <AstraPanel class="active-panel" title="数字办公室" subtitle="按岗位分区，查看员工状态与当前工作" flush><DigitalOffice :employees="store.employees" :tasks="store.tasks" /></AstraPanel>
 
       <AstraPanel title="平台动态" subtitle="来自任务和员工的真实记录">
         <div class="event-feed">

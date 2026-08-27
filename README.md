@@ -85,6 +85,7 @@ npm run dev
 - [V0.4 操作使用指南](docs/USER_GUIDE.md)
 - [V0.4 部署手册](docs/DEPLOYMENT.md)
 - [V0.4 实现与需求映射](docs/implementation-brief.md)
+- [数字办公室设计说明与参考案例](docs/design/DIGITAL_OFFICE.md)
 - [V0.4 功能、系统 E2E 与真实 Agent 验收报告](docs/verification/E2E-V0.4-2026-08-28.md)
 - [原始需求资料](docs/requirements/README.md)
 
