@@ -8,6 +8,7 @@ from app.models import DigitalEmployee
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
+from app.runtime.recovery import audit_incomplete_tasks, recover_available_tasks
 from app.runtime.scout import TaskScout
 from app.sources.nr_test_system import NrTestSystemSource
 
@@ -29,6 +30,7 @@ celery.conf.update(
             "task": "astra.employee-heartbeat",
             "schedule": settings.heartbeat_interval,
         },
+        "astra-recovery": {"task": "astra.recovery", "schedule": settings.recovery_interval},
     },
 )
 
@@ -85,3 +87,18 @@ def employee_heartbeat() -> list[str]:
             return await heartbeat_active_employees(session)
 
     return run_async(execute())
+
+
+@celery.task(name="astra.recovery")
+def recovery() -> dict[str, list[str]]:
+    async def execute():
+        await init_database()
+        async with SessionLocal() as session:
+            inactive = await audit_incomplete_tasks(session, settings)
+            resumed = await recover_available_tasks(session)
+            return {"inactive": inactive, "resumed": resumed}
+
+    result = run_async(execute())
+    for task_id in result["resumed"]:
+        process_task.delay(task_id)
+    return result

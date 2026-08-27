@@ -2,11 +2,12 @@ import json
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.bootstrap import bootstrap_employees
 from app.config.settings import Settings
-from app.models import Base, DigitalEmployee
+from app.models import Base, DigitalEmployee, OpenCodeExecutionEnvironment
 from app.sources.nr_test_system import NrTestSystemSource
 
 
@@ -21,15 +22,21 @@ async def session():
     await engine.dispose()
 
 
-async def test_bootstrap_employee_from_yaml(tmp_path, session):
+async def test_bootstrap_employee_from_v03_yaml(tmp_path, session):
     (tmp_path / "employees.yaml").write_text(
         """employees:
   - id: astra-config
     name: Astra Config
-    role: 测试执行员工
-    capabilities: [script_generate]
-    sources: [nr_test_system, manual]
-    max_concurrency: 1
+    role: 测试平台员工
+    task_types: [ISSUE, REQUIREMENT]
+    category_ids: [testing-platform]
+    policy:
+      auto_claim: true
+      auto_execute: false
+      max_auto_retries: 2
+    execution_environment:
+      mode: LOCAL
+      workspace_root: ./workspaces/astra-config
 """,
         encoding="utf-8",
     )
@@ -39,10 +46,16 @@ async def test_bootstrap_employee_from_yaml(tmp_path, session):
 
     assert employee is not None
     assert employee.status == "IDLE"
-    assert employee.source_scope == ["nr_test_system", "manual"]
+    assert employee.task_types == ["ISSUE", "REQUIREMENT"]
+    assert employee.category_ids == ["testing-platform"]
+    assert employee.auto_execute is False
+    environment = await session.scalar(
+        select(OpenCodeExecutionEnvironment).where(OpenCodeExecutionEnvironment.employee_id == employee.id)
+    )
+    assert environment.workspace_root == "./workspaces/astra-config"
 
 
-async def test_nr_test_system_adapter_maps_discovers_and_backfills():
+async def test_nr_test_system_adapter_maps_v03_task_and_backfills():
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -54,10 +67,12 @@ async def test_nr_test_system_adapter_maps_discovers_and_backfills():
                     "items": [
                         {
                             "id": "EXT-42",
-                            "task_type": "script_generate",
-                            "title": "生成登录脚本",
+                            "task_type": "ISSUE",
+                            "category_id": "testing-platform",
+                            "title": "修复登录接口异常",
+                            "description": "登录接口偶发返回 500",
+                            "acceptance_criteria": ["异常已修复", "原能力正常"],
                             "priority": "P1",
-                            "input": {"case_id": "TC-42"},
                         }
                     ]
                 },
@@ -76,7 +91,10 @@ async def test_nr_test_system_adapter_maps_discovers_and_backfills():
         await source.update_task("EXT-42", {"status": "COMPLETED"})
 
     assert tasks[0].external_task_id == "EXT-42"
-    assert tasks[0].input == {"case_id": "TC-42"}
+    assert tasks[0].task_type == "ISSUE"
+    assert tasks[0].category_id == "testing-platform"
+    assert tasks[0].priority == "HIGH"
+    assert tasks[0].acceptance_criteria == ["异常已修复", "原能力正常"]
     assert requests[0].url.params["status"] == "READY"
     assert requests[0].headers["authorization"] == "Bearer test-token"
     assert requests[1].url.path == "/api/astra/tasks/EXT-42/result"

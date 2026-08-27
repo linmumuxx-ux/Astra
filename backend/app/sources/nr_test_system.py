@@ -34,14 +34,24 @@ class NrTestSystemSource(TaskSource):
         external_id = item.get("external_task_id") or item.get("id")
         if not external_id:
             raise ValueError("nr_test_system task is missing id")
+        priority = {"P0": "VERY_HIGH", "P1": "HIGH", "P2": "MEDIUM", "P3": "LOW"}.get(
+            item.get("priority"), item.get("priority", "MEDIUM")
+        )
+        if priority not in {"VERY_HIGH", "HIGH", "MEDIUM", "LOW"}:
+            priority = "MEDIUM"
         return ExternalTask(
             external_task_id=str(external_id),
-            task_type=item.get("task_type", "script_generate"),
+            task_type=(
+                item.get("task_type") if item.get("task_type") in {"ISSUE", "REQUIREMENT"} else "REQUIREMENT"
+            ),
+            category_id=item.get("category_id", "testing-platform"),
             title=item.get("title", f"外部任务 {external_id}"),
             description=item.get("description", ""),
-            input=item.get("input", item),
-            definition_of_done=item.get("definition_of_done", []),
-            priority=item.get("priority", "P2"),
+            acceptance_criteria=item.get(
+                "acceptance_criteria", item.get("definition_of_done", ["完成任务目标并提供结果说明"])
+            ),
+            attachments=item.get("attachments", []),
+            priority=priority,
         )
 
     async def discover_tasks(self) -> list[ExternalTask]:

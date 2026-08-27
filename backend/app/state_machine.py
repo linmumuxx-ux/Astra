@@ -7,45 +7,38 @@ class InvalidTransition(ValueError):
 
 class TaskStateMachine:
     transitions: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.CREATED: {TaskStatus.READY, TaskStatus.CANCELLED},
-        TaskStatus.READY: {TaskStatus.CLAIMED, TaskStatus.PAUSED, TaskStatus.CANCELLED},
-        TaskStatus.CLAIMED: {
-            TaskStatus.RUNNING,
-            TaskStatus.PAUSED,
-            TaskStatus.WAIT_HUMAN,
-            TaskStatus.CANCELLED,
-        },
+        TaskStatus.READY: {TaskStatus.RUNNING, TaskStatus.SUSPENDED, TaskStatus.CANCELLED},
         TaskStatus.RUNNING: {
-            TaskStatus.VERIFYING,
-            TaskStatus.RETRY,
-            TaskStatus.WAIT_HUMAN,
-            TaskStatus.PAUSED,
-            TaskStatus.FAILED,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.VERIFYING: {
             TaskStatus.COMPLETED,
-            TaskStatus.RETRY,
+            TaskStatus.PENDING_CONFIRMATION,
             TaskStatus.WAIT_HUMAN,
+            TaskStatus.SUSPENDED,
             TaskStatus.FAILED,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.RETRY: {
-            TaskStatus.READY,
-            TaskStatus.RUNNING,
-            TaskStatus.WAIT_HUMAN,
-            TaskStatus.PAUSED,
+            TaskStatus.EXECUTION_ERROR,
             TaskStatus.CANCELLED,
         },
         TaskStatus.WAIT_HUMAN: {
             TaskStatus.READY,
             TaskStatus.RUNNING,
-            TaskStatus.PAUSED,
+            TaskStatus.SUSPENDED,
+            TaskStatus.FAILED,
             TaskStatus.CANCELLED,
         },
-        TaskStatus.PAUSED: {TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.CANCELLED},
+        TaskStatus.SUSPENDED: {TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.CANCELLED},
+        TaskStatus.PENDING_CONFIRMATION: {
+            TaskStatus.COMPLETED,
+            TaskStatus.READY,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCELLED,
+        },
+        TaskStatus.EXECUTION_ERROR: {
+            TaskStatus.RUNNING,
+            TaskStatus.SUSPENDED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        },
         TaskStatus.COMPLETED: set(),
-        TaskStatus.FAILED: {TaskStatus.RETRY},
+        TaskStatus.FAILED: set(),
         TaskStatus.CANCELLED: set(),
     }
 

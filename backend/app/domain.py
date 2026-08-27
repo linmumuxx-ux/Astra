@@ -11,16 +11,14 @@ class EmployeeStatus(StrEnum):
 
 
 class TaskStatus(StrEnum):
-    CREATED = "CREATED"
     READY = "READY"
-    CLAIMED = "CLAIMED"
     RUNNING = "RUNNING"
-    VERIFYING = "VERIFYING"
-    RETRY = "RETRY"
     WAIT_HUMAN = "WAIT_HUMAN"
-    PAUSED = "PAUSED"
+    SUSPENDED = "SUSPENDED"
+    PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    EXECUTION_ERROR = "EXECUTION_ERROR"
     CANCELLED = "CANCELLED"
 
 
@@ -45,10 +43,31 @@ class EnvironmentStatus(StrEnum):
 
 
 class Priority(StrEnum):
-    P0 = "P0"
-    P1 = "P1"
-    P2 = "P2"
-    P3 = "P3"
+    VERY_HIGH = "VERY_HIGH"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
 
 
-PRIORITY_WEIGHT = {Priority.P0: 4, Priority.P1: 3, Priority.P2: 2, Priority.P3: 1}
+class TaskType(StrEnum):
+    ISSUE = "ISSUE"
+    REQUIREMENT = "REQUIREMENT"
+
+
+class AcceptanceStatus(StrEnum):
+    SATISFIED = "SATISFIED"
+    UNSATISFIED = "UNSATISFIED"
+    UNCONFIRMED = "UNCONFIRMED"
+
+
+class CompletionPolicy(StrEnum):
+    AUTO = "AUTO"
+    MANUAL_CONFIRM = "MANUAL_CONFIRM"
+
+
+PRIORITY_WEIGHT = {
+    Priority.VERY_HIGH: 4,
+    Priority.HIGH: 3,
+    Priority.MEDIUM: 2,
+    Priority.LOW: 1,
+}

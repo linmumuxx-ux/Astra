@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
 from app.domain import TaskStatus
-from app.models import Event, Run, Task, ToolUsage
+from app.models import Run, Task, ToolUsage
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -132,63 +132,11 @@ async def employee_usage(session: AsyncSession, employee_id: str, days: int) -> 
         day_runs = [run for run in runs if _aware(run.started_at).astimezone(timezone).date() == day]
         day_summary = await summarize_runs(session, day_runs)
         trend.append({"date": day.isoformat(), **day_summary})
-    performance = await employee_performance(session, employee_id, start=start, end=end)
     return {
         "period_days": days,
         "summary": summary,
         "trend": trend,
         "tools": tools,
-        "performance": performance,
-    }
-
-
-async def employee_performance(
-    session: AsyncSession,
-    employee_id: str,
-    *,
-    start: datetime | None = None,
-    end: datetime | None = None,
-) -> dict:
-    tasks = (await session.execute(select(Task).where(Task.employee_id == employee_id))).scalars().all()
-    if start or end:
-        tasks = [
-            task
-            for task in tasks
-            if (not start or _aware(task.finished_at or task.created_at) >= start)
-            and (not end or _aware(task.finished_at or task.created_at) < end)
-        ]
-    task_ids = [task.id for task in tasks]
-    wait_human_ids = set()
-    if task_ids:
-        wait_human_ids = set(
-            (
-                await session.execute(
-                    select(Event.task_id).where(Event.task_id.in_(task_ids), Event.event_type == "WAIT_HUMAN")
-                )
-            ).scalars()
-        )
-    completed = [task for task in tasks if task.status == TaskStatus.COMPLETED]
-    terminal = [
-        task
-        for task in tasks
-        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}
-    ]
-    durations = [
-        int((_aware(task.finished_at) - _aware(task.started_at)).total_seconds())
-        for task in tasks
-        if task.started_at and task.finished_at
-    ]
-    return {
-        "completed_tasks": len(completed),
-        "autonomous_completion_rate": round(
-            100 * len([task for task in completed if task.id not in wait_human_ids]) / len(completed), 1
-        )
-        if completed
-        else None,
-        "human_intervention_rate": round(100 * len(wait_human_ids) / len(tasks), 1) if tasks else None,
-        "success_rate": round(100 * len(completed) / len(terminal), 1) if terminal else None,
-        "average_retries": round(sum(task.retry_count for task in tasks) / len(tasks), 1) if tasks else None,
-        "average_duration_seconds": round(sum(durations) / len(durations)) if durations else None,
     }
 
 

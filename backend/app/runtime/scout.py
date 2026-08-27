@@ -3,7 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import Priority
-from app.models import Task
+from app.models import Task, TaskCategory
 from app.schemas import TaskCreate
 from app.services import TaskService
 from app.sources.base import TaskSource
@@ -19,6 +19,9 @@ class TaskScout:
         for source in self.sources:
             external_tasks = await source.discover_tasks()
             for item in external_tasks:
+                category = await self.session.get(TaskCategory, item.category_id)
+                if not category or not category.enabled:
+                    continue
                 exists = await self.session.scalar(
                     select(Task.id).where(
                         Task.source == source.id,
@@ -33,14 +36,17 @@ class TaskScout:
                             source=source.id,
                             external_task_id=item.external_task_id,
                             task_type=item.task_type,
+                            category_id=item.category_id,
                             title=item.title,
-                            description=item.description,
-                            input=item.input,
-                            definition_of_done=item.definition_of_done,
+                            description=item.description or item.title,
+                            acceptance_criteria=[
+                                {"content": content} for content in item.acceptance_criteria
+                            ],
+                            attachments=item.attachments,
                             priority=Priority(item.priority),
                         )
                     )
-                except IntegrityError:
+                except (IntegrityError, ValueError):
                     continue
                 imported.append(task.id)
         return imported

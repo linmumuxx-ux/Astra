@@ -3,7 +3,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain import EnvironmentStatus, ExecutionMode, Priority
+from app.domain import (
+    AcceptanceStatus,
+    CompletionPolicy,
+    EnvironmentStatus,
+    ExecutionMode,
+    Priority,
+    TaskType,
+)
 
 
 class ORMModel(BaseModel):
@@ -94,20 +101,41 @@ class UsageSummary(BaseModel):
     task_count: int = 0
 
 
+class TaskCategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = ""
+    enabled: bool = True
+    sort_order: int = 0
+
+
+class TaskCategoryPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+    enabled: bool | None = None
+    sort_order: int | None = None
+
+
+class TaskCategoryRead(ORMModel):
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class EmployeeCreate(BaseModel):
     id: str
     name: str
     role: str
     description: str = ""
-    capabilities: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
-    source_scope: list[str] = Field(default_factory=list)
+    task_types: list[TaskType] = Field(default_factory=lambda: list(TaskType))
+    category_ids: list[str] = Field(default_factory=list)
     enabled: bool = True
     auto_claim: bool = True
     auto_execute: bool = True
-    auto_repair: bool = True
     max_auto_retries: int = Field(default=3, ge=0, le=20)
-    max_concurrency: int = Field(default=1, ge=1, le=16)
     execution_environment: ExecutionEnvironmentWrite = Field(default_factory=ExecutionEnvironmentWrite)
 
 
@@ -115,15 +143,12 @@ class EmployeePatch(BaseModel):
     name: str | None = None
     role: str | None = None
     description: str | None = None
-    capabilities: list[str] | None = None
-    skills: list[str] | None = None
-    source_scope: list[str] | None = None
+    task_types: list[TaskType] | None = None
+    category_ids: list[str] | None = None
     enabled: bool | None = None
     auto_claim: bool | None = None
     auto_execute: bool | None = None
-    auto_repair: bool | None = None
     max_auto_retries: int | None = Field(default=None, ge=0, le=20)
-    max_concurrency: int | None = Field(default=None, ge=1, le=16)
 
 
 class EmployeeRead(ORMModel):
@@ -132,15 +157,12 @@ class EmployeeRead(ORMModel):
     role: str
     description: str
     status: str
-    capabilities: list[str]
-    skills: list[str]
-    source_scope: list[str]
+    task_types: list[str]
+    category_ids: list[str]
     enabled: bool
     auto_claim: bool
     auto_execute: bool
-    auto_repair: bool
     max_auto_retries: int
-    max_concurrency: int
     current_task_count: int
     last_heartbeat: datetime | None
     online_since: datetime | None
@@ -149,19 +171,52 @@ class EmployeeRead(ORMModel):
     execution_environment: ExecutionEnvironmentRead | None = None
     today_usage: UsageSummary = Field(default_factory=UsageSummary)
     today_completed: int = 0
-    success_rate: float | None = None
+
+
+class AcceptanceCriterion(BaseModel):
+    id: str | None = None
+    content: str = Field(min_length=1, max_length=500)
+
+
+class AcceptanceResult(BaseModel):
+    criterion_id: str
+    status: AcceptanceStatus
+    description: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
+class WorkResult(BaseModel):
+    summary: str = Field(min_length=1)
+    changes: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    commits: list[str] = Field(default_factory=list)
+    logs: list[str] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
+    other: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskCreate(BaseModel):
     source: str = "manual"
     external_task_id: str | None = None
-    task_type: str
-    title: str
-    description: str = ""
-    input: dict[str, Any] = Field(default_factory=dict)
-    definition_of_done: list[str] = Field(default_factory=list)
-    priority: Priority = Priority.P2
-    max_retry_count: int = Field(default=3, ge=0, le=20)
+    task_type: TaskType
+    category_id: str
+    title: str = Field(min_length=1, max_length=240)
+    description: str = Field(min_length=1)
+    acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    employee_id: str | None = None
+    priority: Priority = Priority.MEDIUM
+    completion_policy: CompletionPolicy | None = None
+
+    @model_validator(mode="after")
+    def default_completion_policy(self):
+        if self.completion_policy is None:
+            self.completion_policy = (
+                CompletionPolicy.MANUAL_CONFIRM
+                if self.priority in {Priority.VERY_HIGH, Priority.HIGH}
+                else CompletionPolicy.AUTO
+            )
+        return self
 
 
 class TaskRead(ORMModel):
@@ -169,22 +224,29 @@ class TaskRead(ORMModel):
     source: str
     external_task_id: str | None
     task_type: str
+    category_id: str | None
     title: str
     description: str
-    input: dict[str, Any]
-    definition_of_done: list[str]
+    acceptance_criteria: list[AcceptanceCriterion]
+    attachments: list[dict[str, Any]]
     priority: str
+    completion_policy: str
     status: str
     employee_id: str | None
-    workspace: str | None
     opencode_session_id: str | None
-    current_phase: str
-    progress: int
-    retry_count: int
-    max_retry_count: int
+    current_progress: str
+    suspension: dict[str, Any] | None
+    execution_error: dict[str, Any] | None
+    review_history: list[dict[str, Any]]
+    inactivity_alert: bool
+    inactivity_alert_since: datetime | None
+    last_activity_at: datetime | None
+    submitted_at: datetime | None
+    confirmed_at: datetime | None
     result: dict[str, Any] | None
     failure_reason: str | None
     human_required_reason: str | None
+    human_intervention: dict[str, Any] | None
     execution_environment_snapshot: dict[str, Any] | None
     claimed_at: datetime | None
     started_at: datetime | None
@@ -196,7 +258,35 @@ class TaskRead(ORMModel):
 class TaskAction(BaseModel):
     reason: str | None = None
     note: str | None = None
-    input_patch: dict[str, Any] | None = None
+
+
+class TaskProgressUpdate(BaseModel):
+    current_progress: str = Field(min_length=1, max_length=500)
+
+
+class HumanInterventionWrite(BaseModel):
+    blocking_reason: str = Field(min_length=1)
+    completed_work: str = ""
+    current_state: str = ""
+    requested_input: str = Field(min_length=1)
+    can_suspend: bool = False
+    scene_context: str = ""
+
+
+class TaskSuspendWrite(BaseModel):
+    reason: str = Field(min_length=1)
+    current_state: str = ""
+    scene_context: str = ""
+    requested_input: str = ""
+
+
+class TaskRejectWrite(BaseModel):
+    feedback: str = Field(min_length=1, max_length=2000)
+
+
+class TaskCompletionWrite(BaseModel):
+    result: WorkResult
+    acceptance_results: list[AcceptanceResult] = Field(min_length=1)
 
 
 class RunRead(ORMModel):

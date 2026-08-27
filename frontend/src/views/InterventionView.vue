@@ -1,29 +1,43 @@
 <template>
   <div class="page" data-testid="intervention-page">
-    <section class="page-intro compact-intro"><div><span class="kicker warning-kicker"><Hand :size="13" /> HUMAN IN THE LOOP</span><h2>人工介入中心</h2><p>仅处理数字员工无法自主完成的环境、权限、信息与业务判断问题。</p></div><span class="intervention-count"><i /> {{ waiting.length }} 项等待处理</span></section>
-    <div v-if="waiting.length" class="intervention-layout">
-      <AstraPanel title="等待队列" subtitle="按优先级与等待时长排序" flush><div class="intervention-queue"><button v-for="task in waiting" :key="task.id" :class="{ active: selected?.id === task.id }" @click="selectedId = task.id"><span class="priority" :data-priority="task.priority">{{ task.priority }}</span><div><strong>{{ task.title }}</strong><p>{{ task.id }} · {{ sourceLabel(task.source) }}</p></div><time>{{ formatDuration(task.updated_at) }}</time><ChevronRight :size="16" /></button></div></AstraPanel>
-      <div v-if="selected" class="intervention-workbench">
-        <AstraPanel title="需要人工输入" subtitle="补充信息后优先恢复原 Workspace 与 Session"><div class="intervention-warning"><TriangleAlert :size="18" /><div><strong>{{ selected.human_required_reason }}</strong><p>当前阶段：{{ phaseLabel(selected.current_phase) }} · 自动修复 {{ selected.retry_count }}/{{ selected.max_retry_count }}</p></div></div><dl class="info-list compact-info"><div><dt>数字员工</dt><dd>{{ selected.employee_id ?? '未分配' }}</dd></div><div><dt>Workspace</dt><dd :title="selected.workspace ?? ''">{{ selected.workspace ?? '待创建' }}</dd></div><div><dt>Session</dt><dd :title="selected.opencode_session_id ?? ''">{{ selected.opencode_session_id ?? '待创建' }}</dd></div></dl></AstraPanel>
-        <AstraPanel title="人工操作" subtitle="输入将追加到任务上下文并形成 Event"><form class="intervention-form" @submit.prevent="resume"><label>处理说明<textarea v-model="note" rows="5" placeholder="说明环境已恢复、补充缺失参数或给出业务判断..." required /></label><label>补充信息（可选）<textarea v-model="inputText" rows="3" placeholder="将以 human_input 字段追加到任务 input" /></label><div class="form-note"><ShieldCheck :size="15" /><span>继续后恢复原 Session，不会丢弃已有分析、代码修改和验证证据。</span></div><footer><button type="button" class="button button--danger" @click="cancel"><Square :size="13" /> 终止任务</button><button class="button button--primary"><Play :size="14" /> 补充并继续</button></footer></form></AstraPanel>
-      </div>
-    </div>
-    <AstraPanel v-else><AstraEmptyState :icon="BadgeCheck" title="没有等待人工的任务" description="所有数字员工当前都能自主推进，或任务已进入终态。"><RouterLink class="button" to="/tasks">查看任务中心</RouterLink></AstraEmptyState></AstraPanel>
+    <section class="page-intro compact-intro"><div><h2>待处理</h2><p>统一处理人工协助、结果确认、执行异常和长时间无活动提示。</p></div><span class="intervention-count"><i /> {{ tasks.length }} 项待处理</span></section>
+    <div class="filter-tabs pending-tabs"><button v-for="item in filters" :key="item.value" :class="{ active: filter === item.value }" @click="filter = item.value">{{ item.label }} <span>{{ item.count }}</span></button></div>
+    <section class="intervention-layout">
+      <AstraPanel title="处理队列" subtitle="异常和需要人工决策的任务" flush><div class="intervention-queue"><button v-for="task in filtered" :key="task.id" :class="{ active: selected?.id === task.id }" @click="selectedId = task.id"><component :is="queueIcon(task)" :size="17" /><div><strong>{{ task.title }}</strong><p>{{ statusLabel(task.status) }} · {{ employeeName(task.employee_id) }}</p></div><time>{{ formatTime(task.updated_at) }}</time><ChevronRight :size="14" /></button><AstraEmptyState v-if="!filtered.length" :icon="CheckCircle2" title="当前分类无待处理项" description="新的协助、确认或异常会显示在这里。" /></div></AstraPanel>
+      <div class="intervention-workbench"><AstraPanel v-if="selected" :title="selected.title" :subtitle="selected.id">
+        <div class="intervention-warning"><component :is="queueIcon(selected)" :size="18" /><div><strong>{{ statusLabel(selected.status) }}</strong><p>{{ pendingReason(selected) }}</p></div></div>
+        <dl class="info-list compact-info"><div><dt>当前进展</dt><dd>{{ selected.current_progress }}</dd></div><div><dt>执行员工</dt><dd>{{ employeeName(selected.employee_id) }}</dd></div><div><dt>最后活动</dt><dd>{{ formatTime(selected.last_activity_at) }}</dd></div><div><dt>OpenCode Session</dt><dd>{{ selected.opencode_session_id ?? '尚未创建' }}</dd></div></dl>
+        <div v-if="selected.status === 'PENDING_CONFIRMATION' && selected.result" class="work-result"><strong>员工提交结果</strong><p>{{ selected.result.summary }}</p></div>
+        <form v-if="selected.status === 'WAIT_HUMAN'" class="intervention-form config-form" @submit.prevent="resume"><label>补充信息<textarea v-model.trim="note" required placeholder="输入权限、业务判断或环境说明" /></label><footer><button type="button" class="button button--danger" @click="cancel">终止任务</button><RouterLink class="button" :to="`/tasks/${selected.id}`">查看详情</RouterLink><button class="button button--primary">补充并继续</button></footer></form>
+        <footer v-else class="pending-actions"><RouterLink class="button" :to="`/tasks/${selected.id}`">查看详情</RouterLink><template v-if="selected.status === 'PENDING_CONFIRMATION'"><button class="button button--danger" @click="reject">退回继续</button><button class="button button--primary" @click="confirm">确认完成</button></template><button v-else-if="selected.status === 'EXECUTION_ERROR'" class="button button--primary" @click="recover">恢复执行</button><button v-else-if="selected.status === 'SUSPENDED'" class="button button--primary" @click="resume">恢复到队列</button><button v-else-if="selected.inactivity_alert" class="button" @click="openTask">检查任务</button></footer>
+      </AstraPanel><AstraPanel v-else title="待处理"><AstraEmptyState :icon="Hand" title="选择一项任务" description="在左侧选择需要处理的任务。" /></AstraPanel></div>
+    </section>
   </div>
 </template>
 <script setup lang="ts">
-import { BadgeCheck, ChevronRight, Hand, Play, ShieldCheck, Square, TriangleAlert } from 'lucide-vue-next'
-import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { CheckCircle2, ChevronRight, CircleAlert, Hand, PauseCircle, ShieldCheck, TriangleAlert } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import { api } from '@/api/client'
+import type { Task } from '@/api/types'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatDuration, phaseLabel, sourceLabel } from '@/utils/format'
-const store = useAstraStore(); const selectedId = ref(''); const note = ref(''); const inputText = ref('')
-const waiting = computed(() => store.tasks.filter((task) => task.status === 'WAIT_HUMAN').sort((a,b) => b.priority.localeCompare(a.priority)))
-const selected = computed(() => waiting.value.find((task) => task.id === selectedId.value) ?? waiting.value[0])
-onMounted(() => store.refresh()); watch(selected, () => { note.value = ''; inputText.value = '' })
-async function resume() { if (!selected.value) return; await api.taskAction(selected.value.id, 'resume', { note: note.value, input_patch: inputText.value ? { human_input: inputText.value } : undefined }); await store.refresh() }
-async function cancel() { if (!selected.value || !window.confirm('确定终止这项任务吗？')) return; await api.taskAction(selected.value.id, 'cancel', { reason: note.value || '人工终止' }); await store.refresh() }
+import { formatTime, statusLabel } from '@/utils/format'
+const store = useAstraStore(); const router = useRouter(); const selectedId = ref(''); const note = ref(''); const filter = ref('ALL')
+const tasks = computed(() => store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert))
+const filtered = computed(() => filter.value === 'ALL' ? tasks.value : filter.value === 'INACTIVE' ? tasks.value.filter((task) => task.inactivity_alert) : tasks.value.filter((task) => task.status === filter.value))
+const filters = computed(() => [{ value: 'ALL', label: '全部', count: tasks.value.length }, { value: 'WAIT_HUMAN', label: '人工协助', count: tasks.value.filter((t) => t.status === 'WAIT_HUMAN').length }, { value: 'PENDING_CONFIRMATION', label: '待确认', count: tasks.value.filter((t) => t.status === 'PENDING_CONFIRMATION').length }, { value: 'EXECUTION_ERROR', label: '执行异常', count: tasks.value.filter((t) => t.status === 'EXECUTION_ERROR').length }, { value: 'SUSPENDED', label: '已挂起', count: tasks.value.filter((t) => t.status === 'SUSPENDED').length }, { value: 'INACTIVE', label: '无活动', count: tasks.value.filter((t) => t.inactivity_alert).length }])
+const selected = computed(() => filtered.value.find((task) => task.id === selectedId.value) ?? filtered.value[0])
+watch(selected, () => { note.value = '' })
+const employeeName = (id: string | null) => store.employees.find((item) => item.id === id)?.name ?? '未分配'
+const queueIcon = (task: Task) => task.status === 'PENDING_CONFIRMATION' ? ShieldCheck : task.status === 'EXECUTION_ERROR' ? TriangleAlert : task.status === 'SUSPENDED' ? PauseCircle : task.inactivity_alert ? CircleAlert : Hand
+const pendingReason = (task: Task) => task.status === 'WAIT_HUMAN' ? (task.human_intervention?.blocking_reason ?? task.human_required_reason ?? '需要人工补充信息') : task.status === 'PENDING_CONFIRMATION' ? '请检查工作结果后确认或退回' : task.status === 'EXECUTION_ERROR' ? String(task.execution_error?.reason ?? '执行环境异常，工作现场已保留') : task.status === 'SUSPENDED' ? String(task.suspension?.reason ?? '任务已安全挂起') : '长时间没有新的可观察活动'
+async function act(action: string, body: Record<string, unknown> = {}) { if (!selected.value) return; await api.taskAction(selected.value.id, action, body); await store.refresh() }
+async function resume() { await act('resume', note.value ? { note: note.value } : {}) }
+async function cancel() { if (selected.value && window.confirm('确定终止这项任务吗？')) await act('cancel', { reason: '人工决定终止' }) }
+async function confirm() { await act('confirm') }
+async function reject() { const feedback = window.prompt('请输入退回原因与补充要求：'); if (feedback) await act('reject', { feedback }) }
+async function recover() { await act('recover') }
+function openTask() { if (selected.value) router.push(`/tasks/${selected.value.id}`) }
 </script>

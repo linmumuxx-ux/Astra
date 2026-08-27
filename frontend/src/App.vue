@@ -9,7 +9,7 @@
         </RouterLink>
       </nav>
       <div class="sidebar__foot">
-        <div class="system-live"><i />Runtime online</div>
+        <div class="system-live" :class="{ 'connection--offline': store.error }"><i />{{ store.error ? '数据连接异常' : '系统运行中' }}</div>
         <div class="admin"><span>NR</span><div><strong>Admin</strong><small>平台管理员</small></div></div>
       </div>
     </aside>
@@ -17,10 +17,9 @@
     <main>
       <header class="topbar">
         <button class="icon-button mobile-menu" aria-label="打开导航" @click="navOpen = true"><Menu :size="19" /></button>
-        <div class="topbar__title"><small>{{ route.meta.eyebrow }}</small><h1>{{ route.meta.title }}</h1></div>
+        <div class="topbar__title"><h1>{{ route.meta.title }}</h1></div>
         <div class="topbar__actions">
-          <span class="connection" :class="{ 'connection--offline': !store.realtimeConnected }"><i /> {{ store.realtimeConnected ? 'LIVE' : 'RECONNECT' }}</span>
-          <button class="icon-button" aria-label="通知"><Bell :size="18" /><b /></button>
+          <span class="connection" :class="{ 'connection--offline': !store.realtimeConnected }"><i /> {{ store.realtimeConnected ? '实时连接' : '重新连接' }}</span>
           <button class="icon-button" aria-label="刷新" @click="refresh"><RefreshCw :size="18" :class="{ spin: store.loading }" /></button>
           <span class="clock">{{ clock }}</span>
         </div>
@@ -32,7 +31,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bell, Bot, CircleGauge, ClipboardList, Hand, History, Menu, RefreshCw, Settings, TriangleAlert } from 'lucide-vue-next'
+import { Bot, CircleGauge, ClipboardList, Hand, History, Menu, RefreshCw, Settings, TriangleAlert } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
@@ -49,7 +48,7 @@ const navigation = computed(() => [
   { to: '/employees', label: '数字员工', icon: Bot },
   { to: '/tasks', label: '任务中心', icon: ClipboardList, count: store.metrics?.running_tasks },
   { to: '/runs', label: '运行记录', icon: History },
-  { to: '/interventions', label: '人工介入', icon: Hand, count: store.metrics?.wait_human_tasks },
+  { to: '/interventions', label: '待处理', icon: Hand, count: (store.metrics?.wait_human_tasks ?? 0) + (store.metrics?.pending_confirmation_tasks ?? 0) + (store.metrics?.execution_error_tasks ?? 0) },
   { to: '/settings', label: '配置中心', icon: Settings },
 ])
 const refresh = () => store.refresh()

@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { AstraEvent, Employee, Metrics, Task } from '@/api/types'
+import type { AstraEvent, Employee, Metrics, Task, TaskCategory } from '@/api/types'
 
 export const useAstraStore = defineStore('astra', () => {
   const metrics = ref<Metrics | null>(null)
   const employees = ref<Employee[]>([])
   const tasks = ref<Task[]>([])
+  const categories = ref<TaskCategory[]>([])
   const events = ref<AstraEvent[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -16,18 +17,23 @@ export const useAstraStore = defineStore('astra', () => {
   let refreshTimer = 0
 
   const activeTasks = computed(() =>
-    tasks.value.filter((task) => ['CLAIMED', 'RUNNING', 'VERIFYING', 'RETRY'].includes(task.status)),
+    tasks.value.filter(
+      (task) =>
+        task.employee_id &&
+        ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.status),
+    ),
   )
 
   async function refresh() {
     loading.value = true
     try {
-      const [metricsValue, employeeValue, taskValue, eventValue] = await Promise.all([
-        api.metrics(), api.employees(), api.tasks(), api.events(12),
+      const [metricsValue, employeeValue, taskValue, categoryValue, eventValue] = await Promise.all([
+        api.metrics(), api.employees(), api.tasks(), api.categories(), api.events(12),
       ])
       metrics.value = metricsValue
       employees.value = employeeValue
       tasks.value = taskValue
+      categories.value = categoryValue
       events.value = eventValue
       error.value = null
       lastUpdated.value = new Date()
@@ -57,5 +63,5 @@ export const useAstraStore = defineStore('astra', () => {
     window.clearTimeout(refreshTimer)
   }
 
-  return { metrics, employees, tasks, events, activeTasks, loading, error, lastUpdated, realtimeConnected, refresh, connectEvents, disconnectEvents }
+  return { metrics, employees, tasks, categories, events, activeTasks, loading, error, lastUpdated, realtimeConnected, refresh, connectEvents, disconnectEvents }
 })

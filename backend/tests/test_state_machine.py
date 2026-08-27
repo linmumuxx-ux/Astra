@@ -7,24 +7,33 @@ from app.state_machine import InvalidTransition, TaskStateMachine
 @pytest.mark.parametrize(
     ("current", "target"),
     [
-        (TaskStatus.CREATED, TaskStatus.READY),
-        (TaskStatus.READY, TaskStatus.CLAIMED),
-        (TaskStatus.RUNNING, TaskStatus.VERIFYING),
-        (TaskStatus.VERIFYING, TaskStatus.COMPLETED),
-        (TaskStatus.RETRY, TaskStatus.RUNNING),
+        (TaskStatus.READY, TaskStatus.RUNNING),
+        (TaskStatus.READY, TaskStatus.SUSPENDED),
+        (TaskStatus.RUNNING, TaskStatus.COMPLETED),
+        (TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN),
         (TaskStatus.WAIT_HUMAN, TaskStatus.RUNNING),
         (TaskStatus.WAIT_HUMAN, TaskStatus.READY),
+        (TaskStatus.SUSPENDED, TaskStatus.RUNNING),
+        (TaskStatus.SUSPENDED, TaskStatus.READY),
+        (TaskStatus.RUNNING, TaskStatus.PENDING_CONFIRMATION),
+        (TaskStatus.RUNNING, TaskStatus.EXECUTION_ERROR),
+        (TaskStatus.PENDING_CONFIRMATION, TaskStatus.COMPLETED),
+        (TaskStatus.EXECUTION_ERROR, TaskStatus.RUNNING),
     ],
 )
-def test_valid_transitions(current, target):
+def test_valid_v04_transitions(current, target):
     TaskStateMachine.validate(current, target)
 
 
-def test_completed_is_terminal():
+@pytest.mark.parametrize(
+    "terminal",
+    [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED],
+)
+def test_terminal_statuses_cannot_restart(terminal):
     with pytest.raises(InvalidTransition):
-        TaskStateMachine.validate(TaskStatus.COMPLETED, TaskStatus.RUNNING)
+        TaskStateMachine.validate(terminal, TaskStatus.RUNNING)
 
 
-def test_cannot_skip_verification():
+def test_ready_cannot_complete_without_working():
     with pytest.raises(InvalidTransition):
-        TaskStateMachine.validate(TaskStatus.RUNNING, TaskStatus.COMPLETED)
+        TaskStateMachine.validate(TaskStatus.READY, TaskStatus.COMPLETED)

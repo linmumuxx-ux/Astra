@@ -4,7 +4,32 @@ import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import EmployeeStatus, EnvironmentStatus
-from app.models import DigitalEmployee, OpenCodeExecutionEnvironment
+from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, TaskCategory
+
+DEFAULT_CATEGORIES = (
+    ("testing-platform", "测试平台", "测试平台相关问题与需求", 10),
+    ("automation-engineering", "自动化工程", "自动化工程建设与维护", 20),
+    ("quality-defense", "防线运营", "质量防线运行与治理", 30),
+)
+
+
+async def bootstrap_categories(session: AsyncSession) -> None:
+    changed = False
+    for category_id, name, description, sort_order in DEFAULT_CATEGORIES:
+        if await session.get(TaskCategory, category_id):
+            continue
+        session.add(
+            TaskCategory(
+                id=category_id,
+                name=name,
+                description=description,
+                enabled=True,
+                sort_order=sort_order,
+            )
+        )
+        changed = True
+    if changed:
+        await session.commit()
 
 
 async def bootstrap_employees(session: AsyncSession, config_path) -> None:
@@ -26,15 +51,15 @@ async def bootstrap_employees(session: AsyncSession, config_path) -> None:
             role=item.get("role", "数字员工"),
             description=item.get("description", ""),
             status=EmployeeStatus.IDLE,
-            capabilities=item.get("capabilities", []),
-            skills=item.get("skills", []),
-            source_scope=item.get("sources", []),
+            task_types=item.get("task_types", ["ISSUE", "REQUIREMENT"]),
+            category_ids=item.get(
+                "category_ids",
+                ["testing-platform", "automation-engineering", "quality-defense"],
+            ),
             enabled=item.get("enabled", True),
             auto_claim=item.get("policy", {}).get("auto_claim", True),
             auto_execute=item.get("policy", {}).get("auto_execute", True),
-            auto_repair=item.get("policy", {}).get("auto_repair", True),
             max_auto_retries=item.get("policy", {}).get("max_auto_retries", 3),
-            max_concurrency=item.get("max_concurrency", 1),
             online_since=now,
             last_heartbeat=now,
         )

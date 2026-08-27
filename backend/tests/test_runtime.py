@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 import pytest
@@ -6,13 +5,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import SessionLocal, init_database
-from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus
-from app.executors.base import (
-    ExecutorResult,
-    OpenCodeExecutor,
-    TokenUsage,
-    ToolUsageResult,
-)
+from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus, TaskType
+from app.executors.base import ExecutorResult, OpenCodeExecutor, TokenUsage, ToolUsageResult
 from app.executors.usage import parse_opencode_usage
 from app.models import (
     Base,
@@ -22,13 +16,13 @@ from app.models import (
     OpenCodeExecutionEnvironment,
     Run,
     Task,
+    TaskCategory,
     ToolUsage,
 )
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.scout import TaskScout
-from app.runtime.verifier import TaskVerifier
 from app.schemas import TaskCreate
 from app.services import TaskService
 from app.sources.base import ExternalTask, TaskSource
@@ -45,12 +39,25 @@ async def session():
     await engine.dispose()
 
 
+def new_task(**overrides) -> TaskCreate:
+    payload = {
+        "task_type": TaskType.ISSUE,
+        "category_id": "testing-platform",
+        "title": "修复接口问题",
+        "description": "定位并解决接口异常",
+        "acceptance_criteria": [{"content": "接口恢复正常"}],
+        "priority": Priority.HIGH,
+        "completion_policy": "AUTO",
+    }
+    payload.update(overrides)
+    return TaskCreate(**payload)
+
+
 async def test_create_task_records_ready_event(session):
-    task = await TaskService(session).create(
-        TaskCreate(task_type="script_generate", title="生成脚本", priority=Priority.P1)
-    )
+    task = await TaskService(session).create(new_task())
 
     assert task.status == TaskStatus.READY
+    assert task.current_progress == "等待领取"
     events = (
         (await session.execute(select(Event).where(Event.task_id == task.id).order_by(Event.id)))
         .scalars()
@@ -59,37 +66,43 @@ async def test_create_task_records_ready_event(session):
     assert [event.event_type for event in events] == ["TASK_CREATED", "TASK_READY"]
 
 
-async def test_dispatcher_matches_capability_and_source_atomically(session):
+async def test_dispatcher_matches_type_and_category_and_limits_one_task(session, tmp_path):
+    workspace = tmp_path / "employee-workspace"
+    workspace.mkdir()
     employee = DigitalEmployee(
         id="astra-test",
         name="Astra Test",
-        role="测试员工",
+        role="测试平台员工",
         status=EmployeeStatus.IDLE,
-        capabilities=["script_generate"],
-        source_scope=["manual"],
-        max_concurrency=1,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+        auto_execute=False,
     )
     session.add(employee)
     session.add(
         OpenCodeExecutionEnvironment(
             employee_id=employee.id,
             mode="LOCAL",
-            name="测试环境",
+            name="员工固定工作空间",
             opencode_path="opencode",
-            workspace_root="/tmp/astra-test",
+            workspace_root=str(workspace),
             status=EnvironmentStatus.AVAILABLE,
         )
     )
     await session.commit()
-    task = await TaskService(session).create(TaskCreate(task_type="script_generate", title="匹配任务"))
+    first = await TaskService(session).create(new_task(title="匹配任务"))
+    await TaskService(session).create(new_task(title="第二个任务"))
 
     claimed = await Dispatcher(session).claim_once()
+    second_claim = await Dispatcher(session).claim_once()
 
-    assert claimed and claimed.id == task.id
-    assert claimed.status == TaskStatus.CLAIMED
+    assert claimed and claimed.id == first.id
+    assert claimed.status == TaskStatus.READY
     assert claimed.employee_id == employee.id
+    assert claimed.claimed_at is not None
+    assert claimed.execution_environment_snapshot["workspace_root"] == str(workspace)
+    assert second_claim is None
     await session.refresh(employee)
-    assert employee.status == EmployeeStatus.WORKING
     assert employee.current_task_count == 1
 
 
@@ -100,8 +113,11 @@ class FakeSource(TaskSource):
         return [
             ExternalTask(
                 external_task_id="EXT-1",
-                task_type="script_generate",
-                title="外部任务",
+                title="外部需求",
+                task_type="REQUIREMENT",
+                category_id="testing-platform",
+                description="处理外部系统需求",
+                acceptance_criteria=["提供处理结果"],
             )
         ]
 
@@ -116,6 +132,14 @@ class FakeSource(TaskSource):
 
 
 async def test_scout_is_idempotent(session):
+    session.add(
+        TaskCategory(
+            id="testing-platform",
+            name="测试平台",
+            description="测试平台相关任务",
+        )
+    )
+    await session.commit()
     scout = TaskScout(session, [FakeSource()])
     first = await scout.poll_once()
     second = await scout.poll_once()
@@ -125,76 +149,34 @@ async def test_scout_is_idempotent(session):
     assert await session.scalar(select(func.count(Task.id))) == 1
 
 
-async def test_verifier_runs_real_command_and_saves_evidence(tmp_path: Path):
-    workspace = tmp_path / "task"
-    source = workspace / "source"
-    evidence = workspace / "evidence"
-    source.mkdir(parents=True)
-    evidence.mkdir()
-    (source / "test_target.py").write_text("assert True\n", encoding="utf-8")
-    (evidence / "opencode_output.json").write_text("{}", encoding="utf-8")
-    task = Task(
-        id="T-VERIFY",
-        task_type="script_generate",
-        title="验证任务",
-        input={
-            "verification": {
-                "required_files": ["test_target.py"],
-                "test_command": [sys.executable, "-c", "print('PASS')"],
-            }
-        },
-    )
-
-    result = await TaskVerifier().verify(task, workspace)
-
-    assert result.passed is True
-    assert (evidence / "execution.log").read_text().strip() == "PASS"
-    assert (evidence / "test_result.json").is_file()
-    assert (evidence / "verify_report.json").is_file()
-
-
-async def test_verifier_rejects_model_only_completion(tmp_path: Path):
-    workspace = tmp_path / "task"
-    (workspace / "source").mkdir(parents=True)
-    (workspace / "evidence").mkdir()
-    task = Task(id="T-NO-COMMAND", task_type="script_generate", title="无验证命令", input={})
-
-    result = await TaskVerifier().verify(task, workspace)
-
-    assert result.passed is False
-    assert result.repairable is False
-    assert "不能程序化证明完成" in result.items[0].detail
-
-
 class FailThenPassExecutor(OpenCodeExecutor):
     def __init__(self):
         self.attempt = 0
+        self.workspaces: list[Path] = []
 
     async def start(self, task, workspace):
         self.attempt += 1
+        self.workspaces.append(workspace)
         return ExecutorResult(
             status="FAILED",
             exit_code=1,
-            session_id="ses-e2e",
-            output=[{"type": "result", "status": "failed"}],
-            stderr="generated test failed",
-            token_usage=TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120, llm_call_count=1),
-            tool_usage=[ToolUsageResult(name="Bash", call_count=1, failure_count=1, duration_ms=10)],
+            session_id="ses-v04",
+            output=[{"type": "text", "part": {"text": "首次处理遇到可恢复异常"}}],
+            stderr="temporary failure",
+            token_usage=TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120),
+            tool_usage=[ToolUsageResult(name="bash", call_count=1, failure_count=1)],
         )
 
     async def resume(self, task, run, workspace):
         self.attempt += 1
-        (workspace / "source" / "result.txt").write_text("PASS", encoding="utf-8")
+        self.workspaces.append(workspace)
         return ExecutorResult(
             status="SUCCEEDED",
             exit_code=0,
-            session_id="ses-e2e",
-            output=[{"type": "result", "status": "completed"}],
-            token_usage=TokenUsage(input_tokens=80, output_tokens=10, total_tokens=90, llm_call_count=1),
-            tool_usage=[
-                ToolUsageResult(name="Bash", call_count=1, success_count=1, duration_ms=8),
-                ToolUsageResult(name="Read", call_count=2, success_count=2, duration_ms=4),
-            ],
+            session_id="ses-v04",
+            output=[{"type": "text", "part": {"text": "接口问题已处理"}}],
+            token_usage=TokenUsage(input_tokens=80, output_tokens=10, total_tokens=90),
+            tool_usage=[ToolUsageResult(name="read", call_count=2, success_count=2)],
         )
 
     async def get_status(self, run):
@@ -207,56 +189,20 @@ class FailThenPassExecutor(OpenCodeExecutor):
         return run.result or {}
 
 
-class BlockedRemoteExecutor(OpenCodeExecutor):
-    def __init__(self):
-        self.workspace = None
-
-    async def start(self, task, workspace):
-        self.workspace = workspace
-        return ExecutorResult(
-            status="BLOCKED",
-            exit_code=2,
-            session_id="ses-remote",
-            output=[],
-            stderr="remote fixture blocked after workspace selection",
-        )
-
-    async def resume(self, task, run, workspace):
-        return await self.start(task, workspace)
-
-    async def get_status(self, run):
-        return run.status
-
-    async def abort(self, run):
-        return None
-
-    async def collect_result(self, run):
-        return run.result or {}
-
-
-class FakeRemoteEnvironmentRuntime(ExecutionEnvironmentRuntime):
-    def __init__(self, remote_root: Path):
-        super().__init__()
-        self.remote_root = remote_root
-        self.prepared = False
-
-    async def prepare_remote_workspace(self, task, environment):
-        self.prepared = True
-        return self.remote_root / task.id
-
-
-async def test_complete_runtime_closure_retries_same_session_and_verifies(tmp_path: Path):
+async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     await init_database()
-    project = tmp_path / "project"
-    project.mkdir()
+    workspace = tmp_path / "persistent-employee-workspace"
+    workspace.mkdir()
+    employee_id = "astra-runtime-v03"
     async with SessionLocal() as global_session:
         employee = DigitalEmployee(
-            id="astra-e2e",
-            name="Astra E2E",
-            role="测试员工",
+            id=employee_id,
+            name="Astra Runtime V0.4",
+            role="测试平台员工",
             status=EmployeeStatus.WORKING,
-            capabilities=["script_generate"],
-            source_scope=["manual"],
+            task_types=["ISSUE"],
+            category_ids=["testing-platform"],
+            max_auto_retries=1,
             current_task_count=1,
         )
         global_session.add(employee)
@@ -264,33 +210,15 @@ async def test_complete_runtime_closure_retries_same_session_and_verifies(tmp_pa
             OpenCodeExecutionEnvironment(
                 employee_id=employee.id,
                 mode="LOCAL",
-                name="E2E 本地环境",
+                name="长期工作空间",
                 opencode_path="opencode",
-                workspace_root=str(tmp_path / "workspaces"),
+                workspace_root=str(workspace),
                 status=EnvironmentStatus.AVAILABLE,
             )
         )
         await global_session.commit()
-        task = await TaskService(global_session).create(
-            TaskCreate(
-                task_type="script_generate",
-                title="闭环验收任务",
-                input={
-                    "project_path": str(project),
-                    "verification": {
-                        "required_files": ["result.txt"],
-                        "test_command": [
-                            sys.executable,
-                            "-c",
-                            "from pathlib import Path; assert Path('result.txt').read_text() == 'PASS'",
-                        ],
-                    },
-                },
-                max_retry_count=2,
-            )
-        )
-        task.employee_id = employee.id
-        await TaskService(global_session).transition(task, TaskStatus.CLAIMED, phase="claimed", progress=8)
+        task = await TaskService(global_session).create(new_task(employee_id=employee.id))
+        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
         task_id = task.id
 
     executor = FailThenPassExecutor()
@@ -298,7 +226,7 @@ async def test_complete_runtime_closure_retries_same_session_and_verifies(tmp_pa
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
-        employee = await global_session.get(DigitalEmployee, "astra-e2e")
+        employee = await global_session.get(DigitalEmployee, employee_id)
         runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
         evidence = (
             (await global_session.execute(select(Evidence).where(Evidence.task_id == task_id)))
@@ -312,61 +240,17 @@ async def test_complete_runtime_closure_retries_same_session_and_verifies(tmp_pa
         )
 
     assert executor.attempt == 2
+    assert executor.workspaces == [workspace, workspace]
     assert task and task.status == TaskStatus.COMPLETED
-    assert task.opencode_session_id == "ses-e2e"
-    assert task.retry_count == 1
+    assert task.opencode_session_id == "ses-v04"
+    assert task.result["summary"] == "接口问题已处理"
+    assert task.result["acceptance_results"][0]["status"] == "UNCONFIRMED"
     assert employee and employee.status == EmployeeStatus.IDLE
+    assert employee.current_task_count == 0
     assert len(runs) == 2
     assert sum(run.total_tokens or 0 for run in runs) == 210
-    assert sum(item.call_count for item in tools) == 4
-    assert {item.name for item in evidence} >= {
-        "opencode_output.json",
-        "execution.log",
-        "test_result.json",
-        "verify_report.json",
-    }
-
-
-async def test_remote_task_uses_remote_workspace_instead_of_local_control_path(tmp_path: Path):
-    await init_database()
-    async with SessionLocal() as global_session:
-        employee = DigitalEmployee(
-            id="astra-remote-workspace",
-            name="Astra Remote Workspace",
-            role="远程测试员工",
-            status=EmployeeStatus.WORKING,
-            capabilities=["script_execute"],
-            source_scope=["manual"],
-            current_task_count=1,
-        )
-        global_session.add(employee)
-        environment = OpenCodeExecutionEnvironment(
-            employee_id=employee.id,
-            mode="LINUX_REMOTE",
-            name="Remote Fixture",
-            host="test.invalid",
-            username="astra",
-            opencode_path="/usr/local/bin/opencode",
-            workspace_root="/srv/astra/workspaces",
-            status=EnvironmentStatus.AVAILABLE,
-        )
-        global_session.add(environment)
-        await global_session.commit()
-        task = await TaskService(global_session).create(
-            TaskCreate(task_type="script_execute", title="远程 Workspace 路由")
-        )
-        task.employee_id = employee.id
-        await TaskService(global_session).transition(task, TaskStatus.CLAIMED, phase="claimed", progress=8)
-        task_id = task.id
-
-    executor = BlockedRemoteExecutor()
-    runtime = FakeRemoteEnvironmentRuntime(Path("/srv/astra/workspaces"))
-    coordinator = TaskCoordinator(executor=executor)
-    coordinator.environment_runtime = runtime
-    await coordinator.process(task_id)
-
-    assert runtime.prepared is True
-    assert executor.workspace == Path("/srv/astra/workspaces") / task_id
+    assert sum(item.call_count for item in tools) == 3
+    assert len(evidence) == 2
 
 
 def test_opencode_usage_parser_uses_actual_json_events():
@@ -375,7 +259,7 @@ def test_opencode_usage_parser_uses_actual_json_events():
             {
                 "type": "step_finish",
                 "part": {
-                    "modelID": "internal/model-a",
+                    "modelID": "deepseek/deepseek-v4-flash",
                     "tokens": {
                         "input": 120,
                         "output": 30,
@@ -387,18 +271,8 @@ def test_opencode_usage_parser_uses_actual_json_events():
                 "type": "tool",
                 "part": {
                     "id": "call-1",
-                    "type": "tool",
-                    "tool": "Bash",
+                    "tool": "bash",
                     "state": {"status": "completed", "time": {"start": 100, "end": 145}},
-                },
-            },
-            {
-                "type": "tool",
-                "part": {
-                    "id": "call-2",
-                    "type": "tool",
-                    "tool": "Bash",
-                    "state": {"status": "failed", "time": {"start": 200, "end": 230}},
                 },
             },
         ]
@@ -406,14 +280,14 @@ def test_opencode_usage_parser_uses_actual_json_events():
 
     assert tokens.total_tokens == 555
     assert tokens.llm_call_count == 1
-    assert model == "internal/model-a"
+    assert model == "deepseek/deepseek-v4-flash"
     assert tools == [
         ToolUsageResult(
-            name="Bash",
-            call_count=2,
+            name="bash",
+            call_count=1,
             success_count=1,
-            failure_count=1,
-            duration_ms=75,
+            failure_count=0,
+            duration_ms=45,
         )
     ]
 

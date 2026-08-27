@@ -16,14 +16,13 @@ from app.usage import load_runs, summarize_runs
 
 STATUS_EVENT = {
     TaskStatus.READY: "TASK_READY",
-    TaskStatus.CLAIMED: "TASK_CLAIMED",
     TaskStatus.RUNNING: "TASK_RUNNING",
-    TaskStatus.VERIFYING: "VERIFY_STARTED",
-    TaskStatus.RETRY: "RETRY_STARTED",
     TaskStatus.WAIT_HUMAN: "WAIT_HUMAN",
-    TaskStatus.PAUSED: "TASK_PAUSED",
+    TaskStatus.SUSPENDED: "TASK_SUSPENDED",
+    TaskStatus.PENDING_CONFIRMATION: "RESULT_SUBMITTED",
     TaskStatus.COMPLETED: "TASK_COMPLETED",
     TaskStatus.FAILED: "TASK_FAILED",
+    TaskStatus.EXECUTION_ERROR: "EXECUTION_ERROR",
     TaskStatus.CANCELLED: "TASK_CANCELLED",
 }
 
@@ -37,34 +36,45 @@ class TaskService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, payload: TaskCreate, *, ready: bool = True) -> Task:
+    async def create(self, payload: TaskCreate) -> Task:
+        criteria = [
+            {
+                "id": criterion.id or f"AC-{index:02d}",
+                "content": criterion.content,
+            }
+            for index, criterion in enumerate(payload.acceptance_criteria, start=1)
+        ]
         task = Task(
             id=new_task_id(),
             source=payload.source,
             external_task_id=payload.external_task_id,
-            task_type=payload.task_type,
+            task_type=payload.task_type.value,
+            category_id=payload.category_id,
             title=payload.title,
             description=payload.description,
-            input=payload.input,
-            definition_of_done=payload.definition_of_done,
+            acceptance_criteria=criteria,
+            attachments=payload.attachments,
             priority=payload.priority.value,
             priority_weight=PRIORITY_WEIGHT[payload.priority],
-            max_retry_count=payload.max_retry_count,
+            completion_policy=payload.completion_policy.value,
+            employee_id=payload.employee_id,
+            status=TaskStatus.READY,
+            current_progress="等待领取",
+            last_activity_at=datetime.now(UTC),
         )
         self.session.add(task)
         await self._record(
             task,
             "TASK_CREATED",
-            "created",
+            "work",
             "任务已创建",
-            {"source": task.source, "external_task_id": task.external_task_id},
+            {
+                "source": task.source,
+                "external_task_id": task.external_task_id,
+                "employee_id": task.employee_id,
+            },
         )
-        if ready:
-            TaskStateMachine.validate(TaskStatus.CREATED, TaskStatus.READY)
-            task.status = TaskStatus.READY
-            task.current_phase = "waiting_dispatch"
-            task.progress = 3
-            await self._record(task, "TASK_READY", task.current_phase, "任务已进入待领取队列")
+        await self._record(task, "TASK_READY", "work", "任务已进入待领取队列")
         try:
             await self.session.commit()
         except IntegrityError:
@@ -79,8 +89,7 @@ class TaskService:
         task: Task,
         target: TaskStatus,
         *,
-        phase: str,
-        progress: int | None = None,
+        current_progress: str | None = None,
         message: str | None = None,
         detail: dict | None = None,
         run_id: str | None = None,
@@ -90,20 +99,21 @@ class TaskService:
         TaskStateMachine.validate(previous, target)
         now = datetime.now(UTC)
         task.status = target.value
-        task.current_phase = phase
-        if progress is not None:
-            task.progress = max(0, min(100, progress))
-        if target is TaskStatus.CLAIMED:
-            task.claimed_at = now
+        if current_progress is not None:
+            task.current_progress = current_progress
         if target is TaskStatus.RUNNING and task.started_at is None:
+            task.claimed_at = task.claimed_at or now
             task.started_at = now
+        if target is TaskStatus.RUNNING:
+            task.inactivity_alert = False
+            task.inactivity_alert_since = None
         if target in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
             task.finished_at = now
         event_type = STATUS_EVENT[target]
         await self._record(
             task,
             event_type,
-            phase,
+            "work",
             message or f"任务状态从 {previous.value} 变更为 {target.value}",
             {"from": previous.value, "to": target.value, **(detail or {})},
             run_id=run_id,
@@ -147,6 +157,9 @@ class TaskService:
             message=message,
             detail=detail or {},
         )
+        task.last_activity_at = event.created_at or datetime.now(UTC)
+        task.inactivity_alert = False
+        task.inactivity_alert_since = None
         self.session.add(event)
         await self.session.flush()
         return event
@@ -221,12 +234,13 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
             for status, count in employee_counts.items()
             if status not in {EmployeeStatus.OFFLINE, EmployeeStatus.ERROR}
         ),
-        "running_tasks": sum(
-            task_counts.get(status, 0)
-            for status in [TaskStatus.CLAIMED, TaskStatus.RUNNING, TaskStatus.VERIFYING, TaskStatus.RETRY]
-        ),
+        "running_tasks": sum(task_counts.get(status, 0) for status in [TaskStatus.RUNNING]),
+        "idle_employees": employee_counts.get(EmployeeStatus.IDLE, 0),
+        "error_employees": employee_counts.get(EmployeeStatus.ERROR, 0),
         "ready_tasks": task_counts.get(TaskStatus.READY, 0),
         "wait_human_tasks": task_counts.get(TaskStatus.WAIT_HUMAN, 0),
+        "pending_confirmation_tasks": task_counts.get(TaskStatus.PENDING_CONFIRMATION, 0),
+        "execution_error_tasks": task_counts.get(TaskStatus.EXECUTION_ERROR, 0),
         "completed_today": completed_today,
         "failed_today": failed_today,
         "today_tokens": usage["total_tokens"],

@@ -1,4 +1,4 @@
-import type { AstraEvent, Employee, EmployeeUsage, Evidence, ExecutionEnvironment, Metrics, Run, RunUsage, Task, TaskUsage } from './types'
+import type { AstraEvent, Employee, EmployeeUsage, Evidence, ExecutionEnvironment, Metrics, Run, RunUsage, Task, TaskCategory, TaskUsage } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -25,6 +25,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   metrics: () => request<Metrics>('/api/system/metrics'),
+  categories: (includeDisabled = false) => request<TaskCategory[]>(`/api/task-categories${includeDisabled ? '?include_disabled=true' : ''}`),
+  createCategory: (body: Record<string, unknown>) => request<TaskCategory>('/api/task-categories', { method: 'POST', body: JSON.stringify(body) }),
+  updateCategory: (id: string, body: Record<string, unknown>) => request<TaskCategory>(`/api/task-categories/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   employees: () => request<Employee[]>('/api/employees'),
   employee: (id: string) => request<Employee>(`/api/employees/${id}`),
   employeeUsage: (id: string, days = 7) => request<EmployeeUsage>(`/api/employees/${id}/usage?days=${days}`),

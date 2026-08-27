@@ -1,3 +1,19 @@
+export type TaskType = 'ISSUE' | 'REQUIREMENT'
+export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
+export type TaskStatus = 'READY' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
+export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
+export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
+
+export interface TaskCategory {
+  id: string
+  name: string
+  description: string
+  enabled: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export interface ExecutionEnvironment {
   id: number
   employee_id: string
@@ -47,26 +63,10 @@ export interface EmployeeUsage {
   summary: UsageSummary
   trend: Array<{ date: string } & UsageSummary>
   tools: ToolUsage[]
-  performance: {
-    completed_tasks: number
-    autonomous_completion_rate: number | null
-    human_intervention_rate: number | null
-    success_rate: number | null
-    average_retries: number | null
-    average_duration_seconds: number | null
-  }
 }
 
-export interface TaskUsage {
-  summary: UsageSummary
-  tools: ToolUsage[]
-  runs: number
-}
-
-export interface RunUsage {
-  summary: UsageSummary
-  tools: ToolUsage[]
-}
+export interface TaskUsage { summary: UsageSummary; tools: ToolUsage[]; runs: number }
+export interface RunUsage { summary: UsageSummary; tools: ToolUsage[] }
 
 export interface Employee {
   id: string
@@ -74,15 +74,12 @@ export interface Employee {
   role: string
   description: string
   status: string
-  capabilities: string[]
-  skills: string[]
-  source_scope: string[]
+  task_types: TaskType[]
+  category_ids: string[]
   enabled: boolean
   auto_claim: boolean
   auto_execute: boolean
-  auto_repair: boolean
   max_auto_retries: number
-  max_concurrency: number
   current_task_count: number
   last_heartbeat: string | null
   online_since: string | null
@@ -91,30 +88,64 @@ export interface Employee {
   execution_environment: ExecutionEnvironment | null
   today_usage: UsageSummary
   today_completed: number
-  success_rate: number | null
+}
+
+export interface AcceptanceCriterion { id: string; content: string }
+export interface AcceptanceResult {
+  criterion_id: string
+  status: AcceptanceStatus
+  description: string
+  evidence: string[]
+}
+
+export interface WorkResult {
+  summary: string
+  changes: string[]
+  files: string[]
+  commits: string[]
+  logs: string[]
+  attachments: string[]
+  other: Record<string, unknown>
+  acceptance_results: AcceptanceResult[]
+}
+
+export interface HumanIntervention {
+  blocking_reason: string
+  completed_work: string
+  current_state: string
+  requested_input: string
+  can_suspend?: boolean
+  scene_context?: string
 }
 
 export interface Task {
   id: string
   source: string
   external_task_id: string | null
-  task_type: string
+  task_type: TaskType
+  category_id: string | null
   title: string
   description: string
-  input: Record<string, unknown>
-  definition_of_done: string[]
-  priority: string
-  status: string
+  acceptance_criteria: AcceptanceCriterion[]
+  attachments: Array<Record<string, unknown>>
+  priority: TaskPriority
+  completion_policy: CompletionPolicy
+  status: TaskStatus
   employee_id: string | null
-  workspace: string | null
   opencode_session_id: string | null
-  current_phase: string
-  progress: number
-  retry_count: number
-  max_retry_count: number
-  result: Record<string, unknown> | null
+  current_progress: string
+  result: WorkResult | null
   failure_reason: string | null
   human_required_reason: string | null
+  human_intervention: HumanIntervention | null
+  suspension: Record<string, unknown> | null
+  execution_error: Record<string, unknown> | null
+  review_history: Array<Record<string, unknown>>
+  inactivity_alert: boolean
+  inactivity_alert_since: string | null
+  last_activity_at: string | null
+  submitted_at: string | null
+  confirmed_at: string | null
   execution_environment_snapshot: Record<string, unknown> | null
   claimed_at: string | null
   started_at: string | null
@@ -175,8 +206,12 @@ export interface Evidence {
 export interface Metrics {
   online_employees: number
   running_tasks: number
+  idle_employees: number
+  error_employees: number
   ready_tasks: number
   wait_human_tasks: number
+  pending_confirmation_tasks: number
+  execution_error_tasks: number
   completed_today: number
   failed_today: number
   today_tokens: number | null

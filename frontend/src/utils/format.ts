@@ -1,26 +1,20 @@
 const STATUS_LABEL: Record<string, string> = {
   OFFLINE: '离线', IDLE: '空闲', WORKING: '工作中', WAIT_HUMAN: '等待人工', PAUSED: '已暂停', ERROR: '异常',
-  CREATED: '已创建', READY: '待领取', CLAIMED: '已领取', RUNNING: '运行中', VERIFYING: '验证中',
-  RETRY: '修复重试', COMPLETED: '已完成', FAILED: '失败', CANCELLED: '已终止',
-  PASSED: '通过', BLOCKED: '阻塞',
+  READY: '待领取', RUNNING: '处理中', SUSPENDED: '已挂起', PENDING_CONFIRMATION: '待确认', EXECUTION_ERROR: '执行异常', COMPLETED: '已完成', FAILED: '未完成', CANCELLED: '已取消',
+  PASSED: '完成', BLOCKED: '阻塞',
   AVAILABLE: '正常', CHECKING: '检查中', UNAVAILABLE: '不可用', UNKNOWN: '未检查',
 }
 
-const PHASE_LABEL: Record<string, string> = {
-  created: '任务创建', waiting_dispatch: '等待调度', claimed: '任务认领', workspace: '准备工作区',
-  executing: 'OpenCode 执行', script_generate: '脚本生成', code_review: '代码检视', fault_analysis: '故障分析',
-  repairing: '自动修复', verifying: '结果验证', completed: '已完成', environment_blocked: '环境阻塞',
-  human_handoff: '人工接管', runtime_error: '运行时异常',
-}
-
 export const statusLabel = (value: string) => STATUS_LABEL[value] ?? value
-export const phaseLabel = (value: string) => PHASE_LABEL[value] ?? value.replaceAll('_', ' ')
+export const taskTypeLabel = (value: string) => value === 'ISSUE' ? '问题' : value === 'REQUIREMENT' ? '需求' : value
+export const priorityLabel = (value: string) => ({ VERY_HIGH: '很高', HIGH: '高', MEDIUM: '中', LOW: '低' }[value] ?? value)
+export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', UNSATISFIED: '未满足', UNCONFIRMED: '无法确认' }[value] ?? value)
 
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
   if (['COMPLETED', 'PASSED', 'IDLE', 'AVAILABLE'].includes(status)) return 'success'
-  if (['WAIT_HUMAN', 'PAUSED', 'BLOCKED'].includes(status)) return 'warning'
-  if (['FAILED', 'ERROR', 'CANCELLED', 'OFFLINE', 'UNAVAILABLE'].includes(status)) return 'danger'
-  if (['RUNNING', 'WORKING', 'VERIFYING', 'RETRY', 'CLAIMED', 'CHECKING'].includes(status)) return 'info'
+  if (['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'PAUSED', 'BLOCKED'].includes(status)) return 'warning'
+  if (['FAILED', 'EXECUTION_ERROR', 'ERROR', 'CANCELLED', 'OFFLINE', 'UNAVAILABLE'].includes(status)) return 'danger'
+  if (['RUNNING', 'WORKING', 'CHECKING'].includes(status)) return 'info'
   return 'neutral'
 }
 
@@ -53,5 +47,11 @@ export const environmentLabel = (snapshot: { mode?: unknown; name?: unknown; hos
   if (!snapshot) return '未配置'
   return snapshot.mode === 'LINUX_REMOTE' ? `Linux · ${snapshot.name ?? snapshot.host ?? '远程'}` : '本地'
 }
+
+export const executionModeLabel = (value: unknown) =>
+  value === 'LINUX_REMOTE' ? 'Linux 远程' : value === 'LOCAL' ? '本地' : '—'
+
+export const executorLabel = (value: string) =>
+  value === 'opencode_ssh' ? 'Linux 远程 OpenCode' : value === 'opencode_cli' ? '本地 OpenCode' : value
 
 export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : source

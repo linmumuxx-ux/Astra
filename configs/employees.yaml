@@ -1,28 +1,21 @@
 employees:
   - id: astra-01
     name: Astra-01
-    role: 测试执行员工
+    role: 测试平台开发
+    description: 负责测试平台问题和需求处理
     enabled: true
-    max_concurrency: 1
-    skills:
-      - test-automation
-      - debugging
-    capabilities:
-      - script_generate
-      - script_review
-      - script_execute
-      - script_repair
-      - result_verify
-    sources:
-      - nr_test_system
-      - manual
+    task_types:
+      - ISSUE
+      - REQUIREMENT
+    category_ids:
+      - testing-platform
+      - automation-engineering
     execution_environment:
       mode: LOCAL
       name: 本地 OpenCode
       opencode_path: opencode
-      workspace_root: ./workspaces
+      workspace_root: /workspaces/astra-01
     policy:
       auto_claim: true
       auto_execute: true
-      auto_repair: true
       max_auto_retries: 3

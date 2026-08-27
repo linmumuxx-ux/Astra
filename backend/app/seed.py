@@ -3,245 +3,308 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
+from app.domain import EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
 from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment, Run, Task, ToolUsage
 from app.runtime.environment import environment_snapshot
 
 
 async def seed_demo_data(session: AsyncSession) -> None:
     if await session.scalar(select(func.count(DigitalEmployee.id))):
-        await upgrade_demo_v02(session)
+        await upgrade_demo_v03(session)
         return
-    now = datetime.now(UTC)
-    employee = DigitalEmployee(
-        id="astra-01",
-        name="Astra-01",
-        role="测试执行员工",
-        description="长期在线，负责测试脚本生成、执行、修复与结果验证。",
-        status=EmployeeStatus.WORKING,
-        capabilities=[
-            "script_generate",
-            "script_review",
-            "script_execute",
-            "script_repair",
-            "result_verify",
-        ],
-        skills=["test-automation", "debugging"],
-        source_scope=["nr_test_system", "manual"],
-        max_concurrency=1,
-        current_task_count=1,
-        online_since=now - timedelta(hours=8, minutes=26),
-        last_heartbeat=now,
-    )
-    remote_employee = DigitalEmployee(
-        id="astra-02",
-        name="Astra-02",
-        role="远程回归员工",
-        description="在 Linux Server A 上执行回归任务与结果验证。",
-        status=EmployeeStatus.IDLE,
-        capabilities=["script_generate", "script_execute", "script_repair", "result_verify"],
-        skills=["regression-testing", "linux"],
-        source_scope=["nr_test_system", "manual"],
-        max_concurrency=1,
-        online_since=now - timedelta(hours=5, minutes=12),
-        last_heartbeat=now,
-    )
-    remote_employee_b = DigitalEmployee(
-        id="astra-03",
-        name="Astra-03",
-        role="专项测试员工",
-        description="在 Linux Server B 上执行专项测试任务。",
-        status=EmployeeStatus.IDLE,
-        capabilities=["script_review", "script_execute", "result_verify"],
-        skills=["security-review", "linux"],
-        source_scope=["manual"],
-        max_concurrency=1,
-        online_since=now - timedelta(hours=3, minutes=46),
-        last_heartbeat=now,
-    )
-    session.add_all([employee, remote_employee, remote_employee_b])
-    await session.flush()
-    local_environment = OpenCodeExecutionEnvironment(
-        employee_id=employee.id,
-        mode="LOCAL",
-        name="本地 OpenCode",
-        opencode_path="opencode",
-        workspace_root="./workspaces/astra-01",
-        status=EnvironmentStatus.AVAILABLE,
-        status_detail={"demo": True, "message": "演示环境"},
-        labels=["local", "primary"],
-        last_checked_at=now - timedelta(minutes=4),
-    )
-    session.add_all(
-        [
-            local_environment,
-            OpenCodeExecutionEnvironment(
-                employee_id=remote_employee.id,
-                mode="LINUX_REMOTE",
-                name="Linux Server A",
-                host="server-a.internal",
-                port=22,
-                username="astra",
-                auth_method="SSH_AGENT",
-                opencode_path="/usr/local/bin/opencode",
-                workspace_root="/srv/astra/workspaces",
-                status=EnvironmentStatus.UNKNOWN,
-                status_detail={"demo": True, "message": "等待首次连接检查"},
-                labels=["linux", "regression"],
-            ),
-            OpenCodeExecutionEnvironment(
-                employee_id=remote_employee_b.id,
-                mode="LINUX_REMOTE",
-                name="Linux Server B",
-                host="server-b.internal",
-                port=22,
-                username="astra",
-                auth_method="SSH_AGENT",
-                opencode_path="/opt/opencode/bin/opencode",
-                workspace_root="/data/astra/workspaces",
-                status=EnvironmentStatus.UNAVAILABLE,
-                status_detail={"demo": True, "message": "演示：SSH 连接待配置"},
-                labels=["linux", "specialized"],
-                last_checked_at=now - timedelta(minutes=18),
-            ),
-        ]
-    )
-    await session.flush()
-    local_snapshot = environment_snapshot(local_environment)
 
+    now = datetime.now(UTC)
+    employees = [
+        DigitalEmployee(
+            id="astra-01",
+            name="Astra-01",
+            role="测试平台开发",
+            description="负责测试平台问题和需求处理",
+            status=EmployeeStatus.WORKING,
+            task_types=["ISSUE", "REQUIREMENT"],
+            category_ids=["testing-platform", "automation-engineering"],
+            enabled=True,
+            auto_claim=True,
+            auto_execute=True,
+            max_auto_retries=3,
+            current_task_count=1,
+            online_since=now - timedelta(hours=8),
+            last_heartbeat=now,
+        ),
+        DigitalEmployee(
+            id="astra-02",
+            name="Astra-02",
+            role="自动化工程师",
+            description="负责自动化工程建设与维护",
+            status=EmployeeStatus.WAIT_HUMAN,
+            task_types=["ISSUE", "REQUIREMENT"],
+            category_ids=["automation-engineering"],
+            enabled=True,
+            auto_claim=True,
+            auto_execute=True,
+            max_auto_retries=2,
+            current_task_count=1,
+            online_since=now - timedelta(hours=6),
+            last_heartbeat=now,
+        ),
+        DigitalEmployee(
+            id="astra-03",
+            name="Astra-03",
+            role="防线运营专员",
+            description="负责质量防线运行与治理",
+            status=EmployeeStatus.IDLE,
+            task_types=["ISSUE", "REQUIREMENT"],
+            category_ids=["quality-defense"],
+            enabled=True,
+            auto_claim=True,
+            auto_execute=True,
+            max_auto_retries=2,
+            current_task_count=0,
+            online_since=now - timedelta(hours=5),
+            last_heartbeat=now,
+        ),
+    ]
+    session.add_all(employees)
+    await session.flush()
+    environments = [
+        OpenCodeExecutionEnvironment(
+            employee_id="astra-01",
+            mode="LOCAL",
+            name="本地开发工作空间",
+            description="测试平台工程",
+            opencode_path="opencode",
+            workspace_root="./workspaces/astra-01",
+            status=EnvironmentStatus.AVAILABLE,
+            status_detail={"message": "演示环境"},
+            last_checked_at=now - timedelta(minutes=10),
+        ),
+        OpenCodeExecutionEnvironment(
+            employee_id="astra-02",
+            mode="LINUX_REMOTE",
+            name="自动化开发机",
+            description="Linux 远程工作空间",
+            host="10.20.8.42",
+            username="astra02",
+            opencode_path="/usr/local/bin/opencode",
+            workspace_root="/home/astra02/automation",
+            status=EnvironmentStatus.AVAILABLE,
+            status_detail={"message": "演示环境"},
+            last_checked_at=now - timedelta(minutes=16),
+        ),
+        OpenCodeExecutionEnvironment(
+            employee_id="astra-03",
+            mode="LINUX_REMOTE",
+            name="防线运营机",
+            description="Linux 远程工作空间",
+            host="10.20.8.43",
+            username="astra03",
+            opencode_path="/usr/local/bin/opencode",
+            workspace_root="/home/astra03/quality-defense",
+            status=EnvironmentStatus.AVAILABLE,
+            status_detail={"message": "演示环境"},
+            last_checked_at=now - timedelta(minutes=22),
+        ),
+    ]
+    session.add_all(environments)
+    await session.flush()
+    snapshots = {item.employee_id: environment_snapshot(item) for item in environments}
+
+    criteria_login = [
+        {"id": "AC-01", "content": "当前 500 问题解决"},
+        {"id": "AC-02", "content": "原有登录能力正常"},
+        {"id": "AC-03", "content": "相关检查通过"},
+        {"id": "AC-04", "content": "提供修改结果说明"},
+    ]
     tasks = [
         Task(
             id="T-20260827-001",
-            source="nr_test_system",
-            external_task_id="NRTS-5821",
-            task_type="script_generate",
-            title="登录流程自动化脚本开发",
-            description="补充登录主流程与异常密码场景，完成真实环境执行。",
-            input={
-                "case_id": "TC-LOGIN-018",
-                "verification": {
-                    "test_command": ["pytest", "tests/test_login.py", "-q"],
-                    "required_files": ["tests/test_login.py"],
-                },
-            },
-            definition_of_done=["脚本生成完成", "代码检视通过", "真实执行 PASS", "证据已保存"],
-            priority="P1",
-            priority_weight=3,
+            source="manual",
+            task_type="ISSUE",
+            category_id="testing-platform",
+            title="修复用户登录接口偶发 500 问题",
+            description="用户登录接口在特定情况下偶发 500，请定位并解决。",
+            acceptance_criteria=criteria_login,
+            priority="VERY_HIGH",
+            priority_weight=4,
+            completion_policy="MANUAL_CONFIRM",
             status=TaskStatus.RUNNING,
             employee_id="astra-01",
-            workspace="/workspaces/T-20260827-001",
-            opencode_session_id="ses_astra_01_5821",
-            current_phase="repairing",
-            progress=68,
-            retry_count=1,
-            max_retry_count=3,
-            execution_environment_snapshot=local_snapshot,
-            claimed_at=now - timedelta(minutes=34),
-            started_at=now - timedelta(minutes=32),
-            created_at=now - timedelta(minutes=38),
+            current_progress="已定位权限缓存问题，正在检查影响范围",
+            opencode_session_id="session-task-001",
+            execution_environment_snapshot=snapshots["astra-01"],
+            claimed_at=now - timedelta(minutes=31),
+            started_at=now - timedelta(minutes=30),
+            last_activity_at=now - timedelta(minutes=8),
         ),
         Task(
             id="T-20260827-002",
-            source="nr_test_system",
-            external_task_id="NRTS-5824",
-            task_type="script_execute",
-            title="订单支付流程回归验证",
-            description="支付回调环境不可用，等待人工确认测试窗口。",
-            input={"case_id": "TC-PAY-042"},
-            definition_of_done=["订单支付回归通过"],
-            priority="P0",
-            priority_weight=4,
+            source="manual",
+            task_type="REQUIREMENT",
+            category_id="automation-engineering",
+            title="新增回调场景自动化覆盖",
+            description="补充支付回调异常和幂等场景的自动化覆盖。",
+            acceptance_criteria=[
+                {"id": "AC-01", "content": "关键回调场景完成覆盖"},
+                {"id": "AC-02", "content": "提供执行结果说明"},
+            ],
+            priority="HIGH",
+            priority_weight=3,
+            completion_policy="MANUAL_CONFIRM",
             status=TaskStatus.WAIT_HUMAN,
-            employee_id=None,
-            current_phase="environment_blocked",
-            progress=46,
-            human_required_reason="测试环境支付回调服务连续 3 次返回 503，需要确认环境恢复时间。",
-            retry_count=3,
-            max_retry_count=3,
-            created_at=now - timedelta(hours=2, minutes=18),
+            employee_id="astra-02",
+            current_progress="已完成场景设计，等待测试环境访问权限",
+            human_required_reason="当前账号没有修改测试环境配置的权限",
+            human_intervention={
+                "blocking_reason": "当前账号没有修改测试环境配置的权限",
+                "completed_work": "已完成场景设计并定位需要的环境配置",
+                "current_state": "等待环境权限",
+                "requested_input": "请提供可操作该环境的账号，或完成对应配置",
+            },
+            execution_environment_snapshot=snapshots["astra-02"],
+            claimed_at=now - timedelta(minutes=58),
+            started_at=now - timedelta(minutes=56),
+            last_activity_at=now - timedelta(minutes=47),
         ),
         Task(
             id="T-20260827-003",
+            source="nr_test_system",
+            external_task_id="NR-5021",
+            task_type="REQUIREMENT",
+            category_id="quality-defense",
+            title="完善接口变更防线告警信息",
+            description="增强告警上下文，便于快速定位变更来源。",
+            acceptance_criteria=[
+                {"id": "AC-01", "content": "告警包含变更接口与来源信息"},
+                {"id": "AC-02", "content": "现有防线运行正常"},
+            ],
+            priority="MEDIUM",
+            priority_weight=2,
+            completion_policy="AUTO",
+            status=TaskStatus.COMPLETED,
+            employee_id="astra-03",
+            current_progress="任务已完成",
+            result={
+                "summary": "已补充变更接口、仓库与提交信息，并确认现有防线运行正常。",
+                "changes": ["扩展防线告警上下文"],
+                "files": ["src/alerts/change_context.py"],
+                "commits": ["8f21c1a"],
+                "logs": [],
+                "attachments": [],
+                "other": {},
+                "acceptance_results": [
+                    {
+                        "criterion_id": "AC-01",
+                        "status": "SATISFIED",
+                        "description": "告警已展示接口与来源信息",
+                        "evidence": ["commit 8f21c1a"],
+                    },
+                    {
+                        "criterion_id": "AC-02",
+                        "status": "SATISFIED",
+                        "description": "相关检查均通过",
+                        "evidence": ["132 项检查通过"],
+                    },
+                ],
+            },
+            opencode_session_id="session-task-003",
+            execution_environment_snapshot=snapshots["astra-03"],
+            claimed_at=now - timedelta(hours=2),
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=1, minutes=24),
+            last_activity_at=now - timedelta(hours=1, minutes=24),
+        ),
+        Task(
+            id="T-20260827-004",
             source="manual",
-            external_task_id=None,
-            task_type="script_review",
-            title="用户权限边界用例代码检视",
-            description="检查团队角色与全局角色叠加场景。",
-            input={"review_target": "tests/test_team_permissions.py"},
-            definition_of_done=["检视项全部关闭", "回归测试通过"],
-            priority="P2",
-            priority_weight=2,
-            status=TaskStatus.COMPLETED,
-            employee_id="astra-01",
-            workspace="/workspaces/T-20260827-003",
-            opencode_session_id="ses_astra_01_review",
-            current_phase="completed",
-            progress=100,
-            result={"passed": True, "summary": "12 项检查通过，pytest 28 passed"},
-            execution_environment_snapshot=local_snapshot,
-            claimed_at=now - timedelta(hours=4, minutes=10),
-            started_at=now - timedelta(hours=4, minutes=8),
-            finished_at=now - timedelta(hours=3, minutes=31),
-            created_at=now - timedelta(hours=4, minutes=15),
-        ),
-        Task(
-            id="T-20260826-014",
-            source="nr_test_system",
-            external_task_id="NRTS-5797",
-            task_type="script_generate",
-            title="产品版本升级场景脚本生成",
-            description="覆盖版本规则的补集语义与边界值。",
-            input={"case_id": "TC-VERSION-011"},
-            definition_of_done=["脚本生成", "测试通过"],
-            priority="P2",
-            priority_weight=2,
-            status=TaskStatus.COMPLETED,
-            employee_id="astra-01",
-            current_phase="completed",
-            progress=100,
-            result={"passed": True, "summary": "pytest 19 passed"},
-            execution_environment_snapshot=local_snapshot,
-            finished_at=now - timedelta(hours=6, minutes=12),
-            created_at=now - timedelta(hours=7),
-        ),
-        Task(
-            id="T-20260826-011",
-            source="nr_test_system",
-            external_task_id="NRTS-5768",
-            task_type="script_execute",
-            title="基础设施健康检查回归",
-            description="验证 MySQL、Redis 与 Celery 基础链路。",
-            input={},
-            definition_of_done=["健康检查通过"],
-            priority="P3",
+            task_type="ISSUE",
+            category_id="testing-platform",
+            title="排查任务列表时间筛选异常",
+            description="任务列表在跨天时间范围下出现结果缺失，请定位并解决。",
+            acceptance_criteria=[
+                {"id": "AC-01", "content": "跨天时间范围返回完整结果"},
+                {"id": "AC-02", "content": "原有筛选能力保持正常"},
+            ],
+            priority="LOW",
             priority_weight=1,
-            status=TaskStatus.FAILED,
-            employee_id="astra-01",
-            current_phase="failed",
-            progress=78,
-            failure_reason="Redis 测试实例不可达",
-            execution_environment_snapshot=local_snapshot,
-            finished_at=now - timedelta(days=1, hours=1),
-            created_at=now - timedelta(days=1, hours=2),
+            completion_policy="AUTO",
+            status=TaskStatus.READY,
+            current_progress="等待领取",
+            last_activity_at=now - timedelta(minutes=20),
+        ),
+        Task(
+            id="T-20260827-005",
+            source="manual",
+            task_type="REQUIREMENT",
+            category_id="quality-defense",
+            title="优化防线异常通知内容",
+            description="数字员工已提交结果，等待管理员确认。",
+            acceptance_criteria=[{"id": "AC-01", "content": "通知内容清晰可定位"}],
+            priority="HIGH",
+            priority_weight=3,
+            completion_policy="MANUAL_CONFIRM",
+            status=TaskStatus.PENDING_CONFIRMATION,
+            employee_id="astra-03",
+            current_progress="结果已提交，等待确认",
+            result={
+                "summary": "已补充异常来源、影响范围与处置建议。",
+                "changes": ["扩展异常通知模板"],
+                "files": [],
+                "commits": [],
+                "logs": [],
+                "attachments": [],
+                "other": {},
+                "acceptance_results": [
+                    {
+                        "criterion_id": "AC-01",
+                        "status": "SATISFIED",
+                        "description": "通知已包含定位与处置信息",
+                        "evidence": [],
+                    }
+                ],
+            },
+            submitted_at=now - timedelta(minutes=12),
+            last_activity_at=now - timedelta(minutes=12),
+        ),
+        Task(
+            id="T-20260827-006",
+            source="manual",
+            task_type="ISSUE",
+            category_id="automation-engineering",
+            title="等待外部测试数据后继续排查",
+            description="当前可安全释放员工，待数据到齐后继续。",
+            acceptance_criteria=[{"id": "AC-01", "content": "完成问题定位"}],
+            priority="MEDIUM",
+            priority_weight=2,
+            completion_policy="AUTO",
+            status=TaskStatus.SUSPENDED,
+            employee_id="astra-02",
+            current_progress="已保留工作现场，等待外部数据",
+            opencode_session_id="session-task-006",
+            suspension={
+                "reason": "外部测试数据尚未生成",
+                "scene_context": "已排除本地配置问题",
+                "suspended_at": (now - timedelta(minutes=25)).isoformat(),
+            },
+            last_activity_at=now - timedelta(minutes=25),
         ),
     ]
     session.add_all(tasks)
     await session.flush()
 
     run = Run(
-        id="RUN-DEMO-001",
-        task_id="T-20260827-001",
-        employee_id="astra-01",
+        id="RUN-DEMO-003",
+        task_id="T-20260827-003",
+        employee_id="astra-03",
         run_number=1,
-        status="FAILED",
-        executor_type="opencode_cli",
-        opencode_session_id="ses_astra_01_5821",
-        started_at=now - timedelta(minutes=31),
-        finished_at=now - timedelta(minutes=12),
-        exit_code=1,
-        result={"summary": "登录断言定位器失效，已进入自动修复"},
-        execution_environment_snapshot=local_snapshot,
-        model_name="internal/test-model",
+        status=RunStatus.PASSED,
+        executor_type="opencode_ssh",
+        opencode_session_id="session-task-003",
+        started_at=now - timedelta(hours=2),
+        finished_at=now - timedelta(hours=1, minutes=24),
+        exit_code=0,
+        result={"status": "SUCCEEDED", "summary": tasks[2].result["summary"]},
+        execution_environment_snapshot=snapshots["astra-03"],
+        model_name="deepseek/deepseek-v4-flash",
         input_tokens=42000,
         output_tokens=6800,
         cache_read_tokens=112000,
@@ -256,175 +319,64 @@ async def seed_demo_data(session: AsyncSession) -> None:
         [
             ToolUsage(
                 run_id=run.id,
-                tool_name="Bash",
-                call_count=12,
-                success_count=11,
-                failure_count=1,
-                duration_ms=18400,
-            ),
-            ToolUsage(
-                run_id=run.id,
-                tool_name="Read",
-                call_count=11,
-                success_count=11,
-                failure_count=0,
-                duration_ms=3200,
-            ),
-            ToolUsage(
-                run_id=run.id,
-                tool_name="Edit",
-                call_count=6,
-                success_count=6,
-                failure_count=0,
-                duration_ms=5100,
-            ),
-            ToolUsage(
-                run_id=run.id,
-                tool_name="Skill",
-                call_count=3,
-                success_count=3,
-                failure_count=0,
-                duration_ms=2100,
-            ),
+                tool_name=name,
+                call_count=calls,
+                success_count=success,
+                failure_count=calls - success,
+                duration_ms=duration,
+            )
+            for name, calls, success, duration in (
+                ("bash", 12, 11, 18400),
+                ("read", 11, 11, 3200),
+                ("edit", 6, 6, 5100),
+                ("skill", 3, 3, 2100),
+            )
         ]
     )
-    timeline = [
-        ("TASK_CREATED", "created", "从 nr_test_system 导入任务", -38),
-        ("TASK_CLAIMED", "claimed", "Astra-01 已领取任务", -34),
-        ("WORKSPACE_CREATED", "workspace", "独立 Workspace 已创建", -33),
-        ("OPENCODE_STARTED", "executing", "OpenCode Session 已启动", -31),
-        ("SCRIPT_GENERATED", "script_generate", "登录流程脚本生成完成", -22),
-        ("CODE_REVIEWED", "code_review", "静态检视通过", -18),
-        ("EXECUTION_FAILED", "executing", "首次执行失败：登录按钮定位器失效", -12),
-        ("FAULT_ANALYZED", "fault_analysis", "已定位为前端 data-testid 变更", -9),
-        ("REPAIR_COMPLETED", "repairing", "正在应用最小脚本修复", -3),
-    ]
     session.add_all(
         [
             Event(
-                task_id="T-20260827-001",
-                employee_id="astra-01",
-                run_id="RUN-DEMO-001" if event_type not in {"TASK_CREATED", "TASK_CLAIMED"} else None,
+                task_id=task_id,
+                employee_id=employee_id,
+                run_id=run_id,
                 event_type=event_type,
-                phase=phase,
+                phase="work",
                 message=message,
                 detail={},
                 created_at=now + timedelta(minutes=offset),
             )
-            for event_type, phase, message, offset in timeline
+            for task_id, employee_id, run_id, event_type, message, offset in (
+                ("T-20260827-001", None, None, "TASK_CREATED", "任务已创建", -34),
+                ("T-20260827-001", "astra-01", None, "TASK_ASSIGNED", "任务已分配给 Astra-01", -32),
+                (
+                    "T-20260827-001",
+                    "astra-01",
+                    None,
+                    "WORK_PROGRESS",
+                    "已定位权限缓存问题，正在检查影响范围",
+                    -8,
+                ),
+                ("T-20260827-002", "astra-02", None, "WAIT_HUMAN", "Astra-02 请求人工协助", -47),
+                ("T-20260827-003", "astra-03", "RUN-DEMO-003", "TASK_COMPLETED", "Astra-03 完成任务", -84),
+            )
         ]
-    )
-    session.add(
-        Event(
-            task_id="T-20260827-002",
-            event_type="WAIT_HUMAN",
-            phase="environment_blocked",
-            message="支付回调环境不可用，已请求人工介入",
-            detail={"http_status": 503},
-            created_at=now - timedelta(minutes=47),
-        )
     )
     await session.commit()
 
 
-async def upgrade_demo_v02(session: AsyncSession) -> None:
-    """Idempotently enrich a V0.1 demo database without replacing user-created rows."""
-    now = datetime.now(UTC)
-    employee = await session.get(DigitalEmployee, "astra-01")
-    if not employee:
-        return
-    environment = await session.scalar(
-        select(OpenCodeExecutionEnvironment).where(OpenCodeExecutionEnvironment.employee_id == employee.id)
-    )
-    if environment:
-        snapshot = environment_snapshot(environment)
-        tasks = (await session.execute(select(Task).where(Task.employee_id == employee.id))).scalars().all()
-        for task in tasks:
-            task.execution_environment_snapshot = task.execution_environment_snapshot or snapshot
-        run = await session.get(Run, "RUN-DEMO-001")
-        if run and run.total_tokens is None:
-            run.execution_environment_snapshot = snapshot
-            run.model_name = "internal/test-model"
-            run.input_tokens = 42000
-            run.output_tokens = 6800
-            run.cache_read_tokens = 112000
-            run.cache_write_tokens = 0
-            run.total_tokens = 160800
-            run.llm_call_count = 7
-            run.tool_call_count = 32
-            existing_tools = await session.scalar(
-                select(func.count(ToolUsage.id)).where(ToolUsage.run_id == run.id)
-            )
-            if not existing_tools:
-                session.add_all(
-                    [
-                        ToolUsage(
-                            run_id=run.id,
-                            tool_name="Bash",
-                            call_count=12,
-                            success_count=11,
-                            failure_count=1,
-                            duration_ms=18400,
-                        ),
-                        ToolUsage(
-                            run_id=run.id,
-                            tool_name="Read",
-                            call_count=11,
-                            success_count=11,
-                            failure_count=0,
-                            duration_ms=3200,
-                        ),
-                        ToolUsage(
-                            run_id=run.id,
-                            tool_name="Edit",
-                            call_count=6,
-                            success_count=6,
-                            failure_count=0,
-                            duration_ms=5100,
-                        ),
-                        ToolUsage(
-                            run_id=run.id,
-                            tool_name="Skill",
-                            call_count=3,
-                            success_count=3,
-                            failure_count=0,
-                            duration_ms=2100,
-                        ),
-                    ]
-                )
-
-    for employee_id, name, role, host, status in [
-        ("astra-02", "Astra-02", "远程回归员工", "server-a.internal", EnvironmentStatus.UNKNOWN),
-        ("astra-03", "Astra-03", "专项测试员工", "server-b.internal", EnvironmentStatus.UNAVAILABLE),
-    ]:
-        if await session.get(DigitalEmployee, employee_id):
-            continue
-        remote = DigitalEmployee(
-            id=employee_id,
-            name=name,
-            role=role,
-            description="Linux 远程数字员工演示配置。",
-            status=EmployeeStatus.IDLE,
-            capabilities=["script_generate", "script_execute", "result_verify"],
-            skills=["linux", "regression-testing"],
-            source_scope=["manual", "nr_test_system"],
-            online_since=now,
-            last_heartbeat=now,
+async def upgrade_demo_v03(session: AsyncSession) -> None:
+    employees = (await session.execute(select(DigitalEmployee))).scalars().all()
+    for employee in employees:
+        employee.task_types = employee.task_types or ["ISSUE", "REQUIREMENT"]
+        employee.category_ids = employee.category_ids or [
+            "testing-platform",
+            "automation-engineering",
+            "quality-defense",
+        ]
+    tasks = (await session.execute(select(Task))).scalars().all()
+    for task in tasks:
+        task.completion_policy = task.completion_policy or (
+            "MANUAL_CONFIRM" if task.priority in {"VERY_HIGH", "HIGH"} else "AUTO"
         )
-        session.add(remote)
-        await session.flush()
-        session.add(
-            OpenCodeExecutionEnvironment(
-                employee_id=remote.id,
-                mode="LINUX_REMOTE",
-                name="Linux Server A" if employee_id == "astra-02" else "Linux Server B",
-                host=host,
-                username="astra",
-                opencode_path="/usr/local/bin/opencode",
-                workspace_root="/srv/astra/workspaces",
-                status=status,
-                status_detail={"demo": True, "message": "演示远程配置"},
-                labels=["linux"],
-            )
-        )
+        task.last_activity_at = task.last_activity_at or task.updated_at
     await session.commit()

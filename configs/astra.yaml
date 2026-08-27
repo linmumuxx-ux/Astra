@@ -3,9 +3,8 @@ runtime:
   heartbeat_interval: 10
   heartbeat_timeout: 60
   dispatcher_interval: 5
-
-task:
-  default_max_retry_count: 3
+  inactivity_timeout: 900
+  recovery_interval: 30
 
 executor:
   type: opencode_cli

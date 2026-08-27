@@ -1,6 +1,8 @@
 import asyncio
 import shlex
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from app.config.settings import Settings
 from app.executors.base import ExecutorResult
@@ -15,8 +17,13 @@ class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
         environment: OpenCodeExecutionEnvironment,
         settings: Settings,
         runtime: ExecutionEnvironmentRuntime | None = None,
+        event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ):
-        super().__init__(settings, opencode_binary=environment.opencode_path)
+        super().__init__(
+            settings,
+            opencode_binary=environment.opencode_path,
+            event_callback=event_callback,
+        )
         self.environment = environment
         self.runtime = runtime or ExecutionEnvironmentRuntime(settings)
 

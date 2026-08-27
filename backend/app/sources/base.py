@@ -6,12 +6,13 @@ from typing import Any
 @dataclass(slots=True)
 class ExternalTask:
     external_task_id: str
-    task_type: str
     title: str
+    task_type: str = "REQUIREMENT"
+    category_id: str = "testing-platform"
     description: str = ""
-    input: dict[str, Any] = field(default_factory=dict)
-    definition_of_done: list[str] = field(default_factory=list)
-    priority: str = "P2"
+    acceptance_criteria: list[str] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    priority: str = "MEDIUM"
 
 
 class TaskSource(ABC):

@@ -3,12 +3,12 @@ import os
 import shlex
 import shutil
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
 from app.domain import EnvironmentStatus, ExecutionMode
-from app.models import OpenCodeExecutionEnvironment, Task
+from app.models import OpenCodeExecutionEnvironment
 
 
 @dataclass(slots=True)
@@ -196,24 +196,6 @@ class ExecutionEnvironmentRuntime:
         else:
             checks.append(CheckItem("OpenCode 可启动", False, "未执行：OpenCode 不存在"))
         return checks
-
-    async def prepare_remote_workspace(self, task: Task, environment: OpenCodeExecutionEnvironment) -> Path:
-        workspace = PurePosixPath(environment.workspace_root) / task.id
-        directories = " ".join(
-            shlex.quote(str(workspace / name)) for name in ("source", "output", "evidence", "logs", "meta")
-        )
-        commands = [f"mkdir -p {directories}"]
-        project_path = task.input.get("project_path")
-        if project_path:
-            project = shlex.quote(str(project_path))
-            source = shlex.quote(str(workspace / "source"))
-            commands.append(
-                f'test -d {project} && if [ -z "$(ls -A {source})" ]; then cp -a {project}/. {source}/; fi'
-            )
-        code, _, stderr = await self.run_remote(environment, " && ".join(commands), timeout=120)
-        if code:
-            raise RuntimeError(f"远程 Workspace 创建失败: {stderr.strip() or f'退出码 {code}'}")
-        return Path(str(workspace))
 
 
 def checks_status(checks: list[CheckItem]) -> EnvironmentStatus:

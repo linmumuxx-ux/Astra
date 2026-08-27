@@ -26,11 +26,11 @@ class Settings(BaseSettings):
     dispatcher_interval: int = 5
     heartbeat_interval: int = 10
     heartbeat_timeout: int = 60
-    default_max_retry_count: int = 3
-
+    inactivity_timeout: int = 900
+    recovery_interval: int = 30
     executor_type: str = "opencode_cli"
     opencode_binary: str = "opencode"
-    opencode_agent: str = "maintainer"
+    opencode_agent: str | None = None
     opencode_model: str | None = None
     opencode_timeout_seconds: int = 3600
     ssh_binary: str = "ssh"

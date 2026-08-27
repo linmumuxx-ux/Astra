@@ -1,29 +1,30 @@
-# Astra V0.2 部署手册
+# Astra V0.4 部署手册
 
 ## 1. 部署拓扑
 
-推荐使用 Docker Compose 部署：
+推荐使用 Docker Compose：
 
 - `astra-frontend`：Nginx 托管 Vue 管理台并代理 `/api/`；
-- `astra-backend`：FastAPI、REST API、SSE、环境连接检测和数据库迁移；
-- `astra-worker`：Celery Worker + Beat，运行 Scout、Dispatcher、Heartbeat、OpenCode 和 Verifier；
-- `postgres`：员工、环境、任务、Run、Token、工具调用、Event 和证据元数据；
-- `redis`：Celery Broker/Result Backend。
+- `astra-backend`：FastAPI、REST API、SSE、员工环境检查和数据库迁移；
+- `astra-worker`：Celery Worker + Beat，运行任务发现、任务分配、心跳与 OpenCode；
+- `postgres`：分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
+- `redis`：Celery Broker 与 Result Backend。
 
-Workspace 使用持久卷。Linux 远程模式的源码、输出和验证命令位于远程服务器；Astra 仍在本地 Workspace 证据区保存 OpenCode 输出、执行日志和验证报告。
+员工工作空间是长期工程目录，必须由运维提前准备并挂载给 Worker。Astra 自己的 `/workspaces/records` 只用于保存 OpenCode 观察记录，不是任务源码工作区。
 
 ## 2. 前置条件
 
-- Linux x86_64/arm64，建议从 4 核 CPU、8 GB 内存、30 GB 磁盘起步；
+- Linux x86_64 或 arm64，建议从 4 核 CPU、8 GB 内存、30 GB 磁盘起步；
 - Docker Engine 24+ 与 Docker Compose v2；
-- 可访问任务源、代码工程、测试环境和模型服务；
-- 本地模式需要容器内可用的 Linux OpenCode CLI；
-- 远程模式需要目标机 SSH、OpenCode 和可写 Workspace；
-- TLS 域名与企业认证网关。
+- PostgreSQL 16、Redis 7，或 Compose 中对应服务；
+- 可访问任务源、代码仓库、模型服务和员工需要的外部系统；
+- 本地模式需要 Worker 容器内可用的 Linux OpenCode CLI；
+- 远程模式需要目标机 SSH、OpenCode 和员工专属可写工作空间；
+- TLS 域名和企业认证网关。
 
 管理台没有内置登录/RBAC，不得直接暴露到公网。
 
-## 3. 获取代码与配置
+## 3. 获取代码与环境变量
 
 ```bash
 git clone git@github.com:linxuyiyi/Astra.git
@@ -31,52 +32,83 @@ cd Astra
 cp deploy/docker.env.example .env
 ```
 
-正式部署应固定 tag 或 commit，并将 `ASTRA_SEED_DEMO=false`。`.env` 已被 Git 忽略，不得提交真实秘密。
+生产环境必须固定 tag 或 commit，并设置：
+
+```bash
+ASTRA_SEED_DEMO=false
+```
 
 关键变量：
 
-| 变量 | 用途 | 建议 |
+| 变量 | 用途 | 生产建议 |
 | --- | --- | --- |
-| `ASTRA_DATABASE_URL` | 异步 SQLAlchemy 数据库地址 | PostgreSQL，凭据从秘密系统注入 |
-| `ASTRA_POSTGRES_PASSWORD` | Compose PostgreSQL 密码 | 强随机值并安全分发 |
-| `ASTRA_REDIS_URL` | Celery Broker/Backend | 生产 Redis 地址 |
-| `ASTRA_SEED_DEMO` | 演示数据 | 生产必须为 `false` |
-| `ASTRA_OPENCODE_BINARY` | 默认本地 CLI 路径 | 容器内绝对路径 |
+| `ASTRA_DATABASE_URL` | 异步 SQLAlchemy 数据库地址 | 使用 PostgreSQL，凭据由秘密系统注入 |
+| `ASTRA_POSTGRES_PASSWORD` | Compose PostgreSQL 密码 | 使用强随机值 |
+| `ASTRA_REDIS_URL` | Celery Broker / Backend | 使用受控 Redis |
+| `ASTRA_SEED_DEMO` | 演示数据开关 | 必须为 `false` |
+| `ASTRA_WORKSPACE_ROOT` | Astra 观察记录目录 | 使用持久卷，不作为员工源码目录 |
+| `ASTRA_OPENCODE_MODEL` | 可选的全局模型覆盖 | 留空时使用员工工作空间中的 OpenCode 配置 |
+| `ASTRA_OPENCODE_AGENT` | 可选的兼容性 Agent 覆盖 | 建议留空，由 OpenCode 自主选择 |
+| `ASTRA_INACTIVITY_TIMEOUT` | 无可观察活动多久后提示 | 默认 `900` 秒；只提示，不改任务状态 |
+| `ASTRA_RECOVERY_INTERVAL` | 恢复和活跃度扫描间隔 | 默认 `30` 秒 |
 | `ASTRA_SSH_BINARY` | Linux 远程 SSH 客户端 | 默认 `ssh` |
-| `ASTRA_SSH_CONNECT_TIMEOUT_SECONDS` | SSH 连接超时 | 默认 10 秒 |
-| `ASTRA_NR_TEST_SYSTEM_ENDPOINT` | 任务源基地址 | 内网 HTTPS |
-| `ASTRA_NR_TEST_SYSTEM_TOKEN` | 任务源认证 | 只从秘密系统或 `.env` 注入 |
+| `ASTRA_NR_TEST_SYSTEM_ENDPOINT` | 外部任务源地址 | 使用内网 HTTPS |
+| `ASTRA_NR_TEST_SYSTEM_TOKEN` | 外部任务源认证 | 只从秘密系统注入 |
 
-## 4. 准备本地 OpenCode 环境
+## 4. 准备员工本地工作空间
 
-仓库不会打包公司内部 OpenCode。若员工使用 `LOCAL`：
+若员工环境使用“本地”，这里的本地指 Astra Worker 所在主机或容器。
 
-1. 在受控构建阶段将 Linux OpenCode 安装进后端镜像；或
-2. 通过只读卷把二进制和必要配置同时挂载到 `astra-backend` 与 `astra-worker`。
+每名员工需要一个长期工程目录。例如：
 
-后端需要同一二进制来执行“测试连接”，Worker 需要它执行任务。两个容器必须看到相同路径和兼容配置。
-
-验证：
-
-```bash
-docker compose run --rm astra-backend sh -lc "$ASTRA_OPENCODE_BINARY --version"
-docker compose run --rm astra-worker sh -lc "$ASTRA_OPENCODE_BINARY --version"
+```text
+/workspaces/astra-01/nr_test_system
+/workspaces/astra-02/automation_platform
 ```
 
-不要把 macOS 二进制挂载到 Linux 容器，也不要将模型凭据写入镜像层或仓库。
+目录必须：
 
-## 5. 准备 Linux 远程执行
+- 已包含员工需要处理的工程；
+- 对 Worker 运行账号可读写；
+- 包含该员工自己的 OpenCode 配置、Agent、Skills 与 Tools（如业务需要）；
+- 不与另一名同时工作的员工共享同一个可写目录。
 
-V0.2 镜像包含 `openssh-client`，但不会托管密码或私钥。部署人员需在后端和 Worker 的运行环境中准备：
+在 Compose override 中把实际工程挂载到 Worker：
 
-- 到目标服务器的网络与防火墙权限；
+```yaml
+services:
+  astra-backend:
+    volumes:
+      - /srv/astra/workspaces:/workspaces
+  astra-worker:
+    volumes:
+      - /srv/astra/workspaces:/workspaces
+```
+
+配置中心的员工“工作空间”填写容器内路径，例如 `/workspaces/astra-01/nr_test_system`。
+
+仓库不打包 OpenCode。应在受控构建阶段安装 Linux OpenCode，或通过只读卷同时挂载到 Backend 和 Worker 能看到的路径。Backend 用它测试连接，Worker 用它处理任务。
+
+```bash
+docker compose exec astra-backend opencode --version
+docker compose exec astra-worker opencode --version
+docker compose exec astra-worker test -w /workspaces/astra-01/nr_test_system
+```
+
+不要把 macOS 二进制挂载到 Linux 容器，也不要把模型凭据写进镜像层或仓库。
+
+## 5. 准备 Linux 远程工作空间
+
+远程员工需要：
+
+- 到目标服务器的网络和防火墙权限；
 - SSH Agent，或只读挂载的私钥文件；
 - 已核验的 `known_hosts`，避免首次连接交互；
-- 远程绝对 Workspace 根目录及写权限；
-- 远程 OpenCode 路径与执行权限；
-- 远程任务 `project_path` 的读取权限。
+- 员工专属的远程工程工作空间；
+- 远程 OpenCode 路径及执行权限；
+- OpenCode 所需模型、Agent、Skills 和 Tools 配置。
 
-示例 Compose override（路径仅示意）：
+示例只读 SSH 挂载：
 
 ```yaml
 services:
@@ -88,17 +120,49 @@ services:
       - ./deploy/ssh:/root/.ssh:ro
 ```
 
-保护 `deploy/ssh`，不要提交该目录。配置中心的 SSH Key 路径应填写容器内路径，例如 `/root/.ssh/id_ed25519`。Astra 使用 `BatchMode=yes`，不支持交互式密码输入。
-
-在容器中先做等价检查：
+Astra 使用 `BatchMode=yes`，不支持交互式密码。配置中心只保存密钥路径，不读取或保存私钥内容。
 
 ```bash
-docker compose exec astra-worker ssh -o BatchMode=yes astra@server-a.internal true
-docker compose exec astra-worker ssh astra@server-a.internal '/usr/local/bin/opencode --version'
-docker compose exec astra-worker ssh astra@server-a.internal 'mkdir -p /srv/astra/workspaces && test -w /srv/astra/workspaces'
+docker compose exec astra-worker ssh -o BatchMode=yes astra01@server-a.internal true
+docker compose exec astra-worker ssh astra01@server-a.internal '/usr/local/bin/opencode --version'
+docker compose exec astra-worker ssh astra01@server-a.internal 'test -d /home/astra01/nr_test_system && test -w /home/astra01/nr_test_system'
 ```
 
-## 6. 构建与启动
+## 6. 数据库升级
+
+启动前先备份数据库。标准升级：
+
+```bash
+cd backend
+alembic current
+alembic upgrade head
+alembic current
+```
+
+升级后应看到 `0004_astra_v04 (head)`。
+
+迁移 `0003_astra_v03` 会：
+
+- 新建可配置任务分类表并写入三个默认分类；
+- 为员工增加支持任务类型和支持分类；
+- 为任务增加分类、结构化验收标准、附件、自然语言进展和人工介入信息；
+- 把 P0/P1/P2/P3 映射为很高/高/中/低对应枚举；
+- 把旧细分状态合并为待领取或处理中；
+- 将旧完成标准迁移为结构化验收标准；
+- 将旧任务结果包入 V0.3 结果结构，历史验收项标记为“无法确认”；
+- 删除任务级工程输入、Workspace、固定 Phase、百分比和平台验证/重试字段；
+- 删除员工 Skills、Capabilities、来源范围、自动修复和可配置并发字段。
+
+迁移 `0004_astra_v04` 会：
+
+- 增加任务完成策略、挂起现场、执行异常、退回历史和活跃度字段；
+- 将旧任务 `PAUSED` 映射为 `SUSPENDED`；
+- 将很高/高优先级存量任务默认设为人工确认；
+- 以原 `updated_at` 初始化最后活动时间。
+
+迁移前必须备份。不要对来源不明或结构不一致的数据库盲目执行 `alembic stamp`。
+
+## 7. 构建与启动
 
 ```bash
 docker compose config
@@ -106,7 +170,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-后端启动命令会先执行 `alembic upgrade head`。检查：
+Backend 启动命令会先执行 `alembic upgrade head`。
 
 ```bash
 curl --fail http://127.0.0.1:${ASTRA_BACKEND_PORT:-8100}/api/health
@@ -114,76 +178,31 @@ curl --fail http://127.0.0.1:${ASTRA_FRONTEND_PORT:-8080}/
 docker compose logs --tail=100 astra-backend astra-worker
 ```
 
-健康 API 应返回 `status: ok`，Worker 应连接 Redis 并运行 Beat。
+Worker 应连接 Redis 并注册任务发现、分配、心跳、恢复扫描和 OpenCode 处理任务。
 
-## 7. V0.1 升级到 V0.2
+## 8. 首次上线配置
 
-V0.2 迁移 `0002_astra_v02` 会：
+1. 打开“配置中心 → 任务分类”，确认生产使用的分类。
+2. 创建或更新员工基本信息与工作范围。
+3. 为每名员工配置真实工程工作空间。
+4. 点击“测试连接”，确认 OpenCode、SSH（如有）和工作空间均正常。
+5. 确认员工是否允许自动领取和自主执行。
+6. 配置外部任务源后再启动正式 Task Scout。
 
-- 为现有员工补充自主策略字段；
-- 为每名 V0.1 员工创建状态为 `UNKNOWN` 的默认本地环境；
-- 为 Task/Run 添加环境快照；
-- 为 Run 添加模型、Token、LLM/工具计数；
-- 创建工具使用量表。
+任务中不再传入 `project_path`、验证脚本或执行命令。若外部任务源仍使用 V0.2 契约，应先在 Adapter 中完成字段映射。
 
-升级前备份数据库和 Workspace。标准 Alembic 部署直接执行：
+## 9. 生产安全
 
-```bash
-cd backend
-alembic current
-alembic upgrade head
-```
+- 入口网关提供 HTTPS、SSO/OIDC、管理员授权、速率限制与审计；
+- `/api/events/stream` 关闭代理缓冲并允许长连接；
+- 员工工作空间包含源代码和运行产物，应按敏感研发数据保护；
+- 一名员工使用一个独立可写工作空间，V0.4 不支持并行 Worktree；
+- SSH 私钥只由基础设施挂载，数据库只保存路径；
+- 远程用户使用最小权限账号；
+- PostgreSQL、Redis、管理台和 API 均限制在受控网络；
+- OpenCode 输出记录可能包含工程信息，`ASTRA_WORKSPACE_ROOT/records` 应加密备份并限制访问。
 
-若早期 SQLite 开发库由 `create_all` 创建、已有 V0.1 表但 `alembic current` 为空，应先确认它确实只有 V0.1 结构，再执行：
-
-```bash
-cp data/astra.db data/astra-v01-before-v02.db.backup
-alembic stamp 0001_astra_v01
-alembic upgrade head
-alembic current
-```
-
-不要对来源不明或结构不一致的数据库盲目 `stamp`。升级后应看到 `0002_astra_v02 (head)`，并在配置中心逐个测试默认环境。
-
-## 8. 生产安全
-
-入口网关应提供 HTTPS、SSO/OIDC、管理员授权、速率限制和审计。`/api/events/stream` 需关闭代理缓冲并允许长连接。
-
-额外边界：
-
-- 任务 Workspace 可包含源代码、日志和测试证据，应作为敏感研发数据保护；
-- SSH 私钥仅由基础设施挂载，Astra 数据库只允许保存路径；
-- 远程用户使用最小权限账号，不应授予无关主机或目录访问；
-- `project_path` 和验证命令属于高权限任务输入，应限制任务创建来源；
-- 生产数据库、Redis、管理台和 API 均应限制在受控网络。
-
-## 9. 上线验收
-
-发布前：
-
-```bash
-cd frontend
-npm ci
-npx playwright install chromium
-cd ..
-python3 -m venv .venv
-.venv/bin/pip install -e 'backend[dev]'
-./scripts/verify.sh
-```
-
-部署后逐项验收：
-
-1. 总览无错误横幅，SSE 显示 `LIVE`。
-2. 每名启用员工都配置且测试了默认环境。
-3. 本地环境分项通过 OpenCode 存在、可启动、Workspace 可写。
-4. Linux 远程环境分项通过 SSH、Workspace 和 OpenCode 检查。
-5. 创建一个受控 P3 任务，确认它使用正确员工与环境快照。
-6. 确认 Run 记录实际 Token、模型和工具调用；缺失字段显示 `—`。
-7. 确认 Verifier 通过后任务才完成，并生成执行日志和报告。
-8. 验证失败/转人工后 Run 用量仍可查看。
-9. 再开启正式 Task Scout。
-
-## 10. 备份、恢复与回滚
+## 10. 备份与恢复
 
 PostgreSQL 备份：
 
@@ -191,31 +210,48 @@ PostgreSQL 备份：
 docker compose exec -T postgres pg_dump -U astra -Fc astra > astra-backup.dump
 ```
 
-Workspace 使用卷快照或文件级备份。数据库和 Workspace 尽量使用同一维护窗口。
+同时备份：
 
-升级前固定目标 commit、备份、在预发布运行全量门禁。回滚前确认数据库迁移兼容性；若需数据回退，应从升级前备份恢复到隔离实例验证，禁止直接覆盖唯一生产副本。
+- Astra 观察记录卷；
+- 员工工作空间或其对应 Git 仓库；
+- 非秘密平台配置；
+- SSH `known_hosts` 和基础设施侧密钥挂载配置。
+
+数据库与文件尽量使用同一维护窗口。回滚前在隔离环境验证迁移兼容性，不要直接覆盖唯一生产副本。
 
 ## 11. 运维排查
 
 ### 员工不领取任务
 
-检查员工是否启用、`auto_claim`、状态、能力/来源匹配、并发上限，以及环境是否 `AVAILABLE`。
+检查员工是否启用、空闲、允许自动领取，环境是否 `AVAILABLE`，以及任务类型和分类是否在员工工作范围内。
 
-### 本地环境检测失败
+### 本地环境异常
 
-在后端和 Worker 中分别运行 OpenCode `--version`，并以相同运行账号测试 Workspace 写入。
+在 Backend 和 Worker 中分别运行 OpenCode `--version`，再以 Worker 账号检查员工工作空间是否存在且可写。
 
-### Linux 远程检测失败
+### Linux 远程环境异常
 
-使用相同容器、账号、Host、Port 和 Key 重放批处理 SSH。重点检查 DNS、网络、`known_hosts`、文件权限、远程目录和 OpenCode 路径。
+使用相同容器、账号、Host、Port 与 Key 重放批处理 SSH。重点检查 DNS、网络、`known_hosts`、文件权限、远程工作空间和 OpenCode 路径。
 
-### Token 或工具数据为 `—`
+### 任务进入等待人工
 
-检查 Run 的 `opencode_output.json` 是否包含 JSON 格式使用量/工具事件，以及 OpenCode 是否使用 `--format json`。Astra 不会用字符数补算。
+查看任务的结构化人工介入信息、Event、最近 Run 的退出码和 OpenCode stderr。补充信息后使用“继续任务”，系统会恢复该任务原 Session。
 
-### 任务反复进入人工介入
+### 任务进入执行异常
 
-按顺序检查任务 Event、Run 退出码、OpenCode stderr、工具失败、Verifier 报告和 `human_required_reason`。
+先保留数据库和 `ASTRA_WORKSPACE_ROOT/records` 中的现场。在员工详情重新执行“测试连接”，只有环境在异常发生后重新检查为 `AVAILABLE` 时，手工或周期恢复才会继续原任务。如原 Session 已不可用，Worker 会携带已保留进展、挂起现场、人工补充或退回意见创建新 Session。
+
+### 重启后未完成任务
+
+Backend 启动和 Celery Beat 会扫描 `RUNNING` / `WAIT_HUMAN` / `SUSPENDED` / `EXECUTION_ERROR`。等待人工和已挂起任务保持原状态；运行中任务只标记无活动提示；执行异常任务仅在环境经新一次检查恢复后自动继续。
+
+### Token 或 Tool 显示 `—`
+
+检查 Run 对应 OpenCode JSON 事件是否包含实际用量与工具事件。Astra 不会用字符数补算。
+
+### 任务完成但验收项显示“无法确认”
+
+表示员工最终回复没有返回可结构化识别的逐项结论。Astra 不会运行独立 Verifier 或伪造确认结果，应由员工或人工补充验收说明。
 
 ## 12. 停止服务
 
@@ -223,4 +259,4 @@ Workspace 使用卷快照或文件级备份。数据库和 Workspace 尽量使�
 docker compose down
 ```
 
-不要在生产使用 `docker compose down -v`，它会删除 PostgreSQL 与 Workspace 持久卷。
+不要在生产使用 `docker compose down -v`，它会删除 PostgreSQL 与 Astra 观察记录卷。员工外部工作空间是否受影响取决于实际挂载方式，也必须在执行前确认。

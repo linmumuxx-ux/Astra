@@ -1,28 +1,33 @@
-# Astra V0.2
+# Astra V0.4
 
-Astra 是面向测试业务的常驻型数字员工平台。它用确定性程序发现和调度任务，以每任务独立的 Workspace 与 OpenCode Session 执行工作，并在独立 Verifier 通过后才完成任务。
+Astra 是面向长期数字员工的任务分配、工作观察、人工介入和结果管理平台。
 
-当前版本包含：
+Astra 定义任务目标、分类、优先级、执行员工和验收标准；任务真正如何完成，由数字员工自己的 OpenCode Agent 决定。平台不编排员工内部工作步骤，不管理 Skill 或 Tool，也不运行独立 Verifier。
 
-- FastAPI + SQLAlchemy 后端、集中状态机、事件与 SSE；
-- Task Scout、Dispatcher、Celery Worker、Heartbeat；
-- OpenCode CLI Executor 与 `nr_test_system` Task Source Adapter；
-- 文件、执行结果和证据链的确定性 Verifier；
-- Vue 3 + TypeScript 管理台：总览、数字员工、任务中心、任务详情、运行记录、人工介入和配置中心；
-- PostgreSQL、Redis 与 Docker Compose 部署；
-- SQLite 本地开发模式和演示数据。
-- 每名数字员工唯一绑定的 `LOCAL` 或 `LINUX_REMOTE` OpenCode 执行环境、分项连接检测与任务级不可变环境快照；
-- OpenCode 实际 Token、LLM 调用与工具调用采集，以及 Run → Task → Employee → Platform 聚合展示。
+V0.4 保持 V0.3 的职责边界，新增长期连续工作与更直观的数字办公室。当前版本包含：
 
-## 快速启动（本地开发）
+- 问题 / 需求两种任务类型，以及可配置的任务分类；
+- 自动分配或指定员工，匹配依据为员工状态、任务类型与任务分类；
+- 每名员工一个本地或 Linux 远程 OpenCode 环境与长期工作空间；
+- 每项任务独立 OpenCode Session，挂起、恢复和重启后优先继续原 Session；
+- 指定员工任务优先、再按优先级和 FIFO 的连续自动领取；
+- 安全挂起、待人工确认、执行异常恢复和无活动提示；
+- 数字办公室、待处理中心与可选“减少动效”；
+- 可读工作进展、详细操作与原始 Run / 日志三层观察；
+- 员工提交的处理结果、逐项验收结果与证据；
+- Run、Task、Employee 和 Platform 四级 Token / Tool 汇总；
+- Vue 3 管理台、FastAPI 后端、PostgreSQL、Redis 与 Celery Worker。
+
+## 快速启动
 
 后端需要 Python 3.11+，前端需要 Node.js 20+。
 
 ```bash
 cd backend
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
+alembic upgrade head
 uvicorn app.main:app --reload --port 8100
 ```
 
@@ -30,11 +35,11 @@ uvicorn app.main:app --reload --port 8100
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-访问 `http://localhost:5173`，API 文档在 `http://localhost:8100/docs`。
+访问 `http://localhost:5173`，API 文档位于 `http://localhost:8100/docs`。
 
 ## Docker Compose
 
@@ -42,57 +47,38 @@ npm run dev
 docker compose up --build
 ```
 
-管理台在 `http://localhost:8080`，API 在 `http://localhost:8100`。
+管理台位于 `http://localhost:8080`，API 位于 `http://localhost:8100`。
 
-`astra-worker` 镜像不会打包公司内部 OpenCode。正式容器运行前，需要按公司分发方式把 Linux 版改装 OpenCode 加入该镜像或挂载到 `ASTRA_OPENCODE_BINARY` 指定位置；macOS 的本机二进制不能直接挂入 Linux 容器。开发阶段可在已配置 OpenCode 的宿主机直接启动 Celery Worker。
+正式运行前需把 Linux 版 OpenCode 安装到 Worker 镜像或挂载到容器。员工配置中的“工作空间”必须直接指向该员工长期使用的工程目录，而不是 Astra 创建的任务目录。
 
-## 运行真实任务前
-
-1. 按 `.env.example` 配置 `nr_test_system` 的正式发现/回填地址；目前目标仓库尚未提供附件约定的 Astra 任务接口，因此 Adapter 契约已实现，但需要对端补齐接口或调整路径映射。
-2. 确认本机 `opencode run --format json` 可用，并把任务输入中的 `project_path` 指向允许执行的工程。
-3. 在“配置中心 → 数字员工配置 → 执行环境”保存并测试环境；只有状态为“正常”的环境才参与自动调度。
-4. 任务必须提供 `input.verification.test_command`；没有可程序化验证命令时，Verifier 会拒绝把任务标为完成并转入人工介入。
-
-任务输入示例：
+## 创建任务示例
 
 ```json
 {
-  "task_type": "script_generate",
-  "title": "生成并验证登录测试脚本",
-  "description": "为登录流程补充自动化测试并在真实环境执行。",
-  "input": {
-    "project_path": "/path/to/nr_test_system",
-    "verification": {
-      "test_command": ["pytest", "tests/test_login.py", "-q"],
-      "required_files": ["tests/test_login.py"]
-    }
-  },
-  "definition_of_done": ["脚本生成完成", "测试真实执行并通过", "验证证据已保存"],
-  "priority": 2
+  "source": "manual",
+  "task_type": "ISSUE",
+  "category_id": "testing-platform",
+  "priority": "VERY_HIGH",
+  "completion_policy": "MANUAL_CONFIRM",
+  "title": "修复用户登录接口偶发 500 问题",
+  "description": "用户登录接口在特定情况下偶发 500，请定位并解决。",
+  "acceptance_criteria": [
+    { "content": "当前 500 问题解决" },
+    { "content": "原有登录能力正常" },
+    { "content": "相关检查通过" },
+    { "content": "提供修改结果说明" }
+  ],
+  "employee_id": "astra-01"
 }
 ```
 
-## 测试
-
-```bash
-./scripts/verify.sh
-```
-
-该命令依次执行后端静态检查、后端测试、前端类型检查、生产构建和 Chromium E2E。首次运行 E2E 前执行：
-
-```bash
-cd frontend
-npm ci
-npx playwright install chromium
-```
-
-只运行隔离的浏览器验收：`./scripts/e2e.sh`。HTML 报告生成在 `artifacts/playwright-report/index.html`。
+任务中不填写工程路径、Workspace、Skill、Tool、模型、执行命令或验证脚本。
 
 ## 文档
 
-- [操作使用指南](docs/USER_GUIDE.md)
-- [部署手册](docs/DEPLOYMENT.md)
-- [E2E 验收报告](docs/verification/E2E-2026-08-27.md)
-- [V0.2 实现与需求映射](docs/implementation-brief.md)
+- [V0.4 操作使用指南](docs/USER_GUIDE.md)
+- [V0.4 部署手册](docs/DEPLOYMENT.md)
+- [V0.4 实现与需求映射](docs/implementation-brief.md)
+- [原始需求资料](docs/requirements/README.md)
 
-原始需求和原型已保存在 [docs/requirements](docs/requirements) 与 [docs/references](docs/references)。实现边界和验收映射见 [docs/implementation-brief.md](docs/implementation-brief.md)。
+V0.1–V0.4 原始需求及原型资料均保存在仓库中。V0.2 E2E 报告仅作为历史记录；按用户最新指示，V0.4 未执行功能或 E2E 验收。

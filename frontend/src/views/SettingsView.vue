@@ -1,134 +1,65 @@
 <template>
   <div class="page" data-testid="settings-page">
-    <section class="page-intro compact-intro"><div><span class="kicker"><Settings :size="13" /> SYSTEM CONFIG</span><h2>配置中心</h2><p>配置数字员工、默认 OpenCode 执行环境与自主工作策略。</p></div><span class="config-mode"><LockKeyhole :size="13" /> 不保存密码与私钥内容</span></section>
+    <section class="page-intro compact-intro"><div><h2>配置中心</h2><p>管理员工工作范围、OpenCode 工作环境、任务分类和平台设置。</p></div><span class="config-mode"><LockKeyhole :size="13" /> 不保存密码与私钥内容</span></section>
     <nav class="settings-tabs"><button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id"><component :is="item.icon" :size="14" />{{ item.label }}</button></nav>
 
-    <section v-if="tab === 'employees'" class="settings-layout settings-layout--v02">
-      <AstraPanel title="数字员工" subtitle="一名员工绑定一个默认执行环境">
-        <template #action><button class="icon-button" aria-label="新增员工" data-testid="create-employee" @click="beginCreate"><Plus :size="15" /></button></template>
-        <div class="settings-employee-list"><button v-for="employee in store.employees" :key="employee.id" class="settings-employee" :class="{ active: !creating && selectedId === employee.id }" @click="selectEmployee(employee.id)"><span class="employee-avatar employee-avatar--mini"><Bot :size="18" /><i /></span><div><strong>{{ employee.name }}</strong><small>{{ environmentLabel(employee.execution_environment) }}</small></div><AstraStatusBadge :status="employee.execution_environment?.status ?? 'UNKNOWN'" /></button><button class="settings-new" @click="beginCreate"><Plus :size="14" /> 新建员工</button></div>
-      </AstraPanel>
+    <section v-if="tab === 'employees'" class="settings-layout settings-layout--v03">
+      <AstraPanel title="员工配置" subtitle="每位员工拥有自己的工作范围与长期工作空间"><template #action><button class="icon-button" aria-label="新增员工" @click="beginCreate"><Plus :size="15" /></button></template><div class="settings-employee-list"><button v-for="employee in store.employees" :key="employee.id" class="settings-employee" :class="{ active: !creating && selectedId === employee.id }" @click="selectEmployee(employee.id)"><span class="employee-avatar employee-avatar--mini"><Bot :size="18" /><i /></span><div><strong>{{ employee.name }}</strong><small>{{ employee.role }}</small></div><AstraStatusBadge :status="employee.execution_environment?.status ?? 'UNKNOWN'" /></button><button class="settings-new" @click="beginCreate"><Plus :size="14" /> 新建员工</button></div></AstraPanel>
 
-      <AstraPanel :title="creating ? '创建数字员工' : `${selectedEmployee?.name ?? '员工'} 配置`" :subtitle="creating ? '保存后可立即检测执行环境' : '环境变更仅应用于后续新任务'">
-        <template #action><AstraStatusBadge v-if="!creating && selectedEmployee?.execution_environment" :status="selectedEmployee.execution_environment.status" /></template>
-        <div v-if="selectedEmployee?.current_task_count" class="configuration-warning"><TriangleAlert :size="15" /><span>员工正在执行任务。本次环境修改只影响后续领取的新任务，当前任务继续使用原环境快照。</span></div>
+      <AstraPanel :title="creating ? '创建数字员工' : `${selectedEmployee?.name ?? '员工'} 配置`" subtitle="配置只描述员工负责的工作和工作环境"><template #action><AstraStatusBadge v-if="!creating && selectedEmployee?.execution_environment" :status="selectedEmployee.execution_environment.status" /></template>
         <nav class="sub-tabs"><button v-for="item in employeeTabs" :key="item.id" :class="{ active: employeeTab === item.id }" @click="employeeTab = item.id">{{ item.label }}</button></nav>
         <form class="config-form config-form--editable" @submit.prevent="save">
-          <div v-if="employeeTab === 'basic'">
-            <div class="form-grid"><label>员工 ID<input v-model.trim="form.id" :readonly="!creating" required placeholder="Astra-04" /></label><label>显示名称<input v-model.trim="form.name" required placeholder="Astra-04" /></label></div>
-            <label>岗位<input v-model.trim="form.role" required placeholder="测试执行员工" /></label>
-            <label>描述<textarea v-model="form.description" rows="4" placeholder="该数字员工的工作职责与边界" /></label>
-            <label>任务来源范围<input v-model="form.sourceScope" placeholder="manual, nr_test_system" /><small>多个来源用英文逗号分隔</small></label>
-            <label class="check-row"><input v-model="form.enabled" type="checkbox" /><span><strong>启用员工</strong><small>关闭后不参与 Dispatcher 调度</small></span></label>
-          </div>
+          <div v-if="employeeTab === 'basic'"><div class="form-grid"><label>员工 ID<input v-model.trim="form.id" :readonly="!creating" required placeholder="astra-04" /></label><label>员工名称<input v-model.trim="form.name" required placeholder="Astra-04" /></label></div><label>岗位<input v-model.trim="form.role" required placeholder="测试平台开发" /></label><label>说明<textarea v-model="form.description" rows="4" placeholder="说明该员工的工作职责与边界" /></label><label class="check-row"><input v-model="form.enabled" type="checkbox" /><span><strong>启用员工</strong><small>停用后不再自动分配新任务</small></span></label></div>
 
-          <div v-else-if="employeeTab === 'capabilities'">
-            <label>能力标签<textarea v-model="form.capabilities" rows="5" placeholder="script_generate, script_execute, result_verify" /><small>用于 Dispatcher 的确定性任务匹配</small></label>
-            <label>技能标签<textarea v-model="form.skills" rows="5" placeholder="pytest, playwright, api-test" /><small>用于描述员工擅长的测试技术栈</small></label>
-          </div>
+          <div v-else-if="employeeTab === 'scope'" class="scope-config"><fieldset><legend>支持任务类型</legend><label class="check-row"><input v-model="form.task_types" type="checkbox" value="ISSUE" /><span><strong>问题</strong><small>缺陷、故障、异常或已有能力失效</small></span></label><label class="check-row"><input v-model="form.task_types" type="checkbox" value="REQUIREMENT" /><span><strong>需求</strong><small>新功能、能力增强、改造、优化或重构</small></span></label></fieldset><fieldset><legend>支持任务分类</legend><label v-for="category in categories.filter((item) => item.enabled)" :key="category.id" class="check-row"><input v-model="form.category_ids" type="checkbox" :value="category.id" /><span><strong>{{ category.name }}</strong><small>{{ category.description }}</small></span></label></fieldset></div>
 
-          <div v-else-if="employeeTab === 'environment'" data-testid="environment-form">
-            <div class="environment-mode"><button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地执行</strong><small>Astra 所在主机</small></button><button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong><small>通过 SSH 执行</small></button></div>
-            <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><label>OpenCode 命令<input v-model.trim="form.environment.opencode_path" required placeholder="opencode" /></label></div>
-            <label>环境描述<input v-model="form.environment.description" placeholder="例如：本机开发环境 / Linux 测试机" /></label>
-            <label>Workspace 根目录<input v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? './workspaces' : '/opt/astra/workspaces'" /></label>
-            <template v-if="form.environment.mode === 'LINUX_REMOTE'">
-              <div class="form-grid"><label>Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div>
-              <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="astra" /></label><label>认证方式<select v-model="form.environment.auth_method"><option value="SSH_AGENT">SSH Agent</option><option value="SSH_KEY">SSH Key 路径</option></select></label></div>
-              <label v-if="form.environment.auth_method === 'SSH_KEY'">SSH Key 路径<input v-model.trim="form.environment.ssh_key_path" required placeholder="/Users/me/.ssh/id_ed25519" /><small>只保存路径，不读取或展示私钥内容</small></label>
-            </template>
-            <div class="environment-security"><ShieldCheck :size="15" /><span>远程认证仅支持 SSH Agent 或密钥路径。Astra 不在页面、数据库或日志中保存密码和私钥内容。</span></div>
-            <div v-if="checks.length" class="environment-checks"><article v-for="check in checks" :key="check.name"><CheckCircle2 v-if="check.passed" :size="14" /><CircleX v-else :size="14" /><div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div></article></div>
-          </div>
+          <div v-else-if="employeeTab === 'environment'" data-testid="environment-form"><div class="environment-mode"><button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地</strong><small>Astra 所在主机</small></button><button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong><small>通过 SSH 连接</small></button></div><div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><label>OpenCode 路径<input v-model.trim="form.environment.opencode_path" required placeholder="opencode" /></label></div><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label><label>工作空间<input v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? '/path/to/project' : '/home/astra/project'" /><small>该路径属于员工，会在不同任务间长期复用。</small></label><template v-if="form.environment.mode === 'LINUX_REMOTE'"><div class="form-grid"><label>Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div><div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="astra" /></label><label>认证方式<select v-model="form.environment.auth_method"><option value="SSH_AGENT">SSH Agent</option><option value="SSH_KEY">SSH Key 路径</option></select></label></div><label v-if="form.environment.auth_method === 'SSH_KEY'">SSH Key 路径<input v-model.trim="form.environment.ssh_key_path" required placeholder="/Users/me/.ssh/id_ed25519" /></label></template><div class="environment-security"><ShieldCheck :size="15" /><span>Astra 只记录非秘密连接参数和密钥路径，不保存密码或私钥内容。</span></div><div v-if="checks.length" class="environment-checks"><article v-for="check in checks" :key="check.name"><CheckCircle2 v-if="check.passed" :size="14" /><CircleX v-else :size="14" /><div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div></article></div></div>
 
-          <div v-else>
-            <div class="policy-grid"><label class="check-row"><input v-model="form.auto_claim" type="checkbox" /><span><strong>自动领取</strong><small>允许 Dispatcher 分配匹配任务</small></span></label><label class="check-row"><input v-model="form.auto_execute" type="checkbox" /><span><strong>自动执行</strong><small>领取后自动进入 OpenCode</small></span></label><label class="check-row"><input v-model="form.auto_repair" type="checkbox" /><span><strong>自动修复</strong><small>验证失败后继续原 Session</small></span></label></div>
-            <div class="form-grid"><label>最大自动重试<input v-model.number="form.max_auto_retries" type="number" min="0" max="20" /></label><label>最大并发任务<input v-model.number="form.max_concurrency" type="number" min="1" max="16" /></label></div>
-          </div>
+          <div v-else><div class="policy-grid"><label class="check-row"><input v-model="form.auto_claim" type="checkbox" /><span><strong>自动领取任务</strong><small>空闲时可以领取匹配的新任务</small></span></label><label class="check-row"><input v-model="form.auto_execute" type="checkbox" /><span><strong>允许自主执行</strong><small>领取后自动启动任务独立 OpenCode Session</small></span></label></div><label>最大自动重试次数<input v-model.number="form.max_auto_retries" type="number" min="0" max="20" /><small>用于 OpenCode 执行异常时的恢复上限；员工工作方法不由 Astra 规定。</small></label><div class="form-note">每位员工同时只处理一项任务。</div></div>
 
-          <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div>
-          <footer class="config-actions"><button v-if="!creating" type="button" class="button" :disabled="testing || saving" @click="testEnvironment"><RefreshCw :size="14" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</button><button type="button" class="button" @click="resetForm">取消</button><button class="button button--primary" :disabled="saving"><Save :size="14" /> {{ saving ? '保存中' : creating ? '创建员工' : '保存配置' }}</button></footer>
+          <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div><footer class="config-actions"><button v-if="!creating" type="button" class="button" :disabled="testing || saving" @click="testEnvironment"><RefreshCw :size="14" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</button><button type="button" class="button" @click="resetForm">取消</button><button class="button button--primary" :disabled="saving"><Save :size="14" /> {{ saving ? '保存中' : '保存配置' }}</button></footer>
         </form>
       </AstraPanel>
     </section>
 
-    <section v-else class="config-grid"><AstraPanel v-for="group in activeConfig" :key="group.title" :title="group.title" :subtitle="group.subtitle"><dl class="config-list"><div v-for="item in group.items" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl></AstraPanel></section>
-    <div class="config-security"><ShieldCheck :size="18" /><div><strong>配置安全边界</strong><p>业务 Token 仅从环境变量读取；SSH 配置只记录非秘密连接参数和密钥文件路径。</p></div></div>
+    <section v-else-if="tab === 'categories'" class="category-settings"><AstraPanel title="任务分类" subtitle="分类用于表示任务所属的业务领域"><template #action><button class="button button--compact" @click="createCategory"><Plus :size="14" /> 新增分类</button></template><div class="category-editor"><article v-for="category in categories" :key="category.id"><div><input v-model.trim="category.name" aria-label="分类名称" /><input v-model.trim="category.description" aria-label="分类说明" /></div><label>排序<input v-model.number="category.sort_order" type="number" /></label><label class="inline-switch"><input v-model="category.enabled" type="checkbox" />{{ category.enabled ? '已启用' : '已停用' }}</label><button class="button button--compact" @click="saveCategory(category)"><Save :size="13" /> 保存</button></article></div></AstraPanel></section>
+
+    <section v-else-if="tab === 'system'" class="config-grid"><AstraPanel title="运行设置"><dl class="config-list"><div><dt>任务发现 / 分配</dt><dd>30 秒 / 5 秒</dd></div><div><dt>无活动提示</dt><dd>15 分钟（不改变任务状态）</dd></div><div><dt>员工并发</dt><dd>每人 1 项任务</dd></div></dl></AstraPanel><AstraPanel title="界面偏好"><label class="check-row"><input v-model="reducedMotion" type="checkbox" @change="saveMotion" /><span><strong>减少动效</strong><small>关闭数字办公室的工作动画，适合长时间观看。</small></span></label></AstraPanel><AstraPanel title="OpenCode 运行边界"><dl class="config-list"><div><dt>工作空间</dt><dd>属于员工并长期复用</dd></div><div><dt>Session</dt><dd>每项任务独立，挂起与恢复时保留</dd></div><div><dt>工作方式</dt><dd>由员工 OpenCode Agent 自主决定</dd></div></dl></AstraPanel></section>
+    <section v-else class="config-grid"><AstraPanel v-for="group in activeConfig" :key="group.title" :title="group.title"><dl class="config-list"><div v-for="item in group.items" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl></AstraPanel></section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { Bot, CheckCircle2, CircleX, Database, Laptop, LockKeyhole, Plus, RefreshCw, Save, Server, Settings, ShieldCheck, SlidersHorizontal, TriangleAlert } from 'lucide-vue-next'
+import { Bot, CheckCircle2, CircleX, Database, FolderTree, Laptop, LockKeyhole, Plus, RefreshCw, Save, Server, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import type { Employee } from '@/api/types'
+import type { Employee, TaskCategory, TaskType } from '@/api/types'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { environmentLabel } from '@/utils/format'
 
-const route = useRoute()
-const router = useRouter()
-const store = useAstraStore()
-const tab = ref('employees')
-const employeeTab = ref('basic')
-const selectedId = ref('')
-const creating = ref(false)
-const saving = ref(false)
-const testing = ref(false)
-const message = ref('')
-const messageIsError = ref(false)
-const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
-const tabs = [{ id: 'employees', label: '数字员工配置', icon: Bot }, { id: 'sources', label: '任务源配置', icon: Database }, { id: 'system', label: '系统配置', icon: SlidersHorizontal }]
-const employeeTabs = [{ id: 'basic', label: '基本信息' }, { id: 'capabilities', label: '能力与技能' }, { id: 'environment', label: '执行环境' }, { id: 'policy', label: '自主策略' }]
-
-const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 OpenCode', description: '', host: '', port: 22, username: '', auth_method: 'SSH_AGENT' as 'SSH_AGENT' | 'SSH_KEY', ssh_key_path: '', opencode_path: 'opencode', workspace_root: './workspaces', labels: [] as string[] })
-const form = reactive({ id: '', name: '', role: '', description: '', capabilities: '', skills: '', sourceScope: 'manual', enabled: true, auto_claim: true, auto_execute: true, auto_repair: true, max_auto_retries: 3, max_concurrency: 1, environment: emptyEnvironment() })
+const route = useRoute(); const router = useRouter(); const store = useAstraStore(); const tab = ref('employees'); const employeeTab = ref('basic'); const selectedId = ref(''); const creating = ref(false); const saving = ref(false); const testing = ref(false); const message = ref(''); const messageIsError = ref(false); const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([]); const categories = ref<TaskCategory[]>([])
+const reducedMotion = ref(localStorage.getItem('astra-reduced-motion') === 'true')
+function saveMotion() { localStorage.setItem('astra-reduced-motion', String(reducedMotion.value)) }
+const tabs = [{ id: 'employees', label: '员工配置', icon: Bot }, { id: 'categories', label: '任务分类', icon: FolderTree }, { id: 'sources', label: '任务来源', icon: Database }, { id: 'system', label: '系统设置', icon: SlidersHorizontal }]
+const employeeTabs = [{ id: 'basic', label: '基本信息' }, { id: 'scope', label: '工作范围' }, { id: 'environment', label: '工作环境' }, { id: 'policy', label: '工作策略' }]
+const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 OpenCode', description: '', host: '', port: 22, username: '', auth_method: 'SSH_AGENT' as 'SSH_AGENT' | 'SSH_KEY', ssh_key_path: '', opencode_path: 'opencode', workspace_root: '', labels: [] as string[] })
+const form = reactive({ id: '', name: '', role: '', description: '', task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, max_auto_retries: 3, environment: emptyEnvironment() })
 const selectedEmployee = computed(() => store.employees.find((employee) => employee.id === selectedId.value))
-const split = (value: string) => value.split(',').map((item) => item.trim()).filter(Boolean)
-
-function fill(employee?: Employee) {
-  const environment = employee?.execution_environment
-  Object.assign(form, { id: employee?.id ?? '', name: employee?.name ?? '', role: employee?.role ?? '', description: employee?.description ?? '', capabilities: employee?.capabilities.join(', ') ?? '', skills: employee?.skills.join(', ') ?? '', sourceScope: employee?.source_scope.join(', ') ?? 'manual', enabled: employee?.enabled ?? true, auto_claim: employee?.auto_claim ?? true, auto_execute: employee?.auto_execute ?? true, auto_repair: employee?.auto_repair ?? true, max_auto_retries: employee?.max_auto_retries ?? 3, max_concurrency: employee?.max_concurrency ?? 1, environment: environment ? { mode: environment.mode, name: environment.name, description: environment.description, host: environment.host ?? '', port: environment.port, username: environment.username ?? '', auth_method: environment.auth_method, ssh_key_path: environment.ssh_key_path ?? '', opencode_path: environment.opencode_path, workspace_root: environment.workspace_root, labels: [...environment.labels] } : emptyEnvironment() })
-  checks.value = []
-  message.value = ''
-}
+function fill(employee?: Employee) { const environment = employee?.execution_environment; Object.assign(form, { id: employee?.id ?? '', name: employee?.name ?? '', role: employee?.role ?? '', description: employee?.description ?? '', task_types: [...(employee?.task_types ?? ['ISSUE', 'REQUIREMENT'])], category_ids: [...(employee?.category_ids ?? categories.value.filter((item) => item.enabled).map((item) => item.id))], enabled: employee?.enabled ?? true, auto_claim: employee?.auto_claim ?? true, auto_execute: employee?.auto_execute ?? true, max_auto_retries: employee?.max_auto_retries ?? 3, environment: environment ? { mode: environment.mode, name: environment.name, description: environment.description, host: environment.host ?? '', port: environment.port, username: environment.username ?? '', auth_method: environment.auth_method, ssh_key_path: environment.ssh_key_path ?? '', opencode_path: environment.opencode_path, workspace_root: environment.workspace_root, labels: [...environment.labels] } : emptyEnvironment() }); checks.value = []; message.value = '' }
 function selectEmployee(id: string) { creating.value = false; selectedId.value = id; fill(store.employees.find((item) => item.id === id)); router.replace({ query: { employee: id } }) }
 function beginCreate() { creating.value = true; selectedId.value = ''; employeeTab.value = 'basic'; fill(); router.replace({ query: { create: '1' } }) }
-function resetForm() { if (creating.value) beginCreate(); else fill(selectedEmployee.value) }
-function setMode(mode: 'LOCAL' | 'LINUX_REMOTE') { form.environment.mode = mode; if (mode === 'LINUX_REMOTE' && !form.environment.workspace_root.startsWith('/')) form.environment.workspace_root = '/opt/astra/workspaces'; if (mode === 'LOCAL' && form.environment.workspace_root.startsWith('/opt/astra')) form.environment.workspace_root = './workspaces' }
+function resetForm() { creating.value ? beginCreate() : fill(selectedEmployee.value) }
+function setMode(mode: 'LOCAL' | 'LINUX_REMOTE') { form.environment.mode = mode }
 function environmentPayload() { return { ...form.environment, host: form.environment.mode === 'LOCAL' ? null : form.environment.host || null, username: form.environment.mode === 'LOCAL' ? null : form.environment.username || null, ssh_key_path: form.environment.auth_method === 'SSH_KEY' ? form.environment.ssh_key_path || null : null } }
-function employeePayload() { return { name: form.name, role: form.role, description: form.description, capabilities: split(form.capabilities), skills: split(form.skills), source_scope: split(form.sourceScope), enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute, auto_repair: form.auto_repair, max_auto_retries: form.max_auto_retries, max_concurrency: form.max_concurrency } }
-
-async function save() {
-  saving.value = true; message.value = ''; messageIsError.value = false
-  try {
-    if (creating.value) {
-      const created = await api.createEmployee({ id: form.id, ...employeePayload(), execution_environment: environmentPayload() })
-      await store.refresh(); selectEmployee(created.id); message.value = '员工已创建。请测试连接，使环境进入“正常”状态。'; employeeTab.value = 'environment'
-    } else {
-      await api.updateEmployee(selectedId.value, employeePayload()); await api.updateEnvironment(selectedId.value, environmentPayload()); await store.refresh(); fill(store.employees.find((item) => item.id === selectedId.value)); message.value = '配置已保存。环境状态已重置为“未检查”，请重新测试连接。'
-    }
-  } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '保存失败' }
-  finally { saving.value = false }
-}
-async function testEnvironment() {
-  testing.value = true; message.value = ''; messageIsError.value = false
-  try { const result = await api.testEnvironment(selectedId.value); checks.value = result.checks; message.value = result.status === 'AVAILABLE' ? '环境检测通过，可以领取新任务。' : '环境检测未通过，请根据检查项修复。'; messageIsError.value = result.status !== 'AVAILABLE'; await store.refresh() }
-  catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '检测失败' }
-  finally { testing.value = false }
-}
-
-onMounted(async () => {
-  await store.refresh()
-  if (route.query.create === '1') beginCreate()
-  else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? ''))
-})
-
-const configs = {
-  sources: [{ title: 'nr_test_system', subtitle: 'Task Source Adapter', items: [{ label: '状态', value: '可配置 / 待对端联调' }, { label: '发现路径', value: '/api/astra/tasks' }, { label: '发现状态', value: 'READY' }, { label: '唯一键', value: 'source + external_task_id' }] }, { title: '来源隔离', subtitle: 'Core 不依赖外部结构', items: [{ label: '字段映射', value: 'Adapter 内完成' }, { label: '认证', value: 'Bearer Token（环境变量）' }, { label: '回填时点', value: 'Verifier PASS 后' }] }],
-  system: [{ title: 'Runtime 调度', subtitle: 'configs/astra.yaml', items: [{ label: 'Task Scout 间隔', value: '30 秒' }, { label: 'Dispatcher 间隔', value: '5 秒' }, { label: 'Heartbeat 间隔', value: '10 秒' }, { label: '离线阈值', value: '60 秒' }] }, { title: 'OpenCode 与验证', subtitle: '真实执行门禁', items: [{ label: '环境模式', value: 'LOCAL / LINUX_REMOTE' }, { label: 'Session 策略', value: '每任务独立，重试恢复' }, { label: '完成门禁', value: 'Verifier PASS' }, { label: '使用量口径', value: 'OpenCode 实际返回，不估算' }] }],
-}
+function employeePayload() { return { name: form.name, role: form.role, description: form.description, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute, max_auto_retries: form.max_auto_retries } }
+async function save() { saving.value = true; message.value = ''; messageIsError.value = false; try { if (!form.task_types.length || !form.category_ids.length) throw new Error('工作范围至少需要一种任务类型和一个任务分类'); if (creating.value) { const created = await api.createEmployee({ id: form.id, ...employeePayload(), execution_environment: environmentPayload() }); await store.refresh(); selectEmployee(created.id); employeeTab.value = 'environment' } else { await api.updateEmployee(selectedId.value, employeePayload()); await api.updateEnvironment(selectedId.value, environmentPayload()); await store.refresh(); fill(store.employees.find((item) => item.id === selectedId.value)) } message.value = '配置已保存。工作环境变更后请重新测试连接。' } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '保存失败' } finally { saving.value = false } }
+async function testEnvironment() { testing.value = true; try { const result = await api.testEnvironment(selectedId.value); checks.value = result.checks; message.value = result.status === 'AVAILABLE' ? '环境正常，可以处理新任务。' : '环境异常，请根据检查项处理。'; messageIsError.value = result.status !== 'AVAILABLE'; await store.refresh() } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '检测失败' } finally { testing.value = false } }
+async function loadCategories() { categories.value = await api.categories(true) }
+async function createCategory() { const name = window.prompt('请输入新分类名称：'); if (!name) return; await api.createCategory({ name, description: '', enabled: true, sort_order: (categories.value.at(-1)?.sort_order ?? 0) + 10 }); await loadCategories(); await store.refresh() }
+async function saveCategory(category: TaskCategory) { await api.updateCategory(category.id, { name: category.name, description: category.description, enabled: category.enabled, sort_order: category.sort_order }); await loadCategories(); await store.refresh() }
+onMounted(async () => { await Promise.all([store.refresh(), loadCategories()]); if (route.query.create === '1') beginCreate(); else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? '')) })
+const configs = { sources: [{ title: '任务来源', items: [{ label: '手工创建', value: '已启用' }, { label: 'nr_test_system', value: '可配置导入与结果回填' }, { label: '唯一标识', value: '来源 + 外部任务 ID' }] }], system: [{ title: '运行设置', items: [{ label: '任务发现间隔', value: '30 秒' }, { label: '任务分配间隔', value: '5 秒' }, { label: '员工心跳间隔', value: '10 秒' }, { label: '员工并发', value: '每人 1 项任务' }] }, { title: 'OpenCode 运行边界', items: [{ label: '工作空间', value: '属于员工并长期复用' }, { label: 'Session', value: '每项任务独立' }, { label: '工作方式', value: '由员工 OpenCode Agent 自主决定' }, { label: '用量数据', value: '只记录 OpenCode 实际返回值' }] }] }
 const activeConfig = computed(() => configs[tab.value as keyof typeof configs] ?? [])
 </script>

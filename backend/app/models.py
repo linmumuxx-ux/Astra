@@ -13,6 +13,18 @@ class Base(DeclarativeBase):
     pass
 
 
+class TaskCategory(Base):
+    __tablename__ = "task_categories"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class DigitalEmployee(Base):
     __tablename__ = "digital_employees"
 
@@ -21,15 +33,12 @@ class DigitalEmployee(Base):
     role: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="OFFLINE", index=True)
-    capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
-    skills: Mapped[list[str]] = mapped_column(JSON, default=list)
-    source_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    task_types: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["ISSUE", "REQUIREMENT"])
+    category_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_claim: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_execute: Mapped[bool] = mapped_column(Boolean, default=True)
-    auto_repair: Mapped[bool] = mapped_column(Boolean, default=True)
     max_auto_retries: Mapped[int] = mapped_column(Integer, default=3)
-    max_concurrency: Mapped[int] = mapped_column(Integer, default=1)
     current_task_count: Mapped[int] = mapped_column(Integer, default=0)
     last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     online_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -80,18 +89,27 @@ class Task(Base):
     task_type: Mapped[str] = mapped_column(String(80), index=True)
     title: Mapped[str] = mapped_column(String(240))
     description: Mapped[str] = mapped_column(Text, default="")
-    input: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    definition_of_done: Mapped[list[str]] = mapped_column(JSON, default=list)
-    priority: Mapped[str] = mapped_column(String(8), default="P2")
+    category_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    acceptance_criteria: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    priority: Mapped[str] = mapped_column(String(16), default="MEDIUM")
     priority_weight: Mapped[int] = mapped_column(Integer, default=2)
-    status: Mapped[str] = mapped_column(String(32), default="CREATED", index=True)
+    completion_policy: Mapped[str] = mapped_column(String(32), default="AUTO")
+    status: Mapped[str] = mapped_column(String(32), default="READY", index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
-    workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_progress: Mapped[str] = mapped_column(Text, default="等待领取")
+    human_intervention: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    suspension: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    execution_error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    review_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    inactivity_alert: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    inactivity_alert_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    current_phase: Mapped[str] = mapped_column(String(80), default="created")
-    progress: Mapped[int] = mapped_column(Integer, default=0)
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    max_retry_count: Mapped[int] = mapped_column(Integer, default=3)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

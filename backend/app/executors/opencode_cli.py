@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,19 +11,40 @@ from app.models import Run, Task
 
 
 class OpenCodeCLIExecutor(OpenCodeExecutor):
-    def __init__(self, settings: Settings | None = None, *, opencode_binary: str | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        opencode_binary: str | None = None,
+        event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ):
         self.settings = settings or get_settings()
         self.opencode_binary = opencode_binary or self.settings.opencode_binary
+        self.event_callback = event_callback
         self._processes: dict[str, asyncio.subprocess.Process] = {}
 
     def _prompt(self, task: Task, workspace: Path, *, retry: bool = False) -> str:
-        dod = "\n".join(f"{index + 1}. {item}" for index, item in enumerate(task.definition_of_done))
-        retry_text = (
-            "\n这是同一任务的修复重试。请基于当前 Workspace 和原 OpenCode Session 分析失败证据，"
-            "做最小修复并重新执行。"
-            if retry
-            else ""
+        criteria = "\n".join(
+            f"{item.get('id', f'AC-{index + 1:02d}')}. {item.get('content', '')}"
+            for index, item in enumerate(task.acceptance_criteria or [])
         )
+        human_input = (task.human_intervention or {}).get("response")
+        suspension = task.suspension or {}
+        review = (task.review_history or [])[-1] if task.review_history else {}
+        retry_text = ""
+        if retry:
+            retry_text = "\n这是同一任务继续处理，请使用当前 OpenCode Session 中的已有上下文。"
+            if human_input:
+                retry_text += f"\n人工补充信息：\n{human_input}"
+        context_text = ""
+        if task.current_progress:
+            context_text += f"\n已保留的当前进展：\n{task.current_progress}"
+        if suspension.get("scene_context"):
+            context_text += f"\n挂起时现场上下文：\n{suspension['scene_context']}"
+        if review.get("feedback"):
+            context_text += f"\n上次结果被退回的意见：\n{review['feedback']}"
+        if human_input and not retry:
+            context_text += f"\n人工补充信息：\n{human_input}"
         return f"""当前任务：
 {task.id}
 
@@ -35,34 +57,30 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 任务描述：
 {task.description}
 
-任务输入：
-{json.dumps(task.input, ensure_ascii=False, indent=2)}
-
-工作目录：
+员工工作空间：
 {workspace}
 
-完成标准：
-{dod or "按任务输入中的验证契约完成并产生真实执行证据。"}
+验收标准：
+{criteria}
 
-请优先使用项目已有 Skill、Command 和工具完成实际操作。不要只输出分析或建议。
-不得自行把任务标记为完成；Astra Verifier 会独立执行确定性验证。
-无法继续时，请明确返回 BLOCKED 并说明需要人工补充的内容。{retry_text}
+请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
+检查方式或内部步骤。请在完成后如实说明处理结果，并逐项说明验收标准是否满足及相关证据。
+无法继续时，请明确返回 BLOCKED，说明阻塞原因、已完成工作和需要人工提供的内容。{context_text}{retry_text}
 """
 
     def _command(self, task: Task, workspace: Path, session_id: str | None = None) -> list[str]:
-        source_dir = workspace / "source"
         command = [
             self.opencode_binary,
             "run",
             "--format",
             "json",
             "--dir",
-            str(source_dir),
+            str(workspace),
             "--title",
             f"Astra {task.id}",
-            "--agent",
-            self.settings.opencode_agent,
         ]
+        if self.settings.opencode_agent:
+            command.extend(["--agent", self.settings.opencode_agent])
         if self.settings.opencode_model:
             command.extend(["--model", self.settings.opencode_model])
         if session_id:
@@ -95,9 +113,39 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         session_id: str | None = None,
     ) -> ExecutorResult:
         self._processes[task.id] = process
+        stdout_lines: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        output: list[dict[str, Any]] = []
+        detected_session = session_id
+
+        async def read_stdout() -> None:
+            nonlocal detected_session
+            assert process.stdout is not None
+            while line := await process.stdout.readline():
+                stdout_lines.append(line)
+                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    payload = {"type": "text", "text": text}
+                output.append(payload)
+                detected_session = detected_session or self._extract_session(payload)
+                if self.event_callback:
+                    try:
+                        await self.event_callback(payload)
+                    except Exception:
+                        # Observation must never interrupt the employee's work.
+                        pass
+
+        async def read_stderr() -> None:
+            assert process.stderr is not None
+            while chunk := await process.stderr.read(4096):
+                stderr_chunks.append(chunk)
+
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=self.settings.opencode_timeout_seconds
+            await asyncio.wait_for(
+                asyncio.gather(read_stdout(), read_stderr(), process.wait()),
+                timeout=self.settings.opencode_timeout_seconds,
             )
         except TimeoutError:
             process.kill()
@@ -106,17 +154,8 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         finally:
             self._processes.pop(task.id, None)
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
-        output: list[dict[str, Any]] = []
-        detected_session = session_id
-        for line in stdout.splitlines():
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                payload = {"type": "text", "text": line}
-            output.append(payload)
-            detected_session = detected_session or self._extract_session(payload)
+        stdout = b"".join(stdout_lines).decode("utf-8", errors="replace")
+        stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
         combined = f"{stdout}\n{stderr}".upper()
         status = (
