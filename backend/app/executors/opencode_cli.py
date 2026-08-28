@@ -6,6 +6,7 @@ from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.executors.base import ExecutorResult, OpenCodeExecutor
+from app.executors.process import local_command, process_group_options, terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import Run, Task
 
@@ -162,8 +163,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
                 timeout=self.settings.opencode_timeout_seconds,
             )
         except TimeoutError:
-            process.kill()
-            await process.wait()
+            await terminate_process(process)
             return ExecutorResult(status="BLOCKED", exit_code=124, stderr="Agent execution timeout")
         finally:
             self._processes.pop(task.id, None)
@@ -198,10 +198,12 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         )
 
     async def _execute(self, task: Task, workspace: Path, *, session_id: str | None = None) -> ExecutorResult:
+        command = self._command(task, workspace, session_id)
         process = await asyncio.create_subprocess_exec(
-            *self._command(task, workspace, session_id),
+            *local_command(command[0], command[1:]),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **process_group_options(),
         )
         return await self._communicate(task, process, session_id=session_id)
 
@@ -221,11 +223,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
     async def abort(self, run: Run) -> None:
         process = self._processes.get(run.task_id)
         if process and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=10)
-            except TimeoutError:
-                process.kill()
+            await terminate_process(process)
 
     async def collect_result(self, run: Run) -> dict[str, Any]:
         return run.result or {}

@@ -4,12 +4,20 @@ from datetime import UTC, datetime
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision = "0003_astra_v03"
 down_revision = "0002_astra_v02"
 branch_labels = None
 depends_on = None
+
+
+def json_default(value):
+    if op.get_context().dialect.name == "mysql":
+        if isinstance(value, list):
+            return sa.func.json_array(*value)
+        return sa.func.json_object()
+    return value
 
 
 DEFAULT_CATEGORIES = (
@@ -38,30 +46,45 @@ def upgrade() -> None:
             sa.Column(
                 "task_types",
                 sa.JSON(),
-                nullable=False,
-                server_default='["ISSUE", "REQUIREMENT"]',
+                nullable=True,
             )
         )
         batch.add_column(
             sa.Column(
                 "category_ids",
                 sa.JSON(),
-                nullable=False,
-                server_default='["testing-platform", "automation-engineering", "quality-defense"]',
+                nullable=True,
             )
         )
 
+    connection = op.get_bind()
+    employees_for_defaults = sa.table(
+        "digital_employees",
+        sa.column("task_types", sa.JSON()),
+        sa.column("category_ids", sa.JSON()),
+    )
+    connection.execute(
+        employees_for_defaults.update().values(
+            task_types=json_default(["ISSUE", "REQUIREMENT"]),
+            category_ids=json_default(
+                ["testing-platform", "automation-engineering", "quality-defense"]
+            ),
+        )
+    )
+    with op.batch_alter_table("digital_employees") as batch:
+        batch.alter_column("task_types", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("category_ids", existing_type=sa.JSON(), nullable=False)
+
     with op.batch_alter_table("tasks") as batch:
         batch.add_column(sa.Column("category_id", sa.String(64), nullable=True))
-        batch.add_column(sa.Column("acceptance_criteria", sa.JSON(), nullable=False, server_default="[]"))
-        batch.add_column(sa.Column("attachments", sa.JSON(), nullable=False, server_default="[]"))
-        batch.add_column(sa.Column("current_progress", sa.Text(), nullable=False, server_default="等待领取"))
+        batch.add_column(sa.Column("acceptance_criteria", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("attachments", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("current_progress", sa.Text(), nullable=True))
         batch.add_column(sa.Column("human_intervention", sa.JSON(), nullable=True))
         batch.alter_column("priority", type_=sa.String(16), existing_type=sa.String(8))
 
     op.create_index("ix_tasks_category_id", "tasks", ["category_id"])
 
-    connection = op.get_bind()
     now = datetime.now(UTC)
     categories = sa.table(
         "task_categories",
@@ -95,6 +118,7 @@ def upgrade() -> None:
         sa.column("task_type", sa.String()),
         sa.column("definition_of_done", sa.JSON()),
         sa.column("acceptance_criteria", sa.JSON()),
+        sa.column("attachments", sa.JSON()),
         sa.column("category_id", sa.String()),
         sa.column("priority", sa.String()),
         sa.column("status", sa.String()),
@@ -102,57 +126,76 @@ def upgrade() -> None:
         sa.column("current_progress", sa.Text()),
         sa.column("result", sa.JSON()),
     )
-    for row in connection.execute(
-        sa.select(
-            tasks.c.id,
-            tasks.c.task_type,
-            tasks.c.definition_of_done,
-            tasks.c.current_phase,
-            tasks.c.result,
+    connection.execute(
+        tasks.update().values(
+            acceptance_criteria=json_default([]),
+            attachments=json_default([]),
+            current_progress="等待领取",
         )
-    ).mappings():
-        criteria = [
-            {"id": f"AC-{index:02d}", "content": str(content)}
-            for index, content in enumerate(row["definition_of_done"] or [], start=1)
-        ]
-        legacy_type = str(row["task_type"] or "").lower()
-        task_type = (
-            "ISSUE" if any(word in legacy_type for word in ("repair", "fix", "bug")) else "REQUIREMENT"
-        )
-        progress = str(row["current_phase"] or "").replace("_", " ").strip() or "等待领取"
-        legacy_result = row["result"]
-        result = None
-        if legacy_result is not None:
-            legacy_payload = legacy_result if isinstance(legacy_result, dict) else {"value": legacy_result}
-            result = {
-                "summary": str(legacy_payload.get("summary") or "历史任务结果已迁移"),
-                "changes": [],
-                "files": [],
-                "commits": [],
-                "logs": [],
-                "attachments": [],
-                "other": {"v02_result": legacy_payload},
-                "acceptance_results": [
-                    {
-                        "criterion_id": item["id"],
-                        "status": "UNCONFIRMED",
-                        "description": "由 V0.2 迁移，未提供员工逐项验收结论",
-                        "evidence": [],
-                    }
-                    for item in criteria
-                ],
-            }
-        connection.execute(
-            tasks.update()
-            .where(tasks.c.id == row["id"])
-            .values(
-                task_type=task_type,
-                category_id="testing-platform",
-                acceptance_criteria=criteria,
-                current_progress=progress,
-                result=result,
+    )
+    if not context.is_offline_mode():
+        for row in connection.execute(
+            sa.select(
+                tasks.c.id,
+                tasks.c.task_type,
+                tasks.c.definition_of_done,
+                tasks.c.current_phase,
+                tasks.c.result,
             )
-        )
+        ).mappings():
+            criteria = [
+                {"id": f"AC-{index:02d}", "content": str(content)}
+                for index, content in enumerate(row["definition_of_done"] or [], start=1)
+            ]
+            legacy_type = str(row["task_type"] or "").lower()
+            task_type = (
+                "ISSUE"
+                if any(word in legacy_type for word in ("repair", "fix", "bug"))
+                else "REQUIREMENT"
+            )
+            progress = (
+                str(row["current_phase"] or "").replace("_", " ").strip() or "等待领取"
+            )
+            legacy_result = row["result"]
+            result = None
+            if legacy_result is not None:
+                legacy_payload = (
+                    legacy_result if isinstance(legacy_result, dict) else {"value": legacy_result}
+                )
+                result = {
+                    "summary": str(legacy_payload.get("summary") or "历史任务结果已迁移"),
+                    "changes": [],
+                    "files": [],
+                    "commits": [],
+                    "logs": [],
+                    "attachments": [],
+                    "other": {"v02_result": legacy_payload},
+                    "acceptance_results": [
+                        {
+                            "criterion_id": item["id"],
+                            "status": "UNCONFIRMED",
+                            "description": "由 V0.2 迁移，未提供员工逐项验收结论",
+                            "evidence": [],
+                        }
+                        for item in criteria
+                    ],
+                }
+            connection.execute(
+                tasks.update()
+                .where(tasks.c.id == row["id"])
+                .values(
+                    task_type=task_type,
+                    category_id="testing-platform",
+                    acceptance_criteria=criteria,
+                    current_progress=progress,
+                    result=result,
+                )
+            )
+
+    with op.batch_alter_table("tasks") as batch:
+        batch.alter_column("acceptance_criteria", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("attachments", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("current_progress", existing_type=sa.Text(), nullable=False)
 
     priority_map = {"P0": "VERY_HIGH", "P1": "HIGH", "P2": "MEDIUM", "P3": "LOW"}
     for legacy, current in priority_map.items():
@@ -198,19 +241,51 @@ def downgrade() -> None:
         connection.execute(tasks.update().where(tasks.c.priority == current).values(priority=legacy))
 
     with op.batch_alter_table("digital_employees") as batch:
-        batch.add_column(sa.Column("capabilities", sa.JSON(), nullable=False, server_default="[]"))
-        batch.add_column(sa.Column("skills", sa.JSON(), nullable=False, server_default="[]"))
-        batch.add_column(sa.Column("source_scope", sa.JSON(), nullable=False, server_default="[]"))
+        batch.add_column(sa.Column("capabilities", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("skills", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("source_scope", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("auto_repair", sa.Boolean(), nullable=False, server_default=sa.false()))
         batch.add_column(sa.Column("max_concurrency", sa.Integer(), nullable=False, server_default="1"))
+    employees_for_defaults = sa.table(
+        "digital_employees",
+        sa.column("capabilities", sa.JSON()),
+        sa.column("skills", sa.JSON()),
+        sa.column("source_scope", sa.JSON()),
+    )
+    connection.execute(
+        employees_for_defaults.update().values(
+            capabilities=json_default([]),
+            skills=json_default([]),
+            source_scope=json_default([]),
+        )
+    )
+    with op.batch_alter_table("digital_employees") as batch:
+        batch.alter_column("capabilities", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("skills", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("source_scope", existing_type=sa.JSON(), nullable=False)
+
     with op.batch_alter_table("tasks") as batch:
-        batch.add_column(sa.Column("input", sa.JSON(), nullable=False, server_default="{}"))
-        batch.add_column(sa.Column("definition_of_done", sa.JSON(), nullable=False, server_default="[]"))
+        batch.add_column(sa.Column("input", sa.JSON(), nullable=True))
+        batch.add_column(sa.Column("definition_of_done", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("workspace", sa.Text(), nullable=True))
         batch.add_column(sa.Column("current_phase", sa.String(80), nullable=False, server_default="work"))
         batch.add_column(sa.Column("progress", sa.Integer(), nullable=False, server_default="0"))
         batch.add_column(sa.Column("retry_count", sa.Integer(), nullable=False, server_default="0"))
         batch.add_column(sa.Column("max_retry_count", sa.Integer(), nullable=False, server_default="3"))
+
+    legacy_tasks = sa.table(
+        "tasks",
+        sa.column("input", sa.JSON()),
+        sa.column("definition_of_done", sa.JSON()),
+    )
+    connection.execute(
+        legacy_tasks.update().values(
+            input=json_default({}), definition_of_done=json_default([])
+        )
+    )
+    with op.batch_alter_table("tasks") as batch:
+        batch.alter_column("input", existing_type=sa.JSON(), nullable=False)
+        batch.alter_column("definition_of_done", existing_type=sa.JSON(), nullable=False)
 
     op.drop_index("ix_tasks_category_id", table_name="tasks")
     with op.batch_alter_table("tasks") as batch:

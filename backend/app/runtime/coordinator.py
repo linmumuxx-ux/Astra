@@ -60,7 +60,7 @@ class TaskCoordinator:
                 )
                 workspace = Path(environment.workspace_root).expanduser()
                 if environment.mode == ExecutionMode.LOCAL:
-                    workspace = workspace.resolve()
+                    workspace = self.settings.employee_workspace_path(environment.workspace_root)
                     if not workspace.is_dir():
                         raise RuntimeError(f"员工工作空间不存在: {workspace}")
                 task.current_progress = "Agent 正在自主处理任务"
@@ -334,7 +334,7 @@ class TaskCoordinator:
         await self._backfill_source(task)
 
     def _save_observation(self, task: Task, run: Run, result) -> Path:
-        record_dir = (self.settings.workspace_root / "records" / task.id).resolve()
+        record_dir = self.settings.resolved_workspace_root / "records" / task.id
         record_dir.mkdir(parents=True, exist_ok=True)
         path = record_dir / f"{run.id}-agent.json"
         path.write_text(

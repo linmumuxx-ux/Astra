@@ -13,6 +13,31 @@ Astra 用于长期数字员工的任务分配、工作观察、人工介入和�
 
 ## 2. 首次启动
 
+公司 Windows 电脑推荐使用 PowerShell 快速安装。脚本会依次查找已有虚拟环境、`ASTRA_PYTHON` 指定路径、`py.exe -3.11` 和 `python.exe`，并输出实际 Python 版本：
+
+```powershell
+git clone git@github.com:linxuyiyi/Astra.git
+cd Astra
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+首次安装会从 `deploy\astra.env.windows.example` 生成根目录 `.env`。填写 MySQL、Redis、Agent 可执行文件和目录后执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
+
+停止平台：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-windows.ps1
+```
+
+Python 3.8 不属于当前支持范围，后端基线为 Python 3.11+。
+
+Linux 开发环境可手动启动：
+
 ```bash
 cd backend
 python3 -m venv .venv
@@ -91,7 +116,9 @@ Astra 不在员工配置中维护 Skills、Capabilities、Commands、Tools 或 S
 - 环境名称；
 - Agent 启动命令或绝对路径（当前适配器填写 `opencode`）；
 - Agent 模型，例如 `deepseek/deepseek-v4-flash`；留空时使用 Agent 自身配置或平台默认模型；
-- 员工工作空间，例如 `/srv/projects/nr_test_system`。
+- 员工工作空间，例如 Windows 的 `D:\code\nr_test_system`，或 Linux 的 `/srv/projects/nr_test_system`。
+
+Windows 路径可包含盘符、空格和中文目录。Agent 可执行文件可填写 PATH 中的命令名，也可填写 `C:\Program Files\OpenCode\opencode.exe` 之类的完整路径；Astra 使用参数数组启动进程，不要求 Bash，也不需要手工给路径加 Shell 转义。
 
 Linux 远程环境还需要：
 
@@ -273,7 +300,8 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 
 ## 13. 常见问题
 
-- 任务一直待领取：先确认 `./scripts/runtime.sh` 正在运行且日志出现 `ready`；再检查员工是否启用、空闲、允许自动领取，工作环境是否正常，以及类型和分类是否匹配。
+- 任务一直待领取：Windows 先运行 `scripts\check-windows.ps1`，再用 `scripts\process_manager.py status` 检查调度运行时；Linux 检查 `./scripts/runtime.sh` 或 systemd 服务。随后检查员工是否启用、空闲、允许自动领取，工作环境是否正常，以及类型和分类是否匹配。
+- 启动后只有 traceback：先运行环境自检。每个失败项都会显示“检查项、当前值、失败原因、建议处理方式”，重点处理 MySQL、Redis、Agent、Workspace 和日志目录。
 - 本地环境异常：以 Worker 账号执行配置的 Agent 命令加 `--version`，并检查员工工作空间是否存在且可写。
 - Linux 远程环境异常：检查 SSH 网络、`known_hosts`、账号、密钥路径、远程 Agent 和工作空间权限。
 - Token 显示 `—`：当前 Agent 事件未提供该字段，Astra 不做估算。
@@ -289,7 +317,15 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 ./scripts/verify.sh
 ```
 
-该命令会使用隔离的临时数据库与端口依次运行后端检查、37 个后端测试、前端类型检查、生产构建和 10 条 Chromium E2E，不会写入日常开发数据库。E2E 会启动隔离 Redis 与真实 Celery Worker/Beat，并覆盖员工模型配置、配置保存、自动领取、结构化询问、人工回复、原会话继续和最终验收。
+该命令会使用隔离的临时数据库与端口依次运行后端检查、后端测试、前端类型检查、生产构建和 10 条 Chromium E2E，不会写入日常开发数据库。E2E 会启动隔离 Redis 与真实 Celery Worker/Beat，并覆盖员工模型配置、配置保存、自动领取、结构化询问、人工回复、原会话继续和最终验收。
+
+公司电脑在启动前或修改环境配置后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
+```
+
+自检会确认操作系统、Python 版本、依赖、MySQL 连接、迁移版本、数据表、Redis、默认 Agent、观察记录目录、日志目录与运行目录。MySQL 正式联调必须在能访问公司实例的机器上执行；SQLite 只用于本地开发和隔离测试。
 
 需要验证 Astra 到真实本地 OpenCode 的简单闭环时运行：
 
@@ -309,3 +345,4 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 - 不提供一名员工多个并行工作空间、Git Worktree 调度、节点资源池或动态故障迁移。
 - 不保存密码、令牌或私钥内容。
 - 管理台没有内置登录/RBAC，必须部署在可信内网或企业认证网关之后。
+- Celery 官方不承诺 Windows 支持；仓库的 Windows 启动器使用 `solo` 池规避多进程差异，但正式上线前仍需在公司 Windows 镜像上做稳定性验收。要求严格运行保障时，可把调度运行时部署到 Linux，并继续从 Windows 使用管理台。

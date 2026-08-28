@@ -2,11 +2,11 @@ import json
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import make_url, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.bootstrap import bootstrap_employees
-from app.config.settings import Settings
+from app.config.settings import BACKEND_ROOT, Settings
 from app.models import Base, DigitalEmployee, OpenCodeExecutionEnvironment
 from app.sources.nr_test_system import NrTestSystemSource
 
@@ -99,3 +99,41 @@ async def test_nr_test_system_adapter_maps_v03_task_and_backfills():
     assert requests[0].headers["authorization"] == "Bearer test-token"
     assert requests[1].url.path == "/api/astra/tasks/EXT-42/result"
     assert json.loads(requests[1].content) == {"status": "COMPLETED"}
+
+
+def test_mysql_settings_build_encoded_async_url_without_exposing_password():
+    settings = Settings(
+        database_url=None,
+        database_backend="mysql",
+        database_host="mysql.company.local",
+        database_port=3307,
+        database_name="astra_company",
+        database_username="astra user",
+        database_password="p@ss:/ word",
+        database_charset="utf8mb4",
+    )
+
+    url = make_url(settings.sqlalchemy_database_url)
+
+    assert url.drivername == "mysql+asyncmy"
+    assert url.host == "mysql.company.local"
+    assert url.port == 3307
+    assert url.database == "astra_company"
+    assert url.username == "astra user"
+    assert url.password == "p@ss:/ word"
+    assert url.query["charset"] == "utf8mb4"
+    assert "p@ss" not in settings.database_description
+
+
+def test_redis_description_hides_credentials():
+    settings = Settings(redis_url="redis://astra:secret@redis.company.local:6380/2")
+
+    assert settings.redis_description == "redis://redis.company.local:6380/2"
+    assert "secret" not in settings.redis_description
+
+
+def test_legacy_relative_sqlite_url_keeps_backend_data_location():
+    settings = Settings(database_url="sqlite+aiosqlite:///./data/astra.db")
+
+    expected = (BACKEND_ROOT / "data" / "astra.db").resolve().as_posix()
+    assert settings.sqlalchemy_database_url == f"sqlite+aiosqlite:///{expected}"

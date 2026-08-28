@@ -2,7 +2,7 @@
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision = "0002_astra_v02"
 down_revision = "0001_astra_v01"
@@ -10,10 +10,16 @@ branch_labels = None
 depends_on = None
 
 
+def json_default(value):
+    if op.get_context().dialect.name == "mysql":
+        if isinstance(value, list):
+            return sa.func.json_array(*value)
+        return sa.func.json_object()
+    return value
+
+
 def upgrade() -> None:
-    op.add_column(
-        "digital_employees", sa.Column("skills", sa.JSON(), nullable=False, server_default="[]")
-    )
+    op.add_column("digital_employees", sa.Column("skills", sa.JSON(), nullable=True))
     op.add_column(
         "digital_employees",
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
@@ -34,6 +40,17 @@ def upgrade() -> None:
         "digital_employees",
         sa.Column("max_auto_retries", sa.Integer(), nullable=False, server_default="3"),
     )
+    connection = op.get_bind()
+    employees_for_defaults = sa.table(
+        "digital_employees", sa.column("skills", sa.JSON())
+    )
+    connection.execute(
+        employees_for_defaults.update()
+        .where(employees_for_defaults.c.skills.is_(None))
+        .values(skills=json_default([]))
+    )
+    with op.batch_alter_table("digital_employees") as batch:
+        batch.alter_column("skills", existing_type=sa.JSON(), nullable=False)
 
     op.create_table(
         "opencode_execution_environments",
@@ -96,32 +113,41 @@ def upgrade() -> None:
         sa.column("created_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
     )
-    connection = op.get_bind()
     now = sa.func.now()
-    for employee_id in connection.execute(sa.select(employees.c.id)).scalars():
-        connection.execute(
-            environments.insert().values(
-                employee_id=employee_id,
-                mode="LOCAL",
-                name="本地 OpenCode",
-                description="由 V0.1 升级生成的默认本地执行环境",
-                port=22,
-                auth_method="SSH_AGENT",
-                opencode_path="opencode",
-                workspace_root="./workspaces",
-                status="UNKNOWN",
-                status_detail={},
-                labels=[],
-                created_at=now,
-                updated_at=now,
+    if not context.is_offline_mode():
+        for employee_id in connection.execute(sa.select(employees.c.id)).scalars():
+            connection.execute(
+                environments.insert().values(
+                    employee_id=employee_id,
+                    mode="LOCAL",
+                    name="本地 OpenCode",
+                    description="由 V0.1 升级生成的默认本地执行环境",
+                    port=22,
+                    auth_method="SSH_AGENT",
+                    opencode_path="opencode",
+                    workspace_root="./workspaces",
+                    status="UNKNOWN",
+                    status_detail={},
+                    labels=[],
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-        )
 
     op.add_column("tasks", sa.Column("execution_environment_snapshot", sa.JSON()))
-    op.add_column(
-        "runs",
-        sa.Column("execution_environment_snapshot", sa.JSON(), nullable=False, server_default="{}"),
+    op.add_column("runs", sa.Column("execution_environment_snapshot", sa.JSON(), nullable=True))
+    runs_for_defaults = sa.table(
+        "runs", sa.column("execution_environment_snapshot", sa.JSON())
     )
+    connection.execute(
+        runs_for_defaults.update()
+        .where(runs_for_defaults.c.execution_environment_snapshot.is_(None))
+        .values(execution_environment_snapshot=json_default({}))
+    )
+    with op.batch_alter_table("runs") as batch:
+        batch.alter_column(
+            "execution_environment_snapshot", existing_type=sa.JSON(), nullable=False
+        )
     op.add_column("runs", sa.Column("model_name", sa.String(160)))
     for name in (
         "input_tokens",

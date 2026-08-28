@@ -7,6 +7,7 @@ from typing import Any
 from app.config.settings import Settings
 from app.executors.base import ExecutorResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
+from app.executors.process import process_group_options
 from app.models import OpenCodeExecutionEnvironment, Run, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
 
@@ -35,6 +36,7 @@ class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
             remote_command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **process_group_options(),
         )
         return await self._communicate(task, process, session_id=session_id)
 

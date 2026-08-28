@@ -15,7 +15,7 @@ employees:
       name: 本地 Agent
       opencode_path: opencode
       model_name: deepseek/deepseek-v4-flash
-      workspace_root: /workspaces/astra-01
+      workspace_root: ./workspaces/astra-01
     policy:
       auto_claim: true
       auto_execute: true

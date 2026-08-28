@@ -15,9 +15,9 @@
 | 门禁 | 结果 |
 | --- | --- |
 | Ruff | 通过 |
-| 后端单元/集成测试 | 37 passed |
+| 后端单元/集成测试 | 41 passed |
 | 前端类型检查 | 通过 |
-| 前端生产构建 | 通过，2305 modules transformed |
+| 前端生产构建 | 通过，2308 modules transformed |
 | Chromium 系统 E2E | 10 passed，0 failed，0 skipped |
 
 ## 系统 E2E 运行边界
@@ -71,8 +71,28 @@ E2E 每次创建临时目录，并启动隔离的 Redis、Celery Worker/Beat、F
 - 真实问题、阻塞原因、已完成工作、Token、工具调用和执行会话均可见；
 - 浏览器控制台错误和警告为 0。
 
+### 公司显示适配复核
+
+使用 Astra 应用内浏览器对真实页面进行了两种目标分辨率复核：
+
+| 分辨率与页面 | 结果 |
+| --- | --- |
+| 2560×1440 总览 | 正文 16px、页面标题 24px，无页面级水平溢出 |
+| 1920×1080 配置中心 | 输入框与按钮 15px、常用控件 42px，无页面级水平溢出 |
+| 1920×1080 任务中心 | 表格正文 16px、表头 15px、行高约 80px，无页面级水平溢出 |
+
+### 部署与数据库复核
+
+- 本机环境自检 10 项通过，覆盖操作系统、Python、依赖、Agent、Redis、数据库、迁移与可写目录；
+- SQLite 新库从零实际升级到 `0005_employee_model (head)`；
+- MySQL 8 方言完整离线编译 5 个迁移，共生成 354 行 SQL，未发现 PostgreSQL 专属类型、JSON 字段默认值或时区字段语法；
+- 前端生产构建通过 Vite Preview 启动后，`/api/health` 代理实际返回成功；
+- Windows CI 已加入 Python 3.12 的 Ruff、后端测试和完整数据库迁移门禁。
+
 ## 已知部署边界
 
 - Linux 远程执行仍需在目标主机验证 SSH、Agent、工作空间和模型网络；
+- 当前现场没有公司 MySQL 与 Windows 主机，真实 MySQL 连接、PowerShell 启停和 Windows Celery 长时间运行需在公司镜像补充验收；
+- Celery 上游不承诺 Windows 支持；Windows 启动器固定使用 `solo` 池，严格 SLA 时建议把调度运行时放在 Linux；
 - 正式外部任务源需在对端接口可用后联调；
 - 管理台不含登录/RBAC，正式部署必须置于可信内网或企业认证网关之后。

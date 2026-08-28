@@ -23,7 +23,7 @@ async def lifespan(_: FastAPI):
             await seed_demo_data(session)
     else:
         async with SessionLocal() as session:
-            await bootstrap_employees(session, settings.config_dir)
+            await bootstrap_employees(session, settings.resolved_config_dir)
     async with SessionLocal() as session:
         await audit_incomplete_tasks(session, settings)
     yield

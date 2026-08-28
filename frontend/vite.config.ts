@@ -15,4 +15,9 @@ export default defineConfig({
     strictPort: true,
     proxy: { '/api': proxyTarget },
   },
+  preview: {
+    port: 5173,
+    strictPort: true,
+    proxy: { '/api': proxyTarget },
+  },
 })

@@ -8,6 +8,7 @@ from app.database import SessionLocal, init_database
 from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus, TaskType
 from app.executors.base import ExecutorResult, OpenCodeExecutor, TokenUsage, ToolUsageResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
+from app.executors.process import windows_batch_command
 from app.executors.usage import parse_opencode_usage
 from app.models import (
     Base,
@@ -362,7 +363,9 @@ def test_opencode_usage_parser_uses_actual_json_events():
 
 
 async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Path):
-    binary = tmp_path / "fake-opencode"
+    binary_dir = tmp_path / "Agent Program Files"
+    binary_dir.mkdir()
+    binary = binary_dir / "fake-opencode"
     binary.write_text("#!/bin/sh\necho fake-opencode-1.0\n", encoding="utf-8")
     binary.chmod(0o755)
     environment = OpenCodeExecutionEnvironment(
@@ -381,6 +384,18 @@ async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Pa
         "Workspace 可用",
     ]
     assert all(item.passed for item in checks)
+
+
+def test_windows_batch_command_quotes_paths_and_arguments():
+    command = windows_batch_command(
+        r"C:\Program Files\OpenCode\opencode.cmd",
+        ["run", "--dir", r"D:\中文项目\workspace with spaces"],
+        r"C:\Windows\System32\cmd.exe",
+    )
+
+    assert command[:4] == [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c"]
+    assert '"C:\\Program Files\\OpenCode\\opencode.cmd"' in command[4]
+    assert '"D:\\中文项目\\workspace with spaces"' in command[4]
 
 
 async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_path: Path):
@@ -450,7 +465,7 @@ def test_legacy_task_snapshot_inherits_employee_model():
         name="员工 Agent 环境",
         opencode_path="opencode",
         model_name="deepseek/deepseek-v4-flash",
-        workspace_root="/tmp/astra-legacy-model",
+        workspace_root="./workspaces/astra-legacy-model",
     )
     task = Task(
         id="T-LEGACY-MODEL",
@@ -468,7 +483,7 @@ def test_legacy_task_snapshot_inherits_employee_model():
             "mode": "LOCAL",
             "name": "旧 Agent 环境",
             "opencode_path": "opencode",
-            "workspace_root": "/tmp/astra-legacy-model",
+            "workspace_root": "./workspaces/astra-legacy-model",
         },
     )
 

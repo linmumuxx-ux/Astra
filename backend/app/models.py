@@ -3,10 +3,32 @@ from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class UTCDateTime(TypeDecorator):
+    """Persist UTC without relying on a database-specific timezone column."""
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, _dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value, _dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class Base(DeclarativeBase):
@@ -21,8 +43,8 @@ class TaskCategory(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class DigitalEmployee(Base):
@@ -40,10 +62,10 @@ class DigitalEmployee(Base):
     auto_execute: Mapped[bool] = mapped_column(Boolean, default=True)
     max_auto_retries: Mapped[int] = mapped_column(Integer, default=3)
     current_task_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    online_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    last_heartbeat: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    online_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="employee")
     execution_environment: Mapped["OpenCodeExecutionEnvironment | None"] = relationship(
@@ -70,9 +92,9 @@ class OpenCodeExecutionEnvironment(Base):
     status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", index=True)
     status_detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     labels: Mapped[list[str]] = mapped_column(JSON, default=list)
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     employee: Mapped[DigitalEmployee] = relationship(back_populates="execution_environment")
 
@@ -104,22 +126,22 @@ class Task(Base):
     execution_error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     review_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     inactivity_alert: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    inactivity_alert_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    inactivity_alert_since: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
+        UTCDateTime(), nullable=True, index=True
     )
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_environment_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
     runs: Mapped[list["Run"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -138,8 +160,8 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")
     executor_type: Mapped[str] = mapped_column(String(64), default="opencode_cli")
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     execution_environment_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -151,7 +173,7 @@ class Run(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     llm_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="runs")
     events: Mapped[list["Event"]] = relationship(back_populates="run")
@@ -184,7 +206,7 @@ class Event(Base):
     phase: Mapped[str] = mapped_column(String(80), default="system")
     message: Mapped[str] = mapped_column(Text)
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
     task: Mapped[Task | None] = relationship(back_populates="events")
     run: Mapped[Run | None] = relationship(back_populates="events")
@@ -202,6 +224,6 @@ class Evidence(Base):
     size: Mapped[int] = mapped_column(Integer, default=0)
     content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="evidence")

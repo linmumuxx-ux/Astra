@@ -16,11 +16,24 @@ V0.4 保持 V0.3 的职责边界，新增长期连续工作与更直观的数字
 - 可读工作进展、详细操作与原始 Run / 日志三层观察；
 - 员工提交的处理结果、逐项验收结果与证据；
 - Run、Task、Employee 和 Platform 四级 Token / Tool 汇总；
-- Vue 3 管理台、FastAPI 后端、PostgreSQL、Redis 与 Celery Worker。
+- Vue 3 管理台、FastAPI 后端、MySQL、Redis 与 Celery Worker。
 
 ## 快速启动
 
-后端需要 Python 3.11+，前端需要 Node.js 20+。
+后端需要 Python 3.11+，前端需要 Node.js 20+。Windows 公司电脑推荐直接使用仓库中的 PowerShell 脚本：
+
+```powershell
+git clone git@github.com:linxuyiyi/Astra.git
+cd Astra
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+# 编辑根目录 .env 中的 MySQL、Redis、Agent 和目录配置
+powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
+
+访问 `http://localhost:5173`；停止时运行 `scripts\stop-windows.ps1`。Python 3.8 不属于当前支持范围。
+
+Linux 开发环境可手动启动：
 
 ```bash
 cd backend
@@ -51,9 +64,7 @@ npm run dev
 
 ## 正式部署
 
-项目采用原生进程部署：FastAPI 和 Celery 由 systemd 守护，Redis 与 PostgreSQL
-使用主机服务，前端生产产物由 Nginx 托管。员工工作空间是宿主机上的长期工程目录，
-当前使用 OpenCode 适配器时，OpenCode 安装在实际执行 Worker 的主机或远程 Linux 主机。
+项目采用原生进程部署，不包含容器部署配置。公司 Windows 环境使用 PowerShell 安装、自检和启停脚本，正式配置以 MySQL 为主；Linux 环境可由 systemd 守护 FastAPI 和 Celery，并由 Nginx 托管前端产物。员工工作空间是主机上的长期工程目录，当前使用 OpenCode 适配器时，OpenCode 安装在实际执行 Worker 的 Windows 主机或远程 Linux 主机。
 
 完整安装、systemd、Nginx、升级、备份和停止步骤见[部署手册](docs/DEPLOYMENT.md)。
 
@@ -89,4 +100,4 @@ npm run dev
 - [V0.4 功能、系统 E2E 与真实 Agent 验收报告](docs/verification/E2E-V0.4-2026-08-28.md)
 - [原始需求资料](docs/requirements/README.md)
 
-V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前版本已通过 37 个后端测试、前端类型检查与生产构建、10 条 Chromium E2E；系统 E2E 会真实启动 Redis、Worker、Backend、Frontend 和可控 Agent，覆盖员工模型配置以及“询问—等待答复—继续执行—验收完成”。另已使用本地 OpenCode + `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。V0.2 E2E 报告仅作为历史记录。
+V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端测试、前端类型检查与生产构建、10 条 Chromium E2E；系统 E2E 会真实启动 Redis、Worker、Backend、Frontend 和可控 Agent，覆盖员工模型配置以及“询问—等待答复—继续执行—验收完成”。另已使用本地 OpenCode + `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。V0.2 E2E 报告仅作为历史记录。

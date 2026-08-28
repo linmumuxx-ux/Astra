@@ -10,12 +10,18 @@ branch_labels = None
 depends_on = None
 
 
+def json_default(value):
+    if op.get_context().dialect.name == "mysql":
+        return sa.func.json_array(*value)
+    return value
+
+
 def upgrade() -> None:
     with op.batch_alter_table("tasks") as batch:
         batch.add_column(sa.Column("completion_policy", sa.String(32), nullable=False, server_default="AUTO"))
         batch.add_column(sa.Column("suspension", sa.JSON(), nullable=True))
         batch.add_column(sa.Column("execution_error", sa.JSON(), nullable=True))
-        batch.add_column(sa.Column("review_history", sa.JSON(), nullable=False, server_default="[]"))
+        batch.add_column(sa.Column("review_history", sa.JSON(), nullable=True))
         batch.add_column(
             sa.Column("inactivity_alert", sa.Boolean(), nullable=False, server_default=sa.false())
         )
@@ -32,10 +38,18 @@ def upgrade() -> None:
         sa.column("priority", sa.String()),
         sa.column("status", sa.String()),
         sa.column("completion_policy", sa.String()),
+        sa.column("review_history", sa.JSON()),
         sa.column("last_activity_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
     )
     connection = op.get_bind()
+    connection.execute(
+        tasks.update()
+        .where(tasks.c.review_history.is_(None))
+        .values(review_history=json_default([]))
+    )
+    with op.batch_alter_table("tasks") as batch:
+        batch.alter_column("review_history", existing_type=sa.JSON(), nullable=False)
     connection.execute(
         tasks.update()
         .where(tasks.c.priority.in_(["VERY_HIGH", "HIGH"]))

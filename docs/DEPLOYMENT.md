@@ -1,37 +1,217 @@
 # Astra V0.4 部署手册
 
-## 1. 部署方式
+## 1. 本轮部署基线
 
-Astra 使用原生进程部署：
+Astra 使用主机原生进程部署，不包含容器部署配置。当前基线为：
 
-- Nginx 托管 Vue 管理台生产产物，并代理 `/api/`、API 文档和 SSE；
-- Uvicorn 运行 FastAPI、REST API、SSE 和员工环境检查；
-- Celery Worker + Beat 运行任务发现、分配、心跳、恢复扫描和 Agent 执行器；
-- PostgreSQL 保存分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
-- Redis 作为 Celery Broker 和 Result Backend；
-- systemd 守护 Backend 和调度运行时。
+- Python 3.11+；Python 3.8 不在支持范围；
+- Node.js 20+；
+- MySQL 8.0+，字符集固定为 `utf8mb4`；
+- Redis 6+；
+- 当前内置 OpenCode Agent 适配器；
+- Windows 本地执行和 Linux SSH 远程执行；
+- Windows PowerShell 快速安装、自检、启动和停止；
+- Linux 继续支持 systemd、Nginx 和远程 Agent 主机。
 
-员工工作空间是由运维提前准备的长期工程目录。`ASTRA_WORKSPACE_ROOT/records`
-只保存 Agent 观察记录，不是任务源码工作区。
+管理台没有内置登录或 RBAC，必须放在可信公司网络或企业认证网关之后。
 
-## 2. 前置条件
+## 2. 组件与数据目录
 
-- Linux x86_64 或 arm64，建议从 4 核 CPU、8 GB 内存、30 GB 磁盘起步；
-- Python 3.11+、Node.js 20+、Nginx、Git 和 `openssh-client`；
-- PostgreSQL 14+ 与 Redis 6+，安装为主机服务或使用企业已有托管实例；
-- Worker 主机安装至少一种平台支持的 Agent；当前版本内置 OpenCode 适配器；
-- 可访问任务源、代码仓库、模型服务和员工需要的外部系统；
-- 远程员工的目标主机已配置 SSH、对应 Agent 和员工专属可写工作空间；
-- TLS 域名和企业认证网关。
+- FastAPI：REST API、SSE、员工环境检查；
+- Celery Worker + Beat：任务发现、分配、心跳、恢复扫描和 Agent 执行；
+- MySQL：分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
+- Redis：Celery Broker 和 Result Backend；
+- Vue 管理台：Windows 快速部署使用已构建产物的本地预览服务，Linux 正式部署由 Nginx 托管；
+- 员工 Workspace：员工长期使用的真实工程目录；
+- `ASTRA_WORKSPACE_ROOT/records`：Astra 保存的 Agent 观察记录，不是源码工作区；
+- `ASTRA_LOG_DIR`：Backend、运行时和前端日志；
+- `ASTRA_RUNTIME_DIR`：PID、Celery Beat schedule 等运行状态。
 
-管理台没有内置登录/RBAC，不得直接暴露到公网。
+机器相关路径统一放在根目录 `.env`，不要散落修改 Python 或前端源码。
 
-## 3. 安装代码与依赖
+## 3. Windows 快速部署
 
-以 `/opt/astra` 为示例安装目录：
+### 3.1 前置条件
+
+- 64 位 Windows 10/11 或 Windows Server；
+- Python 3.11+；可使用 `py.exe -3.11`、`python.exe`，或把完整路径写入 `ASTRA_PYTHON`；
+- Node.js 20+，并能找到 `npm.cmd`；
+- Git；
+- 可访问的 MySQL 8.0+ 与 Redis；
+- 本地员工需要的 Agent 已加入 PATH，或可配置完整 `.exe` / `.cmd` 路径；
+- Linux 远程员工需要 Windows OpenSSH Client 的 `ssh.exe`。
+
+路径可以包含盘符、空格和中文，例如 `D:\研发项目\Astra` 与 `D:\code\nr_test_system`。
+
+### 3.2 安装
+
+在 PowerShell 中执行：
+
+```powershell
+git clone git@github.com:linxuyiyi/Astra.git
+cd Astra
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+脚本会：
+
+1. 定位并输出实际 Python 版本；
+2. 创建根目录 `.venv`；
+3. 安装后端依赖和 MySQL 异步驱动；
+4. 执行 `npm ci` 和前端生产构建；
+5. 首次运行时从 `deploy\astra.env.windows.example` 生成根目录 `.env`。
+
+如果公司 Python 不在 PATH：
+
+```powershell
+$env:ASTRA_PYTHON = 'C:\Company\Python311\python.exe'
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
+```
+
+### 3.3 配置
+
+编辑根目录 `.env`：
+
+```dotenv
+ASTRA_ENVIRONMENT=production
+ASTRA_DATABASE_BACKEND=mysql
+ASTRA_DATABASE_HOST=127.0.0.1
+ASTRA_DATABASE_PORT=3306
+ASTRA_DATABASE_NAME=astra
+ASTRA_DATABASE_USERNAME=astra
+ASTRA_DATABASE_PASSWORD=replace-with-a-strong-password
+ASTRA_DATABASE_CHARSET=utf8mb4
+ASTRA_REDIS_URL=redis://127.0.0.1:6379/0
+
+ASTRA_DATA_DIR=D:\AstraData\data
+ASTRA_WORKSPACE_ROOT=D:\AstraData\workspaces
+ASTRA_LOG_DIR=D:\AstraData\logs
+ASTRA_RUNTIME_DIR=D:\AstraData\run
+ASTRA_CONFIG_DIR=D:\Astra\configs
+ASTRA_SEED_DEMO=false
+
+ASTRA_OPENCODE_BINARY=C:\Program Files\OpenCode\opencode.exe
+```
+
+不要提交真实数据库密码、任务源令牌或私钥。
+
+### 3.4 自检、启动与停止
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+```
+
+访问：
+
+- 管理台：`http://localhost:5173`
+- API：`http://localhost:8100/api/health`
+- API 文档：`http://localhost:8100/docs`
+
+查看进程状态或停止：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\process_manager.py status
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-windows.ps1
+```
+
+日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器用参数数组创建子进程，并使用 Windows 进程组和 `taskkill /T` 管理进程树。
+
+## 4. 环境自检
+
+Windows 使用 `scripts\check-windows.ps1`，其他环境可直接运行：
 
 ```bash
-sudo useradd --system --create-home --shell /usr/sbin/nologin astra
+.venv/bin/python scripts/preflight.py
+```
+
+自检项目：
+
+- 当前操作系统；
+- Python 版本和必要依赖；
+- MySQL 连接、服务版本、连接字符集；
+- Alembic 当前版本和必要数据表；
+- Redis 连接；
+- 默认 Agent 是否可执行；
+- Workspace、日志目录和运行目录是否存在且可写。
+
+失败输出固定包含“检查项、当前值、失败原因、建议处理方式”，正常环境问题不会只显示 Python traceback。启动脚本会先迁移数据库，再执行同一自检；任一项失败时不启动平台。
+
+## 5. MySQL 准备
+
+使用管理员账号一次性创建数据库和最小权限账号：
+
+```sql
+CREATE DATABASE astra CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'astra'@'%' IDENTIFIED BY 'replace-with-a-strong-password';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP
+ON astra.* TO 'astra'@'%';
+FLUSH PRIVILEGES;
+```
+
+生产建议：
+
+- MySQL 与 Redis 只开放给受控应用网段；
+- 账号密码由企业秘密系统或受保护的 `.env` 注入；
+- 连接字符集必须是 `utf8mb4`；
+- MySQL、应用主机和远程主机统一校时；Astra 以 UTC 写入时间字段；
+- 升级前备份，升级后运行自检确认 revision 与表结构。
+
+`ASTRA_DATABASE_URL` 仍可作为兼容覆盖项，但正式配置优先使用 Host、Port、Database、Username、Password、Charset 六项，便于换机维护。SQLite 只用于本地开发和隔离测试。
+
+## 6. 数据库迁移
+
+Windows 启动脚本会自动执行：
+
+```powershell
+Push-Location backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+Pop-Location
+```
+
+Linux：
+
+```bash
+cd /opt/astra/backend
+/opt/astra/.venv/bin/alembic current
+/opt/astra/.venv/bin/alembic upgrade head
+/opt/astra/.venv/bin/alembic current
+```
+
+当前应到达 `0005_employee_model (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
+
+## 7. 员工 Agent 工作环境
+
+### 7.1 Windows 本地
+
+配置中心的每名员工配置：
+
+- 模式：本地；
+- Agent 可执行文件：PATH 命令名或完整路径；
+- Agent 模型：例如 `deepseek/deepseek-v4-flash`；
+- 员工 Workspace：例如 `D:\code\nr_test_system`。
+
+路径中有空格时直接填写完整路径，不要自行添加 Shell 引号。Astra 不拼接 Shell 字符串；`.exe` 使用参数数组直接启动，`.cmd` / `.bat` 通过 `COMSPEC` 显式适配。
+
+每名同时工作的员工必须有独立可写 Workspace。该目录应包含员工所需的代码、Agent 配置、Skills 与 Tools。
+
+### 7.2 Linux SSH 远程
+
+继续支持现有 Linux 远程模式。目标主机需要：
+
+- 可访问的 Host、Port 与最小权限 Username；
+- 已核验的 `known_hosts`；
+- SSH Agent 或权限受控的私钥路径；
+- 远程 Agent 可执行路径；
+- 员工专属的绝对 Workspace。
+
+Astra 使用 `BatchMode=yes`，不支持交互式密码，只保存密钥路径，不保存私钥内容。远程目标明确为 Linux，因此远程探测和命令执行使用 Linux 命令语义；上层任务、员工与 Run 逻辑不感知本地 Windows 或远程 Linux 的命令差异。
+
+## 8. Linux 原生部署
+
+Windows 是公司快速部署入口；需要 Linux 服务守护时，保留现有 systemd 与 Nginx 配置：
+
+```bash
 sudo git clone git@github.com:linxuyiyi/Astra.git /opt/astra
 sudo chown -R astra:astra /opt/astra
 cd /opt/astra
@@ -39,250 +219,97 @@ sudo -u astra python3 -m venv .venv
 sudo -u astra .venv/bin/pip install -e backend
 sudo -u astra npm --prefix frontend ci
 sudo -u astra npm --prefix frontend run build
-```
 
-正式环境必须固定 Git tag 或 commit，不要直接跟随未验收的分支。
-
-## 4. 准备 PostgreSQL 与 Redis
-
-以 PostgreSQL 为例创建独立数据库和账号：
-
-```bash
-sudo -u postgres createuser --pwprompt astra
-sudo -u postgres createdb --owner=astra astra
-```
-
-确认两个服务可用：
-
-```bash
-pg_isready -h 127.0.0.1 -p 5432
-redis-cli -u redis://127.0.0.1:6379/0 ping
-```
-
-生产数据库和 Redis 应限制在受控网络，并按企业规范配置鉴权、备份和监控。
-
-## 5. 配置环境变量
-
-```bash
 sudo install -d -m 0750 -o root -g astra /etc/astra
-sudo cp /opt/astra/deploy/astra.env.example /etc/astra/astra.env
-sudo chown root:astra /etc/astra/astra.env
-sudo chmod 0640 /etc/astra/astra.env
+sudo cp deploy/astra.env.example /etc/astra/astra.env
 sudo editor /etc/astra/astra.env
-```
 
-关键变量：
-
-| 变量 | 用途 | 生产建议 |
-| --- | --- | --- |
-| `ASTRA_DATABASE_URL` | 异步 SQLAlchemy 数据库地址 | 使用 PostgreSQL，凭据从受控配置注入 |
-| `ASTRA_REDIS_URL` | Celery Broker / Backend | 使用受控 Redis |
-| `ASTRA_SEED_DEMO` | 演示数据开关 | 必须为 `false` |
-| `ASTRA_WORKSPACE_ROOT` | Astra 观察记录目录 | 使用持久磁盘，不作为员工源码目录 |
-| `ASTRA_CONFIG_DIR` | 员工初始配置目录 | 指向只读的受控配置 |
-| `ASTRA_OPENCODE_BINARY` | 当前 OpenCode 适配器的本机 Agent 启动路径 | 使用绝对路径 |
-| `ASTRA_OPENCODE_MODEL` | 可选的平台模型后备值 | 员工页面配置优先；建议按员工配置 |
-| `ASTRA_INACTIVITY_TIMEOUT` | 无可观察活动多久后提示 | 默认 `900` 秒；只提示，不改状态 |
-| `ASTRA_RECOVERY_INTERVAL` | 恢复和活跃度扫描间隔 | 默认 `30` 秒 |
-| `ASTRA_SSH_BINARY` | Linux 远程 SSH 客户端 | 默认 `ssh` |
-| `ASTRA_NR_TEST_SYSTEM_ENDPOINT` | 外部任务源地址 | 使用内网 HTTPS |
-| `ASTRA_NR_TEST_SYSTEM_TOKEN` | 外部任务源认证 | 只从秘密管理系统注入 |
-
-## 6. 准备员工工作空间
-
-本地员工与 Astra Worker 在同一台主机上工作。每名员工需要独立的长期工程目录，例如：
-
-```text
-/srv/astra-employees/astra-01/nr_test_system
-/srv/astra-employees/astra-02/automation_platform
-```
-
-目录必须：
-
-- 已包含员工需要处理的工程；
-- 对 `astra` 运行账号可读写；
-- 包含该员工自己的 Agent 配置、Agent、Skills 与 Tools（如业务需要）；
-- 不与另一名同时工作的员工共享同一个可写目录。
-
-以服务账号检查：
-
-```bash
-sudo -u astra /usr/local/bin/opencode --version
-sudo -u astra test -w /srv/astra-employees/astra-01/nr_test_system
-```
-
-## 7. 准备 Linux 远程工作空间
-
-远程员工需要：
-
-- 到目标服务器的网络和防火墙权限；
-- `astra` 账号可使用的 SSH Agent，或权限为 `0600` 的私钥文件；
-- 已核验的 `known_hosts`，避免首次连接交互；
-- 员工专属的远程工程工作空间；
-- 远程 Agent 路径及执行权限。
-
-Astra 使用 `BatchMode=yes`，不支持交互式密码。配置中只保存私钥路径，不读取或保存私钥内容。
-
-```bash
-sudo -u astra ssh -o BatchMode=yes astra01@server-a.internal true
-sudo -u astra ssh astra01@server-a.internal '/usr/local/bin/opencode --version'
-sudo -u astra ssh astra01@server-a.internal \
-  'test -d /home/astra01/nr_test_system && test -w /home/astra01/nr_test_system'
-```
-
-## 8. 数据库升级
-
-升级前必须备份数据库。以 `/etc/astra/astra.env` 中的变量运行：
-
-```bash
-sudo -u astra bash -c 'set -a; source /etc/astra/astra.env; set +a; cd /opt/astra/backend; /opt/astra/.venv/bin/alembic current'
-sudo -u astra bash -c 'set -a; source /etc/astra/astra.env; set +a; cd /opt/astra/backend; /opt/astra/.venv/bin/alembic upgrade head'
-sudo -u astra bash -c 'set -a; source /etc/astra/astra.env; set +a; cd /opt/astra/backend; /opt/astra/.venv/bin/alembic current'
-```
-
-使用 systemd 部署时，Backend 服务的 `ExecStartPre` 会自动执行同一升级。升级后应看到
-`0004_astra_v04 (head)`。不要对来源不明或结构不一致的数据库盲目执行 `alembic stamp`。
-
-## 9. 安装 systemd 与 Nginx 配置
-
-```bash
-sudo install -d -m 0750 -o astra -g astra /var/lib/astra
-sudo cp /opt/astra/deploy/systemd/astra-backend.service /etc/systemd/system/
-sudo cp /opt/astra/deploy/systemd/astra-runtime.service /etc/systemd/system/
-sudo cp /opt/astra/deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
+sudo cp deploy/systemd/astra-backend.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-runtime.service /etc/systemd/system/
+sudo cp deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now astra-backend astra-runtime
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-如果实际安装目录不是 `/opt/astra`，先修改两个 unit 和 Nginx 配置中的路径。
+如果安装目录不是 `/opt/astra`，先修改 unit、Nginx 和环境文件中的路径。
 
-检查启动状态：
+## 9. 首次业务配置
 
-```bash
-systemctl status astra-backend astra-runtime --no-pager
-curl --fail http://127.0.0.1:8100/api/health
-curl --fail http://127.0.0.1/
-journalctl -u astra-backend -u astra-runtime -n 100 --no-pager
-```
+1. 打开“配置中心 → 任务分类”，确认正式分类；
+2. 创建或更新员工基本信息与工作范围；
+3. 配置每名员工的 Agent、模型和真实工程 Workspace；
+4. 保存并点击“测试连接”，确认环境状态为“正常”；
+5. 按需开启自动领取与自主执行；
+6. 配置外部任务源后再启用正式 Task Scout；
+7. 创建一项低风险测试任务，观察领取、Run、结果和验收证据。
 
-Worker 日志应显示已连接 Redis 并注册任务发现、分配、心跳、恢复扫描和 Agent 处理任务。
+任务中不传工程路径、模型、执行命令或验证脚本；这些属于员工工作环境。
 
-## 10. 首次上线配置
+## 10. 验证
 
-1. 打开“配置中心 → 任务分类”，确认正式使用的分类。
-2. 创建或更新员工基本信息与工作范围。
-3. 为每名员工配置真实工程工作空间、Agent 启动命令和所需模型。
-4. 保存环境配置并确认自动检测结果；也可点击“测试连接”，确认 Agent、SSH（如有）和工作空间均正常。
-5. 确认员工是否允许自动领取和自主执行。
-6. 配置外部任务源后再启用正式 Task Scout。
-
-任务中不再传入 `project_path`、验证脚本或执行命令。若外部任务源仍使用 V0.2 契约，
-应先在 Adapter 中完成字段映射。
-
-## 11. 上线验收
-
-在源码构建环境执行：
+Linux/macOS 构建机执行完整质量门禁：
 
 ```bash
 ./scripts/verify.sh
 ```
 
-该命令运行 Ruff、后端测试、前端类型检查、生产构建和 10 条隔离的 Chromium E2E；E2E 会启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖员工模型配置以及完整询问与继续执行链路。
-服务启动后再检查：
+门禁包含 Ruff、后端测试、前端类型检查、生产构建和 10 条隔离 Chromium E2E。E2E 会真实启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖配置保存、自动领取、员工模型以及“询问—等待回复—继续原会话—验收完成”。
 
-```bash
-curl --fail http://127.0.0.1:8100/api/health
-curl --fail http://127.0.0.1/
-sudo -u astra /usr/local/bin/opencode --version
-```
-
-在能访问真实模型的 Worker 主机，使用受控工程副本执行当前 OpenCode 适配器的冒烟验证：
+在允许访问真实模型的员工主机，可执行真实 OpenCode 冒烟验证：
 
 ```bash
 .venv/bin/python scripts/real_opencode_smoke.py \
   --model deepseek/deepseek-v4-flash \
-  --opencode "$(command -v opencode)"
+  --opencode /absolute/path/to/opencode
 ```
 
-该验证会调用真实模型并消耗 Token。必须使用员工实际运行账号、同类 Agent 配置
-与可写工作空间；不要把凭据写入命令、日志或仓库。自动化不能替代目标 Linux、SSH、
-模型网络、工作空间权限、企业认证网关和外部任务源联调。
+该命令会调用真实模型并消耗 Token，不要把凭据放进命令、日志或仓库。
 
-## 12. 生产安全
+## 11. 备份、升级与停止
 
-- 入口网关提供 HTTPS、SSO/OIDC、管理员授权、速率限制与审计；
-- `/api/events/stream` 关闭代理缓冲并允许长连接；
-- 员工工作空间包含源码和运行产物，应按敏感研发数据保护；
-- 一名员工使用一个独立可写工作空间，V0.4 不支持并行 Worktree；
-- SSH 私钥由主机权限和秘密系统管理，数据库只保存路径；
-- 远程用户使用最小权限账号；
-- PostgreSQL、Redis、管理台和 API 均限制在受控网络；
-- Agent 输出记录可能包含工程信息，`ASTRA_WORKSPACE_ROOT/records` 应加密备份并限制访问。
-
-## 13. 备份与恢复
-
-PostgreSQL 备份：
+MySQL 备份示例：
 
 ```bash
-sudo -u postgres pg_dump -Fc astra > astra-backup.dump
+mysqldump --single-transaction --routines --triggers \
+  -h mysql.company.internal -u astra -p astra > astra-backup.sql
 ```
 
 同时备份：
 
 - `ASTRA_WORKSPACE_ROOT/records`；
-- 员工工作空间或其对应 Git 仓库；
+- 员工 Workspace 或对应 Git 仓库；
 - 非秘密平台配置；
-- SSH `known_hosts` 和基础设施侧密钥配置。
+- 基础设施侧 SSH 配置。
 
-数据库与文件尽量使用同一维护窗口。回滚前在隔离环境验证迁移兼容性，不要直接覆盖唯一生产副本。
+升级顺序：停止运行时与后端、备份、切换到已验收 commit、安装依赖、构建前端、执行迁移和自检、再启动。停止 Astra 不会删除 MySQL 数据、Redis、观察记录或员工 Workspace。
 
-## 14. 运维排查
+## 12. 排查
 
-### 员工不领取任务
+### 任务一直待领取
 
-先检查 `systemctl status astra-runtime`和 Worker 日志，再检查员工是否启用、空闲、允许自动领取，
-环境是否“正常”，以及任务类型和分类是否在员工工作范围内。
+先检查运行时进程和日志，再确认员工已启用、空闲、允许自动领取，环境为“正常”，且任务类型与分类在员工工作范围中。
 
 ### 本地环境异常
 
-以 `astra` 账号执行配置的 Agent `--version`，并检查员工工作空间是否存在且可写。
+以实际运行 Astra 的 Windows 账号执行配置的 Agent 加 `--version`，再检查 Workspace 是否存在且可写。完整路径不需要手工转义。
 
-### Linux 远程环境异常
+### Linux 远程异常
 
-使用相同主机账号、Host、Port 与 Key 重放批处理 SSH。重点检查 DNS、网络、`known_hosts`、
-文件权限、远程工作空间和 Agent 路径。
+使用相同账号、Host、Port 与 Key 重放批处理 SSH，检查 DNS、网络、`known_hosts`、权限、远程 Workspace 和 Agent 路径。
 
-### 任务进入等待人工或执行异常
+### 验收项显示“无法确认”
 
-保留数据库和 `ASTRA_WORKSPACE_ROOT/records` 中的现场，查看任务的结构化人工介入信息、Event、
-最近 Run 的退出码和 Agent stderr。补充信息或修复环境后继续原任务会话。
+表示员工最终回复没有返回可识别的逐项结论，不等于执行失败或“未满足”。Astra 优先解析 `ASTRA_RESULT_JSON`，并兼容清晰的 Markdown 验收表；两者都无法确认时保留“无法确认”，供人工结合证据判断。
 
-### 任务完成但验收项显示“无法确认”
+## 13. 仍存在的环境限制
 
-表示员工最终回复没有返回可识别的逐项结论，不等于执行失败或“未满足”。Astra 优先解析
-`ASTRA_RESULT_JSON`，并兼容清晰的 Markdown 验收表；两者都无法确认时才保留“无法确认”。
-
-## 15. 升级与停止
-
-升级：
-
-```bash
-sudo systemctl stop astra-runtime astra-backend
-cd /opt/astra
-sudo -u astra git fetch --tags origin
-sudo -u astra git checkout <validated-tag-or-commit>
-sudo -u astra .venv/bin/pip install -e backend
-sudo -u astra npm --prefix frontend ci
-sudo -u astra npm --prefix frontend run build
-sudo systemctl start astra-backend astra-runtime
-```
-
-停止 Astra 应用进程：
-
-```bash
-sudo systemctl stop astra-runtime astra-backend
-```
-
-停止 Astra 不会删除 PostgreSQL 数据、Redis 服务、观察记录或员工工作空间。
+- Python 3.8 已从本轮范围移除，当前要求 Python 3.11+；
+- Celery 上游不承诺 Windows 支持。Windows 启动器固定使用 `solo` 池并完成跨平台进程管理，但公司正式镜像仍必须做持续运行验收；严格 SLA 可把调度运行时部署在 Linux；
+- Windows 快速启动器使用 Vite Preview 提供已构建前端，适合可信公司内网快速部署；面向大量用户或高可用要求时，应使用企业 Web Server 或反向代理托管 `frontend\dist`；
+- Redis 的 Windows 安装和守护方式由公司基础设施提供，Astra 只通过 `ASTRA_REDIS_URL` 连接；
+- 当前本地 Agent 适配器实现为 OpenCode；接口和页面已使用中性 Agent 表述，但 Claude Code、Codex 等适配器尚未实现；
+- Linux 远程目标必须提供非交互 SSH、已核验 `known_hosts` 和可写 Workspace；
+- 管理台没有内置身份认证、细粒度授权或秘密管理；
+- 迁移已通过 SQLite 实际升级与 MySQL 方言离线编译，本地没有公司 MySQL 实例，因此正式 MySQL 连接、权限和版本仍需在公司环境运行自检确认。

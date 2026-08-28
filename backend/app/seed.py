@@ -346,7 +346,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             run_id=run.id,
             name="RUN-DEMO-003-opencode.json",
             kind="work_record",
-            path="/workspaces/records/T-20260827-003/RUN-DEMO-003-opencode.json",
+            path="records/T-20260827-003/RUN-DEMO-003-opencode.json",
             size=2048,
             content_type="application/json",
             created_at=now - timedelta(hours=1, minutes=24),

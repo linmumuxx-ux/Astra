@@ -1,13 +1,16 @@
 import asyncio
-import os
 import shlex
-import shutil
 from dataclasses import dataclass
-from pathlib import Path
 from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
 from app.domain import EnvironmentStatus, ExecutionMode
+from app.executors.process import (
+    local_command,
+    process_group_options,
+    resolve_executable,
+    terminate_process,
+)
 from app.models import OpenCodeExecutionEnvironment
 
 
@@ -85,6 +88,7 @@ class ExecutionEnvironmentRuntime:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **process_group_options(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -92,8 +96,7 @@ class ExecutionEnvironmentRuntime:
                 timeout=timeout or self.settings.opencode_timeout_seconds,
             )
         except TimeoutError:
-            process.kill()
-            await process.wait()
+            await terminate_process(process)
             return 124, "", "远程命令执行超时"
         return (
             process.returncode or 0,
@@ -108,8 +111,8 @@ class ExecutionEnvironmentRuntime:
 
     async def _test_local(self, environment: OpenCodeExecutionEnvironment) -> list[CheckItem]:
         binary = environment.opencode_path
-        resolved = shutil.which(binary) if os.sep not in binary else binary
-        exists = bool(resolved and Path(resolved).expanduser().is_file())
+        resolved = resolve_executable(binary)
+        exists = bool(resolved)
         checks = [
             CheckItem(
                 "Agent 命令存在",
@@ -120,10 +123,10 @@ class ExecutionEnvironmentRuntime:
         if exists:
             try:
                 process = await asyncio.create_subprocess_exec(
-                    str(resolved),
-                    "--version",
+                    *local_command(str(resolved), ["--version"]),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    **process_group_options(),
                 )
                 output, _ = await asyncio.wait_for(process.communicate(), timeout=15)
                 started = process.returncode == 0
@@ -134,7 +137,7 @@ class ExecutionEnvironmentRuntime:
         else:
             checks.append(CheckItem("Agent 命令可启动", False, "未执行：Agent 命令不存在"))
 
-        root = Path(environment.workspace_root).expanduser()
+        root = self.settings.employee_workspace_path(environment.workspace_root)
         try:
             root.mkdir(parents=True, exist_ok=True)
             probe = root / f".astra-write-check-{uuid4().hex}"
