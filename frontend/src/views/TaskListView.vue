@@ -16,7 +16,7 @@
       <select v-model="filters.category"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
       <select v-model="filters.priority"><option value="">全部优先级</option><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}</option></select>
       <select v-model="filters.status"><option value="">全部状态</option><option v-for="item in statuses" :key="item" :value="item">{{ statusLabel(item) }}</option></select>
-      <select v-model="filters.employee"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ item.name }}</option></select>
+      <select v-model="filters.employee"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
       <input v-model="filters.date" class="date-filter" type="date" aria-label="创建日期" />
       <button class="button button--ghost" @click="resetFilters"><RotateCcw :size="14" /> 重置</button>
     </div>
@@ -35,7 +35,7 @@
         <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><label>完成策略<select v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select><small>很高/高优先级默认人工确认。</small></label></div></section>
         <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="5" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><label>附件<input type="file" multiple @change="selectFiles" /><small v-if="attachments.length">已选择 {{ attachments.map((item) => item.name).join('、') }}</small></label></section>
         <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-        <section class="form-section"><h4>执行员工</h4><label>分配方式<select v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ item.name }} · {{ item.role }}</option></select><small>自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。</small></label></section>
+        <section class="form-section"><h4>执行员工</h4><label>分配方式<select v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select><small>自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。</small></label></section>
         <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
         <footer><button type="button" class="button" @click="dialogOpen = false">取消</button><button class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button></footer>
       </form>
@@ -53,7 +53,7 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatTime, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, formatTime, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore(); const router = useRouter(); const dialogOpen = ref(false); const submitting = ref(false); const createError = ref('')
 const statuses: TaskStatus[] = ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'COMPLETED', 'FAILED', 'EXECUTION_ERROR', 'CANCELLED']
@@ -72,7 +72,7 @@ const filtered = computed(() => store.tasks.filter((task) => {
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const count = (value: TaskStatus) => store.tasks.filter((task) => task.status === value).length
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
-const employeeName = (id: string | null) => store.employees.find((item) => item.id === id)?.name ?? '自动分配'
+const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '自动分配')
 const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
 const resetFilters = () => Object.assign(filters, { query: '', type: '', category: '', priority: '', status: '', employee: '', date: '' })
 const openTask = (id: string) => router.push(`/tasks/${id}`)

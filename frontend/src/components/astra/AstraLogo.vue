@@ -1,7 +1,7 @@
 <template>
-  <div class="logo" aria-label="Astra">
-    <span class="logo-mark">A</span>
-    <span v-if="!compact" class="logo-copy"><strong>Astra</strong><small>运行控制台</small></span>
+  <div class="logo" aria-label="NEXUS · 数字空间">
+    <span class="logo-mark"><i /><i /><i /></span>
+    <span v-if="!compact" class="logo-copy"><strong>NEXUS · 数字空间</strong><small>数字员工工作与协同空间</small></span>
   </div>
 </template>
 
@@ -11,9 +11,10 @@ defineProps<{ compact?: boolean }>()
 
 <style scoped>
 .logo { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.logo-mark { position: relative; display: grid; place-items: center; width: 36px; height: 36px; color: var(--astra-primary-bright); font: 700 19px/1 var(--astra-font-display); border: 1px solid var(--astra-primary-border); border-radius: 11px 4px 11px 4px; background: var(--astra-primary-soft); box-shadow: 0 0 28px var(--astra-primary-glow); }
-.logo-mark::after { content: ''; position: absolute; inset: 6px; border: 1px solid currentColor; border-width: 1px 0; transform: skew(-18deg); opacity: .4; }
+.logo-mark { position: relative; width: 38px; height: 38px; filter: drop-shadow(0 7px 14px rgba(24,184,117,.18)); }
+.logo-mark i { position: absolute; width: 9px; height: 31px; border-radius: 6px; background: linear-gradient(180deg, #34cf8e, #10a965); transform: rotate(29deg); }
+.logo-mark i:nth-child(1) { left: 8px; top: 4px; }.logo-mark i:nth-child(2) { right: 8px; top: 4px; transform: rotate(-29deg); }.logo-mark i:nth-child(3) { left: 14px; top: 18px; width: 15px; height: 7px; transform: rotate(0); background: #8ee4bb; }
 .logo-copy { display: grid; line-height: 1.05; }
-.logo-copy strong { font: 650 var(--astra-font-section) var(--astra-font-display); letter-spacing: .03em; color: var(--astra-text-primary); }
-.logo-copy small { margin-top: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); letter-spacing: .18em; text-transform: uppercase; }
+.logo-copy strong { font: 700 18px var(--astra-font-display); letter-spacing: .01em; color: var(--astra-text-primary); white-space: nowrap; }
+.logo-copy small { margin-top: 5px; color: var(--astra-text-muted); font-size: 12px; letter-spacing: .02em; white-space: nowrap; }
 </style>

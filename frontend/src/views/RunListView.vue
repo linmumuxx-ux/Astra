@@ -15,12 +15,12 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { environmentLabel, formatDuration, formatTime, formatTokens } from '@/utils/format'
+import { employeeDisplayName, environmentLabel, formatDuration, formatTime, formatTokens } from '@/utils/format'
 const runs = ref<Run[]>([]); const query = ref(''); const store = useAstraStore()
 const load = async () => { runs.value = await api.runs(); if (!store.tasks.length) await store.refresh() }; onMounted(load)
 const filtered = computed(() => runs.value.filter((run) => !query.value || `${run.id}${run.task_id}`.toLowerCase().includes(query.value.toLowerCase())))
 const totalTokens = computed(() => runs.value.reduce((total, run) => total + (run.total_tokens ?? 0), 0) || null)
 const runCount = (status: string) => runs.value.filter((run) => run.status === status).length
 const taskTitle = (id: string) => store.tasks.find((task) => task.id === id)?.title ?? '任务详情'
-const employeeName = (id: string) => store.employees.find((item) => item.id === id)?.name ?? id
+const employeeName = (id: string) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? id)
 </script>

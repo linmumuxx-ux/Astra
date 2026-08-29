@@ -53,7 +53,7 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { acceptanceStatusLabel, environmentLabel, evidenceKindLabel, formatMilliseconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, taskTypeLabel } from '@/utils/format'
+import { acceptanceStatusLabel, employeeDisplayName, environmentLabel, evidenceKindLabel, formatMilliseconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, taskTypeLabel } from '@/utils/format'
 
 const route = useRoute(); const store = useAstraStore(); const task = ref<Task | null>(null); const events = ref<AstraEvent[]>([]); const evidence = ref<Evidence[]>([]); const runs = ref<Run[]>([]); const usage = ref<TaskUsage | null>(null)
 const latestRun = computed(() => runs.value[0] ?? null)
@@ -61,7 +61,7 @@ const canCancel = computed(() => !!task.value && ['READY', 'RUNNING', 'WAIT_HUMA
 const workEvents = computed(() => events.value.filter((event) => event.phase !== 'operation'))
 const operationEvents = computed(() => events.value.filter((event) => event.phase === 'operation'))
 const categoryName = computed(() => store.categories.find((item) => item.id === task.value?.category_id)?.name ?? '—')
-const employeeName = computed(() => store.employees.find((item) => item.id === task.value?.employee_id)?.name ?? '自动分配')
+const employeeName = computed(() => employeeDisplayName(store.employees.find((item) => item.id === task.value?.employee_id)?.name ?? '自动分配'))
 const acceptanceResult = (id: string): AcceptanceResult | undefined => task.value?.result?.acceptance_results.find((item) => item.criterion_id === id)
 const attachmentHref = (item: Record<string, unknown>) => String(item.content ?? item.url ?? '#')
 async function load() { const id = String(route.params.id); await store.refresh(); [task.value, events.value, evidence.value, runs.value, usage.value] = await Promise.all([api.task(id), api.taskEvents(id), api.evidence(id), api.taskRuns(id), api.taskUsage(id)]) }

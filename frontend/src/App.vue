@@ -21,7 +21,7 @@
         <div class="topbar__actions">
           <span class="connection" :class="{ 'connection--offline': !connectionHealthy }"><i /> {{ connectionLabel }}</span>
           <button class="icon-button" aria-label="刷新" @click="refresh"><RefreshCw :size="18" :class="{ spin: store.loading }" /></button>
-          <span class="clock">{{ clock }}</span>
+          <span class="clock">最后更新 {{ clock }}</span>
         </div>
       </header>
       <div v-if="store.error" class="error-banner"><TriangleAlert :size="17" />{{ store.error }}<button @click="refresh">重试</button></div>

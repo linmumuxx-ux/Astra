@@ -23,14 +23,14 @@ import type { Task } from '@/api/types'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import { useAstraStore } from '@/stores/astra'
-import { formatTime, platformCopy, statusLabel } from '@/utils/format'
+import { employeeDisplayName, formatTime, platformCopy, statusLabel } from '@/utils/format'
 const store = useAstraStore(); const router = useRouter(); const selectedId = ref(''); const note = ref(''); const filter = ref('ALL')
 const tasks = computed(() => store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert))
 const filtered = computed(() => filter.value === 'ALL' ? tasks.value : filter.value === 'INACTIVE' ? tasks.value.filter((task) => task.inactivity_alert) : tasks.value.filter((task) => task.status === filter.value))
 const filters = computed(() => [{ value: 'ALL', label: '全部', count: tasks.value.length }, { value: 'WAIT_HUMAN', label: '人工协助', count: tasks.value.filter((t) => t.status === 'WAIT_HUMAN').length }, { value: 'PENDING_CONFIRMATION', label: '待确认', count: tasks.value.filter((t) => t.status === 'PENDING_CONFIRMATION').length }, { value: 'EXECUTION_ERROR', label: '执行异常', count: tasks.value.filter((t) => t.status === 'EXECUTION_ERROR').length }, { value: 'SUSPENDED', label: '已挂起', count: tasks.value.filter((t) => t.status === 'SUSPENDED').length }, { value: 'INACTIVE', label: '无活动', count: tasks.value.filter((t) => t.inactivity_alert).length }])
 const selected = computed(() => filtered.value.find((task) => task.id === selectedId.value) ?? filtered.value[0])
 watch(selected, () => { note.value = '' })
-const employeeName = (id: string | null) => store.employees.find((item) => item.id === id)?.name ?? '未分配'
+const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '未分配')
 const queueIcon = (task: Task) => task.status === 'PENDING_CONFIRMATION' ? ShieldCheck : task.status === 'EXECUTION_ERROR' ? TriangleAlert : task.status === 'SUSPENDED' ? PauseCircle : task.inactivity_alert ? CircleAlert : Hand
 const pendingReason = (task: Task) => task.status === 'WAIT_HUMAN' ? (task.human_intervention?.blocking_reason ?? task.human_required_reason ?? '需要人工补充信息') : task.status === 'PENDING_CONFIRMATION' ? '请检查工作结果后确认或退回' : task.status === 'EXECUTION_ERROR' ? String(task.execution_error?.reason ?? '执行环境异常，工作现场已保留') : task.status === 'SUSPENDED' ? String(task.suspension?.reason ?? '任务已安全挂起') : '长时间没有新的可观察活动'
 async function act(action: string, body: Record<string, unknown> = {}) { if (!selected.value) return; await api.taskAction(selected.value.id, action, body); await store.refresh() }

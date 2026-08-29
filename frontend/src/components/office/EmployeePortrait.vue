@@ -10,11 +10,11 @@
       <defs>
         <linearGradient :id="`portrait-bg-${safeId}`" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" :stop-color="palette.background" />
-          <stop offset="1" stop-color="#07111f" />
+          <stop offset="1" stop-color="#e8f6ef" />
         </linearGradient>
         <linearGradient :id="`portrait-jacket-${safeId}`" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" :stop-color="palette.accent" />
-          <stop offset="1" stop-color="#172a44" />
+          <stop offset="1" stop-color="#f6fbf8" />
         </linearGradient>
       </defs>
 
@@ -50,10 +50,10 @@ import { computed } from 'vue'
 const props = defineProps<{ employeeId: string; status: string }>()
 
 const palettes = [
-  { accent: '#5b8cff', accentSoft: '#9bc2ff', background: '#17345d', skin: '#dca77f', skinShadow: '#b97862', hair: '#18263e' },
-  { accent: '#36c7ae', accentSoft: '#8ae8d4', background: '#123f49', skin: '#bf8768', skinShadow: '#975f50', hair: '#132a32' },
-  { accent: '#9d7cff', accentSoft: '#c8b8ff', background: '#30295c', skin: '#efc3a0', skinShadow: '#c98d79', hair: '#2c2140' },
-  { accent: '#ef9b58', accentSoft: '#ffd0a4', background: '#4d302b', skin: '#9f654d', skinShadow: '#754337', hair: '#181a25' },
+  { accent: '#18b875', accentSoft: '#70dbaa', background: '#dff6ea', skin: '#dca77f', skinShadow: '#b97862', hair: '#233432' },
+  { accent: '#22aa82', accentSoft: '#8ae8d4', background: '#ddf5ef', skin: '#bf8768', skinShadow: '#975f50', hair: '#1b3130' },
+  { accent: '#3d8ff0', accentSoft: '#a8cdf9', background: '#e5f1fb', skin: '#efc3a0', skinShadow: '#c98d79', hair: '#2c3040' },
+  { accent: '#18b875', accentSoft: '#96e5bf', background: '#e8f7ef', skin: '#9f654d', skinShadow: '#754337', hair: '#252b2a' },
 ]
 
 const hash = computed(() => [...props.employeeId].reduce((total, character) => total + character.charCodeAt(0), 0))
@@ -64,9 +64,9 @@ const portraitStyle = computed(() => ({ '--portrait-accent': palette.value.accen
 </script>
 
 <style scoped>
-.employee-portrait { position: relative; display: block; flex: none; width: 72px; height: 72px; border: 1px solid color-mix(in srgb, var(--portrait-accent) 42%, transparent); border-radius: 20px 12px 20px 12px; background: #0b1728; box-shadow: 0 12px 28px rgba(0, 0, 0, .24), 0 0 24px color-mix(in srgb, var(--portrait-accent) 14%, transparent); }
+.employee-portrait { position: relative; display: block; flex: none; width: 72px; height: 72px; border: 1px solid color-mix(in srgb, var(--portrait-accent) 32%, transparent); border-radius: 20px 12px 20px 12px; background: #edf8f3; box-shadow: 0 10px 24px rgba(35,76,59,.12); }
 .employee-portrait svg { display: block; width: 100%; height: 100%; border-radius: inherit; }
-.employee-portrait__presence { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; border: 3px solid #0d1a2b; border-radius: 50%; background: #7b8da3; box-shadow: 0 0 10px rgba(123, 141, 163, .35); }
+.employee-portrait__presence { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; border: 3px solid #fff; border-radius: 50%; background: #7b8da3; box-shadow: 0 0 10px rgba(123,141,163,.25); }
 .employee-portrait[data-status='IDLE'] .employee-portrait__presence { background: var(--astra-success); box-shadow: 0 0 11px rgba(50, 214, 155, .55); }
 .employee-portrait[data-status='WORKING'] .employee-portrait__presence { background: var(--astra-primary-bright); box-shadow: 0 0 12px rgba(91, 140, 255, .65); animation: portrait-presence 1.6s ease-in-out infinite; }
 .employee-portrait[data-status='WAIT_HUMAN'] .employee-portrait__presence { background: var(--astra-warning); box-shadow: 0 0 12px rgba(255, 173, 91, .6); }

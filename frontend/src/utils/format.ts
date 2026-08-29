@@ -43,6 +43,9 @@ export const formatTokens = (value: number | null | undefined) => {
   return String(value)
 }
 
+export const employeeDisplayName = (value: string | null | undefined) =>
+  String(value ?? '数字员工').replace(/^Astra-(\d+)$/i, '员工-$1')
+
 export const formatDurationSeconds = (seconds: number | null | undefined) => {
   if (seconds === null || seconds === undefined) return '—'
   const minutes = Math.floor(seconds / 60)
@@ -75,11 +78,14 @@ export const evidenceKindLabel = (value: string) =>
 
 export const platformCopy = (value: string | null | undefined) =>
   String(value ?? '')
-    .replaceAll('OpenCode Session', 'Agent 会话')
-    .replaceAll('OpenCode 会话', 'Agent 会话')
-    .replaceAll('CLI 执行会话', 'Agent 会话')
-    .replaceAll('CLI 会话', 'Agent 会话')
+    .replaceAll('Agent 工作环境检查完成', '工作环境检查完成')
+    .replaceAll('Agent 工作环境已更新', '工作环境已更新')
+    .replaceAll('Agent 返回模型用量事件', '模型用量已更新')
+    .replaceAll('OpenCode Session', '执行会话')
+    .replaceAll('OpenCode 会话', '执行会话')
+    .replaceAll('CLI 执行会话', '执行会话')
+    .replaceAll('CLI 会话', '执行会话')
     .replaceAll('-opencode.json', '-agent.json')
     .replaceAll('-cli.json', '-agent.json')
-    .replaceAll('OpenCode', 'Agent')
-    .replaceAll('CLI', 'Agent')
+    .replaceAll('OpenCode', '执行工具')
+    .replaceAll('CLI', '执行工具')
