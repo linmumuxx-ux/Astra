@@ -24,7 +24,7 @@
       </div>
 
       <aside class="dashboard-side">
-        <AstraPanel title="最近更新" subtitle="真实的任务与员工记录"><div class="event-feed"><article v-for="event in meaningfulEvents.slice(0, 5)" :key="event.id"><span class="event-dot" :data-tone="event.event_type === 'WAIT_HUMAN' ? 'warning' : event.event_type === 'TASK_COMPLETED' ? 'success' : 'info'"><component :is="eventIcon(event.event_type)" :size="13" /></span><div><strong>{{ platformCopy(event.message) }}</strong><p>{{ employeeName(event.employee_id) }}</p></div><time>{{ formatTime(event.created_at) }}</time></article><AstraEmptyState v-if="!meaningfulEvents.length" :icon="Activity" title="暂无动态" description="员工工作后会显示在这里。" /></div></AstraPanel>
+        <AstraPanel title="最近更新" subtitle="真实的任务与员工记录"><div class="event-feed"><article v-for="event in meaningfulEvents.slice(0, 5)" :key="event.id"><span class="event-dot" :data-tone="eventTone(event.event_type)"><component :is="eventIcon(event.event_type)" :size="13" /></span><div><strong>{{ eventSummary(event) }}</strong><p>{{ eventTaskTitle(event.task_id) }}</p></div><time>{{ formatTime(event.created_at) }}</time></article><AstraEmptyState v-if="!meaningfulEvents.length" :icon="Activity" title="暂无动态" description="员工工作后会显示在这里。" /></div></AstraPanel>
         <AstraPanel title="待办事项"><div class="todo-list"><RouterLink v-for="task in pendingTasks.slice(0,4)" :key="task.id" :to="`/tasks/${task.id}`"><span><CircleAlert :size="15" /></span><div><strong>{{ task.title }}</strong><small>{{ platformCopy(task.current_progress) || '等待处理' }}</small></div></RouterLink><AstraEmptyState v-if="!pendingTasks.length" :icon="Check" title="暂无待办" description="需要处理的任务会显示在这里。" /></div></AstraPanel>
       </aside>
     </section>
@@ -36,6 +36,7 @@
 import { Activity, BadgeCheck, Binary, BriefcaseBusiness, Check, CircleAlert, Hand, Play, Wrench } from 'lucide-vue-next'
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
+import type { AstraEvent } from '@/api/types'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
@@ -48,12 +49,29 @@ const dataHealthy = computed(() => store.realtimeConnected && !store.error)
 const lastSync = computed(() => store.lastUpdated?.toLocaleTimeString('zh-CN', { hour12: false }) ?? '连接中')
 const employeeCount = (status: string) => store.employees.filter((employee) => employee.status === status).length
 const pendingTasks = computed(() => store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert))
-const meaningfulEvents = computed(() => store.events.filter((event) => !/(模型用量|token|工具调用|工作环境检查|工作环境已更新|缓存|Agent 调用|Agent 会话|会话已启动|Bash|Shell)/i.test(platformCopy(event.message))))
+const visibleEventTypes = new Set(['TASK_ASSIGNED', 'TASK_RUNNING', 'WAIT_HUMAN', 'TASK_SUSPENDED', 'RESULT_SUBMITTED', 'TASK_COMPLETED', 'EXECUTION_ERROR', 'TASK_FAILED', 'TASK_CANCELLED'])
+const meaningfulEvents = computed(() => store.events.filter((event) => visibleEventTypes.has(event.event_type)))
 const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((employee) => employee.id === id)?.name ?? (id ?? '系统更新'))
+const eventTaskTitle = (id: string | null) => store.tasks.find((task) => task.id === id)?.title ?? '任务状态已更新'
+const eventSummary = (event: AstraEvent) => {
+  const name = employeeName(event.employee_id)
+  return ({
+    TASK_ASSIGNED: `${name} 已领取任务`,
+    TASK_RUNNING: `${name} 开始或恢复任务`,
+    WAIT_HUMAN: `${name} 请求人工协助`,
+    TASK_SUSPENDED: `${name} 暂停任务`,
+    RESULT_SUBMITTED: `${name} 提交任务结果`,
+    TASK_COMPLETED: `${name} 完成任务`,
+    EXECUTION_ERROR: `${name} 出现执行异常`,
+    TASK_FAILED: `${name} 任务执行失败`,
+    TASK_CANCELLED: '任务已取消',
+  }[event.event_type] ?? '任务状态已更新')
+}
 const roleGroups = computed(() => {
   const groups = new Map<string, { count: number; working: number }>()
   for (const employee of store.employees) { const group = groups.get(employee.role) ?? { count: 0, working: 0 }; group.count += 1; if (employee.status === 'WORKING') group.working += 1; groups.set(employee.role, group) }
   return [...groups.entries()].map(([role, value]) => ({ role, label: `${role.replace(/(?:数字)?员工$|专员$|工程师$/u, '').trim() || role}区`, ...value }))
 })
 const eventIcon = (type: string) => type === 'WAIT_HUMAN' ? CircleAlert : type === 'TASK_COMPLETED' ? Check : Play
+const eventTone = (type: string) => type === 'WAIT_HUMAN' ? 'warning' : type === 'TASK_COMPLETED' ? 'success' : ['EXECUTION_ERROR', 'TASK_FAILED'].includes(type) ? 'danger' : 'info'
 </script>

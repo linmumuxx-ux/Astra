@@ -1,6 +1,7 @@
 <template>
   <div class="digital-office" :class="{ 'digital-office--reduced': reducedMotion }">
     <div class="office-scene">
+      <div class="office-scene__backdrop" />
       <div class="office-scene__depth" />
       <div class="workstation-grid">
         <button
@@ -12,13 +13,15 @@
           :aria-label="`${employeeDisplayName(employee.name)} ${employee.role} ${statusLabel(employee.status)}`"
           @click="selectedId = selectedId === employee.id ? '' : employee.id"
         >
-          <span class="workstation__number">工位 {{ String(index + 1).padStart(2, '0') }}</span>
-          <EmployeeWorkstation :employee-id="employee.id" :status="employee.status" :variant="index + 1" />
-          <span class="workstation__identity">
-            <span><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></span>
+          <span class="workstation__header">
+            <span class="workstation__number"><small>工位 </small>{{ String(index + 1).padStart(2, '0') }}</span>
             <AstraStatusBadge :status="employee.status" :pulse="employee.status === 'WORKING'" />
           </span>
-          <span class="workstation__taskline">{{ currentTask(employee.id)?.title ?? idleTitle(employee.status) }}</span>
+          <EmployeeWorkstation :employee-id="employee.id" :status="employee.status" :variant="index + 1" />
+          <span class="workstation__info">
+            <span class="workstation__identity"><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></span>
+            <span class="workstation__activity"><small>{{ activityLabel(employee.status) }}</small><strong>{{ currentTask(employee)?.title ?? idleTitle(employee.status) }}</strong></span>
+          </span>
         </button>
       </div>
     </div>
@@ -61,10 +64,12 @@ const priorStatus = new Map<string, string>()
 const reducedMotion = computed(() => localStorage.getItem('astra-reduced-motion') === 'true')
 const visibleEmployees = computed(() => props.employees.slice(0, 4))
 const selected = computed(() => props.employees.find((employee) => employee.id === selectedId.value))
-const selectedTask = computed(() => selected.value ? currentTask(selected.value.id) : undefined)
-const currentTask = (employeeId: string) => props.tasks.find((task) => task.employee_id === employeeId && ['READY', 'RUNNING', 'WAIT_HUMAN', 'EXECUTION_ERROR'].includes(task.status))
+const selectedTask = computed(() => selected.value ? currentTask(selected.value) : undefined)
+const taskStatuses = (status: string) => ({ WORKING: ['RUNNING'], WAIT_HUMAN: ['WAIT_HUMAN'], ERROR: ['EXECUTION_ERROR'], PAUSED: ['SUSPENDED'] }[status] ?? [])
+const currentTask = (employee: Employee) => props.tasks.find((task) => task.employee_id === employee.id && taskStatuses(employee.status).includes(task.status))
 const statusCopy = (status: string) => ({ WORKING: '正在推进任务', IDLE: '等待新任务', WAIT_HUMAN: '等待人工补充信息', PAUSED: '暂停接收新任务', OFFLINE: '当前离线', ERROR: '工作现场已保留' }[status] ?? '等待状态更新')
 const idleTitle = (status: string) => status === 'IDLE' ? '等待新任务' : status === 'WAIT_HUMAN' ? '需要人工处理' : status === 'ERROR' ? '执行异常' : '暂无任务'
+const activityLabel = (status: string) => ({ WORKING: '正在处理', IDLE: '当前状态', WAIT_HUMAN: '正在等待', ERROR: '异常任务', PAUSED: '当前状态', OFFLINE: '工位状态' }[status] ?? '当前工作')
 
 watch(() => props.employees.map(({ id, status }) => ({ id, status })), (employees) => {
   for (const employee of employees) {
@@ -82,23 +87,30 @@ watch(() => props.employees.map(({ id, status }) => ({ id, status })), (employee
 </script>
 
 <style scoped>
-.digital-office { position: relative; background: #eef3f1; }
-.office-scene { position: relative; height: 520px; overflow: hidden; padding: 30px 24px 18px; background: url('/assets/nexus-office.png') center 44% / cover no-repeat; isolation: isolate; }
-.office-scene::before { position: absolute; inset: 0; z-index: -1; background: linear-gradient(180deg,rgba(247,250,249,.16),rgba(234,242,239,.1) 46%,rgba(25,58,49,.22)); content: ''; }
-.office-scene__depth { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 88%,rgba(255,255,255,.42),transparent 55%),linear-gradient(90deg,rgba(233,241,238,.2),transparent 26%,transparent 74%,rgba(233,241,238,.18)); pointer-events: none; }
-.workstation-grid { position: relative; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 2px; align-items: end; height: 100%; }
-.workstation { position: relative; display: grid; grid-template-rows: minmax(0,1fr) auto auto; min-width: 0; min-height: 0; height: 100%; padding: 0 2px 10px; color: inherit; text-align: left; border: 0; background: transparent; cursor: pointer; transition: transform .2s ease; }
-.workstation:hover,.workstation.active { transform: translateY(-7px); }
+.digital-office { position: relative; background: #e7eeeb; }
+.office-scene { position: relative; height: 420px; overflow: hidden; padding: 14px 18px 12px; isolation: isolate; }
+.office-scene__backdrop { position: absolute; inset: -2%; z-index: -3; background: url('/assets/nexus-office.png') center 47% / cover no-repeat; filter: brightness(.86) saturate(.87) contrast(1.04); transform: scale(1.02); }
+.office-scene::before { position: absolute; inset: 0; z-index: -2; background: linear-gradient(180deg,rgba(226,237,233,.06),rgba(216,231,225,.03) 44%,rgba(12,42,34,.28)); content: ''; }
+.office-scene__depth { position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at 50% 92%,rgba(31,196,127,.15),transparent 54%),linear-gradient(90deg,rgba(20,54,45,.1),transparent 23%,transparent 77%,rgba(20,54,45,.1)); pointer-events: none; }
+.workstation-grid { position: relative; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); height: 100%; }
+.workstation { position: relative; display: grid; grid-template-rows: 34px minmax(0,1fr) 66px; min-width: 0; min-height: 0; height: 100%; padding: 0 8px 7px; color: inherit; text-align: left; border: 0; background: transparent; cursor: pointer; transition: transform .2s ease; }
+.workstation::after { position: absolute; top: 20px; right: 0; bottom: 16px; width: 1px; background: linear-gradient(transparent,rgba(228,239,235,.7) 22%,rgba(21,57,48,.28) 76%,transparent); content: ''; }
+.workstation:last-child::after { display: none; }
+.workstation:hover,.workstation.active { transform: translateY(-4px); }
 .workstation:focus-visible { border-radius: 14px; outline: 3px solid rgba(13,142,87,.35); outline-offset: -3px; }
-.workstation__number { position: absolute; z-index: 4; top: 8px; left: 14px; color: rgba(18,48,41,.66); font: 700 12px var(--astra-font-display); letter-spacing: .08em; }
+.workstation__header { position: relative; z-index: 4; display: flex; align-items: center; justify-content: space-between; padding: 0 7px; }
+.workstation__number { display: inline-flex; align-items: baseline; gap: 4px; color: rgba(12,42,34,.82); font: 800 14px var(--astra-font-display); letter-spacing: .06em; text-shadow: 0 1px 1px rgba(255,255,255,.64); }
+.workstation__number small { font: 700 11px var(--astra-font-body); letter-spacing: .08em; }
+.workstation__header :deep(.status-badge) { min-height: 23px; padding: 2px 7px; border: 1px solid rgba(255,255,255,.48); background: rgba(247,250,249,.78); backdrop-filter: blur(8px); }
 .workstation :deep(.employee-workstation) { min-height: 0; }
-.workstation__identity { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; margin: -8px 10px 0; padding: 7px 3px 5px; border-bottom: 1px solid rgba(51,78,71,.22); }
-.workstation__identity > span { display: grid; min-width: 0; }
-.workstation__identity strong,.workstation__identity small,.workstation__taskline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workstation__identity strong { color: #102b25; font: 700 var(--astra-font-body) var(--astra-font-display); }
+.workstation__info { position: relative; z-index: 3; display: grid; grid-template-columns: minmax(88px,.8fr) minmax(0,1.2fr); gap: 12px; min-width: 0; margin: -10px 7px 0; padding: 9px 10px 8px; border-top: 1px solid rgba(229,240,236,.82); background: linear-gradient(90deg,rgba(245,249,247,.88),rgba(238,245,242,.69)); box-shadow: 0 -8px 24px rgba(18,50,42,.08); backdrop-filter: blur(9px); }
+.workstation__identity,.workstation__activity { display: grid; align-content: center; min-width: 0; }
+.workstation__identity strong,.workstation__identity small,.workstation__activity strong,.workstation__activity small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workstation__identity strong { color: #102b25; font: 750 var(--astra-font-body) var(--astra-font-display); }
 .workstation__identity small { color: #45625b; font-size: 13px; }
-.workstation__identity :deep(.status-badge) { min-height: 24px; padding: 2px 7px; background: rgba(255,255,255,.76); backdrop-filter: blur(8px); }
-.workstation__taskline { z-index: 3; padding: 5px 13px 0; color: #2f4b44; font-size: 13px; }
+.workstation__activity { padding-left: 12px; border-left: 1px solid rgba(51,78,71,.22); }
+.workstation__activity small { color: #587069; font-size: 12px; }
+.workstation__activity strong { color: #1c3b33; font-size: 13px; font-weight: 650; }
 .workstation[data-status='WAIT_HUMAN'] .workstation__number { color: #a55d12; }
 .workstation[data-status='ERROR'] .workstation__number { color: #bd4350; }
 .workstation--completed { animation: completed-lift 1.8s ease-out; }
@@ -112,6 +124,6 @@ watch(() => props.employees.map(({ id, status }) => ({ id, status })), (employee
 .office-inspector nav { display: flex; gap: 8px; }
 @keyframes completed-lift { 35% { filter: drop-shadow(0 0 24px rgba(24,184,117,.42)); } }
 .digital-office--reduced :deep(*) { animation: none !important; transition: none !important; }
-@media(max-width:1180px){.office-scene{height:660px;padding-top:20px}.workstation-grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}.workstation__number{top:2px}.office-inspector{grid-template-columns:1fr}.office-inspector dl{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1180px){.office-scene{height:660px;padding-top:16px}.workstation-grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}.workstation{grid-template-rows:30px minmax(0,1fr) 60px}.workstation:nth-child(2n)::after{display:none}.office-inspector{grid-template-columns:1fr}.office-inspector dl{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:700px){.office-scene{height:auto;min-height:980px}.workstation-grid{grid-template-columns:1fr;grid-template-rows:repeat(4,230px)}.office-inspector dl{grid-template-columns:1fr}.office-inspector nav{flex-wrap:wrap}}
 </style>
