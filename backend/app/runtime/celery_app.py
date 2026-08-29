@@ -34,9 +34,22 @@ celery.conf.update(
     },
 )
 
+_loop: asyncio.AbstractEventLoop | None = None
+
 
 def run_async(coro):
-    return asyncio.run(coro)
+    """Run Celery async work on one persistent loop.
+
+    SQLAlchemy's async engine and its pool retain loop-bound futures. Reusing the
+    loop also preserves Windows' default Proactor implementation, which is
+    required by ``asyncio.create_subprocess_exec``.
+    """
+
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop.run_until_complete(coro)
 
 
 @celery.task(name="astra.scout")

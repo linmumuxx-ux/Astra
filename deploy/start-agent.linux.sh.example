@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Copy this template outside the repository and replace all placeholder paths.
+export CODEAGENT_CONFIG="/path/to/cli_config.jsonc"
+export CODEAGENT_CONFIG_DIR="/path/to/agent-config"
+export OPENCODE_SKIP_SAFE_CHECK=1
+export USE_OSC_FILTER=false
+
+exec /path/to/codeagent --disable-update "$@"

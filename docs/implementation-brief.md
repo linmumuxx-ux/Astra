@@ -52,6 +52,6 @@ Agent JSON 输出被流式观察，不等待整次 Run 结束：
 
 ## 迁移与验证边界
 
-`0004_astra_v04` 在 V0.3 数据上增量添加完成策略、挂起/异常/退回、活跃度和提交/确认时间，并将旧 `PAUSED` 转为 `SUSPENDED`。`0005_employee_model` 为员工 Agent 工作环境增加可选模型覆盖。
+`0004_astra_v04` 在 V0.3 数据上增量添加完成策略、挂起/异常/退回、活跃度和提交/确认时间，并将旧 `PAUSED` 转为 `SUSPENDED`。`0005_employee_model` 为员工 Agent 工作环境增加可选模型覆盖。`0006_ssh_password` 将 Linux 远程认证从 SSH Agent/密钥路径迁移为数据库密码字段；API 只暴露是否已配置，任务与 Run 快照不保存密码，远程命令由 Paramiko 执行。
 
-V0.4 已通过 Ruff、37 个后端单元/集成测试、前端类型检查、生产构建和 10 条 Chromium E2E。系统 E2E 启动隔离 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，正式覆盖员工模型配置、配置保存与“询问—等待答复—继续原会话—结构化验收”。另使用本地 OpenCode 1.18.23 与 `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。详细证据见 `docs/verification/E2E-V0.4-2026-08-28.md`；`docs/verification/E2E-2026-08-27.md` 仅保留为 V0.2 历史记录。
+V0.4 当前通过 Ruff、47 个后端单元/集成测试、前端类型检查和生产构建；现有 10 条 Chromium E2E 继续覆盖员工模型配置、配置保存与“询问—等待答复—继续原会话—结构化验收”。系统 E2E 启动隔离 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent。另使用本地 OpenCode 1.18.23 与 `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。详细证据见 `docs/verification/E2E-V0.4-2026-08-28.md`；`docs/verification/E2E-2026-08-27.md` 仅保留为 V0.2 历史记录。

@@ -84,8 +84,7 @@ class OpenCodeExecutionEnvironment(Base):
     host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    auth_method: Mapped[str] = mapped_column(String(32), default="SSH_AGENT")
-    ssh_key_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     opencode_path: Mapped[str] = mapped_column(Text, default="opencode")
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_root: Mapped[str] = mapped_column(Text, default="./workspaces")
@@ -97,6 +96,10 @@ class OpenCodeExecutionEnvironment(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     employee: Mapped[DigitalEmployee] = relationship(back_populates="execution_environment")
+
+    @property
+    def has_ssh_password(self) -> bool:
+        return bool(self.ssh_password)
 
 
 class Task(Base):

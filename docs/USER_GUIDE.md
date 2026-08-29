@@ -123,11 +123,13 @@ Windows 路径可包含盘符、空格和中文目录。Agent 可执行文件可
 Linux 远程环境还需要：
 
 - Host、Port、Username；
-- SSH Agent 或 SSH Key 路径；
+- SSH 密码；已配置的密码不会回显，编辑时留空表示保持不变；
 - 远程 Agent 启动命令或路径；
 - 远程绝对工作空间。
 
-“测试连接”会分别检查 Agent 启动命令是否存在、是否可启动、工作空间是否存在且可写；远程环境还会检查 SSH 连接。Astra 不保存密码或私钥内容。
+“测试连接”会分别检查 Agent 启动命令是否存在、是否可启动、工作空间是否存在且可写；远程环境还会通过 Paramiko 检查 SSH 连接。员工 SSH 密码以明文保存在部署数据库中，API 只返回是否已配置，不回显密码，也不会把密码写入任务快照、运行记录或证据。该模式只适用于受控公司内网，数据库和备份必须限制访问。
+
+如果实际 Agent 命令依赖配置目录或安全检查开关，可参考 `deploy/start-agent.windows.bat.example` 与 `deploy/start-agent.linux.sh.example` 创建机器本地启动器，再把 `opencode_path` 指向启动器。Windows `.bat` 的注释保持英文，避免 cmd.exe 以非 UTF-8 代码页误解析中文注释。
 
 修改“Agent 模型”并保存后，配置中心会重新检测环境。新领取的任务会把该模型写入环境快照并在每次 Run 中记录实际模型。为兼容升级前已经领取但尚未完成的任务，缺少模型字段的旧快照会继承员工当前配置；已经带模型的新快照保持领取时的值。
 
@@ -303,7 +305,7 @@ ASTRA_NR_TEST_SYSTEM_TOKEN=replace-with-secret
 - 任务一直待领取：Windows 先运行 `scripts\check-windows.ps1`，再用 `scripts\process_manager.py status` 检查调度运行时；Linux 检查 `./scripts/runtime.sh` 或 systemd 服务。随后检查员工是否启用、空闲、允许自动领取，工作环境是否正常，以及类型和分类是否匹配。
 - 启动后只有 traceback：先运行环境自检。每个失败项都会显示“检查项、当前值、失败原因、建议处理方式”，重点处理 MySQL、Redis、Agent、Workspace 和日志目录。
 - 本地环境异常：以 Worker 账号执行配置的 Agent 命令加 `--version`，并检查员工工作空间是否存在且可写。
-- Linux 远程环境异常：检查 SSH 网络、`known_hosts`、账号、密钥路径、远程 Agent 和工作空间权限。
+- Linux 远程环境异常：重新输入并保存 SSH 密码，检查网络、Host、Port、账号、远程 Agent 启动器和工作空间权限。
 - Token 显示 `—`：当前 Agent 事件未提供该字段，Astra 不做估算。
 - 任务等待人工：进入“待处理”查看完整阻塞说明，补充信息后继续同一 Session。
 - 验收项显示“无法确认”：表示员工最终回复里没有可识别的该项结论，不等于执行失败或“未满足”。请结合工作记录人工判断；新运行会要求员工回传结构化逐项结论，并兼容清晰的 Markdown 验收表。
@@ -343,6 +345,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 
 - Astra 不是 Coding Agent、工作流编排器、测试流程引擎、Skill 管理平台或 Tool 管理平台。
 - 不提供一名员工多个并行工作空间、Git Worktree 调度、节点资源池或动态故障迁移。
-- 不保存密码、令牌或私钥内容。
+- 员工 SSH 密码会保存在部署数据库中但不会经 API 回显或进入任务记录；任务源令牌和其他秘密仍必须通过受保护配置注入。
 - 管理台没有内置登录/RBAC，必须部署在可信内网或企业认证网关之后。
 - Celery 官方不承诺 Windows 支持；仓库的 Windows 启动器使用 `solo` 池规避多进程差异，但正式上线前仍需在公司 Windows 镜像上做稳定性验收。要求严格运行保障时，可把调度运行时部署到 Linux，并继续从 Windows 使用管理台。

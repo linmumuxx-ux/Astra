@@ -49,6 +49,7 @@ def check_dependencies() -> CheckResult:
         "asyncmy": "asyncmy",
         "celery": "celery",
         "fastapi": "fastapi",
+        "paramiko": "paramiko",
         "redis": "redis",
         "sqlalchemy": "sqlalchemy",
         "uvicorn": "uvicorn",

@@ -24,8 +24,7 @@ class ExecutionEnvironmentWrite(BaseModel):
     host: str | None = None
     port: int = Field(default=22, ge=1, le=65535)
     username: str | None = None
-    auth_method: str = "SSH_AGENT"
-    ssh_key_path: str | None = None
+    ssh_password: str | None = Field(default=None, max_length=1024)
     opencode_path: str = Field(default="opencode", min_length=1)
     model_name: str | None = Field(default=None, max_length=255)
     workspace_root: str = Field(default="./workspaces", min_length=1)
@@ -45,10 +44,6 @@ class ExecutionEnvironmentWrite(BaseModel):
             ]
             if missing:
                 raise ValueError(f"Linux 远程环境缺少：{', '.join(missing)}")
-            if self.auth_method not in {"SSH_AGENT", "SSH_KEY"}:
-                raise ValueError("Linux 远程认证仅支持 SSH_AGENT 或 SSH_KEY")
-            if self.auth_method == "SSH_KEY" and not self.ssh_key_path:
-                raise ValueError("SSH_KEY 认证必须提供 ssh_key_path")
             if not self.workspace_root.startswith("/"):
                 raise ValueError("Linux 远程 Workspace 根目录必须使用绝对路径")
         return self
@@ -63,8 +58,7 @@ class ExecutionEnvironmentRead(ORMModel):
     host: str | None
     port: int
     username: str | None
-    auth_method: str
-    ssh_key_path: str | None
+    has_ssh_password: bool
     opencode_path: str
     model_name: str | None
     workspace_root: str

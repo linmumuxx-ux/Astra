@@ -1,11 +1,15 @@
+import io
+import os
+import sys
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.routes import _cancel_active_runs
 from app.database import SessionLocal, init_database
-from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus, TaskType
+from app.domain import EmployeeStatus, EnvironmentStatus, Priority, RunStatus, TaskStatus, TaskType
 from app.executors.base import ExecutorResult, OpenCodeExecutor, TokenUsage, ToolUsageResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
 from app.executors.process import windows_batch_command
@@ -23,9 +27,10 @@ from app.models import (
 )
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
-from app.runtime.environment import ExecutionEnvironmentRuntime
+from app.runtime.environment import ExecutionEnvironmentRuntime, environment_snapshot
 from app.runtime.heartbeat import heartbeat_active_employees
 from app.runtime.scout import TaskScout
+from app.runtime.ssh_client import SSHSession
 from app.schemas import TaskCreate
 from app.services import TaskService
 from app.sources.base import ExternalTask, TaskSource
@@ -56,6 +61,25 @@ def new_task(**overrides) -> TaskCreate:
     return TaskCreate(**payload)
 
 
+def fake_agent_launcher(tmp_path: Path, python_source: str, name: str) -> Path:
+    script = tmp_path / f"{name}.py"
+    script.write_text(python_source, encoding="utf-8")
+    if os.name == "nt":
+        launcher = tmp_path / f"{name}.cmd"
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        launcher = tmp_path / name
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n',
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+    return launcher
+
+
 async def test_create_task_records_ready_event(session):
     task = await TaskService(session).create(new_task())
 
@@ -67,6 +91,47 @@ async def test_create_task_records_ready_event(session):
         .all()
     )
     assert [event.event_type for event in events] == ["TASK_CREATED", "TASK_READY"]
+
+
+async def test_cancel_active_runs_finishes_running_and_blocked_rows(session):
+    employee = DigitalEmployee(
+        id="astra-cancel-runs",
+        name="取消测试员工",
+        role="测试员工",
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    session.add(employee)
+    task = await TaskService(session).create(new_task(employee_id=employee.id))
+    session.add_all(
+        [
+            Run(
+                id="RUN-CANCEL-RUNNING",
+                task_id=task.id,
+                employee_id=employee.id,
+                run_number=1,
+                status=RunStatus.RUNNING,
+            ),
+            Run(
+                id="RUN-CANCEL-BLOCKED",
+                task_id=task.id,
+                employee_id=employee.id,
+                run_number=2,
+                status=RunStatus.BLOCKED,
+            ),
+        ]
+    )
+    await session.commit()
+
+    await _cancel_active_runs(task.id, session)
+
+    runs = (
+        (await session.execute(select(Run).where(Run.task_id == task.id).order_by(Run.run_number)))
+        .scalars()
+        .all()
+    )
+    assert [run.status for run in runs] == [RunStatus.CANCELLED, RunStatus.CANCELLED]
+    assert all(run.finished_at is not None for run in runs)
 
 
 async def test_dispatcher_matches_type_and_category_and_limits_one_task(session, tmp_path):
@@ -259,6 +324,23 @@ class FailThenPassExecutor(OpenCodeExecutor):
         return run.result or {}
 
 
+class RaisingExecutor(OpenCodeExecutor):
+    async def start(self, task, workspace):
+        raise RuntimeError("stream reader failed")
+
+    async def resume(self, task, run, workspace):
+        raise RuntimeError("stream reader failed")
+
+    async def get_status(self, run):
+        return run.status
+
+    async def abort(self, run):
+        return None
+
+    async def collect_result(self, run):
+        return run.result or {}
+
+
 async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     await init_database()
     workspace = tmp_path / "persistent-employee-workspace"
@@ -323,6 +405,51 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     assert len(evidence) == 2
 
 
+async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
+    await init_database()
+    workspace = tmp_path / "exception-workspace"
+    workspace.mkdir()
+    employee_id = "astra-runtime-exception"
+    async with SessionLocal() as global_session:
+        employee = DigitalEmployee(
+            id=employee_id,
+            name="异常回收员工",
+            role="测试员工",
+            status=EmployeeStatus.WORKING,
+            task_types=["ISSUE"],
+            category_ids=["testing-platform"],
+            current_task_count=1,
+        )
+        global_session.add(employee)
+        global_session.add(
+            OpenCodeExecutionEnvironment(
+                employee_id=employee.id,
+                mode="LOCAL",
+                name="异常测试环境",
+                opencode_path="opencode",
+                workspace_root=str(workspace),
+                status=EnvironmentStatus.AVAILABLE,
+            )
+        )
+        await global_session.commit()
+        task = await TaskService(global_session).create(new_task(employee_id=employee.id))
+        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        task_id = task.id
+
+    await TaskCoordinator(executor=RaisingExecutor()).process(task_id)
+
+    async with SessionLocal() as global_session:
+        task = await global_session.get(Task, task_id)
+        employee = await global_session.get(DigitalEmployee, employee_id)
+        run = await global_session.scalar(select(Run).where(Run.task_id == task_id))
+
+    assert task and task.status == TaskStatus.EXECUTION_ERROR
+    assert employee and employee.status == EmployeeStatus.ERROR
+    assert run and run.status == RunStatus.FAILED
+    assert run.finished_at is not None
+    assert run.result["stderr"] == "stream reader failed"
+
+
 def test_opencode_usage_parser_uses_actual_json_events():
     tokens, tools, model = parse_opencode_usage(
         [
@@ -365,9 +492,7 @@ def test_opencode_usage_parser_uses_actual_json_events():
 async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Path):
     binary_dir = tmp_path / "Agent Program Files"
     binary_dir.mkdir()
-    binary = binary_dir / "fake-opencode"
-    binary.write_text("#!/bin/sh\necho fake-opencode-1.0\n", encoding="utf-8")
-    binary.chmod(0o755)
+    binary = fake_agent_launcher(binary_dir, 'print("fake-opencode-1.0")\n', "fake-opencode")
     environment = OpenCodeExecutionEnvironment(
         employee_id="astra-check",
         mode="LOCAL",
@@ -386,6 +511,66 @@ async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Pa
     assert all(item.passed for item in checks)
 
 
+async def test_paramiko_exec_channel_closes_stdin_and_streams_output():
+    class FakeChannel:
+        closed = False
+
+        def __init__(self):
+            self.command = ""
+            self.stdin_closed = False
+
+        def exec_command(self, command):
+            self.command = command
+
+        def shutdown_write(self):
+            self.stdin_closed = True
+
+        def makefile(self, mode, size):
+            return io.BytesIO(b'{"type":"text","text":"ok"}\n')
+
+        def makefile_stderr(self, mode, size):
+            return io.BytesIO(b"")
+
+        def recv_exit_status(self):
+            return 0
+
+        def close(self):
+            self.closed = True
+
+    channel = FakeChannel()
+
+    class FakeTransport:
+        def is_active(self):
+            return True
+
+        def open_session(self, timeout):
+            return channel
+
+    class FakeClient:
+        def get_transport(self):
+            return FakeTransport()
+
+        def close(self):
+            return None
+
+    ssh = SSHSession(
+        host="example.internal",
+        port=22,
+        username="nexus",
+        password="secret",
+    )
+    ssh._client = FakeClient()
+
+    process = await ssh.open_exec("agent run")
+    stdout = await process.stdout.readline()
+    exit_code = await process.wait()
+
+    assert channel.command == "agent run"
+    assert channel.stdin_closed is True
+    assert stdout.endswith(b"\n")
+    assert exit_code == 0
+
+
 def test_windows_batch_command_quotes_paths_and_arguments():
     command = windows_batch_command(
         r"C:\Program Files\OpenCode\opencode.cmd",
@@ -398,16 +583,23 @@ def test_windows_batch_command_quotes_paths_and_arguments():
     assert '"D:\\中文项目\\workspace with spaces"' in command[4]
 
 
-async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_path: Path):
-    binary = tmp_path / "permission-rejected-opencode"
-    binary.write_text(
-        "#!/bin/sh\n"
-        'echo \'{"type":"text","part":{"text":"无法写入目标文件"}}\'\n'
-        "echo 'permission requested: external_directory; auto-rejecting' >&2\n"
-        "exit 0\n",
-        encoding="utf-8",
+def test_windows_batch_command_quotes_multiline_prompt_and_shell_characters():
+    command = windows_batch_command(
+        r"C:\OpenCode\opencode.cmd",
+        ["run", "第一行\n第二行 & 不应被 cmd 拆分"],
     )
-    binary.chmod(0o755)
+
+    assert command[4].endswith('"第一行\n第二行 & 不应被 cmd 拆分"')
+
+
+async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_path: Path):
+    binary = fake_agent_launcher(
+        tmp_path,
+        "import sys\n"
+        'print(\'{"type":"text","part":{"text":"无法写入目标文件"}}\')\n'
+        'print("permission requested: external_directory; auto-rejecting", file=sys.stderr)\n',
+        "permission-rejected-opencode",
+    )
     task = Task(
         id="T-PERMISSION-REJECTED",
         source="manual",
@@ -490,3 +682,44 @@ def test_legacy_task_snapshot_inherits_employee_model():
     environment = TaskCoordinator._resolve_environment(task, employee)
 
     assert environment.model_name == "deepseek/deepseek-v4-flash"
+
+
+def test_remote_password_is_not_stored_in_task_snapshot_and_is_resolved_at_runtime():
+    employee = DigitalEmployee(
+        id="astra-remote-password",
+        name="远程员工",
+        role="测试员工",
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    employee.execution_environment = OpenCodeExecutionEnvironment(
+        employee_id=employee.id,
+        mode="LINUX_REMOTE",
+        name="远程环境",
+        host="example.internal",
+        port=22,
+        username="nexus",
+        ssh_password="database-only-secret",
+        opencode_path="/opt/agent/start-agent.sh",
+        workspace_root="/srv/workspace",
+    )
+    snapshot = environment_snapshot(employee.execution_environment)
+    task = Task(
+        id="T-REMOTE-PASSWORD",
+        source="manual",
+        task_type="ISSUE",
+        category_id="testing-platform",
+        title="验证远程密码边界",
+        description="密码不进入任务记录",
+        acceptance_criteria=[],
+        priority="LOW",
+        completion_policy="AUTO",
+        status=TaskStatus.RUNNING,
+        execution_environment_snapshot=snapshot,
+    )
+
+    resolved = TaskCoordinator._resolve_environment(task, employee)
+
+    assert "ssh_password" not in snapshot
+    assert snapshot["has_ssh_password"] is True
+    assert resolved.ssh_password == "database-only-secret"

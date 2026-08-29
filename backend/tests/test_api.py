@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.domain import TaskStatus
 from app.main import app
-from app.models import Task
+from app.models import OpenCodeExecutionEnvironment, Task
 
 
 def task_payload(**overrides):
@@ -94,6 +94,63 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
         assert checked.status_code == 200
         assert checked.json()["status"] == "AVAILABLE"
         assert all(item["passed"] for item in checked.json()["checks"])
+
+
+def test_remote_ssh_password_is_never_returned_and_blank_update_keeps_value():
+    with TestClient(app) as client:
+        category = client.post(
+            "/api/task-categories",
+            json={"name": "远程环境测试", "description": "验证 SSH 密码边界"},
+        )
+        assert category.status_code == 201
+        created = client.post(
+            "/api/employees",
+            json={
+                "id": "astra-api-remote-password",
+                "name": "远程密码员工",
+                "role": "远程执行测试",
+                "category_ids": [category.json()["id"]],
+                "execution_environment": {
+                    "mode": "LINUX_REMOTE",
+                    "name": "远程 Agent 环境",
+                    "host": "example.internal",
+                    "port": 22,
+                    "username": "nexus",
+                    "ssh_password": "database-only-secret",
+                    "opencode_path": "/opt/agent/start-agent.sh",
+                    "workspace_root": "/srv/workspace",
+                },
+            },
+        )
+
+        assert created.status_code == 201
+        environment = created.json()["execution_environment"]
+        assert environment["has_ssh_password"] is True
+        assert "ssh_password" not in environment
+
+        updated = client.put(
+            "/api/employees/astra-api-remote-password/environment",
+            json={
+                "mode": "LINUX_REMOTE",
+                "name": "远程 Agent 环境（已更新）",
+                "host": "example.internal",
+                "port": 22,
+                "username": "nexus",
+                "ssh_password": "",
+                "opencode_path": "/opt/agent/start-agent.sh",
+                "workspace_root": "/srv/workspace",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["has_ssh_password"] is True
+        assert "ssh_password" not in updated.json()
+
+        async def load_password():
+            async with SessionLocal() as session:
+                row = await session.get(OpenCodeExecutionEnvironment, environment["id"])
+                return row.ssh_password
+
+        assert asyncio.run(load_password()) == "database-only-secret"
 
 
 def test_employee_can_submit_structured_completion():

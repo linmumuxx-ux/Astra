@@ -18,6 +18,7 @@ from app.domain import (
 )
 from app.executors.opencode_cli import OpenCodeCLIExecutor
 from app.executors.opencode_remote import RemoteOpenCodeExecutor
+from app.executors.process import terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import DigitalEmployee, Evidence, Run, Task, ToolUsage
 from app.runtime.environment import (
@@ -115,7 +116,9 @@ class TaskCoordinator:
                         message="任务执行发生异常",
                         detail={"error": str(exc)},
                     )
-                employee.status = EmployeeStatus.ERROR
+                    employee.status = EmployeeStatus.ERROR
+                elif task.status in {TaskStatus.CANCELLED, TaskStatus.SUSPENDED}:
+                    self._release_employee(employee)
                 await session.commit()
 
     @staticmethod
@@ -127,6 +130,10 @@ class TaskCoordinator:
             # employee's current model once; new tasks already carry it in the snapshot.
             if not environment.model_name and employee.execution_environment:
                 environment.model_name = employee.execution_environment.model_name
+            # Passwords never enter immutable task/run snapshots. Resolve the
+            # current employee secret only at execution time.
+            if employee.execution_environment:
+                environment.ssh_password = employee.execution_environment.ssh_password
             return environment
         if employee.execution_environment:
             return employee.execution_environment
@@ -164,11 +171,28 @@ class TaskCoordinator:
             executor.event_callback = lambda event: self._observe_event(task, run, event, service)
 
         resumed_session = task.opencode_session_id
-        result = (
-            await executor.resume(task, run, workspace)
-            if task.opencode_session_id
-            else await executor.start(task, workspace)
-        )
+        try:
+            result = (
+                await executor.resume(task, run, workspace)
+                if task.opencode_session_id
+                else await executor.start(task, workspace)
+            )
+        except Exception as exc:
+            await self._terminate_executor_processes(executor)
+            await session.refresh(task)
+            await session.refresh(run)
+            stopped = task.status in {TaskStatus.CANCELLED, TaskStatus.SUSPENDED}
+            run.status = RunStatus.CANCELLED if stopped else RunStatus.FAILED
+            run.finished_at = datetime.now(UTC)
+            run.result = {
+                "status": "CANCELLED" if stopped else "FAILED",
+                "session_id": task.opencode_session_id,
+                "summary": "任务停止后 Agent 执行已结束" if stopped else "Agent 执行过程中抛出异常",
+                "stderr": str(exc),
+                "usage_source": "exception",
+            }
+            await session.commit()
+            raise
         await session.refresh(task)
         task.opencode_session_id = result.session_id or task.opencode_session_id
         run.opencode_session_id = task.opencode_session_id
@@ -233,6 +257,9 @@ class TaskCoordinator:
                 {"run_number": run_number, "exit_code": result.exit_code},
                 run.id,
             )
+            if task.status in {TaskStatus.CANCELLED, TaskStatus.SUSPENDED}:
+                self._release_employee(employee)
+            await session.commit()
             return
         if not getattr(executor, "event_callback", None):
             await self._record_progress_messages(task, run, result.output, service)
@@ -476,6 +503,20 @@ class TaskCoordinator:
     def _release_employee(employee: DigitalEmployee) -> None:
         employee.current_task_count = max(0, employee.current_task_count - 1)
         employee.status = EmployeeStatus.IDLE
+
+    @staticmethod
+    async def _terminate_executor_processes(executor) -> None:
+        processes = list(getattr(executor, "_processes", {}).values())
+        terminate = getattr(executor, "_terminate_process", None)
+        for process in processes:
+            try:
+                if terminate:
+                    await terminate(process)
+                else:
+                    await terminate_process(process)
+            except Exception:
+                # The original execution exception remains the useful failure.
+                pass
 
     async def _backfill_source(self, task: Task) -> None:
         if task.source != "nr_test_system" or not task.external_task_id:

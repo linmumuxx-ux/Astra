@@ -42,7 +42,41 @@ def local_command(executable: str, arguments: list[str]) -> list[str]:
 def windows_batch_command(
     executable: str, arguments: list[str], comspec: str = "cmd.exe"
 ) -> list[str]:
-    return [comspec, "/d", "/s", "/c", subprocess.list2cmdline([executable, *arguments])]
+    quoted = " ".join(_quote_for_cmd(argument) for argument in [executable, *arguments])
+    return [comspec, "/d", "/s", "/c", quoted]
+
+
+def _quote_for_cmd(argument: str) -> str:
+    """Quote one cmd.exe argument, including real newlines and shell metacharacters."""
+
+    if not argument:
+        return '""'
+    needs_quotes = any(
+        character in argument
+        for character in (" ", "\t", "\n", "\r", '"', "^", "&", "|", "<", ">", "(", ")")
+    )
+    if not needs_quotes:
+        return argument
+
+    # Follow the Windows C runtime quoting rules, but quote more characters
+    # than subprocess.list2cmdline so cmd.exe cannot split multiline prompts.
+    chunks = ['"']
+    backslashes = 0
+    for character in argument:
+        if character == "\\":
+            backslashes += 1
+            continue
+        if character == '"':
+            chunks.append("\\" * (backslashes * 2 + 1))
+            chunks.append('"')
+            backslashes = 0
+            continue
+        chunks.append("\\" * backslashes)
+        chunks.append(character)
+        backslashes = 0
+    chunks.append("\\" * (backslashes * 2))
+    chunks.append('"')
+    return "".join(chunks)
 
 
 def process_group_options() -> dict:

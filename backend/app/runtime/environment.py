@@ -9,9 +9,9 @@ from app.executors.process import (
     local_command,
     process_group_options,
     resolve_executable,
-    terminate_process,
 )
 from app.models import OpenCodeExecutionEnvironment
+from app.runtime.ssh_client import SSHSession
 
 
 @dataclass(slots=True)
@@ -29,8 +29,7 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "host": environment.host,
         "port": environment.port,
         "username": environment.username,
-        "auth_method": environment.auth_method,
-        "ssh_key_path": environment.ssh_key_path,
+        "has_ssh_password": environment.has_ssh_password,
         "opencode_path": environment.opencode_path,
         "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
@@ -47,8 +46,7 @@ def environment_from_snapshot(snapshot: dict, employee_id: str) -> OpenCodeExecu
         host=snapshot.get("host"),
         port=snapshot.get("port", 22),
         username=snapshot.get("username"),
-        auth_method=snapshot.get("auth_method", "SSH_AGENT"),
-        ssh_key_path=snapshot.get("ssh_key_path"),
+        ssh_password=None,
         opencode_path=snapshot["opencode_path"],
         model_name=snapshot.get("model_name"),
         workspace_root=snapshot["workspace_root"],
@@ -61,20 +59,20 @@ class ExecutionEnvironmentRuntime:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
-    def ssh_prefix(self, environment: OpenCodeExecutionEnvironment) -> list[str]:
-        command = [
-            self.settings.ssh_binary,
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={self.settings.ssh_connect_timeout_seconds}",
-            "-p",
-            str(environment.port),
-        ]
-        if environment.auth_method == "SSH_KEY" and environment.ssh_key_path:
-            command.extend(["-i", environment.ssh_key_path])
-        command.append(f"{environment.username}@{environment.host}")
-        return command
+    async def open_session(self, environment: OpenCodeExecutionEnvironment) -> SSHSession:
+        if not environment.host or not environment.username:
+            raise RuntimeError("Linux 远程环境缺少 Host 或 Username")
+        if not environment.ssh_password:
+            raise RuntimeError("Linux 远程环境尚未配置 SSH 密码")
+        session = SSHSession(
+            host=environment.host,
+            port=environment.port,
+            username=environment.username,
+            password=environment.ssh_password,
+            connect_timeout=self.settings.ssh_connect_timeout_seconds,
+        )
+        await session.connect()
+        return session
 
     async def run_remote(
         self,
@@ -83,26 +81,20 @@ class ExecutionEnvironmentRuntime:
         *,
         timeout: int | None = None,
     ) -> tuple[int, str, str]:
-        process = await asyncio.create_subprocess_exec(
-            *self.ssh_prefix(environment),
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **process_group_options(),
-        )
+        session: SSHSession | None = None
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
+            session = await self.open_session(environment)
+            return await asyncio.wait_for(
+                session.run_command(command),
                 timeout=timeout or self.settings.opencode_timeout_seconds,
             )
         except TimeoutError:
-            await terminate_process(process)
             return 124, "", "远程命令执行超时"
-        return (
-            process.returncode or 0,
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
-        )
+        except Exception as exc:
+            return 255, "", str(exc)
+        finally:
+            if session:
+                await session.close()
 
     async def test(self, environment: OpenCodeExecutionEnvironment) -> list[CheckItem]:
         if environment.mode == ExecutionMode.LOCAL:

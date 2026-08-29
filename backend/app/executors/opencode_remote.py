@@ -1,15 +1,14 @@
-import asyncio
 import shlex
 from collections.abc import Awaitable, Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.config.settings import Settings
 from app.executors.base import ExecutorResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
-from app.executors.process import process_group_options
 from app.models import OpenCodeExecutionEnvironment, Run, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
+from app.runtime.ssh_client import RemoteExecChannel
 
 
 class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
@@ -30,15 +29,26 @@ class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
         self.runtime = runtime or ExecutionEnvironmentRuntime(settings)
 
     async def _execute(self, task: Task, workspace: Path, *, session_id: str | None = None) -> ExecutorResult:
-        remote_command = shlex.join(self._command(task, workspace, session_id))
-        process = await asyncio.create_subprocess_exec(
-            *self.runtime.ssh_prefix(self.environment),
-            remote_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **process_group_options(),
-        )
-        return await self._communicate(task, process, session_id=session_id)
+        remote_workspace = PurePosixPath(workspace.as_posix())
+        remote_command = shlex.join(self._command(task, remote_workspace, session_id))
+        session = await self.runtime.open_session(self.environment)
+        try:
+            channel = await session.open_exec(remote_command)
+            return await self._communicate_channel(task, channel, session_id=session_id)
+        finally:
+            await session.close()
+
+    async def _communicate_channel(
+        self,
+        task: Task,
+        channel: RemoteExecChannel,
+        *,
+        session_id: str | None = None,
+    ) -> ExecutorResult:
+        return await self._communicate(task, channel, session_id=session_id)
+
+    async def _terminate_process(self, process: RemoteExecChannel) -> None:
+        await process.terminate()
 
     async def resume(self, task: Task, run: Run, workspace: Path) -> ExecutorResult:
         return await super().resume(task, run, workspace)

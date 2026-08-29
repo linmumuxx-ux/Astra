@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         self.opencode_binary = opencode_binary or self.settings.opencode_binary
         self.model_name = model_name or self.settings.opencode_model
         self.event_callback = event_callback
-        self._processes: dict[str, asyncio.subprocess.Process] = {}
+        self._processes: dict[str, Any] = {}
 
     def _prompt(self, task: Task, workspace: Path, *, retry: bool = False) -> str:
         criteria = "\n".join(
@@ -69,6 +70,8 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
 检查方式或内部步骤。请在完成后如实说明处理结果，并逐项说明验收标准是否满足及相关证据。
 当任务必须询问使用者、等待业务答案、权限或其他人工输入时，不要猜测或自行跳过。
+当前执行环境完全非交互，不能直接联系使用者。禁止通过 shell、PowerShell、环境变量或
+终端探测命令判断是否可交互；需要人工输入时唯一允许的做法是直接输出下述标记。
 请在可读说明后返回以下结构，`requested_input` 必须是一个可直接回答的具体问题：
 ASTRA_INTERVENTION_JSON: {{"blocking_reason":"为什么需要人工输入",
 "completed_work":"已完成的工作","current_state":"当前保留状态",
@@ -100,7 +103,10 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
             command.extend(["--model", self.model_name])
         if session_id:
             command.extend(["--session", session_id])
-        command.append(self._prompt(task, workspace, retry=bool(session_id)))
+        prompt = self._prompt(task, workspace, retry=bool(session_id))
+        if os.name == "nt":
+            prompt = prompt.replace("\r\n", "\\n").replace("\n", "\\n")
+        command.append(prompt)
         return command
 
     @staticmethod
@@ -123,7 +129,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
     async def _communicate(
         self,
         task: Task,
-        process: asyncio.subprocess.Process,
+        process: Any,
         *,
         session_id: str | None = None,
     ) -> ExecutorResult:
@@ -163,8 +169,11 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
                 timeout=self.settings.opencode_timeout_seconds,
             )
         except TimeoutError:
-            await terminate_process(process)
+            await self._terminate_process(process)
             return ExecutorResult(status="BLOCKED", exit_code=124, stderr="Agent execution timeout")
+        except Exception:
+            await self._terminate_process(process)
+            raise
         finally:
             self._processes.pop(task.id, None)
 
@@ -203,6 +212,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
             *local_command(command[0], command[1:]),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,
             **process_group_options(),
         )
         return await self._communicate(task, process, session_id=session_id)
@@ -223,7 +233,10 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
     async def abort(self, run: Run) -> None:
         process = self._processes.get(run.task_id)
         if process and process.returncode is None:
-            await terminate_process(process)
+            await self._terminate_process(process)
+
+    async def _terminate_process(self, process: Any) -> None:
+        await terminate_process(process)
 
     async def collect_result(self, run: Run) -> dict[str, Any]:
         return run.result or {}

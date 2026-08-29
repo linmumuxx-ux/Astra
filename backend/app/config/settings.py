@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     opencode_agent: str | None = None
     opencode_model: str | None = None
     opencode_timeout_seconds: int = 3600
-    ssh_binary: str = "ssh"
     ssh_connect_timeout_seconds: int = 10
 
     nr_test_system_endpoint: str = "http://localhost:8000"

@@ -23,8 +23,7 @@ export interface ExecutionEnvironment {
   host: string | null
   port: number
   username: string | null
-  auth_method: 'SSH_AGENT' | 'SSH_KEY'
-  ssh_key_path: string | null
+  has_ssh_password: boolean
   opencode_path: string
   model_name: string | null
   workspace_root: string

@@ -39,7 +39,7 @@ Astra 使用主机原生进程部署，不包含容器部署配置。当前基�
 - Git；
 - 可访问的 MySQL 8.0+ 与 Redis；
 - 本地员工需要的 Agent 已加入 PATH，或可配置完整 `.exe` / `.cmd` 路径；
-- Linux 远程员工需要 Windows OpenSSH Client 的 `ssh.exe`。
+- Linux 远程员工需要可访问的 SSH 地址、账号和密码；连接由 Python Paramiko 完成，不依赖 `ssh.exe` 或 `sshpass`。
 
 路径可以包含盘符、空格和中文，例如 `D:\研发项目\Astra` 与 `D:\code\nr_test_system`。
 
@@ -93,7 +93,7 @@ ASTRA_SEED_DEMO=false
 ASTRA_OPENCODE_BINARY=C:\Program Files\OpenCode\opencode.exe
 ```
 
-不要提交真实数据库密码、任务源令牌或私钥。
+后端与 Celery 无论从项目根目录还是 `backend` 启动，都会读取这一个根目录 `.env`，不要再复制一份 `backend/.env`。不要提交真实数据库密码、任务源令牌或员工 SSH 密码。
 
 ### 3.4 自检、启动与停止
 
@@ -116,6 +116,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop-windows.ps1
 ```
 
 日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器用参数数组创建子进程，并使用 Windows 进程组和 `taskkill /T` 管理进程树。
+
+Windows Worker 固定使用 `solo` 池并监听 Celery 默认队列。不要额外添加 `-Q astra`；当前任务没有路由到该自定义队列。运行时复用同一 Proactor 事件循环，以保证 asyncmy 连接池与本地 Agent 子进程在连续任务中稳定工作。
 
 ## 4. 环境自检
 
@@ -178,7 +180,7 @@ cd /opt/astra/backend
 /opt/astra/.venv/bin/alembic current
 ```
 
-当前应到达 `0005_employee_model (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
+当前应到达 `0006_ssh_password (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
 
 ## 7. 员工 Agent 工作环境
 
@@ -199,13 +201,18 @@ cd /opt/astra/backend
 
 继续支持现有 Linux 远程模式。目标主机需要：
 
-- 可访问的 Host、Port 与最小权限 Username；
-- 已核验的 `known_hosts`；
-- SSH Agent 或权限受控的私钥路径；
+- 可访问的 Host、Port、最小权限 Username 与 SSH 密码；
 - 远程 Agent 可执行路径；
 - 员工专属的绝对 Workspace。
 
-Astra 使用 `BatchMode=yes`，不支持交互式密码，只保存密钥路径，不保存私钥内容。远程目标明确为 Linux，因此远程探测和命令执行使用 Linux 命令语义；上层任务、员工与 Run 逻辑不感知本地 Windows 或远程 Linux 的命令差异。
+Astra 使用 Paramiko 在线密码认证，明确禁用本机 SSH Agent 和密钥自动查找，因此 Windows 不需要安装 `ssh.exe` / `sshpass`。SSH 密码以明文保存在 Astra 数据库中，只应部署在受控公司内网并严格限制数据库访问；API 只返回 `has_ssh_password`，不会回显密码，密码也不会进入 Task/Run 环境快照、事件或证据文件。配置中心密码框留空表示保持原值。
+
+若 Agent 依赖额外环境变量或需要跳过工作区信任交互，可复制并修改仓库模板：
+
+- Windows 本地：`deploy/start-agent.windows.bat.example`；
+- Linux 远程：`deploy/start-agent.linux.sh.example`。
+
+模板包含 `OPENCODE_SKIP_SAFE_CHECK=1`、`USE_OSC_FILTER=false` 和 `--disable-update`。远端执行会主动关闭 stdin，Agent 必须以非交互方式运行；`opencode_path` 指向修改后的启动器。模板中的路径都是占位符，禁止把真实凭据写入仓库。
 
 ## 8. Linux 原生部署
 
@@ -281,7 +288,7 @@ mysqldump --single-transaction --routines --triggers \
 - `ASTRA_WORKSPACE_ROOT/records`；
 - 员工 Workspace 或对应 Git 仓库；
 - 非秘密平台配置；
-- 基础设施侧 SSH 配置。
+- 受保护的部署配置与数据库备份（数据库包含员工 SSH 密码，必须按秘密数据管理）。
 
 升级顺序：停止运行时与后端、备份、切换到已验收 commit、安装依赖、构建前端、执行迁移和自检、再启动。停止 Astra 不会删除 MySQL 数据、Redis、观察记录或员工 Workspace。
 
@@ -297,7 +304,7 @@ mysqldump --single-transaction --routines --triggers \
 
 ### Linux 远程异常
 
-使用相同账号、Host、Port 与 Key 重放批处理 SSH，检查 DNS、网络、`known_hosts`、权限、远程 Workspace 和 Agent 路径。
+在配置中心重新输入密码并执行“测试连接”，检查 DNS、Host、Port、账号密码、远程 Workspace 和 Agent 启动器权限。错误密码不会由 API 回显。
 
 ### 验收项显示“无法确认”
 
@@ -310,6 +317,6 @@ mysqldump --single-transaction --routines --triggers \
 - Windows 快速启动器使用 Vite Preview 提供已构建前端，适合可信公司内网快速部署；面向大量用户或高可用要求时，应使用企业 Web Server 或反向代理托管 `frontend\dist`；
 - Redis 的 Windows 安装和守护方式由公司基础设施提供，Astra 只通过 `ASTRA_REDIS_URL` 连接；
 - 当前本地 Agent 适配器实现为 OpenCode；接口和页面已使用中性 Agent 表述，但 Claude Code、Codex 等适配器尚未实现；
-- Linux 远程目标必须提供非交互 SSH、已核验 `known_hosts` 和可写 Workspace；
+- Linux 远程目标必须支持密码 SSH、非交互 Agent 启动和可写 Workspace；当前密码明文保存在数据库，必须依靠可信内网、数据库权限和备份加密保护；
 - 管理台没有内置身份认证、细粒度授权或秘密管理；
 - 迁移已通过 SQLite 实际升级与 MySQL 方言离线编译，本地没有公司 MySQL 实例，因此正式 MySQL 连接、权限和版本仍需在公司环境运行自检确认。

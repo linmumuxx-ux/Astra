@@ -1,0 +1,9 @@
+@echo off
+REM Copy this template outside the repository and replace all placeholder paths.
+REM Keep comments in English so cmd.exe code pages do not misparse UTF-8 text.
+set "CODEAGENT_CONFIG=C:\path\to\cli_config.jsonc"
+set "CODEAGENT_CONFIG_DIR=C:\path\to\agent-config"
+set "OPENCODE_SKIP_SAFE_CHECK=1"
+set "USE_OSC_FILTER=false"
+call "C:\path\to\ngagent.cmd" --disable-update %*
+exit /b %ERRORLEVEL%

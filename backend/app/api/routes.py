@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import SessionLocal, get_session
-from app.domain import CompletionPolicy, EmployeeStatus, EnvironmentStatus, TaskStatus
+from app.domain import CompletionPolicy, EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
 from app.models import (
     DigitalEmployee,
     Event,
@@ -75,6 +75,26 @@ async def require_employee(employee_id: str, session: AsyncSession) -> DigitalEm
     if not employee:
         raise HTTPException(status_code=404, detail="数字员工不存在")
     return employee
+
+
+async def _cancel_active_runs(task_id: str, session: AsyncSession) -> None:
+    active_states = {RunStatus.RUNNING.value, RunStatus.BLOCKED.value}
+    runs = (
+        (
+            await session.execute(
+                select(Run).where(Run.task_id == task_id, Run.status.in_(active_states))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not runs:
+        return
+    now = datetime.now(UTC)
+    for run in runs:
+        run.status = RunStatus.CANCELLED.value
+        run.finished_at = run.finished_at or now
+    await session.commit()
 
 
 async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> EmployeeRead:
@@ -251,7 +271,10 @@ async def update_employee_environment(
     if environment is None:
         environment = OpenCodeExecutionEnvironment(employee_id=employee.id)
         session.add(environment)
-    for key, value in payload.model_dump().items():
+    updates = payload.model_dump()
+    if not updates.get("ssh_password"):
+        updates.pop("ssh_password", None)
+    for key, value in updates.items():
         setattr(environment, key, value)
     environment.status = EnvironmentStatus.UNKNOWN
     environment.status_detail = {
@@ -548,6 +571,7 @@ async def cancel_task(
         payload,
         "任务已取消",
     )
+    await _cancel_active_runs(task.id, session)
     if task.employee_id:
         employee = await session.get(DigitalEmployee, task.employee_id)
         if employee:

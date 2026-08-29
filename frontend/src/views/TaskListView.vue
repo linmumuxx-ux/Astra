@@ -53,14 +53,14 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, formatTime, platformCopy, priorityLabel, safeUUID, statusLabel, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore(); const router = useRouter(); const dialogOpen = ref(false); const submitting = ref(false); const createError = ref('')
 const statuses: TaskStatus[] = ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'COMPLETED', 'FAILED', 'EXECUTION_ERROR', 'CANCELLED']
 const priorities: TaskPriority[] = ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW']
 const filters = reactive({ query: '', type: '', category: '', priority: '', status: '', employee: '', date: '' })
 const form = reactive({ title: '', task_type: 'ISSUE' as 'ISSUE' | 'REQUIREMENT', category_id: '', priority: 'MEDIUM' as TaskPriority, completion_policy: 'AUTO' as 'AUTO' | 'MANUAL_CONFIRM', description: '', employee_id: '' })
-const criteria = ref([{ key: crypto.randomUUID(), content: '' }])
+const criteria = ref([{ key: safeUUID(), content: '' }])
 const attachments = ref<Array<{ name: string; size: number; content_type: string; content: string }>>([])
 watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
 
@@ -76,7 +76,7 @@ const employeeName = (id: string | null) => employeeDisplayName(store.employees.
 const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
 const resetFilters = () => Object.assign(filters, { query: '', type: '', category: '', priority: '', status: '', employee: '', date: '' })
 const openTask = (id: string) => router.push(`/tasks/${id}`)
-const addCriterion = () => criteria.value.push({ key: crypto.randomUUID(), content: '' })
+const addCriterion = () => criteria.value.push({ key: safeUUID(), content: '' })
 function moveCriterion(index: number, direction: number) { const target = index + direction; if (target < 0 || target >= criteria.value.length) return; [criteria.value[index], criteria.value[target]] = [criteria.value[target], criteria.value[index]] }
 async function selectFiles(event: Event) { const files = Array.from((event.target as HTMLInputElement).files ?? []); attachments.value = await Promise.all(files.map(async (file) => ({ name: file.name, size: file.size, content_type: file.type || 'application/octet-stream', content: await readFile(file) }))) }
 const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })

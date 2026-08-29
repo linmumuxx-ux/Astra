@@ -170,7 +170,6 @@ test('配置保存保持环境可用且询问任务可由真实运行时等待�
         name: '隔离 Agent 工作环境',
         description: '系统级 E2E',
         port: 22,
-        auth_method: 'SSH_AGENT',
         opencode_path: 'opencode',
         model_name: 'e2e/original-model',
         workspace_root: `./workspaces/${employeeId}`,
