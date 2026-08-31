@@ -1,4 +1,7 @@
 import asyncio
+import select
+import socketserver
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -56,6 +59,70 @@ class RemoteExecChannel:
         await self.terminate()
 
 
+class _ForwardServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class _ForwardHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        server = self.server
+        try:
+            channel = server.transport.open_channel(  # type: ignore[attr-defined]
+                "direct-tcpip",
+                server.remote_address,  # type: ignore[attr-defined]
+                self.request.getpeername(),
+            )
+        except Exception:
+            return
+        try:
+            while True:
+                readable, _, _ = select.select([self.request, channel], [], [])
+                if self.request in readable:
+                    payload = self.request.recv(65536)
+                    if not payload:
+                        break
+                    channel.sendall(payload)
+                if channel in readable:
+                    payload = channel.recv(65536)
+                    if not payload:
+                        break
+                    self.request.sendall(payload)
+        except (EOFError, OSError):
+            pass
+        finally:
+            channel.close()
+
+
+class SSHTunnel:
+    """Local loopback TCP endpoint forwarded through one Paramiko transport."""
+
+    def __init__(self, server: _ForwardServer, thread: threading.Thread):
+        self._server = server
+        self._thread = thread
+        self._closed = False
+
+    @property
+    def local_port(self) -> int:
+        return int(self._server.server_address[1])
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.local_port}"
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        def stop() -> None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._thread.join(timeout=5)
+
+        await _run_blocking(stop)
+
+
 class SSHSession:
     """One password-authenticated Paramiko connection used for remote execution."""
 
@@ -91,6 +158,32 @@ class SSHSession:
                 look_for_keys=False,
             )
         )
+        transport = self._client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(30)
+
+    async def open_tunnel(
+        self,
+        *,
+        remote_host: str = "127.0.0.1",
+        remote_port: int,
+    ) -> SSHTunnel:
+        def start() -> SSHTunnel:
+            transport = self._client.get_transport()
+            if transport is None or not transport.is_active():
+                raise RuntimeError("SSH 连接未建立或已断开")
+            server = _ForwardServer(("127.0.0.1", 0), _ForwardHandler)
+            server.transport = transport  # type: ignore[attr-defined]
+            server.remote_address = (remote_host, remote_port)  # type: ignore[attr-defined]
+            thread = threading.Thread(
+                target=server.serve_forever,
+                name=f"astra-ssh-tunnel-{self.host}-{remote_port}",
+                daemon=True,
+            )
+            thread.start()
+            return SSHTunnel(server, thread)
+
+        return await _run_blocking(start)
 
     async def open_exec(self, command: str) -> RemoteExecChannel:
         def open_channel():

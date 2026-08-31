@@ -85,6 +85,7 @@ class OpenCodeExecutionEnvironment(Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opencode_server_port: Mapped[int] = mapped_column(Integer, default=4096)
     opencode_path: Mapped[str] = mapped_column(Text, default="opencode")
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_root: Mapped[str] = mapped_column(Text, default="./workspaces")
@@ -130,9 +131,7 @@ class Task(Base):
     review_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     inactivity_alert: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     inactivity_alert_since: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    last_activity_at: Mapped[datetime | None] = mapped_column(
-        UTCDateTime(), nullable=True, index=True
-    )
+    last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
     submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -150,6 +149,9 @@ class Task(Base):
     runs: Mapped[list["Run"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     events: Mapped[list["Event"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     evidence: Mapped[list["Evidence"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    work_session: Mapped["TaskSession | None"] = relationship(
+        back_populates="task", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Run(Base):
@@ -161,7 +163,7 @@ class Run(Base):
     employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
     run_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")
-    executor_type: Mapped[str] = mapped_column(String(64), default="opencode_cli")
+    executor_type: Mapped[str] = mapped_column(String(64), default="opencode_server")
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -230,3 +232,56 @@ class Evidence(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="evidence")
+
+
+class TaskSession(Base):
+    """The durable collaboration space that belongs to one task."""
+
+    __tablename__ = "task_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
+    current_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="work_session")
+    messages: Mapped[list["SessionMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    inquiries: Mapped[list["RunInquiry"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class SessionMessage(Base):
+    __tablename__ = "session_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("task_sessions.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(24), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+    session: Mapped[TaskSession] = relationship(back_populates="messages")
+
+
+class RunInquiry(Base):
+    __tablename__ = "run_inquiries"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("task_sessions.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    agent_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    options: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+    session: Mapped[TaskSession] = relationship(back_populates="inquiries")

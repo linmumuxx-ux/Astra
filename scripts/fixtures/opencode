@@ -38,6 +38,40 @@ emit(
         },
     }
 )
+if "E2E Subagent 场景" in prompt:
+    emit(
+        {
+            "type": "tool_use",
+            "sessionID": "ses_e2e_fixture",
+            "part": {
+                "id": "prt-e2e-subagent",
+                "messageID": "msg-e2e-parent",
+                "sessionID": "ses_e2e_fixture",
+                "type": "tool",
+                "tool": "task",
+                "callID": "call-e2e-subagent",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "description": "Print hello world",
+                        "prompt": "打印 hello world",
+                        "subagent_type": "general",
+                    },
+                    "output": (
+                        '<task id="ses_e2e_child" state="completed">'
+                        "<task_result>hello world</task_result></task>"
+                    ),
+                    "metadata": {
+                        "parentSessionId": "ses_e2e_fixture",
+                        "sessionId": "ses_e2e_child",
+                        "model": {"modelID": "test-model", "providerID": "e2e"},
+                    },
+                    "title": "Print hello world",
+                    "time": {"start": 120, "end": 145},
+                },
+            },
+        }
+    )
 emit({"type": "result", "session_id": "ses_e2e_fixture"})
 
 if "E2E 询问场景" in prompt and not resuming:
@@ -92,6 +126,8 @@ else:
             }
         ],
     }
-    text = "E2E Agent 任务已完成\nASTRA_RESULT_JSON: " + json.dumps(result, ensure_ascii=False)
+    text = "E2E Agent 任务已完成\nASTRA_RESULT_JSON: " + json.dumps(
+        result, ensure_ascii=False
+    )
 
 emit({"type": "text", "part": {"text": text}})

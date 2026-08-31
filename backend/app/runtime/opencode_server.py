@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import subprocess
+import time
+from dataclasses import dataclass
+
+import httpx
+
+from app.config.settings import Settings, get_settings
+from app.executors.process import local_command
+
+
+@dataclass(slots=True)
+class OpenCodeServerHealth:
+    healthy: bool
+    version: str | None = None
+    detail: str = ""
+
+
+class OpenCodeServerManager:
+    """Describe, start and probe the one shared OpenCode Server process."""
+
+    def __init__(self, settings: Settings | None = None, *, binary: str | None = None):
+        self.settings = settings or get_settings()
+        self.binary = binary or self.settings.opencode_binary
+
+    @property
+    def base_url(self) -> str:
+        return self.settings.resolved_opencode_server_url
+
+    def command(self) -> list[str]:
+        return local_command(
+            self.binary,
+            [
+                "serve",
+                "--hostname",
+                self.settings.opencode_server_hostname,
+                "--port",
+                str(self.settings.opencode_server_port),
+            ],
+        )
+
+    def process_environment(self) -> dict[str, str]:
+        environment = os.environ.copy()
+        if self.settings.opencode_server_username:
+            environment["OPENCODE_SERVER_USERNAME"] = self.settings.opencode_server_username
+        if self.settings.opencode_server_password:
+            environment["OPENCODE_SERVER_PASSWORD"] = self.settings.opencode_server_password
+        return environment
+
+    @property
+    def auth(self) -> httpx.BasicAuth | None:
+        if not self.settings.opencode_server_password:
+            return None
+        return httpx.BasicAuth(
+            self.settings.opencode_server_username,
+            self.settings.opencode_server_password,
+        )
+
+    async def health(self, *, timeout: float = 3) -> OpenCodeServerHealth:
+        try:
+            async with httpx.AsyncClient(auth=self.auth, timeout=timeout) as client:
+                response = await client.get(f"{self.base_url}/global/health")
+                response.raise_for_status()
+                payload = response.json()
+            version = str(payload.get("version") or "") or None
+            if version and self._version_tuple(version) < self._version_tuple(
+                self.settings.opencode_server_min_version
+            ):
+                return OpenCodeServerHealth(
+                    False,
+                    version=version,
+                    detail=(
+                        f"OpenCode {version} 低于已验证的最低版本 "
+                        f"{self.settings.opencode_server_min_version}"
+                    ),
+                )
+            return OpenCodeServerHealth(
+                healthy=payload.get("healthy") is True,
+                version=version,
+                detail=json.dumps(payload, ensure_ascii=False),
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            return OpenCodeServerHealth(False, detail=str(exc))
+
+    async def wait_until_ready(self) -> OpenCodeServerHealth:
+        deadline = time.monotonic() + self.settings.opencode_server_start_timeout_seconds
+        last = OpenCodeServerHealth(False, detail="尚未检查")
+        while time.monotonic() < deadline:
+            last = await self.health()
+            if last.healthy:
+                return last
+            await asyncio.sleep(0.2)
+        raise TimeoutError(f"OpenCode Server 未就绪: {last.detail}")
+
+    @staticmethod
+    def _version_tuple(value: str) -> tuple[int, ...]:
+        numbers = [int(item) for item in re.findall(r"\d+", value)]
+        return tuple((numbers + [0, 0, 0])[:3])
+
+
+def main() -> int:
+    manager = OpenCodeServerManager()
+    command = manager.command()
+    environment = manager.process_environment()
+    if os.name != "nt":
+        os.execvpe(command[0], command, environment)
+    process = subprocess.run(command, env=environment, check=False)
+    return process.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

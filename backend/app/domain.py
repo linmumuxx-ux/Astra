@@ -24,6 +24,8 @@ class TaskStatus(StrEnum):
 
 class RunStatus(StrEnum):
     RUNNING = "RUNNING"
+    WAITING_INPUT = "WAITING_INPUT"
+    COMPLETED = "COMPLETED"
     PASSED = "PASSED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"

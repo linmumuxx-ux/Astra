@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,6 +25,7 @@ class ExecutionEnvironmentWrite(BaseModel):
     port: int = Field(default=22, ge=1, le=65535)
     username: str | None = None
     ssh_password: str | None = Field(default=None, max_length=1024)
+    opencode_server_port: int = Field(default=4096, ge=1, le=65535)
     opencode_path: str = Field(default="opencode", min_length=1)
     model_name: str | None = Field(default=None, max_length=255)
     workspace_root: str = Field(default="./workspaces", min_length=1)
@@ -59,6 +60,7 @@ class ExecutionEnvironmentRead(ORMModel):
     port: int
     username: str | None
     has_ssh_password: bool
+    opencode_server_port: int
     opencode_path: str
     model_name: str | None
     workspace_root: str
@@ -331,6 +333,80 @@ class EventRead(ORMModel):
     created_at: datetime
 
 
+class TaskSessionRead(ORMModel):
+    id: str
+    task_id: str
+    status: str
+    current_run_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionMessageWrite(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class SessionMessageRead(ORMModel):
+    id: str
+    session_id: str
+    run_id: str | None
+    role: str
+    content: str
+    status: str
+    created_at: datetime
+
+
+class InquiryAnswerWrite(BaseModel):
+    answer: str = Field(min_length=1, max_length=8000)
+
+
+class RunInquiryRead(ORMModel):
+    id: str
+    session_id: str
+    run_id: str | None
+    agent_name: str | None
+    question: str
+    description: str
+    options: list[dict[str, Any]]
+    answer: str | None
+    status: str
+    created_at: datetime
+    answered_at: datetime | None
+
+
+class RuntimeEventRead(BaseModel):
+    id: str
+    session_id: str
+    run_id: str | None
+    sequence: int
+    event_type: str
+    agent_name: str | None
+    timestamp: datetime
+    phase: str
+    summary: str
+    payload: dict[str, Any]
+
+
+class SessionBlockRead(BaseModel):
+    """Stable workbench projection independent of an Agent CLI wire format."""
+
+    id: str
+    session_id: str
+    run_id: str | None
+    sequence: int | None
+    block_type: Literal["message", "inquiry", "event", "operation_group"]
+    semantic_type: str
+    visibility: Literal["primary", "diagnostic"] = "primary"
+    actor_name: str | None = None
+    status: str | None = None
+    timestamp: datetime
+    summary: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    message: SessionMessageRead | None = None
+    inquiry: RunInquiryRead | None = None
+    events: list[RuntimeEventRead] = Field(default_factory=list)
+
+
 class EvidenceRead(ORMModel):
     id: int
     task_id: str
@@ -342,3 +418,15 @@ class EvidenceRead(ORMModel):
     content_type: str
     metadata_: dict[str, Any]
     created_at: datetime
+
+
+class TaskWorkbenchRead(BaseModel):
+    task: TaskRead
+    session: TaskSessionRead
+    messages: list[SessionMessageRead]
+    events: list[RuntimeEventRead]
+    blocks: list[SessionBlockRead]
+    inquiries: list[RunInquiryRead]
+    artifacts: list[EvidenceRead]
+    runs: list[RunRead]
+    has_more_events: bool = False

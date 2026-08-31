@@ -1,4 +1,4 @@
-import type { AstraEvent, Employee, EmployeeUsage, Evidence, ExecutionEnvironment, Metrics, Run, RunUsage, Task, TaskCategory, TaskUsage } from './types'
+import type { AstraEvent, Employee, EmployeeUsage, Evidence, ExecutionEnvironment, Metrics, Run, RunUsage, Task, TaskCategory, TaskUsage, TaskWorkbench } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -41,6 +41,12 @@ export const api = {
     request<{ status: string; checked_at: string; checks: Array<{ name: string; passed: boolean; detail: string }> }>(`/api/employees/${id}/environment/test`, { method: 'POST' }),
   tasks: (query = '') => request<Task[]>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
+  taskWorkbench: (id: string, beforeSequence?: number) =>
+    request<TaskWorkbench>(`/api/tasks/${id}/workspace${beforeSequence ? `?before_sequence=${beforeSequence}` : ''}`),
+  postTaskMessage: (id: string, content: string) =>
+    request<TaskWorkbench>(`/api/tasks/${id}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
+  answerInquiry: (id: string, answer: string) =>
+    request<TaskWorkbench>(`/api/inquiries/${id}/answer`, { method: 'POST', body: JSON.stringify({ answer }) }),
   taskUsage: (id: string) => request<TaskUsage>(`/api/tasks/${id}/usage`),
   events: (limit = 50) => request<AstraEvent[]>(`/api/events?limit=${limit}`),
   taskEvents: (id: string) => request<AstraEvent[]>(`/api/tasks/${id}/events`),

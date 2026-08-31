@@ -7,9 +7,11 @@ from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.executors.base import ExecutorResult, OpenCodeExecutor
+from app.executors.opencode_prompt import build_task_prompt
 from app.executors.process import local_command, process_group_options, terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import Run, Task
+from app.runtime.semantic_events import extract_inquiry
 
 
 class OpenCodeCLIExecutor(OpenCodeExecutor):
@@ -28,63 +30,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         self._processes: dict[str, Any] = {}
 
     def _prompt(self, task: Task, workspace: Path, *, retry: bool = False) -> str:
-        criteria = "\n".join(
-            f"{item.get('id', f'AC-{index + 1:02d}')}. {item.get('content', '')}"
-            for index, item in enumerate(task.acceptance_criteria or [])
-        )
-        human_input = (task.human_intervention or {}).get("response")
-        suspension = task.suspension or {}
-        review = (task.review_history or [])[-1] if task.review_history else {}
-        retry_text = ""
-        if retry:
-            retry_text = "\n这是同一任务继续处理，请使用当前执行会话中的已有上下文。"
-            if human_input:
-                retry_text += f"\n人工补充信息：\n{human_input}"
-        context_text = ""
-        if task.current_progress:
-            context_text += f"\n已保留的当前进展：\n{task.current_progress}"
-        if suspension.get("scene_context"):
-            context_text += f"\n挂起时现场上下文：\n{suspension['scene_context']}"
-        if review.get("feedback"):
-            context_text += f"\n上次结果被退回的意见：\n{review['feedback']}"
-        if human_input and not retry:
-            context_text += f"\n人工补充信息：\n{human_input}"
-        return f"""当前任务：
-{task.id}
-
-任务来源：
-{task.source}
-
-任务目标：
-{task.title}
-
-任务描述：
-{task.description}
-
-员工工作空间：
-{workspace}
-
-验收标准：
-{criteria}
-
-请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
-检查方式或内部步骤。请在完成后如实说明处理结果，并逐项说明验收标准是否满足及相关证据。
-当任务必须询问使用者、等待业务答案、权限或其他人工输入时，不要猜测或自行跳过。
-当前执行环境完全非交互，不能直接联系使用者。禁止通过 shell、PowerShell、环境变量或
-终端探测命令判断是否可交互；需要人工输入时唯一允许的做法是直接输出下述标记。
-请在可读说明后返回以下结构，`requested_input` 必须是一个可直接回答的具体问题：
-ASTRA_INTERVENTION_JSON: {{"blocking_reason":"为什么需要人工输入",
-"completed_work":"已完成的工作","current_state":"当前保留状态",
-"requested_input":"需要请使用者回答的具体问题"}}
-不要同时返回完成结果。其他无法继续的场景也使用该结构说明阻塞原因和所需输入。
-
-最终回复末尾必须追加以下 JSON；ASTRA_RESULT_JSON 标记与 JSON 开头
-保持在同一行，且每个验收项都必须选择一个确切结论：
-ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"files":[],"commits":[],
-"logs":[],"attachments":[],"other":{{}},"acceptance_results":[{{"criterion_id":"AC-01",
-"status":"SATISFIED 或 UNSATISFIED 或 UNCONFIRMED","description":"结论说明","evidence":[]}}]}}
-不要省略或改写 ASTRA_RESULT_JSON 标记。{context_text}{retry_text}
-"""
+        return build_task_prompt(task, workspace, retry=retry, native_question=False)
 
     def _command(self, task: Task, workspace: Path, session_id: str | None = None) -> list[str]:
         command = [
@@ -138,9 +84,10 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         stderr_chunks: list[bytes] = []
         output: list[dict[str, Any]] = []
         detected_session = session_id
+        pending_inquiry: dict[str, Any] | None = None
 
         async def read_stdout() -> None:
-            nonlocal detected_session
+            nonlocal detected_session, pending_inquiry
             assert process.stdout is not None
             while line := await process.stdout.readline():
                 stdout_lines.append(line)
@@ -151,6 +98,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
                     payload = {"type": "text", "text": text}
                 output.append(payload)
                 detected_session = detected_session or self._extract_session(payload)
+                pending_inquiry = pending_inquiry or extract_inquiry(payload)
                 if self.event_callback:
                     try:
                         await self.event_callback(payload)
@@ -190,7 +138,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
         )
         status = (
             "BLOCKED"
-            if any(marker in combined for marker in blocked_markers)
+            if pending_inquiry or any(marker in combined for marker in blocked_markers)
             else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
         )
         token_usage, tool_usage, model_name = parse_opencode_usage(output)
@@ -202,6 +150,7 @@ ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"fi
             stdout=stdout,
             stderr=stderr,
             model_name=model_name,
+            inquiry=pending_inquiry,
             token_usage=token_usage,
             tool_usage=tool_usage,
         )

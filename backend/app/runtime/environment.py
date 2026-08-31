@@ -30,6 +30,7 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "port": environment.port,
         "username": environment.username,
         "has_ssh_password": environment.has_ssh_password,
+        "opencode_server_port": environment.opencode_server_port,
         "opencode_path": environment.opencode_path,
         "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
@@ -47,6 +48,7 @@ def environment_from_snapshot(snapshot: dict, employee_id: str) -> OpenCodeExecu
         port=snapshot.get("port", 22),
         username=snapshot.get("username"),
         ssh_password=None,
+        opencode_server_port=snapshot.get("opencode_server_port", 4096),
         opencode_path=snapshot["opencode_path"],
         model_name=snapshot.get("model_name"),
         workspace_root=snapshot["workspace_root"],
@@ -192,6 +194,13 @@ class ExecutionEnvironmentRuntime:
             checks.append(CheckItem("Agent 命令可启动", code == 0, detail[:500]))
         else:
             checks.append(CheckItem("Agent 命令可启动", False, "未执行：Agent 命令不存在"))
+        if code == 0 and self.settings.executor_type == "opencode_server":
+            from app.executors.opencode_remote_server import test_remote_server
+
+            server_ok, server_detail = await test_remote_server(environment, self.settings, self)
+            checks.append(CheckItem("OpenCode Server", server_ok, server_detail[:500]))
+        elif self.settings.executor_type == "opencode_server":
+            checks.append(CheckItem("OpenCode Server", False, "未执行：Agent 命令不可启动"))
         return checks
 
 

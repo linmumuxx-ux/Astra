@@ -10,18 +10,29 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import get_settings
 from app.database import SessionLocal, get_session
 from app.domain import CompletionPolicy, EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
+from app.executors.opencode_remote_server import RemoteOpenCodeServerExecutor
+from app.executors.opencode_server import OpenCodeServerClient
 from app.models import (
     DigitalEmployee,
     Event,
     Evidence,
     OpenCodeExecutionEnvironment,
     Run,
+    RunInquiry,
+    SessionMessage,
     Task,
     TaskCategory,
+    TaskSession,
 )
-from app.runtime.environment import CheckItem, ExecutionEnvironmentRuntime, checks_status
+from app.runtime.environment import (
+    CheckItem,
+    ExecutionEnvironmentRuntime,
+    checks_status,
+    environment_from_snapshot,
+)
 from app.runtime.recovery import environment_checked_after_error
 from app.schemas import (
     EmployeeCreate,
@@ -33,7 +44,13 @@ from app.schemas import (
     ExecutionEnvironmentRead,
     ExecutionEnvironmentWrite,
     HumanInterventionWrite,
+    InquiryAnswerWrite,
+    RunInquiryRead,
     RunRead,
+    RuntimeEventRead,
+    SessionBlockRead,
+    SessionMessageRead,
+    SessionMessageWrite,
     TaskAction,
     TaskCategoryCreate,
     TaskCategoryPatch,
@@ -43,9 +60,17 @@ from app.schemas import (
     TaskProgressUpdate,
     TaskRead,
     TaskRejectWrite,
+    TaskSessionRead,
     TaskSuspendWrite,
+    TaskWorkbenchRead,
 )
-from app.services import EmployeeService, TaskService, dashboard_metrics
+from app.services import (
+    EmployeeService,
+    TaskService,
+    WorkbenchService,
+    dashboard_metrics,
+    ensure_task_session,
+)
 from app.state_machine import InvalidTransition
 from app.usage import (
     day_bounds,
@@ -77,24 +102,416 @@ async def require_employee(employee_id: str, session: AsyncSession) -> DigitalEm
     return employee
 
 
-async def _cancel_active_runs(task_id: str, session: AsyncSession) -> None:
-    active_states = {RunStatus.RUNNING.value, RunStatus.BLOCKED.value}
-    runs = (
+def runtime_event_type(event: Event) -> str:
+    if event.event_type == "TOOL_ACTIVITY":
+        semantic_type = str(event.detail.get("semantic_event_type") or "")
+        if semantic_type.startswith("tool."):
+            return semantic_type
+        status_value = str(event.detail.get("status") or "").lower()
+        if any(value in status_value for value in ("fail", "error", "reject")):
+            return "tool.failed"
+        if any(value in status_value for value in ("complete", "success", "done")):
+            return "tool.completed"
+        return "tool.started"
+    if event.event_type == "TASK_RUNNING" and event.detail.get("from") in {
+        TaskStatus.WAIT_HUMAN,
+        TaskStatus.SUSPENDED,
+    }:
+        return "run.resumed"
+    return {
+        "TASK_CREATED": "run.created",
+        "TASK_READY": "run.created",
+        "TASK_RUNNING": "run.started",
+        "WORK_STARTED": "agent.started",
+        "OPENCODE_STARTED": "runtime.session",
+        "OPENCODE_SESSION_BOUND": "runtime.session",
+        "OPENCODE_ABORTED": "runtime.abort",
+        "WORK_PROGRESS": "message.agent",
+        "AGENT_STARTED": "agent.started",
+        "AGENT_PROGRESS": "agent.progress",
+        "AGENT_COMPLETED": "agent.completed",
+        "AGENT_FAILED": "agent.failed",
+        "SUBAGENT_STARTED": "subagent.started",
+        "SUBAGENT_PROGRESS": "subagent.progress",
+        "SUBAGENT_COMPLETED": "subagent.completed",
+        "SUBAGENT_FAILED": "subagent.failed",
+        "MODEL_ACTIVITY": "runtime.metadata",
+        "RUNTIME_METADATA": "runtime.metadata",
+        "WAIT_HUMAN": "run.waiting_input",
+        "INQUIRY_CREATED": "inquiry.created",
+        "INQUIRY_ANSWERED": "inquiry.answered",
+        "MESSAGE_USER": "message.user",
+        "MESSAGE_AGENT": "message.agent",
+        "WORK_RETRY": "run.resumed",
+        "SESSION_RECOVERY": "run.resumed",
+        "TASK_SUSPENDED": "run.paused",
+        "TASK_COMPLETED": "run.completed",
+        "RESULT_SUBMITTED": "agent.completed",
+        "TASK_FAILED": "run.failed",
+        "EXECUTION_ERROR": "run.failed",
+        "TASK_CANCELLED": "run.cancelled",
+        "ARTIFACT_CREATED": "artifact.created",
+        "ARTIFACT_UPDATED": "artifact.updated",
+    }.get(event.event_type, event.event_type.lower().replace("_", "."))
+
+
+def runtime_event(event: Event, work_session: TaskSession) -> RuntimeEventRead:
+    detail = event.detail or {}
+    semantic_type = runtime_event_type(event)
+    agent_name = detail.get("agent_name") or detail.get("agent")
+    if not agent_name and semantic_type.startswith(("agent.", "subagent.", "tool.")):
+        agent_name = event.employee_id
+    return RuntimeEventRead(
+        id=f"evt_{event.id}",
+        session_id=work_session.id,
+        run_id=event.run_id,
+        sequence=event.id,
+        event_type=semantic_type,
+        agent_name=str(agent_name) if agent_name else None,
+        timestamp=event.created_at,
+        phase=event.phase,
+        summary=event.message,
+        payload={"source_event_type": event.event_type, **detail},
+    )
+
+
+def _derived_subagent_event(event: Event, work_session: TaskSession) -> RuntimeEventRead | None:
+    """Compatibility projection for Task Tool events captured before plural semantics."""
+    detail = event.detail or {}
+    tool_input = detail.get("input") if isinstance(detail.get("input"), dict) else {}
+    if str(detail.get("tool") or "").lower() != "task":
+        return None
+    agent_name = str(
+        tool_input.get("subagent_type") or tool_input.get("subagentType") or tool_input.get("agent") or ""
+    ).strip()
+    if not agent_name:
+        return None
+    status_value = str(detail.get("status") or "started").lower()
+    if any(value in status_value for value in ("fail", "error", "reject", "cancel")):
+        semantic_type = "subagent.failed"
+        verb = "执行失败"
+    elif any(value in status_value for value in ("complete", "success", "done", "finished")):
+        semantic_type = "subagent.completed"
+        verb = "已完成"
+    elif any(value in status_value for value in ("progress", "running", "working")):
+        semantic_type = "subagent.progress"
+        verb = "正在执行"
+    else:
+        semantic_type = "subagent.started"
+        verb = "已启动"
+    metadata = detail.get("metadata") if isinstance(detail.get("metadata"), dict) else {}
+    title = str(detail.get("title") or tool_input.get("description") or "子任务")
+    return RuntimeEventRead(
+        id=f"evt_{event.id}_subagent",
+        session_id=work_session.id,
+        run_id=event.run_id,
+        sequence=event.id,
+        event_type=semantic_type,
+        agent_name=agent_name,
+        timestamp=event.created_at,
+        phase="agent",
+        summary=f"{agent_name} {verb}子任务：{title}",
+        payload={
+            "source_event_type": event.event_type,
+            "source_event_id": event.id,
+            "source_tool": "task",
+            "source_call_id": detail.get("call_id"),
+            "status": status_value,
+            "role": agent_name,
+            "description": tool_input.get("description"),
+            "prompt": tool_input.get("prompt"),
+            "input": tool_input,
+            "output": detail.get("output"),
+            "error": detail.get("error"),
+            "parent_session_id": metadata.get("parentSessionId") or metadata.get("parent_session_id"),
+            "child_session_id": metadata.get("sessionId") or metadata.get("session_id"),
+            "model": metadata.get("model"),
+            "compatibility_projection": True,
+        },
+    )
+
+
+def runtime_events(events: list[Event], work_session: TaskSession) -> list[RuntimeEventRead]:
+    """Expand persisted events into canonical runtime events without semantic loss."""
+    projected = [runtime_event(item, work_session) for item in events]
+    observed_source_ids = {
+        item.payload.get("source_event_id") for item in projected if item.event_type.startswith("subagent.")
+    }
+    observed_call_ids = {
+        item.payload.get("source_call_id")
+        for item in projected
+        if item.event_type.startswith("subagent.") and item.payload.get("source_call_id")
+    }
+    observed_run_agents = {
+        (item.run_id, item.agent_name) for item in projected if item.event_type.startswith("subagent.")
+    }
+    for row in events:
+        derived = _derived_subagent_event(row, work_session)
+        if not derived:
+            continue
+        source_call_id = derived.payload.get("source_call_id")
+        if row.id in observed_source_ids:
+            continue
+        if source_call_id and source_call_id in observed_call_ids:
+            continue
+        if not source_call_id and (derived.run_id, derived.agent_name) in observed_run_agents:
+            continue
+        projected.append(derived)
+    return sorted(projected, key=lambda item: (item.sequence, item.id))
+
+
+def session_blocks(
+    work_session: TaskSession,
+    events: list[RuntimeEventRead],
+    messages: list[SessionMessage],
+    inquiries: list[RunInquiry],
+) -> list[SessionBlockRead]:
+    """Project canonical events and durable conversation facts into SessionBlocks."""
+    blocks: list[SessionBlockRead] = []
+    for message in messages:
+        message_read = SessionMessageRead.model_validate(message)
+        blocks.append(
+            SessionBlockRead(
+                id=f"block_{message.id}",
+                session_id=work_session.id,
+                run_id=message.run_id,
+                sequence=None,
+                block_type="message",
+                semantic_type=f"message.{message.role}",
+                actor_name=message.role,
+                status=message.status,
+                timestamp=message.created_at,
+                summary=message.content,
+                message=message_read,
+            )
+        )
+    for inquiry in inquiries:
+        inquiry_read = RunInquiryRead.model_validate(inquiry)
+        blocks.append(
+            SessionBlockRead(
+                id=f"block_{inquiry.id}",
+                session_id=work_session.id,
+                run_id=inquiry.run_id,
+                sequence=None,
+                block_type="inquiry",
+                semantic_type="inquiry.requested",
+                actor_name=inquiry.agent_name,
+                status=inquiry.status,
+                timestamp=inquiry.created_at,
+                summary=inquiry.question,
+                inquiry=inquiry_read,
+            )
+        )
+
+    tool_groups: dict[str, list[RuntimeEventRead]] = {}
+    for event in events:
+        if event.event_type.startswith("tool."):
+            key = event.run_id or "unassigned"
+            tool_groups.setdefault(key, []).append(event)
+            continue
+        diagnostic = (
+            event.event_type.startswith(("runtime.", "message.", "inquiry."))
+            and event.event_type != "runtime.error"
+        )
+        blocks.append(
+            SessionBlockRead(
+                id=f"block_{event.id}",
+                session_id=work_session.id,
+                run_id=event.run_id,
+                sequence=event.sequence,
+                block_type="event",
+                semantic_type=event.event_type,
+                visibility="diagnostic" if diagnostic else "primary",
+                actor_name=event.agent_name,
+                status=str(event.payload.get("status") or "") or None,
+                timestamp=event.timestamp,
+                summary=event.summary,
+                payload={"phase": event.phase},
+                events=[event],
+            )
+        )
+    for run_key, tool_events in tool_groups.items():
+        failed = any(item.event_type == "tool.failed" for item in tool_events)
+        active = any(item.event_type in {"tool.started", "tool.progress"} for item in tool_events)
+        blocks.append(
+            SessionBlockRead(
+                id=f"block_tools_{run_key}",
+                session_id=work_session.id,
+                run_id=None if run_key == "unassigned" else run_key,
+                sequence=min(item.sequence for item in tool_events),
+                block_type="operation_group",
+                semantic_type="tool.group",
+                actor_name=next((item.agent_name for item in tool_events if item.agent_name), None),
+                status="failed" if failed else "running" if active else "completed",
+                timestamp=min(item.timestamp for item in tool_events),
+                summary=f"{len(tool_events)} 项实际操作",
+                payload={"count": len(tool_events)},
+                events=tool_events,
+            )
+        )
+    return sorted(
+        blocks,
+        key=lambda item: (
+            item.timestamp,
+            item.sequence if item.sequence is not None else -1,
+            item.id,
+        ),
+    )
+
+
+async def load_task_workbench(
+    task: Task,
+    session: AsyncSession,
+    *,
+    before_sequence: int | None = None,
+    event_limit: int = 120,
+) -> TaskWorkbenchRead:
+    work_session = await ensure_task_session(session, task)
+    if task.status == TaskStatus.WAIT_HUMAN and task.human_intervention:
+        await WorkbenchService(session).create_inquiry(
+            task,
+            question=str(task.human_intervention.get("requested_input") or "请补充继续任务所需的信息"),
+            description=str(task.human_intervention.get("blocking_reason") or ""),
+            options=task.human_intervention.get("options") or [],
+            agent_name=task.employee_id,
+            run_id=work_session.current_run_id,
+            commit=False,
+        )
+    event_query = select(Event).where(Event.task_id == task.id)
+    if before_sequence is not None:
+        event_query = event_query.where(Event.id < before_sequence)
+    event_rows = (
+        (await session.execute(event_query.order_by(Event.id.desc()).limit(event_limit + 1))).scalars().all()
+    )
+    has_more = len(event_rows) > event_limit
+    event_rows = list(reversed(event_rows[:event_limit]))
+    messages = (
         (
             await session.execute(
-                select(Run).where(Run.task_id == task_id, Run.status.in_(active_states))
+                select(SessionMessage)
+                .where(SessionMessage.session_id == work_session.id)
+                .order_by(SessionMessage.created_at)
             )
         )
         .scalars()
         .all()
     )
-    if not runs:
-        return
+    inquiries = (
+        (
+            await session.execute(
+                select(RunInquiry)
+                .where(RunInquiry.session_id == work_session.id)
+                .order_by(RunInquiry.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    artifacts = (
+        (
+            await session.execute(
+                select(Evidence).where(Evidence.task_id == task.id).order_by(Evidence.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    runs = (
+        (await session.execute(select(Run).where(Run.task_id == task.id).order_by(Run.run_number.desc())))
+        .scalars()
+        .all()
+    )
+    canonical_events = runtime_events(event_rows, work_session)
+    await session.commit()
+    return TaskWorkbenchRead(
+        task=TaskRead.model_validate(task),
+        session=TaskSessionRead.model_validate(work_session),
+        messages=[SessionMessageRead.model_validate(item) for item in messages],
+        events=canonical_events,
+        blocks=session_blocks(work_session, canonical_events, messages, inquiries),
+        inquiries=[RunInquiryRead.model_validate(item) for item in inquiries],
+        artifacts=artifacts,
+        runs=runs,
+        has_more_events=has_more,
+    )
+
+
+async def _cancel_active_runs(task_id: str, session: AsyncSession) -> None:
+    active_states = {
+        RunStatus.RUNNING.value,
+        RunStatus.WAITING_INPUT.value,
+        RunStatus.BLOCKED.value,
+    }
+    runs = (
+        (await session.execute(select(Run).where(Run.task_id == task_id, Run.status.in_(active_states))))
+        .scalars()
+        .all()
+    )
     now = datetime.now(UTC)
     for run in runs:
         run.status = RunStatus.CANCELLED.value
         run.finished_at = run.finished_at or now
+    task_session_ids = select(TaskSession.id).where(TaskSession.task_id == task_id)
+    inquiries = (
+        (
+            await session.execute(
+                select(RunInquiry).where(
+                    RunInquiry.session_id.in_(task_session_ids),
+                    RunInquiry.status.in_(["OPEN", "PENDING"]),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for inquiry in inquiries:
+        inquiry.status = "CANCELLED"
     await session.commit()
+
+
+async def _abort_opencode_session(task: Task, session: AsyncSession) -> bool:
+    settings = get_settings()
+    snapshot = task.execution_environment_snapshot or {}
+    if (
+        settings.executor_type != "opencode_server"
+        or not task.opencode_session_id
+        or not snapshot.get("workspace_root")
+    ):
+        return False
+    try:
+        if str(snapshot.get("mode") or "").upper() == "LINUX_REMOTE":
+            if not task.employee_id:
+                return False
+            employee = await session.scalar(
+                select(DigitalEmployee)
+                .where(DigitalEmployee.id == task.employee_id)
+                .options(selectinload(DigitalEmployee.execution_environment))
+            )
+            if not employee or not employee.execution_environment:
+                return False
+            environment = environment_from_snapshot(snapshot, task.employee_id)
+            environment.ssh_password = employee.execution_environment.ssh_password
+            if "opencode_server_port" not in snapshot:
+                environment.opencode_server_port = (
+                    employee.execution_environment.opencode_server_port
+                )
+            executor = RemoteOpenCodeServerExecutor(
+                environment,
+                settings,
+                ExecutionEnvironmentRuntime(settings),
+            )
+            return await asyncio.wait_for(
+                executor.abort_session(task.opencode_session_id),
+                timeout=max(15, settings.ssh_connect_timeout_seconds + 5),
+            )
+        workspace = settings.employee_workspace_path(str(snapshot["workspace_root"]))
+        return await asyncio.wait_for(
+            OpenCodeServerClient(settings).abort(workspace, task.opencode_session_id),
+            timeout=3,
+        )
+    except Exception:
+        # The state transition remains authoritative when the runtime is already gone.
+        return False
 
 
 async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> EmployeeRead:
@@ -470,6 +887,7 @@ async def pause_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
     task = await require_task(task_id, session)
+    runtime_aborted = await _abort_opencode_session(task, session)
     result = await transition_task(
         task,
         TaskStatus.SUSPENDED,
@@ -478,6 +896,15 @@ async def pause_task(
         payload,
         "任务已挂起",
     )
+    await _cancel_active_runs(task.id, session)
+    if runtime_aborted:
+        await TaskService(session).add_event(
+            task,
+            "OPENCODE_ABORTED",
+            "runtime",
+            "OpenCode Session 已中止",
+            {"session_id": task.opencode_session_id, "reason": "pause"},
+        )
     if task.employee_id:
         employee = await session.get(DigitalEmployee, task.employee_id)
         if employee:
@@ -535,6 +962,7 @@ async def suspend_task(
     session: AsyncSession = Depends(get_session),
 ):
     task = await require_task(task_id, session)
+    runtime_aborted = await _abort_opencode_session(task, session)
     task.suspension = {
         **payload.model_dump(),
         "employee_id": task.employee_id,
@@ -549,6 +977,15 @@ async def suspend_task(
         session,
         current_progress=payload.current_state or task.current_progress,
     )
+    await _cancel_active_runs(task.id, session)
+    if runtime_aborted:
+        await TaskService(session).add_event(
+            task,
+            "OPENCODE_ABORTED",
+            "runtime",
+            "OpenCode Session 已中止",
+            {"session_id": task.opencode_session_id, "reason": "suspend"},
+        )
     if task.employee_id:
         employee = await session.get(DigitalEmployee, task.employee_id)
         if employee:
@@ -563,6 +1000,7 @@ async def cancel_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
     task = await require_task(task_id, session)
+    runtime_aborted = await _abort_opencode_session(task, session)
     result = await transition_task(
         task,
         TaskStatus.CANCELLED,
@@ -572,6 +1010,14 @@ async def cancel_task(
         "任务已取消",
     )
     await _cancel_active_runs(task.id, session)
+    if runtime_aborted:
+        await TaskService(session).add_event(
+            task,
+            "OPENCODE_ABORTED",
+            "runtime",
+            "OpenCode Session 已中止",
+            {"session_id": task.opencode_session_id, "reason": "cancel"},
+        )
     if task.employee_id:
         employee = await session.get(DigitalEmployee, task.employee_id)
         if employee:
@@ -905,6 +1351,309 @@ async def task_evidence(task_id: str, session: AsyncSession = Depends(get_sessio
         .scalars()
         .all()
     )
+
+
+@router.get("/tasks/{task_id}/workspace", response_model=TaskWorkbenchRead)
+async def task_workbench(
+    task_id: str,
+    before_sequence: int | None = Query(default=None, ge=1),
+    event_limit: int = Query(default=120, ge=20, le=300),
+    session: AsyncSession = Depends(get_session),
+):
+    task = await require_task(task_id, session)
+    return await load_task_workbench(
+        task,
+        session,
+        before_sequence=before_sequence,
+        event_limit=event_limit,
+    )
+
+
+async def continue_task_with_message(task: Task, content: str, session: AsyncSession) -> None:
+    task.human_intervention = {
+        **(task.human_intervention or {}),
+        "response": content,
+        "responded_at": datetime.now(UTC).isoformat(),
+    }
+    if task.status in {TaskStatus.WAIT_HUMAN, TaskStatus.SUSPENDED}:
+        await resume_task(task.id, TaskAction(note=content), session)
+        return
+    if task.status == TaskStatus.PENDING_CONFIRMATION:
+        await reject_task(task.id, TaskRejectWrite(feedback=content), session)
+        return
+    if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+        await session.commit()
+        return
+
+    now = datetime.now(UTC)
+    task.review_history = [
+        *(task.review_history or []),
+        {
+            "action": "CONTINUED",
+            "feedback": content,
+            "previous_result": task.result,
+            "created_at": now.isoformat(),
+        },
+    ]
+    task.submitted_at = None
+    task.confirmed_at = None
+    task.failure_reason = None
+    target = TaskStatus.READY
+    employee = None
+    if task.employee_id:
+        employee = await require_employee(task.employee_id, session)
+        if (
+            employee.execution_environment
+            and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+        ):
+            employee.status = EmployeeStatus.WORKING
+            employee.current_task_count = 1
+            target = TaskStatus.RUNNING
+    task.claimed_at = None if target is TaskStatus.READY else task.claimed_at
+    continued = await TaskService(session).reopen(
+        task,
+        target,
+        message="用户在同一会话中提出继续处理要求",
+        current_progress=f"已收到后续要求：{content[:240]}",
+        detail={"note": content},
+    )
+    if target is TaskStatus.RUNNING:
+        await enqueue_running_task(continued, session)
+
+
+@router.post("/tasks/{task_id}/messages", response_model=TaskWorkbenchRead)
+async def post_task_message(
+    task_id: str,
+    payload: SessionMessageWrite,
+    session: AsyncSession = Depends(get_session),
+):
+    task = await require_task(task_id, session)
+    content = payload.content.strip()
+    command = content.split(maxsplit=1)[0].lower() if content.startswith("/") else ""
+    informational_commands = {"/status", "/agents", "/files"}
+    control_commands = {"/pause", "/stop"}
+    task_session = await ensure_task_session(session, task)
+    active_inquiry = await session.scalar(
+        select(RunInquiry)
+        .where(
+            RunInquiry.session_id == task_session.id,
+            RunInquiry.status.in_(["OPEN", "PENDING"]),
+        )
+        .order_by(RunInquiry.created_at.desc())
+    )
+    message_status = (
+        "APPLIED"
+        if command in informational_commands | control_commands
+        else "ANSWERED"
+        if active_inquiry and not command
+        else "PENDING"
+        if task.status == TaskStatus.RUNNING
+        else "QUEUED"
+    )
+    workbench_service = WorkbenchService(session)
+    inquiry_command_blocked = bool(
+        active_inquiry and command and command not in informational_commands | {"/stop"}
+    )
+    await workbench_service.add_message(
+        task,
+        content,
+        status=message_status,
+        run_id=active_inquiry.run_id if active_inquiry and not command else None,
+        commit=False,
+    )
+    if not command:
+        await workbench_service.answer_inquiry(task, content, commit=False)
+    if active_inquiry and command == "/stop":
+        active_inquiry.status = "CANCELLED"
+    if command in informational_commands:
+        if command == "/status":
+            response = f"当前任务状态：{task.status}；当前进展：{task.current_progress}"
+        elif command == "/agents":
+            response = f"主 Agent：{task.employee_id or '等待分配'}。Subagent 仅在运行时产生真实事件后展示。"
+        else:
+            evidence_names = (
+                (
+                    await session.execute(
+                        select(Evidence.name).where(Evidence.task_id == task.id).order_by(Evidence.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            result_files = task.result.get("files", []) if task.result else []
+            file_names = list(dict.fromkeys([*evidence_names, *result_files]))
+            response = "当前产物：" + ("、".join(file_names) if file_names else "尚未生成产物")
+        await workbench_service.add_message(
+            task,
+            response,
+            role="agent",
+            status="APPLIED",
+            commit=False,
+        )
+    elif inquiry_command_blocked:
+        await workbench_service.add_message(
+            task,
+            "当前仍在等待你的业务回答，请直接输入答案后再使用其他执行命令。",
+            role="agent",
+            status="APPLIED",
+            run_id=active_inquiry.run_id if active_inquiry else None,
+            commit=False,
+        )
+    await session.commit()
+
+    if command == "/pause" and task.status == TaskStatus.RUNNING:
+        await pause_task(task.id, TaskAction(reason="用户通过会话暂停"), session)
+    elif command == "/stop" and task.status not in {
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    }:
+        await cancel_task(task.id, TaskAction(reason="用户通过会话终止"), session)
+    elif command in informational_commands:
+        pass
+    elif inquiry_command_blocked:
+        pass
+    elif command == "/retry" and task.status == TaskStatus.EXECUTION_ERROR:
+        await recover_task(task.id, session)
+    else:
+        await continue_task_with_message(task, content, session)
+    await session.refresh(task)
+    return await load_task_workbench(task, session)
+
+
+@router.get("/sessions/{session_id}", response_model=TaskWorkbenchRead)
+async def get_session_workbench(
+    session_id: str,
+    before_sequence: int | None = Query(default=None, ge=1),
+    event_limit: int = Query(default=120, ge=20, le=300),
+    session: AsyncSession = Depends(get_session),
+):
+    work_session = await session.get(TaskSession, session_id)
+    if not work_session:
+        raise HTTPException(status_code=404, detail="任务会话不存在")
+    task = await require_task(work_session.task_id, session)
+    return await load_task_workbench(
+        task,
+        session,
+        before_sequence=before_sequence,
+        event_limit=event_limit,
+    )
+
+
+@router.get("/sessions/{session_id}/events", response_model=list[RuntimeEventRead])
+async def get_session_events(
+    session_id: str,
+    before_sequence: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=120, ge=1, le=300),
+    session: AsyncSession = Depends(get_session),
+):
+    work_session = await session.get(TaskSession, session_id)
+    if not work_session:
+        raise HTTPException(status_code=404, detail="任务会话不存在")
+    await require_task(work_session.task_id, session)
+    query = select(Event).where(Event.task_id == work_session.task_id)
+    if before_sequence is not None:
+        query = query.where(Event.id < before_sequence)
+    rows = (await session.execute(query.order_by(Event.id.desc()).limit(limit))).scalars().all()
+    return runtime_events(list(reversed(rows)), work_session)
+
+
+@router.post("/sessions/{session_id}/messages", response_model=TaskWorkbenchRead)
+async def post_session_message(
+    session_id: str,
+    payload: SessionMessageWrite,
+    session: AsyncSession = Depends(get_session),
+):
+    work_session = await session.get(TaskSession, session_id)
+    if not work_session:
+        raise HTTPException(status_code=404, detail="任务会话不存在")
+    return await post_task_message(work_session.task_id, payload, session)
+
+
+@router.post("/inquiries/{inquiry_id}/answer", response_model=TaskWorkbenchRead)
+async def answer_inquiry(
+    inquiry_id: str,
+    payload: InquiryAnswerWrite,
+    session: AsyncSession = Depends(get_session),
+):
+    inquiry = await session.get(RunInquiry, inquiry_id)
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="确认问题不存在")
+    if inquiry.status not in {"OPEN", "PENDING"}:
+        raise HTTPException(status_code=409, detail="确认问题已处理")
+    work_session = await session.get(TaskSession, inquiry.session_id)
+    if not work_session:
+        raise HTTPException(status_code=404, detail="任务会话不存在")
+    return await post_task_message(work_session.task_id, SessionMessageWrite(content=payload.answer), session)
+
+
+def task_event_stream(
+    task_id: str, work_session: TaskSession, after_sequence: int | None
+) -> StreamingResponse:
+    async def generate():
+        yield f"event: connected\ndata: {json.dumps({'session_id': work_session.id})}\n\n"
+        keepalive_ticks = 0
+        async with SessionLocal() as stream_session:
+            last_id = after_sequence
+            if last_id is None:
+                last_id = (
+                    await stream_session.scalar(select(func.max(Event.id)).where(Event.task_id == task_id))
+                    or 0
+                )
+            while True:
+                await asyncio.sleep(1)
+                rows = (
+                    (
+                        await stream_session.execute(
+                            select(Event)
+                            .where(Event.task_id == task_id, Event.id > last_id)
+                            .order_by(Event.id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if rows:
+                    keepalive_ticks = 0
+                    for event in rows:
+                        last_id = event.id
+                        payload = runtime_event(event, work_session).model_dump(mode="json")
+                        yield f"event: update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                else:
+                    keepalive_ticks += 1
+                if keepalive_ticks >= 15:
+                    keepalive_ticks = 0
+                    yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/tasks/{task_id}/workspace/stream")
+async def task_workbench_stream(
+    task_id: str,
+    after_sequence: int | None = Query(default=None, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    task = await require_task(task_id, session)
+    work_session = await ensure_task_session(session, task)
+    await session.commit()
+    return task_event_stream(task.id, work_session, after_sequence)
+
+
+@router.get("/sessions/{session_id}/events/stream")
+async def session_event_stream(
+    session_id: str,
+    after_sequence: int | None = Query(default=None, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    work_session = await session.get(TaskSession, session_id)
+    if not work_session:
+        raise HTTPException(status_code=404, detail="任务会话不存在")
+    return task_event_stream(work_session.task_id, work_session, after_sequence)
 
 
 @router.get("/events/stream")

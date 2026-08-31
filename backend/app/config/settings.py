@@ -1,9 +1,9 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -50,11 +50,18 @@ class Settings(BaseSettings):
     heartbeat_timeout: int = 60
     inactivity_timeout: int = 900
     recovery_interval: int = 30
-    executor_type: str = "opencode_cli"
+    executor_type: str = "opencode_server"
     opencode_binary: str = "opencode"
     opencode_agent: str | None = None
     opencode_model: str | None = None
     opencode_timeout_seconds: int = 3600
+    opencode_server_url: str | None = None
+    opencode_server_hostname: str = "127.0.0.1"
+    opencode_server_port: int = Field(default=4096, ge=1, le=65535)
+    opencode_server_username: str = "opencode"
+    opencode_server_password: str | None = None
+    opencode_server_min_version: str = "1.18.25"
+    opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
     nr_test_system_endpoint: str = "http://localhost:8000"
@@ -77,6 +84,28 @@ class Settings(BaseSettings):
         if normalized != "utf8mb4":
             raise ValueError("Astra MySQL 必须使用 utf8mb4 字符集")
         return normalized
+
+    @field_validator("executor_type")
+    @classmethod
+    def validate_executor_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"opencode_server", "opencode_cli_fallback"}:
+            raise ValueError("ASTRA_EXECUTOR_TYPE 只支持 opencode_server 或 opencode_cli_fallback")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_opencode_server_security(self):
+        parsed_url = urlparse(self.opencode_server_url) if self.opencode_server_url else None
+        if parsed_url and (parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname):
+            raise ValueError("ASTRA_OPENCODE_SERVER_URL 必须是完整的 HTTP(S) URL")
+        configured_host = parsed_url.hostname if parsed_url else self.opencode_server_hostname
+        if (
+            self.executor_type == "opencode_server"
+            and configured_host not in {"127.0.0.1", "localhost", "::1"}
+            and not self.opencode_server_password
+        ):
+            raise ValueError("OpenCode Server 非 loopback 监听时必须配置密码")
+        return self
 
     def absolute_path(self, value: Path) -> Path:
         expanded = Path(os.path.expandvars(str(value))).expanduser()
@@ -111,6 +140,17 @@ class Settings(BaseSettings):
     @property
     def resolved_config_dir(self) -> Path:
         return self.absolute_path(self.config_dir)
+
+    @property
+    def resolved_opencode_server_url(self) -> str:
+        if self.opencode_server_url:
+            return self.opencode_server_url.rstrip("/")
+        host = (
+            "127.0.0.1"
+            if self.opencode_server_hostname in {"0.0.0.0", "::"}
+            else self.opencode_server_hostname
+        )
+        return f"http://{host}:{self.opencode_server_port}"
 
     @property
     def sqlalchemy_database_url(self) -> str:

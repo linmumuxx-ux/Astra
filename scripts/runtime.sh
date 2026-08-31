@@ -8,6 +8,7 @@ CELERY_BIN="$ROOT_DIR/.venv/bin/celery"
 REDIS_URL="${ASTRA_REDIS_URL:-redis://localhost:6379/0}"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/astra-runtime.XXXXXX")"
 REDIS_PID=""
+OPENCODE_PID=""
 
 cleanup() {
   local exit_code=$?
@@ -15,6 +16,10 @@ cleanup() {
   if [[ -n "$REDIS_PID" ]]; then
     kill "$REDIS_PID" 2>/dev/null || true
     wait "$REDIS_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$OPENCODE_PID" ]]; then
+    kill "$OPENCODE_PID" 2>/dev/null || true
+    wait "$OPENCODE_PID" 2>/dev/null || true
   fi
   rm -rf "$RUNTIME_DIR"
   exit "$exit_code"
@@ -36,6 +41,39 @@ client = Redis.from_url(os.environ["ASTRA_RUNTIME_REDIS_URL"], socket_connect_ti
 client.ping()
 PY
 }
+
+opencode_ready() {
+  (cd "$BACKEND_DIR" && "$PYTHON_BIN" - <<'PY') >/dev/null 2>&1
+import asyncio
+
+from app.runtime.opencode_server import OpenCodeServerManager
+
+raise SystemExit(0 if asyncio.run(OpenCodeServerManager().health()).healthy else 1)
+PY
+}
+
+if [[ "${ASTRA_EXECUTOR_TYPE:-opencode_server}" == "opencode_server" ]]; then
+  if ! opencode_ready; then
+    if [[ -n "${ASTRA_OPENCODE_SERVER_URL:-}" ]]; then
+      echo "无法连接 ASTRA_OPENCODE_SERVER_URL 指定的 OpenCode Server。" >&2
+      exit 1
+    fi
+    echo "启动 OpenCode Server..."
+    (cd "$BACKEND_DIR" && "$PYTHON_BIN" -m app.runtime.opencode_server) \
+      >"$RUNTIME_DIR/opencode-server.log" 2>&1 &
+    OPENCODE_PID=$!
+    for _ in {1..150}; do
+      if opencode_ready; then
+        break
+      fi
+      sleep 0.2
+    done
+  fi
+  if ! opencode_ready; then
+    echo "OpenCode Server 启动失败，日志：$RUNTIME_DIR/opencode-server.log" >&2
+    exit 1
+  fi
+fi
 
 if ! redis_ready; then
   if [[ "$REDIS_URL" != "redis://localhost:6379/0" && "$REDIS_URL" != "redis://127.0.0.1:6379/0" ]]; then
@@ -72,6 +110,9 @@ fi
 
 echo "Astra 调度运行时已启动。按 Ctrl+C 停止。"
 echo "Redis: 已连接"
+if [[ "${ASTRA_EXECUTOR_TYPE:-opencode_server}" == "opencode_server" ]]; then
+  echo "OpenCode Server: 已连接"
+fi
 cd "$BACKEND_DIR"
 "$CELERY_BIN" -A app.runtime.celery_app:celery worker \
   --beat \

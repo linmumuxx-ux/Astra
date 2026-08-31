@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one real Astra task through the local OpenCode CLI in an isolated workspace."""
+"""Run one real Astra task through OpenCode Server in an isolated workspace."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
-        default="deepseek/deepseek-v4-flash",
+        default="opencode/glm-5.1",
         help="OpenCode provider/model identifier",
     )
     parser.add_argument(
@@ -40,7 +40,10 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_smoke(
-    temp_root: Path, model: str, opencode_binary: str
+    temp_root: Path,
+    model: str,
+    opencode_binary: str,
+    server_url: str,
 ) -> dict[str, object]:
     database_path = temp_root / "astra-smoke.db"
     employee_workspace = temp_root / "employee-workspace"
@@ -56,6 +59,8 @@ async def run_smoke(
             "ASTRA_OPENCODE_BINARY": opencode_binary,
             "ASTRA_OPENCODE_MODEL": model,
             "ASTRA_OPENCODE_TIMEOUT_SECONDS": "300",
+            "ASTRA_EXECUTOR_TYPE": "opencode_server",
+            "ASTRA_OPENCODE_SERVER_URL": server_url,
         }
     )
 
@@ -140,6 +145,7 @@ async def run_smoke(
         "exit_code": run.exit_code if run else None,
         "session_id": run.opencode_session_id if run else None,
         "model_name": run.model_name if run else None,
+        "executor_type": run.executor_type if run else None,
         "total_tokens": run.total_tokens if run else None,
         "tool_calls": run.tool_call_count if run else None,
         "output_file_exists": output_path.exists(),
@@ -147,9 +153,10 @@ async def run_smoke(
     }
     expected = {
         "task_status": TaskStatus.COMPLETED,
-        "run_status": RunStatus.PASSED,
+        "run_status": RunStatus.COMPLETED,
         "exit_code": 0,
         "model_name": model,
+        "executor_type": "opencode_server",
         "output_file_exists": True,
         "output_file_content": "ASTRA_V04_OPENCODE_OK",
     }
@@ -175,8 +182,15 @@ def main() -> int:
         tempfile.mkdtemp(prefix=".astra-opencode-smoke-", dir=REPOSITORY_ROOT)
     )
     succeeded = False
+    server = None
     try:
-        summary = asyncio.run(run_smoke(temp_root, args.model, args.opencode))
+        from opencode_server_poc import ManagedServer
+
+        server = ManagedServer(args.opencode, temp_root, 300)
+        server_url = server.start()
+        summary = asyncio.run(
+            run_smoke(temp_root, args.model, args.opencode, server_url)
+        )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         succeeded = True
         return 0
@@ -184,6 +198,8 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     finally:
+        if server:
+            server.stop()
         if succeeded and not args.keep:
             shutil.rmtree(temp_root)
         else:

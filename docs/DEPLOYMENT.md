@@ -8,7 +8,7 @@ Astra 使用主机原生进程部署，不包含容器部署配置。当前基�
 - Node.js 20+；
 - MySQL 8.0+，字符集固定为 `utf8mb4`；
 - Redis 6+；
-- 当前内置 OpenCode Agent 适配器；
+- OpenCode Server 1.18.25 或已验证的兼容版本；
 - Windows 本地执行和 Linux SSH 远程执行；
 - Windows PowerShell 快速安装、自检、启动和停止；
 - Linux 继续支持 systemd、Nginx 和远程 Agent 主机。
@@ -19,6 +19,7 @@ Astra 使用主机原生进程部署，不包含容器部署配置。当前基�
 
 - FastAPI：REST API、SSE、员工环境检查；
 - Celery Worker + Beat：任务发现、分配、心跳、恢复扫描和 Agent 执行；
+- OpenCode Server：Session、Message、Event SSE、Child Session、Question 和 Abort；
 - MySQL：分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
 - Redis：Celery Broker 和 Result Backend；
 - Vue 管理台：Windows 快速部署使用已构建产物的本地预览服务，Linux 正式部署由 Nginx 托管；
@@ -91,6 +92,12 @@ ASTRA_CONFIG_DIR=D:\Astra\configs
 ASTRA_SEED_DEMO=false
 
 ASTRA_OPENCODE_BINARY=C:\Program Files\OpenCode\opencode.exe
+ASTRA_EXECUTOR_TYPE=opencode_server
+ASTRA_OPENCODE_SERVER_HOSTNAME=127.0.0.1
+ASTRA_OPENCODE_SERVER_PORT=4096
+ASTRA_OPENCODE_SERVER_USERNAME=opencode
+# 只绑定 loopback 时可留空；非 loopback 必须配置
+# ASTRA_OPENCODE_SERVER_PASSWORD=replace-with-a-strong-password
 ```
 
 后端与 Celery 无论从项目根目录还是 `backend` 启动，都会读取这一个根目录 `.env`，不要再复制一份 `backend/.env`。不要提交真实数据库密码、任务源令牌或员工 SSH 密码。
@@ -115,9 +122,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-windows.ps1
 ```
 
-日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器用参数数组创建子进程，并使用 Windows 进程组和 `taskkill /T` 管理进程树。
+日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器先启动 OpenCode Server 并等待 `/global/health`，再启动 Backend、Celery 和 Frontend；停止时使用 Windows 进程组与 `taskkill /T` 回收整棵进程树。
 
-Windows Worker 固定使用 `solo` 池并监听 Celery 默认队列。不要额外添加 `-Q astra`；当前任务没有路由到该自定义队列。运行时复用同一 Proactor 事件循环，以保证 asyncmy 连接池与本地 Agent 子进程在连续任务中稳定工作。
+Windows Worker 固定使用 `solo` 池并监听 Celery 默认队列。不要额外添加 `-Q astra`；当前任务没有路由到该自定义队列。运行时复用同一 Proactor 事件循环，以保证 asyncmy 连接池与 OpenCode HTTP/SSE 客户端在连续任务中稳定工作。
 
 ## 4. 环境自检
 
@@ -135,6 +142,7 @@ Windows 使用 `scripts\check-windows.ps1`，其他环境可直接运行：
 - Alembic 当前版本和必要数据表；
 - Redis 连接；
 - 默认 Agent 是否可执行；
+- OpenCode Server 配置，以及已运行实例的健康状态；
 - Workspace、日志目录和运行目录是否存在且可写。
 
 失败输出固定包含“检查项、当前值、失败原因、建议处理方式”，正常环境问题不会只显示 Python traceback。启动脚本会先迁移数据库，再执行同一自检；任一项失败时不启动平台。
@@ -180,39 +188,45 @@ cd /opt/astra/backend
 /opt/astra/.venv/bin/alembic current
 ```
 
-当前应到达 `0006_ssh_password (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
+当前应到达 `0010_remote_opencode_server (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
 
 ## 7. 员工 Agent 工作环境
 
 ### 7.1 Windows 本地
 
-配置中心的每名员工配置：
+配置中心的每名员工配置 Workspace 和模型；正式 Runtime 共享由 `ASTRA_OPENCODE_BINARY` 启动的 OpenCode Server：
 
 - 模式：本地；
 - Agent 可执行文件：PATH 命令名或完整路径；
 - Agent 模型：例如 `deepseek/deepseek-v4-flash`；
 - 员工 Workspace：例如 `D:\code\nr_test_system`。
 
-路径中有空格时直接填写完整路径，不要自行添加 Shell 引号。Astra 不拼接 Shell 字符串；`.exe` 使用参数数组直接启动，`.cmd` / `.bat` 通过 `COMSPEC` 显式适配。
+路径中有空格时直接填写完整路径，不要自行添加 Shell 引号。Astra 不拼接 Shell 字符串；`.exe` 使用参数数组直接启动，`.cmd` / `.bat` 通过 `COMSPEC` 显式适配。每名同时工作的员工仍必须使用独立 Workspace；Server Event 会再按主 Session 和 Child Session ID 隔离。
 
 每名同时工作的员工必须有独立可写 Workspace。该目录应包含员工所需的代码、Agent 配置、Skills 与 Tools。
 
 ### 7.2 Linux SSH 远程
 
-继续支持现有 Linux 远程模式。目标主机需要：
+Linux 远程与本地使用同一套 Session / Event Runtime，Run 记录为 `opencode_server_ssh`。目标主机需要：
 
 - 可访问的 Host、Port、最小权限 Username 与 SSH 密码；
-- 远程 Agent 可执行路径；
+- OpenCode 1.18.25 或已验证兼容版本，以及可执行路径；
 - 员工专属的绝对 Workspace。
 
-Astra 使用 Paramiko 在线密码认证，明确禁用本机 SSH Agent 和密钥自动查找，因此 Windows 不需要安装 `ssh.exe` / `sshpass`。SSH 密码以明文保存在 Astra 数据库中，只应部署在受控公司内网并严格限制数据库访问；API 只返回 `has_ssh_password`，不会回显密码，密码也不会进入 Task/Run 环境快照、事件或证据文件。配置中心密码框留空表示保持原值。
+Astra 先连接 SSH，再检查远程 `127.0.0.1:<OpenCode Server Port>`。未运行时，它会在员工 Workspace 下以 `nohup opencode serve --hostname 127.0.0.1 --port <port>` 启动 Server，并将日志和 PID 放在远程 `/tmp/astra-opencode-server-<uid>-<port>/`。Backend/Celery 只连接本机临时 SSH 隧道；不要在远程防火墙开放该 Server Port，也不要把 Server 改成 `0.0.0.0`。Session、SSE、Main/Child Tool、Question/Reply、连续多轮与 Abort 都走隧道内的真实 Server API。
+
+配置中心需要填写 SSH Port 和 OpenCode Server Port；后者默认 4096。同一 Linux 主机若由不同账号运行不同 OpenCode/provider 配置，应给每个账号分配不同 Server Port，避免连接到另一账号已经监听的进程。同一账号、同一配置可以共享一个 Server，Astra 仍按 Workspace、主 Session 和 Child Session ID 隔离并发任务。
+
+Astra 使用 Paramiko 在线密码认证，明确禁用本机 SSH Agent 和密钥自动查找，因此 Windows 不需要安装 `ssh.exe` / `sshpass`。SSH 密码以明文保存在 Astra 数据库中，只应部署在受控公司内网并严格限制数据库访问；API 只返回 `has_ssh_password`，不会回显密码，密码也不会进入 Task/Run 环境快照、事件或证据文件。配置中心密码框留空表示保持原值。OpenCode Server Port 会进入 Task/Run 不可变环境快照，以便 Resume 和 Abort 回到原 Server。
+
+只有全局明确设置 `ASTRA_EXECUTOR_TYPE=opencode_cli_fallback` 时，远程 Run 才退回隔离的 `opencode_cli_fallback_ssh`；正式模式不会同时维护两套事件解释逻辑。
 
 若 Agent 依赖额外环境变量或需要跳过工作区信任交互，可复制并修改仓库模板：
 
 - Windows 本地：`deploy/start-agent.windows.bat.example`；
 - Linux 远程：`deploy/start-agent.linux.sh.example`。
 
-模板包含 `OPENCODE_SKIP_SAFE_CHECK=1`、`USE_OSC_FILTER=false` 和 `--disable-update`。远端执行会主动关闭 stdin，Agent 必须以非交互方式运行；`opencode_path` 指向修改后的启动器。模板中的路径都是占位符，禁止把真实凭据写入仓库。
+模板包含 `OPENCODE_SKIP_SAFE_CHECK=1`、`USE_OSC_FILTER=false` 和 `--disable-update`，并会把 `serve` 参数继续传给真实可执行文件；`opencode_path` 指向修改后的启动器。模板中的路径都是占位符，禁止把真实凭据写入仓库。
 
 ## 8. Linux 原生部署
 
@@ -232,10 +246,11 @@ sudo cp deploy/astra.env.example /etc/astra/astra.env
 sudo editor /etc/astra/astra.env
 
 sudo cp deploy/systemd/astra-backend.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-opencode.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-runtime.service /etc/systemd/system/
 sudo cp deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now astra-backend astra-runtime
+sudo systemctl enable --now astra-backend astra-opencode astra-runtime
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -268,11 +283,11 @@ Linux/macOS 构建机执行完整质量门禁：
 
 ```bash
 .venv/bin/python scripts/real_opencode_smoke.py \
-  --model deepseek/deepseek-v4-flash \
+  --model opencode/glm-5.1 \
   --opencode /absolute/path/to/opencode
 ```
 
-该命令会调用真实模型并消耗 Token，不要把凭据放进命令、日志或仓库。
+该命令会在隔离目录启动真实 `opencode serve`，通过 Astra Coordinator 完成一项包含 Tool 的任务，并校验 Session ID、Event 用量和产物。它会调用真实模型并消耗 Token，不要把凭据放进命令、日志或仓库。
 
 ## 11. 备份、升级与停止
 
@@ -304,7 +319,7 @@ mysqldump --single-transaction --routines --triggers \
 
 ### Linux 远程异常
 
-在配置中心重新输入密码并执行“测试连接”，检查 DNS、Host、Port、账号密码、远程 Workspace 和 Agent 启动器权限。错误密码不会由 API 回显。
+在配置中心重新输入密码并执行“测试连接”，检查 DNS、SSH Host/Port、账号密码、远程 Workspace、Agent 启动器权限和 OpenCode Server Port。测试会依次验证 SSH、Workspace、`opencode --version`、Server 启动以及经 SSH 隧道访问 `/global/health`。错误密码不会由 API 回显；Server 启动失败时到远程 `/tmp/astra-opencode-server-<uid>-<port>/server.log` 查看原因。
 
 ### 验收项显示“无法确认”
 
@@ -316,7 +331,7 @@ mysqldump --single-transaction --routines --triggers \
 - Celery 上游不承诺 Windows 支持。Windows 启动器固定使用 `solo` 池并完成跨平台进程管理，但公司正式镜像仍必须做持续运行验收；严格 SLA 可把调度运行时部署在 Linux；
 - Windows 快速启动器使用 Vite Preview 提供已构建前端，适合可信公司内网快速部署；面向大量用户或高可用要求时，应使用企业 Web Server 或反向代理托管 `frontend\dist`；
 - Redis 的 Windows 安装和守护方式由公司基础设施提供，Astra 只通过 `ASTRA_REDIS_URL` 连接；
-- 当前本地 Agent 适配器实现为 OpenCode；接口和页面已使用中性 Agent 表述，但 Claude Code、Codex 等适配器尚未实现；
+- 当前本地与 Linux 远程 Agent 适配器实现为 OpenCode Server；接口和页面已使用中性 Agent 表述，但 Claude Code、Codex 等适配器尚未实现；
 - Linux 远程目标必须支持密码 SSH、非交互 Agent 启动和可写 Workspace；当前密码明文保存在数据库，必须依靠可信内网、数据库权限和备份加密保护；
 - 管理台没有内置身份认证、细粒度授权或秘密管理；
 - 迁移已通过 SQLite 实际升级与 MySQL 方言离线编译，本地没有公司 MySQL 实例，因此正式 MySQL 连接、权限和版本仍需在公司环境运行自检确认。

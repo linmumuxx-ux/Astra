@@ -23,6 +23,11 @@ def _token_values(payload: dict[str, Any]) -> tuple[int | None, int | None, int 
 
 def _find_tokens(event: dict[str, Any]) -> tuple[int | None, int | None, int | None, int | None]:
     candidates: list[dict[str, Any]] = []
+    info = event.get("info")
+    if isinstance(info, dict):
+        for key in ("tokens", "usage"):
+            if isinstance(info.get(key), dict):
+                candidates.append(info[key])
     part = event.get("part")
     if isinstance(part, dict):
         for key in ("tokens", "usage"):

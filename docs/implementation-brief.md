@@ -2,7 +2,7 @@
 
 ## 产品边界
 
-V0.4 延续 V0.3：Astra 只管理任务定义、员工分配、工作观察、人工处理和结果。数字员工的 Agent 自主选择 Agent、Skill、Tool、命令和检查方式。平台没有引入 Workflow / Phase 编排、任务级 Workspace、Verifier、多 Agent 或 Worktree。当前内置 OpenCode 本地/SSH 适配器，执行器抽象可扩展到其他 Agent。
+V0.4 延续 V0.3：Astra 只管理任务定义、员工分配、工作观察、人工处理和结果。数字员工的 Agent 自主选择 Agent、Skill、Tool、命令和检查方式。平台没有引入 Workflow / Phase 编排、任务级 Workspace、Verifier 或 Worktree。本地与 Linux SSH 远程的正式 Runtime 都是 OpenCode Server；可重复测试和运维应急才显式使用隔离的 CLI fallback。
 
 ## 连续工作
 
@@ -32,13 +32,17 @@ READY → RUNNING → COMPLETED
 - 当运行中任务超过配置时间没有新 Event，只设置 `inactivity_alert`。
 - 执行异常任务仅在员工环境于异常后重新检查为 `AVAILABLE` 时自动恢复，防止无限失败循环。
 
-## 工作观察
+## Server Runtime 与工作观察
 
-Agent JSON 输出被流式观察，不等待整次 Run 结束：
+Coordinator 为每个 Task/Run 绑定真实 OpenCode Session ID，以 Server Event SSE 作为执行事实：
 
-1. 文本事件写入 `WORK_PROGRESS`，同步任务当前进展和最后活动时间；
-2. 工具与模型用量事件写入 `operation` 层；
-3. 完整 Agent JSON、stderr、Token / Tool 汇总保留在 Run 和证据文件。
+1. `message.part.updated` 中的文本和 Tool 经 Semantic Event Adapter 写入任务现场；
+2. Task Tool metadata、Child `parentID` 和 Child Session Event 识别真实 Subagent 及其内部 Tool；
+3. `question.asked` 保存原生 request ID，用户回答后调用 Reply 并继续原 Session；
+4. 暂停、挂起、取消调用 Session Abort；
+5. 完整结构化 Event、Message error、Token / Tool 汇总保留在 Run 和证据文件。
+
+Linux 远程由 Paramiko 建立 SSH 本地端口转发，Server 只监听目标机 loopback。每个 Run 使用远程 POSIX Workspace 和真实 Session ID；Question/Resume/Abort 不回退到 CLI stdout 解析。
 
 平台不记录或展示模型内部推理，不调用另一模型生成二次总结。
 
@@ -52,6 +56,6 @@ Agent JSON 输出被流式观察，不等待整次 Run 结束：
 
 ## 迁移与验证边界
 
-`0004_astra_v04` 在 V0.3 数据上增量添加完成策略、挂起/异常/退回、活跃度和提交/确认时间，并将旧 `PAUSED` 转为 `SUSPENDED`。`0005_employee_model` 为员工 Agent 工作环境增加可选模型覆盖。`0006_ssh_password` 将 Linux 远程认证从 SSH Agent/密钥路径迁移为数据库密码字段；API 只暴露是否已配置，任务与 Run 快照不保存密码，远程命令由 Paramiko 执行。
+`0004_astra_v04` 在 V0.3 数据上增量添加完成策略、挂起/异常/退回、活跃度和提交/确认时间，并将旧 `PAUSED` 转为 `SUSPENDED`。`0005_employee_model` 为员工 Agent 工作环境增加可选模型覆盖。`0006_ssh_password` 将 Linux 远程认证从 SSH Agent/密钥路径迁移为数据库密码字段；API 只暴露是否已配置，任务与 Run 快照不保存密码，远程命令由 Paramiko 执行。`0010_remote_opencode_server` 增加远程私有 Server Port，并把 Linux 主链切换为 SSH Tunnel + Session/Event API。
 
-V0.4 当前通过 Ruff、47 个后端单元/集成测试、前端类型检查和生产构建；现有 10 条 Chromium E2E 继续覆盖员工模型配置、配置保存与“询问—等待答复—继续原会话—结构化验收”。系统 E2E 启动隔离 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent。另使用本地 OpenCode 1.18.23 与 `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。详细证据见 `docs/verification/E2E-V0.4-2026-08-28.md`；`docs/verification/E2E-2026-08-27.md` 仅保留为 V0.2 历史记录。
+V0.4 当前通过 Ruff、67 个后端单元/集成测试、前端类型检查和生产构建；10 条 Chromium E2E 显式使用 CLI fallback fixture 做可重复业务验收。OpenCode 1.18.25 + `opencode/glm-5.1` 的真实 Server 验收覆盖 Session、SSE、Tool、Subagent/Child Tool、Question/Reply、同 Session 多轮、Abort 和并发隔离；Astra Coordinator 端到端烟测也已使用真实 Server/GLM5.1 完成任务、Tool、Session ID 和用量持久化。远程适配另有 SSH 隧道、远程 POSIX Workspace、私有 Server 自启动和主/fallback 选择测试；仓库现场没有可认证的 Linux SSH 主机，因此不把远程主机 E2E 伪报为 PASS。

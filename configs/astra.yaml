@@ -7,4 +7,4 @@ runtime:
   recovery_interval: 30
 
 executor:
-  type: opencode_cli
+  type: opencode_server

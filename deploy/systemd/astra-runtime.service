@@ -1,8 +1,8 @@
 [Unit]
 Description=Astra Celery worker and scheduler
-After=network-online.target astra-backend.service
+After=network-online.target astra-backend.service astra-opencode.service
 Wants=network-online.target
-Requires=astra-backend.service
+Requires=astra-backend.service astra-opencode.service
 
 [Service]
 Type=simple

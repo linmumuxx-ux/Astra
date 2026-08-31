@@ -2,7 +2,7 @@
 
 Astra 是面向长期数字员工的任务分配、工作观察、人工介入和结果管理平台。
 
-Astra 定义任务目标、分类、优先级、执行员工和验收标准；任务真正如何完成，由数字员工自己的 Agent 决定。平台不编排员工内部工作步骤，不管理 Skill 或 Tool，也不运行独立 Verifier。当前内置 OpenCode 适配器，执行接口可继续扩展 Claude Code、Codex 等 Agent 工具。
+Astra 定义任务目标、分类、优先级、执行员工和验收标准；任务真正如何完成，由数字员工自己的 Agent 决定。平台不编排员工内部工作步骤，不管理 Skill 或 Tool，也不运行独立 Verifier。当前以 OpenCode Server / Session / Event 作为正式 Runtime；`opencode run` 仅作显式隔离的 CLI fallback。
 
 V0.4 保持 V0.3 的职责边界，新增长期连续工作与更直观的数字办公室。当前版本包含：
 
@@ -10,6 +10,7 @@ V0.4 保持 V0.3 的职责边界，新增长期连续工作与更直观的数字
 - 自动分配或指定员工，匹配依据为员工状态、任务类型与任务分类；
 - 每名员工一个本地或 Linux 远程 Agent 工作环境、可选模型和长期工作空间；
 - 每项任务独立执行会话，挂起、恢复和重启后优先继续原会话；
+- 持续任务工作台，将用户消息、Runtime Event、Inquiry、Agent / Tool 活动和产物组织在同一长期会话中；
 - 指定员工任务优先、再按优先级和 FIFO 的连续自动领取；
 - 安全挂起、待人工确认、执行异常恢复和无活动提示；
 - 数字办公室、待处理中心与可选“减少动效”；
@@ -50,7 +51,7 @@ uvicorn app.main:app --reload --port 8100
 ./scripts/runtime.sh
 ```
 
-该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。
+该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会启动并检查 OpenCode Server，同时复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。
 
 再开一个终端启动管理台：
 
@@ -64,7 +65,7 @@ npm run dev
 
 ## 正式部署
 
-项目采用原生进程部署，不包含容器部署配置。公司 Windows 环境使用 PowerShell 安装、自检和启停脚本，正式配置以 MySQL 为主；Linux 环境可由 systemd 守护 FastAPI 和 Celery，并由 Nginx 托管前端产物。员工工作空间是主机上的长期工程目录，当前使用 OpenCode 适配器时，OpenCode 安装在实际执行 Worker 的 Windows 主机或远程 Linux 主机。
+项目采用原生进程部署，不包含容器部署配置。公司 Windows 环境使用 PowerShell 安装、自检和启停脚本，正式配置以 MySQL 为主；Linux 环境可由 systemd 守护 FastAPI 和 Celery，并由 Nginx 托管前端产物。员工工作空间是主机上的长期工程目录，当前使用 OpenCode 适配器时，OpenCode 安装在实际执行 Worker 的 Windows 主机或远程 Linux 主机。Linux 远程通过 SSH Tunnel 访问只监听目标机 loopback 的 OpenCode Server，Session/Event/Question/Abort 与本地模式一致，无需开放 Server 端口。
 
 完整安装、systemd、Nginx、升级、备份和停止步骤见[部署手册](docs/DEPLOYMENT.md)。
 
@@ -97,7 +98,9 @@ npm run dev
 - [V0.4 部署手册](docs/DEPLOYMENT.md)
 - [V0.4 实现与需求映射](docs/implementation-brief.md)
 - [数字办公室设计说明与参考案例](docs/design/DIGITAL_OFFICE.md)
+- [持续任务工作台设计与实现](docs/design/TASK_WORKBENCH.md)
+- [持续任务工作台语义与 HITL 验收报告](docs/verification/TASK-WORKBENCH-2026-08-30.md)
 - [V0.4 功能、系统 E2E 与真实 Agent 验收报告](docs/verification/E2E-V0.4-2026-08-28.md)
 - [原始需求资料](docs/requirements/README.md)
 
-V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端测试、前端类型检查与生产构建、10 条 Chromium E2E；系统 E2E 会真实启动 Redis、Worker、Backend、Frontend 和可控 Agent，覆盖员工模型配置以及“询问—等待答复—继续执行—验收完成”。另已使用本地 OpenCode + `deepseek/deepseek-v4-flash` 验证真实任务领取和结构化询问。V0.2 E2E 报告仅作为历史记录。
+V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端测试、前端类型检查与生产构建、10 条 Chromium E2E；可重复系统 E2E 显式使用隔离的 CLI fixture。另已使用 OpenCode 1.18.25 + `opencode/glm-5.1` 真实验收 Server Session、SSE、Tool、Subagent、Question/Resume、Abort、并发隔离和 Astra Coordinator 端到端执行。

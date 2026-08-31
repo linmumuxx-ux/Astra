@@ -34,11 +34,12 @@ class ExecutorResult:
     stdout: str = ""
     stderr: str = ""
     model_name: str | None = None
+    inquiry: dict[str, Any] | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tool_usage: list[ToolUsageResult] = field(default_factory=list)
 
 
-class CLIExecutor(ABC):
+class AgentExecutor(ABC):
     @abstractmethod
     async def start(self, task: Task, workspace: Path) -> ExecutorResult: ...
 
@@ -55,6 +56,6 @@ class CLIExecutor(ABC):
     async def collect_result(self, run: Run) -> dict[str, Any]: ...
 
 
-# Backward-compatible import for the current OpenCode adapter. New CLI adapters
-# should implement the neutral CLIExecutor contract.
-OpenCodeExecutor = CLIExecutor
+# Backward-compatible aliases for existing adapters and tests.
+CLIExecutor = AgentExecutor
+OpenCodeExecutor = AgentExecutor

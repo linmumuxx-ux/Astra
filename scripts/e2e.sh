@@ -70,6 +70,8 @@ runtime_environment() {
   export ASTRA_WORKSPACE_ROOT="$RUN_DIR/workspaces"
   export ASTRA_SEED_DEMO="true"
   export ASTRA_REDIS_URL="$REDIS_URL"
+  # 系统 E2E 的可重复 fixture 只验证显式隔离的 CLI fallback。
+  export ASTRA_EXECUTOR_TYPE="opencode_cli_fallback"
   export ASTRA_SCOUT_INTERVAL="3600"
   export ASTRA_DISPATCHER_INTERVAL="1"
   export ASTRA_HEARTBEAT_INTERVAL="1"

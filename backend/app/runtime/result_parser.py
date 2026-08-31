@@ -38,7 +38,7 @@ def _structured_result(raw_text: str) -> dict[str, Any] | None:
     return nested if isinstance(nested, dict) else payload
 
 
-def parse_human_intervention(raw_text: str) -> dict[str, str] | None:
+def parse_human_intervention(raw_text: str) -> dict[str, Any] | None:
     """Parse an explicit request for human input from an Agent employee."""
     payload = _marked_object(raw_text, INTERVENTION_MARKER)
     if not payload:
@@ -49,20 +49,20 @@ def parse_human_intervention(raw_text: str) -> dict[str, str] | None:
     requested_input = str(payload.get("requested_input") or "").strip()
     if not requested_input:
         return None
+    options = payload.get("options")
     return {
         "blocking_reason": str(payload.get("blocking_reason") or "需要人工补充信息").strip(),
         "completed_work": str(payload.get("completed_work") or "尚未开始后续处理").strip(),
         "current_state": str(payload.get("current_state") or "等待人工回复").strip(),
         "requested_input": requested_input,
+        "options": options if isinstance(options, list) else [],
     }
 
 
 def human_readable_result(raw_text: str) -> str:
     """Remove Astra's machine-readable suffix from text shown to managers."""
     marker_indexes = [
-        index
-        for marker in (RESULT_MARKER, INTERVENTION_MARKER)
-        if (index := raw_text.rfind(marker)) >= 0
+        index for marker in (RESULT_MARKER, INTERVENTION_MARKER) if (index := raw_text.rfind(marker)) >= 0
     ]
     visible = raw_text[: min(marker_indexes)] if marker_indexes else raw_text
 

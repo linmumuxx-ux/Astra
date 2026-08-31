@@ -63,6 +63,7 @@ def test_structured_human_intervention_preserves_question_and_hides_payload():
         "completed_work": "已准备输出脚本",
         "current_state": "等待回答",
         "requested_input": "请告诉我需要打印的具体内容是什么？",
+        "options": [],
     }
     assert human_readable_result(raw) == "需要你补充一个信息后才能继续。"
 

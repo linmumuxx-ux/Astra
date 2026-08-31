@@ -119,12 +119,23 @@ test('完成任务展示结果、逐项验收和实际工作消耗', async ({ pa
   await expect(detail.getByText('满足 · 相关检查均通过')).toBeVisible()
   await expect(detail.locator('.usage-panel')).toContainText('160.8K')
   await expect(detail.locator('.usage-panel')).toContainText('bash')
+  await detail.locator('.workbench-flow').evaluate((element) => {
+    const viewport = element as HTMLElement
+    viewport.style.height = '160px'
+    viewport.scrollTop = 0
+    element.dispatchEvent(new Event('scroll'))
+  })
+  await expect(detail.getByRole('button', { name: '回到最新' })).toBeVisible()
+  await expect(detail.getByLabel('给数字员工的指令')).toBeVisible()
+  await detail.getByRole('button', { name: '回到最新' }).click()
+  await expect(detail.getByRole('button', { name: '回到最新' })).toHaveCount(0)
+  await detail.locator('.runtime-info').click()
   await expect(detail.getByRole('link', { name: 'RUN-DEMO-003' })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
-  await expect(detail.getByText('Agent 工作记录')).toBeVisible()
+  await expect(detail.getByText('Agent 工作记录', { exact: true })).toBeVisible()
 })
 
 test('业务枚举和时间单位统一显示为中文', async ({ page }) => {
-  const rawEnums = /\b(?:READY|RUNNING|WAIT_HUMAN|SUSPENDED|PENDING_CONFIRMATION|EXECUTION_ERROR|COMPLETED|FAILED|CANCELLED|PASSED|BLOCKED|AVAILABLE|CHECKING|UNAVAILABLE|UNKNOWN|WORKING|IDLE|OFFLINE|ERROR|VERY_HIGH|HIGH|MEDIUM|LOW|ISSUE|REQUIREMENT|SATISFIED|UNSATISFIED|UNCONFIRMED)\b/
+  const rawEnums = /\b(?:READY|RUNNING|WAIT_HUMAN|WAITING_INPUT|SUSPENDED|PENDING_CONFIRMATION|EXECUTION_ERROR|COMPLETED|FAILED|CANCELLED|PASSED|BLOCKED|AVAILABLE|CHECKING|UNAVAILABLE|UNKNOWN|WORKING|IDLE|OFFLINE|ERROR|VERY_HIGH|HIGH|MEDIUM|LOW|ISSUE|REQUIREMENT|SATISFIED|UNSATISFIED|UNCONFIRMED)\b/
   for (const route of ['/tasks', '/tasks/T-20260827-003', '/employees', '/employees/astra-01', '/runs', '/runs/RUN-DEMO-003', '/interventions', '/settings']) {
     await page.goto(route)
     await expect(page.locator('body')).not.toContainText(rawEnums)
@@ -149,7 +160,7 @@ test('员工配置只管理工作范围、工作环境和简单策略', async ({
   await expect(settings.getByLabel('Agent 模型')).toHaveValue('deepseek/deepseek-v4-flash')
 })
 
-test('配置保存保持环境可用且询问任务可由真实运行时等待并继续完成', async ({ page, request }) => {
+test('配置保存保持环境可用且任务会话覆盖真实询问、恢复、追问与普通执行', async ({ page, request }) => {
   const suffix = Date.now()
   const employeeId = `astra-inquiry-${suffix}`
   const employeeName = `询问测试员工 ${suffix}`
@@ -223,12 +234,28 @@ test('配置保存保持环境可用且询问任务可由真实运行时等待�
     return (await response.json()).status
   }, { timeout: 30_000 }).toBe('WAIT_HUMAN')
 
-  await page.goto('/interventions')
-  const intervention = page.getByTestId('intervention-page')
-  await intervention.getByRole('button', { name: new RegExp(title) }).click()
-  await expect(intervention.getByText('请告诉我这次需要打印的具体答案是什么？')).toBeVisible()
-  await intervention.getByLabel('补充信息').fill('自动化验收答案')
-  await intervention.getByRole('button', { name: '补充并继续' }).click()
+  const waitingWorkspaceResponse = await request.get(`/api/tasks/${taskId}/workspace`)
+  const waitingWorkspace = await waitingWorkspaceResponse.json()
+  const sessionId = waitingWorkspace.session.id
+  expect(waitingWorkspace.task.status).toBe('WAIT_HUMAN')
+  expect(waitingWorkspace.session.status).toBe('WAITING_INPUT')
+  expect(waitingWorkspace.runs).toHaveLength(1)
+  expect(waitingWorkspace.runs[0].status).toBe('WAITING_INPUT')
+  expect(waitingWorkspace.inquiries).toHaveLength(1)
+  expect(waitingWorkspace.inquiries[0].status).toBe('OPEN')
+  expect(waitingWorkspace.inquiries[0].run_id).toBe(waitingWorkspace.runs[0].id)
+  const waitingEmployee = await (await request.get(`/api/employees/${employeeId}`)).json()
+  expect(waitingEmployee.status).toBe('WAIT_HUMAN')
+
+  const detail = page.getByTestId('task-detail-page')
+  await expect(detail.getByText('先向使用者询问要打印的答案，收到回答后打印该答案。')).toBeVisible()
+  await expect(detail.getByText('请告诉我这次需要打印的具体答案是什么？', { exact: true })).toBeVisible()
+  await expect(detail.getByText('等待输入', { exact: true }).first()).toBeVisible()
+  await expect(detail.getByText('运行元数据已更新')).toHaveCount(0)
+  await expect(detail.getByText('模型用量')).toHaveCount(0)
+  await detail.getByLabel('给数字员工的指令').fill('自动化验收答案')
+  await detail.getByRole('button', { name: '发送指令' }).click()
+  await expect(detail.getByText('回答已提交，原 Run 将从等待点继续执行。')).toBeVisible()
 
   await expect.poll(async () => {
     const response = await request.get(`/api/tasks/${taskId}`)
@@ -243,12 +270,103 @@ test('配置保存保持环境可用且询问任务可由真实运行时等待�
 
   const runsResponse = await request.get(`/api/tasks/${taskId}/runs`)
   const runs = await runsResponse.json()
-  expect(runs).toHaveLength(2)
-  expect(runs.map((run: { status: string }) => run.status).sort()).toEqual(['BLOCKED', 'PASSED'])
+  expect(runs).toHaveLength(1)
+  expect(runs[0].status).toBe('COMPLETED')
   expect(new Set(runs.map((run: { opencode_session_id: string }) => run.opencode_session_id))).toEqual(new Set(['ses_e2e_fixture']))
 
-  await page.goto(`/tasks/${taskId}`)
-  const detail = page.getByTestId('task-detail-page')
+  const completedWorkspace = await (await request.get(`/api/tasks/${taskId}/workspace`)).json()
+  expect(completedWorkspace.session.id).toBe(sessionId)
+  expect(completedWorkspace.session.status).toBe('COMPLETED')
+  expect(completedWorkspace.inquiries[0].status).toBe('ANSWERED')
+  const completedEmployee = await (await request.get(`/api/employees/${employeeId}`)).json()
+  expect(completedEmployee.status).toBe('IDLE')
+
+  await page.reload()
   await expect(detail.getByRole('paragraph').filter({ hasText: '已打印用户答案：自动化验收答案' })).toBeVisible()
   await expect(detail.getByText('满足 · 已按使用者回答打印自动化验收答案')).toBeVisible()
+  await expect(detail.locator('.runtime-info')).toContainText('运行信息')
+  await expect(detail.locator('.runtime-info code')).not.toBeVisible()
+
+  await detail.getByLabel('给数字员工的指令').fill('请在同一任务中再次打印自动化验收答案')
+  await detail.getByRole('button', { name: '发送指令' }).click()
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${taskId}/workspace`)
+    return (await response.json()).runs.length
+  }, { timeout: 30_000 }).toBe(2)
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${taskId}/workspace`)
+    const workspace = await response.json()
+    return `${workspace.task.status}:${workspace.runs[0].status}`
+  }, { timeout: 30_000 }).toBe('COMPLETED:COMPLETED')
+  const followedUp = await (await request.get(`/api/tasks/${taskId}/workspace`)).json()
+  expect(followedUp.session.id).toBe(sessionId)
+  expect(followedUp.runs).toHaveLength(2)
+  expect(followedUp.runs.every((run: { status: string }) => run.status === 'COMPLETED')).toBeTruthy()
+
+  const ordinaryResponse = await request.post('/api/tasks', {
+    data: {
+      source: 'manual',
+      task_type: 'REQUIREMENT',
+      category_id: 'testing-platform',
+      title: `E2E 普通任务 ${suffix}`,
+      description: '直接完成一个普通任务，不需要询问使用者。',
+      acceptance_criteria: [{ content: '普通任务成功完成' }],
+      attachments: [],
+      priority: 'MEDIUM',
+      completion_policy: 'AUTO',
+      employee_id: employeeId,
+    },
+  })
+  expect(ordinaryResponse.ok()).toBeTruthy()
+  const ordinaryTask = await ordinaryResponse.json()
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${ordinaryTask.id}`)
+    return (await response.json()).status
+  }, { timeout: 30_000 }).toBe('COMPLETED')
+  const ordinaryWorkspace = await (await request.get(`/api/tasks/${ordinaryTask.id}/workspace`)).json()
+  expect(ordinaryWorkspace.inquiries).toHaveLength(0)
+  expect(ordinaryWorkspace.runs).toHaveLength(1)
+  expect(ordinaryWorkspace.runs[0].status).toBe('COMPLETED')
+  expect(ordinaryWorkspace.messages[0].content).toBe('直接完成一个普通任务，不需要询问使用者。')
+  expect(ordinaryWorkspace.messages.some((message: { role: string }) => message.role === 'agent')).toBeTruthy()
+
+  const subagentResponse = await request.post('/api/tasks', {
+    data: {
+      source: 'manual',
+      task_type: 'REQUIREMENT',
+      category_id: 'testing-platform',
+      title: `E2E Subagent 场景 ${suffix}`,
+      description: 'E2E Subagent 场景：通过 Task Tool 启动 general 子 Agent。',
+      acceptance_criteria: [{ content: '结构化 Subagent 事件进入任务会话' }],
+      attachments: [],
+      priority: 'MEDIUM',
+      completion_policy: 'AUTO',
+      employee_id: employeeId,
+    },
+  })
+  expect(subagentResponse.ok()).toBeTruthy()
+  const subagentTask = await subagentResponse.json()
+  await expect.poll(async () => {
+    const response = await request.get(`/api/tasks/${subagentTask.id}`)
+    return (await response.json()).status
+  }, { timeout: 30_000 }).toBe('COMPLETED')
+  const subagentWorkspace = await (await request.get(`/api/tasks/${subagentTask.id}/workspace`)).json()
+  const subagentEvents = subagentWorkspace.events.filter((event: { event_type: string }) => event.event_type.startsWith('subagent.'))
+  expect(subagentEvents).toHaveLength(1)
+  expect(subagentEvents[0]).toMatchObject({
+    event_type: 'subagent.completed',
+    agent_name: 'general',
+    payload: {
+      source_call_id: 'call-e2e-subagent',
+      parent_session_id: 'ses_e2e_fixture',
+      child_session_id: 'ses_e2e_child',
+    },
+  })
+  expect(subagentWorkspace.blocks.some((block: { semantic_type: string; visibility: string }) => block.semantic_type === 'subagent.completed' && block.visibility === 'primary')).toBeTruthy()
+
+  await page.goto(`/tasks/${subagentTask.id}`)
+  const subagentDetail = page.getByTestId('task-detail-page')
+  await expect(subagentDetail.getByRole('heading', { name: 'Subagent (1)' })).toBeVisible()
+  await expect(subagentDetail.getByText('general 已完成子任务：Print hello world')).toBeVisible()
+  await expect(subagentDetail.getByText('当前事件中未发现 Subagent 调用')).toHaveCount(0)
 })

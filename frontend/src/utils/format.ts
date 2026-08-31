@@ -1,7 +1,7 @@
 const STATUS_LABEL: Record<string, string> = {
   OFFLINE: '离线', IDLE: '空闲', WORKING: '工作中', WAIT_HUMAN: '等待人工', PAUSED: '已暂停', ERROR: '异常',
   READY: '待领取', RUNNING: '处理中', SUSPENDED: '已挂起', PENDING_CONFIRMATION: '待确认', EXECUTION_ERROR: '执行异常', COMPLETED: '已完成', FAILED: '未完成', CANCELLED: '已取消',
-  PASSED: '完成', BLOCKED: '阻塞',
+  PASSED: '完成', BLOCKED: '阻塞', WAITING_INPUT: '等待输入',
   AVAILABLE: '正常', CHECKING: '检查中', UNAVAILABLE: '不可用', UNKNOWN: '未检查',
 }
 
@@ -24,7 +24,7 @@ export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', 
 
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
   if (['COMPLETED', 'PASSED', 'IDLE', 'AVAILABLE'].includes(status)) return 'success'
-  if (['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'PAUSED', 'BLOCKED'].includes(status)) return 'warning'
+  if (['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'PAUSED', 'WAITING_INPUT', 'BLOCKED'].includes(status)) return 'warning'
   if (['FAILED', 'EXECUTION_ERROR', 'ERROR', 'CANCELLED', 'OFFLINE', 'UNAVAILABLE'].includes(status)) return 'danger'
   if (['RUNNING', 'WORKING', 'CHECKING'].includes(status)) return 'info'
   return 'neutral'
@@ -81,7 +81,15 @@ export const executionModeLabel = (value: unknown) =>
   value === 'LINUX_REMOTE' ? 'Linux 远程' : value === 'LOCAL' ? '本地' : '—'
 
 export const executorLabel = (value: string) =>
-  value === 'opencode_ssh' ? 'Linux 远程 Agent' : value === 'opencode_cli' ? '本地 Agent' : '未知执行方式'
+  value === 'opencode_server'
+    ? 'OpenCode Server'
+    : value === 'opencode_server_ssh'
+      ? 'Linux 远程 OpenCode Server'
+      : value === 'opencode_cli_fallback_ssh'
+        ? 'Linux 远程 CLI fallback'
+      : value === 'opencode_cli_fallback'
+        ? '本地 CLI fallback'
+        : '未知执行方式'
 
 export const sourceLabel = (source: string) => source === 'nr_test_system' ? 'nr_test_system' : source === 'manual' ? '手工创建' : '其他来源'
 
@@ -90,6 +98,9 @@ export const evidenceKindLabel = (value: string) =>
 
 export const platformCopy = (value: string | null | undefined) =>
   String(value ?? '')
+    .replace(/^completed$/i, '任务已完成')
+    .replace(/^failed$/i, '任务未完成')
+    .replace(/^running$/i, '任务处理中')
     .replaceAll('Agent 工作环境检查完成', '工作环境检查完成')
     .replaceAll('Agent 工作环境已更新', '工作环境已更新')
     .replaceAll('Agent 返回模型用量事件', '模型用量已更新')

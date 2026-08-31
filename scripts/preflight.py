@@ -22,7 +22,9 @@ class CheckResult:
     suggestion: str
 
 
-def result(item: str, passed: bool, current: object, reason: str, suggestion: str) -> CheckResult:
+def result(
+    item: str, passed: bool, current: object, reason: str, suggestion: str
+) -> CheckResult:
     return CheckResult(item, passed, str(current), reason, suggestion)
 
 
@@ -72,7 +74,9 @@ def check_dependencies() -> CheckResult:
 def check_writable_directory(item: str, path: Path) -> CheckResult:
     try:
         path.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(prefix=".astra-check-", dir=path, delete=False) as probe:
+        with tempfile.NamedTemporaryFile(
+            prefix=".astra-check-", dir=path, delete=False
+        ) as probe:
             probe_path = Path(probe.name)
             probe.write(b"ok")
         probe_path.unlink()
@@ -103,7 +107,13 @@ async def check_database(settings) -> list[CheckResult]:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
             checks.append(
-                result("数据库连接", True, settings.database_description, "连接成功", "无需处理")
+                result(
+                    "数据库连接",
+                    True,
+                    settings.database_description,
+                    "连接成功",
+                    "无需处理",
+                )
             )
 
             if settings.sqlalchemy_database_url.startswith("mysql"):
@@ -271,6 +281,45 @@ async def check_agent(settings) -> CheckResult:
         )
 
 
+async def check_opencode_runtime(settings) -> CheckResult:
+    if settings.executor_type == "opencode_cli_fallback":
+        return result(
+            "OpenCode Runtime",
+            True,
+            "opencode_cli_fallback",
+            "已显式选择隔离的 CLI fallback",
+            "生产环境建议使用 opencode_server",
+        )
+
+    from app.runtime.opencode_server import OpenCodeServerManager
+
+    manager = OpenCodeServerManager(settings)
+    health = await manager.health()
+    if health.healthy:
+        return result(
+            "OpenCode Runtime",
+            True,
+            manager.base_url,
+            f"OpenCode Server 已就绪，版本 {health.version or '未知'}",
+            "无需处理",
+        )
+    if not settings.opencode_server_url:
+        return result(
+            "OpenCode Runtime",
+            True,
+            manager.base_url,
+            "本机受管 Server 将由 Astra 启动器启动并执行健康检查",
+            "无需处理",
+        )
+    return result(
+        "OpenCode Runtime",
+        False,
+        manager.base_url,
+        f"外部 OpenCode Server 不可用：{health.detail}",
+        "启动 ASTRA_OPENCODE_SERVER_URL 指定的 Server 并检查认证",
+    )
+
+
 def print_results(checks: list[CheckResult]) -> None:
     for check in checks:
         marker = "PASS" if check.passed else "FAIL"
@@ -314,10 +363,13 @@ async def main() -> int:
         return 1
     checks.extend(
         [
-            check_writable_directory("Astra Workspace 目录", settings.resolved_workspace_root),
+            check_writable_directory(
+                "Astra Workspace 目录", settings.resolved_workspace_root
+            ),
             check_writable_directory("日志目录", settings.resolved_log_dir),
             check_writable_directory("运行状态目录", settings.resolved_runtime_dir),
             await check_agent(settings),
+            await check_opencode_runtime(settings),
             await check_redis(settings),
         ]
     )

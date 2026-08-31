@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import asyncio
 import ctypes
 import json
 import os
@@ -17,6 +18,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.config.settings import get_settings
 from app.executors.process import local_command
+from app.runtime.opencode_server import OpenCodeServerManager
 
 settings = get_settings()
 PID_FILE = settings.resolved_runtime_dir / "processes.json"
@@ -50,10 +52,18 @@ def load_processes() -> dict[str, dict]:
 
 def save_processes(processes: dict[str, dict]) -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(json.dumps(processes, ensure_ascii=False, indent=2), encoding="utf-8")
+    PID_FILE.write_text(
+        json.dumps(processes, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
-def spawn(name: str, argv: list[str], cwd: Path) -> dict:
+def spawn(
+    name: str,
+    argv: list[str],
+    cwd: Path,
+    *,
+    environment: dict[str, str] | None = None,
+) -> dict:
     settings.resolved_log_dir.mkdir(parents=True, exist_ok=True)
     log_path = settings.resolved_log_dir / f"{name}.log"
     creation_options = {}
@@ -70,7 +80,7 @@ def spawn(name: str, argv: list[str], cwd: Path) -> dict:
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
-            env=os.environ.copy(),
+            env=environment or os.environ.copy(),
             **creation_options,
         )
     return {"pid": process.pid, "log": str(log_path), "command": argv, "cwd": str(cwd)}
@@ -125,7 +135,9 @@ def command_stop() -> int:
 
 def command_start() -> int:
     active = {
-        name: info for name, info in load_processes().items() if process_exists(int(info["pid"]))
+        name: info
+        for name, info in load_processes().items()
+        if process_exists(int(info["pid"]))
     }
     if active:
         print("Astra 已在运行，请先执行 stop。")
@@ -137,7 +149,9 @@ def command_start() -> int:
         print("启动失败：未找到 npm。建议：安装 Node.js 20+ 并加入 PATH。")
         return 1
     if not (FRONTEND_ROOT / "dist" / "index.html").is_file():
-        print("启动失败：缺少前端生产构建。建议：先运行 Windows 安装脚本或 npm run build。")
+        print(
+            "启动失败：缺少前端生产构建。建议：先运行 Windows 安装脚本或 npm run build。"
+        )
         return 1
 
     subprocess.run(
@@ -146,48 +160,69 @@ def command_start() -> int:
         check=True,
     )
 
+    processes: dict[str, dict] = {}
+    if settings.executor_type == "opencode_server":
+        manager = OpenCodeServerManager(settings)
+        if not settings.opencode_server_url:
+            processes["opencode-server"] = spawn(
+                "opencode-server",
+                manager.command(),
+                PROJECT_ROOT,
+                environment=manager.process_environment(),
+            )
+        try:
+            health = asyncio.run(manager.wait_until_ready())
+        except TimeoutError as exc:
+            for info in reversed(list(processes.values())):
+                stop_pid(int(info["pid"]))
+            print(f"启动失败：OpenCode Server 未就绪：{exc}")
+            return 1
+        print(f"OpenCode Server 已就绪：{health.version or '未知版本'}")
+
     schedule_path = settings.resolved_runtime_dir / "celerybeat-schedule"
-    processes = {
-        "backend": spawn(
-            "backend",
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "app.main:app",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                "8100",
-            ],
-            BACKEND_ROOT,
-        ),
-        "runtime": spawn(
-            "runtime",
-            [
-                sys.executable,
-                "-m",
-                "celery",
-                "-A",
-                "app.runtime.celery_app:celery",
-                "worker",
-                "--beat",
-                "--loglevel=INFO",
-                "--pool=solo",
-                "--hostname=astra-runtime@%h",
-                f"--schedule={schedule_path}",
-            ],
-            BACKEND_ROOT,
-        ),
-        "frontend": spawn(
-            "frontend",
-            local_command(
-                npm,
-                ["run", "preview", "--", "--host", "0.0.0.0", "--port", "5173"],
+    processes.update(
+        {
+            "backend": spawn(
+                "backend",
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "app.main:app",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "8100",
+                ],
+                BACKEND_ROOT,
             ),
-            FRONTEND_ROOT,
-        ),
-    }
+            "runtime": spawn(
+                "runtime",
+                [
+                    sys.executable,
+                    "-m",
+                    "celery",
+                    "-A",
+                    "app.runtime.celery_app:celery",
+                    "worker",
+                    "--beat",
+                    "--loglevel=INFO",
+                    "--pool=solo",
+                    "--hostname=astra-runtime@%h",
+                    f"--schedule={schedule_path}",
+                ],
+                BACKEND_ROOT,
+            ),
+            "frontend": spawn(
+                "frontend",
+                local_command(
+                    npm,
+                    ["run", "preview", "--", "--host", "0.0.0.0", "--port", "5173"],
+                ),
+                FRONTEND_ROOT,
+            ),
+        }
+    )
     save_processes(processes)
     time.sleep(1)
     print("Astra 已启动：http://localhost:5173")

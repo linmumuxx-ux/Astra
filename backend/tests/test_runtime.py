@@ -1,6 +1,9 @@
 import io
+import json
 import os
+import socket
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -8,10 +11,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.routes import _cancel_active_runs
+from app.config.settings import Settings
 from app.database import SessionLocal, init_database
 from app.domain import EmployeeStatus, EnvironmentStatus, Priority, RunStatus, TaskStatus, TaskType
 from app.executors.base import ExecutorResult, OpenCodeExecutor, TokenUsage, ToolUsageResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
+from app.executors.opencode_remote import RemoteOpenCodeExecutor
+from app.executors.opencode_remote_server import RemoteOpenCodeServerExecutor
 from app.executors.process import windows_batch_command
 from app.executors.usage import parse_opencode_usage
 from app.models import (
@@ -21,8 +27,11 @@ from app.models import (
     Evidence,
     OpenCodeExecutionEnvironment,
     Run,
+    RunInquiry,
+    SessionMessage,
     Task,
     TaskCategory,
+    TaskSession,
     ToolUsage,
 )
 from app.runtime.coordinator import TaskCoordinator
@@ -32,7 +41,7 @@ from app.runtime.heartbeat import heartbeat_active_employees
 from app.runtime.scout import TaskScout
 from app.runtime.ssh_client import SSHSession
 from app.schemas import TaskCreate
-from app.services import TaskService
+from app.services import TaskService, WorkbenchService
 from app.sources.base import ExternalTask, TaskSource
 
 
@@ -91,6 +100,45 @@ async def test_create_task_records_ready_event(session):
         .all()
     )
     assert [event.event_type for event in events] == ["TASK_CREATED", "TASK_READY"]
+
+
+async def test_runtime_observer_persists_tool_and_subagent_semantics(session):
+    task = await TaskService(session).create(new_task(title="调用结构化子 Agent"))
+    raw_event = {
+        "type": "tool_use",
+        "sessionID": "ses_parent",
+        "part": {
+            "type": "tool",
+            "tool": "task",
+            "callID": "call_subagent_1",
+            "state": {
+                "status": "completed",
+                "input": {
+                    "description": "Print hello world",
+                    "prompt": "打印 hello world",
+                    "subagent_type": "general",
+                },
+                "output": "<task_result>hello world</task_result>",
+                "metadata": {
+                    "parentSessionId": "ses_parent",
+                    "sessionId": "ses_child",
+                },
+                "title": "Print hello world",
+            },
+        },
+    }
+
+    await TaskCoordinator._observe_event(task, None, raw_event, TaskService(session))
+    events = (
+        (await session.execute(select(Event).where(Event.task_id == task.id).order_by(Event.id)))
+        .scalars()
+        .all()
+    )
+
+    assert [item.event_type for item in events[-2:]] == ["TOOL_ACTIVITY", "SUBAGENT_COMPLETED"]
+    assert events[-2].detail["call_id"] == "call_subagent_1"
+    assert events[-1].detail["agent_name"] == "general"
+    assert events[-1].detail["child_session_id"] == "ses_child"
 
 
 async def test_cancel_active_runs_finishes_running_and_blocked_rows(session):
@@ -324,6 +372,77 @@ class FailThenPassExecutor(OpenCodeExecutor):
         return run.result or {}
 
 
+class AskThenCompleteExecutor(OpenCodeExecutor):
+    def __init__(self):
+        self.started = 0
+        self.resumed_run_ids: list[str] = []
+
+    async def start(self, task, workspace):
+        self.started += 1
+        question = "请告诉我需要打印的具体答案是什么？"
+        return ExecutorResult(
+            status="BLOCKED",
+            exit_code=0,
+            session_id="ses-hitl-same-run",
+            output=[{"type": "text", "part": {"text": f"需要你的回答后才能继续：{question}"}}],
+            inquiry={
+                "blocking_reason": "任务要求使用用户提供的答案",
+                "completed_work": "已准备打印步骤",
+                "current_state": "等待回答",
+                "requested_input": question,
+                "options": [],
+            },
+            token_usage=TokenUsage(input_tokens=20, output_tokens=5, total_tokens=25),
+        )
+
+    async def resume(self, task, run, workspace):
+        self.resumed_run_ids.append(run.id)
+        answer = task.human_intervention["response"]
+        result = {
+            "summary": f"已打印用户答案：{answer}",
+            "changes": [],
+            "files": [],
+            "commits": [],
+            "logs": [answer],
+            "attachments": [],
+            "other": {"printed_answer": answer},
+            "acceptance_results": [
+                {
+                    "criterion_id": "AC-01",
+                    "status": "SATISFIED",
+                    "description": f"已打印 {answer}",
+                    "evidence": [answer],
+                }
+            ],
+        }
+        return ExecutorResult(
+            status="SUCCEEDED",
+            exit_code=0,
+            session_id="ses-hitl-same-run",
+            output=[
+                {
+                    "type": "text",
+                    "part": {
+                        "text": (
+                            f"已打印用户答案：{answer}\nASTRA_RESULT_JSON: "
+                            f"{json.dumps(result, ensure_ascii=False)}"
+                        )
+                    },
+                }
+            ],
+            token_usage=TokenUsage(input_tokens=15, output_tokens=5, total_tokens=20),
+        )
+
+    async def get_status(self, run):
+        return run.status
+
+    async def abort(self, run):
+        return None
+
+    async def collect_result(self, run):
+        return run.result or {}
+
+
 class RaisingExecutor(OpenCodeExecutor):
     async def start(self, task, workspace):
         raise RuntimeError("stream reader failed")
@@ -403,6 +522,118 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     assert sum(run.total_tokens or 0 for run in runs) == 210
     assert sum(item.call_count for item in tools) == 3
     assert len(evidence) == 2
+
+
+async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
+    await init_database()
+    workspace = tmp_path / "hitl-same-run-workspace"
+    workspace.mkdir()
+    employee_id = "astra-hitl-same-run"
+    async with SessionLocal() as global_session:
+        employee = DigitalEmployee(
+            id=employee_id,
+            name="HITL 同 Run 员工",
+            role="测试员工",
+            status=EmployeeStatus.WORKING,
+            task_types=["REQUIREMENT"],
+            category_ids=["testing-platform"],
+            current_task_count=1,
+        )
+        global_session.add(employee)
+        global_session.add(
+            OpenCodeExecutionEnvironment(
+                employee_id=employee.id,
+                mode="LOCAL",
+                name="HITL 测试环境",
+                opencode_path="opencode",
+                workspace_root=str(workspace),
+                status=EnvironmentStatus.AVAILABLE,
+            )
+        )
+        await global_session.commit()
+        task = await TaskService(global_session).create(
+            new_task(
+                employee_id=employee.id,
+                task_type=TaskType.REQUIREMENT,
+                title="先问后打印",
+                description="先向使用者询问要打印的答案，收到回答后打印该答案。",
+                acceptance_criteria=[{"content": "打印使用者回答的具体答案"}],
+            )
+        )
+        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        task_id = task.id
+
+    executor = AskThenCompleteExecutor()
+    await TaskCoordinator(executor=executor).process(task_id)
+
+    async with SessionLocal() as global_session:
+        task = await global_session.get(Task, task_id)
+        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
+        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
+        inquiry = await global_session.scalar(
+            select(RunInquiry).where(RunInquiry.session_id == task_session.id)
+        )
+        assert task and task.status == TaskStatus.WAIT_HUMAN
+        assert task_session and task_session.current_run_id == runs[0].id
+        assert len(runs) == 1
+        assert runs[0].status == RunStatus.WAITING_INPUT
+        assert runs[0].finished_at is None
+        assert inquiry and inquiry.status == "OPEN"
+        assert inquiry.run_id == runs[0].id
+
+        await WorkbenchService(global_session).add_message(
+            task,
+            "自动化验收答案",
+            status="ANSWERED",
+            run_id=runs[0].id,
+            commit=False,
+        )
+        await WorkbenchService(global_session).answer_inquiry(
+            task,
+            "自动化验收答案",
+            commit=False,
+        )
+        task.human_intervention = {
+            **(task.human_intervention or {}),
+            "response": "自动化验收答案",
+        }
+        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        employee = await global_session.get(DigitalEmployee, employee_id)
+        employee.status = EmployeeStatus.WORKING
+        employee.current_task_count = 1
+        await global_session.commit()
+
+    await TaskCoordinator(executor=executor).process(task_id)
+
+    async with SessionLocal() as global_session:
+        task = await global_session.get(Task, task_id)
+        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
+        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
+        inquiry = await global_session.scalar(
+            select(RunInquiry).where(RunInquiry.session_id == task_session.id)
+        )
+        messages = (
+            (
+                await global_session.execute(
+                    select(SessionMessage)
+                    .where(SessionMessage.session_id == task_session.id)
+                    .order_by(SessionMessage.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert task and task.status == TaskStatus.COMPLETED
+    assert task.result["summary"] == "已打印用户答案：自动化验收答案"
+    assert len(runs) == 1
+    assert runs[0].status == RunStatus.COMPLETED
+    assert runs[0].total_tokens == 45
+    assert executor.started == 1
+    assert executor.resumed_run_ids == [runs[0].id]
+    assert task_session and task_session.current_run_id == runs[0].id
+    assert inquiry and inquiry.status == "ANSWERED"
+    assert [message.role for message in messages] == ["user", "agent", "user", "agent"]
 
 
 async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
@@ -571,6 +802,54 @@ async def test_paramiko_exec_channel_closes_stdin_and_streams_output():
     assert exit_code == 0
 
 
+async def test_ssh_tunnel_forwards_local_loopback_traffic():
+    class FakeTransport:
+        def is_active(self):
+            return True
+
+        def open_channel(self, kind, destination, source):
+            assert kind == "direct-tcpip"
+            assert destination == ("127.0.0.1", 4096)
+            assert source[0] == "127.0.0.1"
+            handler_side, echo_side = socket.socketpair()
+
+            def echo() -> None:
+                try:
+                    while payload := echo_side.recv(65536):
+                        echo_side.sendall(payload)
+                finally:
+                    echo_side.close()
+
+            threading.Thread(target=echo, daemon=True).start()
+            return handler_side
+
+    class FakeClient:
+        def __init__(self):
+            self.transport = FakeTransport()
+
+        def get_transport(self):
+            return self.transport
+
+        def close(self):
+            return None
+
+    ssh = SSHSession(
+        host="example.internal",
+        port=22,
+        username="nexus",
+        password="secret",
+    )
+    ssh._client = FakeClient()
+    tunnel = await ssh.open_tunnel(remote_port=4096)
+    client = socket.create_connection(("127.0.0.1", tunnel.local_port), timeout=2)
+    try:
+        client.sendall(b"GET /global/health HTTP/1.0\r\n\r\n")
+        assert client.recv(65536) == b"GET /global/health HTTP/1.0\r\n\r\n"
+    finally:
+        client.close()
+        await tunnel.close()
+
+
 def test_windows_batch_command_quotes_paths_and_arguments():
     command = windows_batch_command(
         r"C:\Program Files\OpenCode\opencode.cmd",
@@ -700,6 +979,7 @@ def test_remote_password_is_not_stored_in_task_snapshot_and_is_resolved_at_runti
         port=22,
         username="nexus",
         ssh_password="database-only-secret",
+        opencode_server_port=4196,
         opencode_path="/opt/agent/start-agent.sh",
         workspace_root="/srv/workspace",
     )
@@ -722,4 +1002,33 @@ def test_remote_password_is_not_stored_in_task_snapshot_and_is_resolved_at_runti
 
     assert "ssh_password" not in snapshot
     assert snapshot["has_ssh_password"] is True
+    assert snapshot["opencode_server_port"] == 4196
     assert resolved.ssh_password == "database-only-secret"
+
+
+def test_remote_environment_uses_server_runtime_unless_cli_fallback_is_explicit():
+    environment = OpenCodeExecutionEnvironment(
+        employee_id="astra-remote-runtime",
+        mode="LINUX_REMOTE",
+        name="远程 Server 环境",
+        host="linux.internal",
+        port=22,
+        username="astra",
+        ssh_password="secret",
+        opencode_path="/usr/local/bin/opencode",
+        workspace_root="/srv/astra/workspace",
+    )
+    task = Task(id="T-REMOTE-RUNTIME", source="manual", task_type="ISSUE", title="runtime")
+    coordinator = TaskCoordinator()
+    coordinator.settings = Settings(executor_type="opencode_server", seed_demo=False)
+    coordinator.environment_runtime = ExecutionEnvironmentRuntime(coordinator.settings)
+
+    primary = coordinator._executor_for_environment(task, environment, None)
+
+    assert isinstance(primary, RemoteOpenCodeServerExecutor)
+
+    coordinator.settings = Settings(executor_type="opencode_cli_fallback", seed_demo=False)
+    coordinator.environment_runtime = ExecutionEnvironmentRuntime(coordinator.settings)
+    fallback = coordinator._executor_for_environment(task, environment, None)
+
+    assert isinstance(fallback, RemoteOpenCodeExecutor)

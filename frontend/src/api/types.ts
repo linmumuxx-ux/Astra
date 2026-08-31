@@ -24,6 +24,7 @@ export interface ExecutionEnvironment {
   port: number
   username: string | null
   has_ssh_password: boolean
+  opencode_server_port: number
   opencode_path: string
   model_name: string | null
   workspace_root: string
@@ -190,6 +191,70 @@ export interface AstraEvent {
   created_at: string
 }
 
+export interface TaskSession {
+  id: string
+  task_id: string
+  status: 'ACTIVE' | 'WAITING_INPUT' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  current_run_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionMessage {
+  id: string
+  session_id: string
+  run_id: string | null
+  role: 'user' | 'agent' | 'system'
+  content: string
+  status: 'PENDING' | 'QUEUED' | 'APPLIED' | 'ANSWERED'
+  created_at: string
+}
+
+export interface RunInquiry {
+  id: string
+  session_id: string
+  run_id: string | null
+  agent_name: string | null
+  question: string
+  description: string
+  options: Array<{ label?: string; value?: string; description?: string }>
+  answer: string | null
+  status: 'OPEN' | 'PENDING' | 'ANSWERED' | 'CANCELLED'
+  created_at: string
+  answered_at: string | null
+}
+
+export interface RuntimeEvent {
+  id: string
+  session_id: string
+  run_id: string | null
+  sequence: number
+  event_type: string
+  agent_name: string | null
+  timestamp: string
+  phase: string
+  summary: string
+  payload: Record<string, unknown>
+}
+
+export interface SessionBlock {
+  id: string
+  session_id: string
+  run_id: string | null
+  sequence: number | null
+  block_type: 'message' | 'inquiry' | 'event' | 'operation_group'
+  semantic_type: string
+  visibility: 'primary' | 'diagnostic'
+  actor_name: string | null
+  status: string | null
+  timestamp: string
+  summary: string
+  payload: Record<string, unknown>
+  message: SessionMessage | null
+  inquiry: RunInquiry | null
+  events: RuntimeEvent[]
+}
+
 export interface Evidence {
   id: number
   task_id: string
@@ -201,6 +266,18 @@ export interface Evidence {
   content_type: string
   metadata_: Record<string, unknown>
   created_at: string
+}
+
+export interface TaskWorkbench {
+  task: Task
+  session: TaskSession
+  messages: SessionMessage[]
+  events: RuntimeEvent[]
+  blocks: SessionBlock[]
+  inquiries: RunInquiry[]
+  artifacts: Evidence[]
+  runs: Run[]
+  has_more_events: boolean
 }
 
 export interface Metrics {
