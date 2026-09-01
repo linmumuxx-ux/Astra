@@ -280,6 +280,127 @@ export interface TaskWorkbench {
   has_more_events: boolean
 }
 
+export type KnowledgeType = 'document' | 'rule' | 'guide' | 'experience' | 'faq' | 'tool' | 'example'
+export type KnowledgeStatus = 'draft' | 'candidate' | 'published' | 'archived' | 'rejected'
+export type VerificationStatus = 'unverified' | 'verified' | 'failed'
+
+export interface LibraryPermissions {
+  user_id: string
+  role: 'viewer' | 'maintainer' | 'reviewer' | 'admin'
+  can_manage: boolean
+  can_review: boolean
+}
+
+export interface LibraryStats {
+  knowledge_pages: number
+  knowledge_spaces: number
+  weekly_references: number
+  published_experiences: number
+  candidate_experiences: number
+}
+
+export interface KnowledgeSpace {
+  id: string
+  name: string
+  description: string
+  parent_id: string | null
+  sort_order: number
+  status: string
+  access_scope: string
+  knowledge_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeListItem {
+  id: string
+  space_id: string | null
+  space_name: string | null
+  title: string
+  type: KnowledgeType
+  summary: string
+  status: KnowledgeStatus
+  verification_status: VerificationStatus
+  tags: string[]
+  source_task_id: string | null
+  reference_count: number
+  helpful_count: number
+  updated_at: string
+  published_at: string | null
+}
+
+export interface KnowledgeSource {
+  id: number
+  source_type: string
+  source_id: string | null
+  source_name: string | null
+  source_uri: string | null
+  version: string | null
+  created_at: string
+}
+
+export interface ExperienceEvidence {
+  id: number
+  task_id: string | null
+  run_id: string | null
+  evidence_type: string
+  content: string | null
+  uri: string | null
+  result: string | null
+  created_at: string
+}
+
+export interface KnowledgeDetail extends KnowledgeListItem {
+  content_md: string
+  source_type: string | null
+  source_ref: string | null
+  source_employee_id: string | null
+  source_employee_name: string | null
+  source_task_title: string | null
+  source_run_id: string | null
+  experience_data: Record<string, unknown>
+  review_note: string | null
+  created_by: string
+  updated_by: string
+  published_by: string | null
+  created_at: string
+  sources: KnowledgeSource[]
+  evidence: ExperienceEvidence[]
+  is_favorite: boolean
+  user_helpful: boolean
+}
+
+export interface KnowledgePage {
+  items: KnowledgeListItem[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+export interface UsageTopKnowledge {
+  knowledge_id: string
+  title: string
+  reference_count: number
+}
+
+export interface LibraryUsageSummary {
+  days: number
+  total_references: number
+  active_employees: number
+  top_knowledge: UsageTopKnowledge[]
+  popular_space: string | null
+  trend: Array<{ date: string; reference_count: number }>
+}
+
+export interface RelatedTask {
+  id: string
+  title: string
+  status: string
+  relation: string
+  last_used_at: string | null
+}
+
 export interface Metrics {
   online_employees: number
   running_tasks: number

@@ -31,7 +31,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bot, CircleGauge, ClipboardList, Hand, History, Menu, RefreshCw, Settings, TriangleAlert } from 'lucide-vue-next'
+import { BookOpen, Bot, CircleGauge, ClipboardList, Hand, History, Menu, RefreshCw, Settings, TriangleAlert } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
@@ -50,8 +50,9 @@ const navigation = computed(() => [
   { to: '/employees', label: '数字员工', icon: Bot },
   { to: '/tasks', label: '任务中心', icon: ClipboardList, count: store.metrics?.running_tasks },
   { to: '/runs', label: '运行记录', icon: History },
-  { to: '/interventions', label: '待处理', icon: Hand, count: store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert).length },
+  { to: '/library', label: '数字图书馆', icon: BookOpen },
   { to: '/settings', label: '配置中心', icon: Settings },
+  { to: '/interventions', label: '待处理', icon: Hand, count: store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert).length },
 ])
 const refresh = () => store.refresh()
 onMounted(() => { store.refresh(); store.connectEvents(); timer = window.setInterval(() => { now.value = new Date() }, 1000) })

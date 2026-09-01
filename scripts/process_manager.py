@@ -223,6 +223,12 @@ def command_start() -> int:
             ),
         }
     )
+    if settings.mcp_transport == "streamable-http":
+        processes["library-mcp"] = spawn(
+            "library-mcp",
+            [sys.executable, "-m", "app.mcp_server"],
+            BACKEND_ROOT,
+        )
     save_processes(processes)
     time.sleep(1)
     print("Astra 已启动：http://localhost:5173")

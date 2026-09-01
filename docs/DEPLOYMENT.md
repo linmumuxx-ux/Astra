@@ -23,6 +23,7 @@ Astra 使用主机原生进程部署，不包含容器部署配置。当前基�
 - MySQL：分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
 - Redis：Celery Broker 和 Result Backend；
 - Vue 管理台：Windows 快速部署使用已构建产物的本地预览服务，Linux 正式部署由 Nginx 托管；
+- 数字图书馆 MCP：独立进程但复用 Backend 的 Knowledge Service 与数据库，支持 stdio 或 Streamable HTTP；
 - 员工 Workspace：员工长期使用的真实工程目录；
 - `ASTRA_WORKSPACE_ROOT/records`：Astra 保存的 Agent 观察记录，不是源码工作区；
 - `ASTRA_LOG_DIR`：Backend、运行时和前端日志；
@@ -114,6 +115,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 - 管理台：`http://localhost:5173`
 - API：`http://localhost:8100/api/health`
 - API 文档：`http://localhost:8100/docs`
+- 数字图书馆 MCP（启用 Streamable HTTP 时）：`http://127.0.0.1:8201/mcp`
 
 查看进程状态或停止：
 
@@ -248,14 +250,22 @@ sudo editor /etc/astra/astra.env
 sudo cp deploy/systemd/astra-backend.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-opencode.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-runtime.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-library-mcp.service /etc/systemd/system/
 sudo cp deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now astra-backend astra-opencode astra-runtime
+sudo systemctl enable --now astra-backend astra-opencode astra-runtime astra-library-mcp
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
 如果安装目录不是 `/opt/astra`，先修改 unit、Nginx 和环境文件中的路径。
+
+数字图书馆 MCP 默认监听 loopback `127.0.0.1:8201/mcp`。生产环境必须通过受控网关或内网代理访问，并在受保护的环境文件中配置 `ASTRA_MCP_API_KEY`；非 loopback 监听但未配置该令牌时服务会拒绝启动。每次 Tool 调用还必须携带真实 `employee_id`，并按需携带 `task_id`、`run_id`，服务端会验证三者关联并写入使用审计。无需共享 HTTP 服务的本地 MCP Host 可保持 `ASTRA_MCP_TRANSPORT=stdio`，直接运行：
+
+```bash
+cd /opt/astra/backend
+/opt/astra/.venv/bin/python -m app.mcp_server
+```
 
 ## 9. 首次业务配置
 
@@ -277,7 +287,7 @@ Linux/macOS 构建机执行完整质量门禁：
 ./scripts/verify.sh
 ```
 
-门禁包含 Ruff、后端测试、前端类型检查、生产构建和 10 条隔离 Chromium E2E。E2E 会真实启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖配置保存、自动领取、员工模型以及“询问—等待回复—继续原会话—验收完成”。
+门禁包含 Ruff、后端测试、前端类型检查、生产构建和 11 条隔离 Chromium E2E。E2E 会真实启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖数字图书馆安全 Markdown、配置保存、自动领取、员工模型以及“询问—等待回复—继续原会话—验收完成”。
 
 在允许访问真实模型的员工主机，可执行真实 OpenCode 冒烟验证：
 
@@ -333,5 +343,5 @@ mysqldump --single-transaction --routines --triggers \
 - Redis 的 Windows 安装和守护方式由公司基础设施提供，Astra 只通过 `ASTRA_REDIS_URL` 连接；
 - 当前本地与 Linux 远程 Agent 适配器实现为 OpenCode Server；接口和页面已使用中性 Agent 表述，但 Claude Code、Codex 等适配器尚未实现；
 - Linux 远程目标必须支持密码 SSH、非交互 Agent 启动和可写 Workspace；当前密码明文保存在数据库，必须依靠可信内网、数据库权限和备份加密保护；
-- 管理台没有内置身份认证、细粒度授权或秘密管理；
+- 管理台整体仍依赖企业认证网关；数字图书馆 Web API 从可信网关头读取用户与角色，MCP Streamable HTTP 支持受保护环境变量提供的 Bearer Token，但平台尚未内置统一登录与秘密管理；
 - 迁移已通过 SQLite 实际升级与 MySQL 方言离线编译，本地没有公司 MySQL 实例，因此正式 MySQL 连接、权限和版本仍需在公司环境运行自检确认。

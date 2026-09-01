@@ -4,12 +4,20 @@ import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import EmployeeStatus, EnvironmentStatus
-from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, TaskCategory
+from app.models import DigitalEmployee, KnowledgeSpace, OpenCodeExecutionEnvironment, TaskCategory
 
 DEFAULT_CATEGORIES = (
     ("testing-platform", "测试平台", "测试平台相关问题与需求", 10),
     ("automation-engineering", "自动化工程", "自动化工程建设与维护", 20),
     ("quality-defense", "防线运营", "质量防线运行与治理", 30),
+)
+
+DEFAULT_KNOWLEDGE_SPACES = (
+    ("SPACE_PUBLIC", "公共知识库", "面向所有数字员工的通用知识", 10),
+    ("SPACE_TESTING", "测试领域知识", "测试设计、执行与质量治理知识", 20),
+    ("SPACE_DEVELOPMENT", "开发领域知识", "开发、集成与故障处理知识", 30),
+    ("SPACE_PROJECT", "项目知识库", "项目约定、背景与交付知识", 40),
+    ("SPACE_TOOLS", "工具与脚本", "可复用工具、脚本与使用指南", 50),
 )
 
 
@@ -25,6 +33,27 @@ async def bootstrap_categories(session: AsyncSession) -> None:
                 description=description,
                 enabled=True,
                 sort_order=sort_order,
+            )
+        )
+        changed = True
+    if changed:
+        await session.commit()
+
+
+async def bootstrap_knowledge_spaces(session: AsyncSession) -> None:
+    changed = False
+    for space_id, name, description, sort_order in DEFAULT_KNOWLEDGE_SPACES:
+        if await session.get(KnowledgeSpace, space_id):
+            continue
+        session.add(
+            KnowledgeSpace(
+                id=space_id,
+                name=name,
+                description=description,
+                sort_order=sort_order,
+                status="active",
+                access_scope="public",
+                created_by="system",
             )
         )
         changed = True

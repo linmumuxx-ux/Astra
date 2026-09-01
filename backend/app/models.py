@@ -285,3 +285,192 @@ class RunInquiry(Base):
     answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     session: Mapped[TaskSession] = relationship(back_populates="inquiries")
+
+
+class KnowledgeSpace(Base):
+    __tablename__ = "knowledge_spaces"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_spaces.id"), nullable=True, index=True
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    access_scope: Mapped[str] = mapped_column(String(160), default="public", index=True)
+    created_by: Mapped[str] = mapped_column(String(120), default="system")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    items: Mapped[list["KnowledgeItem"]] = relationship(back_populates="space")
+
+
+class KnowledgeItem(Base):
+    __tablename__ = "knowledge_items"
+    __table_args__ = (
+        Index("ix_knowledge_items_browse", "status", "space_id", "updated_at"),
+        Index("ix_knowledge_items_experience", "type", "status", "published_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    space_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_spaces.id"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(240), index=True)
+    type: Mapped[str] = mapped_column(String(32), default="document", index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    verification_status: Mapped[str] = mapped_column(String(32), default="unverified", index=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_ref: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_employee_id: Mapped[str | None] = mapped_column(
+        ForeignKey("digital_employees.id"), nullable=True, index=True
+    )
+    source_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    source_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    experience_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(120))
+    updated_by: Mapped[str] = mapped_column(String(120))
+    published_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    reference_count: Mapped[int] = mapped_column(Integer, default=0)
+    helpful_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    space: Mapped[KnowledgeSpace | None] = relationship(back_populates="items")
+    sources: Mapped[list["KnowledgeSource"]] = relationship(
+        back_populates="knowledge", cascade="all, delete-orphan"
+    )
+    evidence: Mapped[list["ExperienceEvidence"]] = relationship(
+        back_populates="knowledge", cascade="all, delete-orphan"
+    )
+
+
+class KnowledgeSource(Base):
+    __tablename__ = "knowledge_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    source_type: Mapped[str] = mapped_column(String(64))
+    source_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    source_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+    knowledge: Mapped[KnowledgeItem] = relationship(back_populates="sources")
+
+
+class KnowledgeRelation(Base):
+    __tablename__ = "knowledge_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_knowledge_id",
+            "target_knowledge_id",
+            "relation_type",
+            name="uq_knowledge_relation",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    target_knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    relation_type: Mapped[str] = mapped_column(String(32), default="related")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class KnowledgeUsage(Base):
+    __tablename__ = "knowledge_usage"
+    __table_args__ = (Index("ix_knowledge_usage_summary", "action", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    employee_id: Mapped[str | None] = mapped_column(
+        ForeignKey("digital_employees.id"), nullable=True, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    tool_name: Mapped[str] = mapped_column(String(80), index=True)
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+
+class KnowledgeFeedback(Base):
+    __tablename__ = "knowledge_feedback"
+    __table_args__ = (
+        UniqueConstraint("knowledge_id", "actor_key", "feedback_type", name="uq_knowledge_feedback_actor"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    actor_key: Mapped[str] = mapped_column(String(200))
+    user_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    employee_id: Mapped[str | None] = mapped_column(
+        ForeignKey("digital_employees.id"), nullable=True, index=True
+    )
+    feedback_type: Mapped[str] = mapped_column(String(32), index=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class KnowledgeFavorite(Base):
+    __tablename__ = "knowledge_favorites"
+    __table_args__ = (UniqueConstraint("knowledge_id", "user_id", name="uq_knowledge_favorite_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(120), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class ExperienceEvidence(Base):
+    __tablename__ = "experience_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+    knowledge: Mapped[KnowledgeItem] = relationship(back_populates="evidence")
+
+
+class KnowledgeAudit(Base):
+    __tablename__ = "knowledge_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    knowledge_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(48), index=True)
+    actor_id: Mapped[str] = mapped_column(String(120), index=True)
+    actor_role: Mapped[str] = mapped_column(String(32))
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)

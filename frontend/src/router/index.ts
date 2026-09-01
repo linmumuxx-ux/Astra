@@ -6,6 +6,7 @@ const TaskListView = () => import('@/views/TaskListView.vue')
 const TaskDetailView = () => import('@/views/TaskDetailView.vue')
 const RunListView = () => import('@/views/RunListView.vue')
 const RunDetailView = () => import('@/views/RunDetailView.vue')
+const DigitalLibraryView = () => import('@/views/DigitalLibraryView.vue')
 const InterventionView = () => import('@/views/InterventionView.vue')
 const SettingsView = () => import('@/views/SettingsView.vue')
 
@@ -19,7 +20,8 @@ export default createRouter({
     { path: '/tasks/:id', name: 'task-detail', component: TaskDetailView, meta: { title: '任务详情' } },
     { path: '/runs', name: 'runs', component: RunListView, meta: { title: '运行记录' } },
     { path: '/runs/:id', name: 'run-detail', component: RunDetailView, meta: { title: '运行详情' } },
-    { path: '/interventions', name: 'interventions', component: InterventionView, meta: { title: '待处理' } },
+    { path: '/library', name: 'digital-library', component: DigitalLibraryView, meta: { title: '数字图书馆' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '配置中心' } },
+    { path: '/interventions', name: 'interventions', component: InterventionView, meta: { title: '待处理' } },
   ],
 })

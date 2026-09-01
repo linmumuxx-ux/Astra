@@ -1,4 +1,24 @@
-import type { AstraEvent, Employee, EmployeeUsage, Evidence, ExecutionEnvironment, Metrics, Run, RunUsage, Task, TaskCategory, TaskUsage, TaskWorkbench } from './types'
+import type {
+  AstraEvent,
+  Employee,
+  EmployeeUsage,
+  Evidence,
+  ExecutionEnvironment,
+  KnowledgeDetail,
+  KnowledgePage,
+  KnowledgeSpace,
+  LibraryPermissions,
+  LibraryStats,
+  LibraryUsageSummary,
+  Metrics,
+  RelatedTask,
+  Run,
+  RunUsage,
+  Task,
+  TaskCategory,
+  TaskUsage,
+  TaskWorkbench,
+} from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -61,4 +81,29 @@ export const api = {
     request<Employee>(`/api/employees/${id}/${action}`, { method: 'POST' }),
   createTask: (body: Record<string, unknown>) =>
     request<Task>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  libraryPermissions: () => request<LibraryPermissions>('/api/library/permissions'),
+  libraryStats: () => request<LibraryStats>('/api/library/stats'),
+  librarySpaces: () => request<KnowledgeSpace[]>('/api/library/spaces'),
+  createLibrarySpace: (body: Record<string, unknown>) =>
+    request<KnowledgeSpace>('/api/library/spaces', { method: 'POST', body: JSON.stringify(body) }),
+  updateLibrarySpace: (id: string, body: Record<string, unknown>) =>
+    request<KnowledgeSpace>(`/api/library/spaces/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  libraryKnowledge: (query = '') => request<KnowledgePage>(`/api/library/knowledge${query}`),
+  libraryKnowledgeDetail: (id: string) => request<KnowledgeDetail>(`/api/library/knowledge/${id}`),
+  createLibraryKnowledge: (body: Record<string, unknown>) =>
+    request<KnowledgeDetail>('/api/library/knowledge', { method: 'POST', body: JSON.stringify(body) }),
+  updateLibraryKnowledge: (id: string, body: Record<string, unknown>) =>
+    request<KnowledgeDetail>(`/api/library/knowledge/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  publishLibraryKnowledge: (id: string, body: Record<string, unknown>) =>
+    request<KnowledgeDetail>(`/api/library/knowledge/${id}/publish`, { method: 'POST', body: JSON.stringify(body) }),
+  rejectLibraryKnowledge: (id: string, reason: string) =>
+    request<KnowledgeDetail>(`/api/library/knowledge/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  supplementLibraryKnowledge: (id: string, reason: string) =>
+    request<KnowledgeDetail>(`/api/library/knowledge/${id}/request-supplement`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  favoriteLibraryKnowledge: (id: string) =>
+    request<{ favorite: boolean }>(`/api/library/knowledge/${id}/favorite`, { method: 'POST' }),
+  helpfulLibraryKnowledge: (id: string) =>
+    request<{ created: boolean; helpful_count: number }>(`/api/library/knowledge/${id}/helpful`, { method: 'POST' }),
+  libraryRelatedTasks: (id: string) => request<RelatedTask[]>(`/api/library/knowledge/${id}/related-tasks`),
+  libraryUsageSummary: (days = 7) => request<LibraryUsageSummary>(`/api/library/usage/summary?days=${days}`),
 }

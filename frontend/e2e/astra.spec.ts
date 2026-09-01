@@ -24,8 +24,9 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
     { link: /^数字员工/, testId: 'employee-list-page', heading: '数字员工' },
     { link: /^任务中心/, testId: 'task-list-page', heading: '任务中心' },
     { link: /^运行记录/, testId: 'run-list-page', heading: '运行记录' },
-    { link: /^待处理/, testId: 'intervention-page', heading: '待处理' },
+    { link: /^数字图书馆/, testId: 'digital-library-page', heading: '数字图书馆' },
     { link: /^配置中心/, testId: 'settings-page', heading: '配置中心' },
+    { link: /^待处理/, testId: 'intervention-page', heading: '待处理' },
   ]
   for (const destination of destinations) {
     await page.getByRole('link', { name: destination.link }).click()
@@ -33,6 +34,48 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
     await expect(content).toBeVisible()
     await expect(content.getByRole('heading', { name: destination.heading, level: 2 })).toBeVisible()
   }
+})
+
+test('数字图书馆支持全局搜索、安全 Markdown 弹框和滚动恢复', async ({ page, request }) => {
+  const spacesResponse = await request.get('/api/library/spaces')
+  expect(spacesResponse.ok()).toBeTruthy()
+  const spaces = await spacesResponse.json()
+  const title = `流水线 50004 E2E ${Date.now()}`
+  const createdResponse = await request.post('/api/library/knowledge', {
+    data: {
+      space_id: spaces[0].id,
+      title,
+      type: 'experience',
+      summary: '验证数字图书馆搜索和安全渲染',
+      content_md: '## 问题现象\n\n返回 `50004`。\n\n<img src="x" onerror="window.__libraryXss = true">\n\n<script>window.__libraryXss = true</script>',
+      tags: ['流水线', '50004'],
+    },
+  })
+  expect(createdResponse.ok()).toBeTruthy()
+  const created = await createdResponse.json()
+  const publishedResponse = await request.post(`/api/library/knowledge/${created.id}/publish`, {
+    data: { space_id: spaces[0].id, verification_status: 'verified' },
+  })
+  expect(publishedResponse.ok()).toBeTruthy()
+
+  await page.goto('/library')
+  const library = page.getByTestId('digital-library-page')
+  await expect(library.getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
+  await expect(library.getByRole('heading', { name: '知识空间', exact: true })).toBeVisible()
+  await library.getByLabel('全局知识搜索').fill('50004')
+  await expect(library.getByText(title, { exact: true })).toBeVisible()
+  await library.getByText(title, { exact: true }).click()
+
+  const dialog = page.getByTestId('knowledge-detail-dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: title })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: '问题现象' })).toBeVisible()
+  await expect(dialog.locator('.markdown-body script')).toHaveCount(0)
+  await expect(dialog.locator('.markdown-body [onerror]')).toHaveCount(0)
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+  await dialog.getByRole('button', { name: '关闭知识详情' }).click()
+  await expect(dialog).toHaveCount(0)
+  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden')
 })
 
 test('创建任务仅填写业务事实且高优先级默认人工确认', async ({ page, request }) => {

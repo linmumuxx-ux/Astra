@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlparse
 
 from pydantic import Field, field_validator, model_validator
@@ -64,6 +65,14 @@ class Settings(BaseSettings):
     opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
+    mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
+    mcp_host: str = "127.0.0.1"
+    mcp_port: int = Field(default=8201, ge=1, le=65535)
+    mcp_streamable_http_path: str = "/mcp"
+    mcp_api_key: str | None = None
+    mcp_issuer_url: str = "http://127.0.0.1:8201"
+    mcp_resource_server_url: str = "http://127.0.0.1:8201/mcp"
+
     nr_test_system_endpoint: str = "http://localhost:8000"
     nr_test_system_discover_path: str = "/api/astra/tasks"
     nr_test_system_result_path: str = "/api/astra/tasks/{external_task_id}/result"
@@ -105,6 +114,14 @@ class Settings(BaseSettings):
             and not self.opencode_server_password
         ):
             raise ValueError("OpenCode Server 非 loopback 监听时必须配置密码")
+        if (
+            self.mcp_transport == "streamable-http"
+            and self.mcp_host not in {"127.0.0.1", "localhost", "::1"}
+            and not self.mcp_api_key
+        ):
+            raise ValueError("数字图书馆 MCP 非 loopback 监听时必须配置 ASTRA_MCP_API_KEY")
+        if not self.mcp_streamable_http_path.startswith("/"):
+            raise ValueError("ASTRA_MCP_STREAMABLE_HTTP_PATH 必须以 / 开头")
         return self
 
     def absolute_path(self, value: Path) -> Path:
