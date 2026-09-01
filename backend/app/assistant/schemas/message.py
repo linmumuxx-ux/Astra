@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
+
 from pydantic import BaseModel, Field
+
 
 class MessagePartBase(BaseModel):
     part_type: str = Field(description="片段类型 (TEXT, TASK_CARD, EMPLOYEE_CARD, RUN_CARD, KNOWLEDGE_CARD, CONFIRM_CARD, STATUS, ERROR)")

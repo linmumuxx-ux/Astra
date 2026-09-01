@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
+
 from pydantic import BaseModel, Field
+
 
 class AssistantEvent(BaseModel):
     event: str = Field(description="事件名称 (如 assistant.message.delta)")

@@ -75,6 +75,14 @@ export const useAssistantStore = defineStore('assistant', () => {
     }
   }
 
+
+  const confirmOperation = async (operationId: string) => {
+      await AssistantAPI.confirmOperation(operationId)
+  }
+  const cancelOperation = async (operationId: string) => {
+      await AssistantAPI.cancelOperation(operationId)
+  }
+
   const stopGeneration = async () => {
       if (currentConversation.value) {
           await AssistantAPI.abortMessage(currentConversation.value.id)
@@ -92,6 +100,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     isStreaming,
     loadConversation,
     sendMessage,
-    stopGeneration
+    stopGeneration,
+    confirmOperation,
+    cancelOperation
   }
 })

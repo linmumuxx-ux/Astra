@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
+
 from pydantic import BaseModel, Field
+
 
 class OperationBase(BaseModel):
     operation_type: str = Field(description="操作类型")

@@ -1,11 +1,14 @@
 import asyncio
+
 from mcp.server.mcpserver import MCPServer as Server
-from .task import register_task_tools
+from mcp.server.stdio import stdio_server
+
 from .employee import register_employee_tools
-from .run import register_run_tools
 from .knowledge import register_knowledge_tools
 from .operations import register_operation_tools
-from mcp.server.stdio import stdio_server
+from .run import register_run_tools
+from .task import register_task_tools
+
 
 class AssistantMCPServer:
     def __init__(self, db_session=None):

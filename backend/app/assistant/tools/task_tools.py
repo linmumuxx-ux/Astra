@@ -1,5 +1,6 @@
-from typing import Any
 import uuid
+from typing import Any
+
 
 # In a real implementation, these would interact with TaskService and models
 async def nexus_task_search(params: dict[str, Any]) -> dict[str, Any]:

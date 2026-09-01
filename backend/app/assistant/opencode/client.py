@@ -1,7 +1,9 @@
-import httpx
-from typing import Any, AsyncGenerator
 import json
-import asyncio
+from collections.abc import AsyncGenerator
+from typing import Any
+
+import httpx
+
 
 class OpenCodeClientError(Exception):
     pass

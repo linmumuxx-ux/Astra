@@ -1,5 +1,6 @@
 from typing import Any
 
+
 async def nexus_knowledge_search(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "items": [

@@ -1,5 +1,6 @@
-from mcp.server.mcpserver import MCPServer as Server
 from app.assistant.tools import employee_tools
+from mcp.server.mcpserver import MCPServer as Server
+
 
 def register_employee_tools(server: Server, db_session):
     @server.tool(name="nexus_employee_search", )

@@ -1,14 +1,15 @@
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
 
-from app.database import get_session as get_db
-from app.assistant.schemas import ConversationResponse, ConversationCreate
+from app.assistant.schemas import ConversationCreate, ConversationResponse
 from app.assistant.services.conversation_service import ConversationService
+from app.database import get_session as get_db
 
 router = APIRouter(prefix="/conversations", tags=["Assistant Conversations"])
 
 from fastapi import Request
+
 
 @router.post("", response_model=ConversationResponse)
 
@@ -19,7 +20,7 @@ async def create_conversation(conversation_in: ConversationCreate, request: Requ
     service = ConversationService(db)
     return await service.create_conversation(user_id, conversation_in)
 
-@router.get("", response_model=List[ConversationResponse])
+@router.get("", response_model=list[ConversationResponse])
 async def list_conversations(request: Request, db: AsyncSession = Depends(get_db)):
     user_id = request.headers.get("X-Astra-User-Id", "admin")
     service = ConversationService(db)

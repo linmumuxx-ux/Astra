@@ -1,5 +1,6 @@
-from mcp.server.mcpserver import MCPServer as Server
 from app.assistant.tools import task_tools
+from mcp.server.mcpserver import MCPServer as Server
+
 
 def register_task_tools(server: Server, db_session):
     @server.tool(name="nexus_task_search", )

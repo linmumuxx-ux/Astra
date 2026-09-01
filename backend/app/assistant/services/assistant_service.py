@@ -1,14 +1,16 @@
 import uuid
-from typing import AsyncGenerator
-from fastapi import Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from collections.abc import AsyncGenerator
 
-from app.assistant.models import AssistantConversation, AssistantMessage
-from app.assistant.schemas import MessageCreate
+from fastapi import Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.assistant.models import AssistantMessage
 from app.assistant.opencode.client import OpenCodeClient
 from app.assistant.opencode.event_mapper import EventMapper
+from app.assistant.schemas import MessageCreate
 from app.assistant.services.conversation_service import ConversationService
+
 
 class AssistantService:
     def __init__(self, db: AsyncSession):

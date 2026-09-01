@@ -1,4 +1,5 @@
 import asyncio
+
 from app.assistant.mcp.server import start_mcp_server
 
 if __name__ == "__main__":

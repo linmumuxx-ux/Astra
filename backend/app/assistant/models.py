@@ -1,10 +1,11 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models import Base, UTCDateTime, utcnow
+
 
 class AssistantConversation(Base):
     __tablename__ = "assistant_conversations"

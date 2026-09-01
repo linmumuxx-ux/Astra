@@ -1,6 +1,7 @@
 from datetime import datetime
-from typing import Any
+
 from pydantic import BaseModel, Field
+
 
 class ConversationBase(BaseModel):
     title: str = Field(default="新对话", description="对话标题")

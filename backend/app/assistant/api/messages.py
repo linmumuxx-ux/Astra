@@ -1,10 +1,10 @@
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
 
-from app.database import get_session as get_db
-from app.assistant.schemas import MessageResponse, MessageCreate
+from app.assistant.schemas import MessageCreate, MessageResponse
 from app.assistant.services.assistant_service import AssistantService
+from app.database import get_session as get_db
 
 router = APIRouter(prefix="/conversations/{conversation_id}/messages", tags=["Assistant Messages"])
 
@@ -17,7 +17,7 @@ async def create_message(conversation_id: str, message_in: MessageCreate, reques
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("", response_model=List[MessageResponse])
+@router.get("", response_model=list[MessageResponse])
 async def list_messages(conversation_id: str, db: AsyncSession = Depends(get_db)):
     service = AssistantService(db)
     return await service.list_messages(conversation_id)

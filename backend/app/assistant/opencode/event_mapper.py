@@ -1,6 +1,9 @@
-from typing import AsyncGenerator, Any
 import json
+from collections.abc import AsyncGenerator
+from typing import Any
+
 from .client import OpenCodeClient
+
 
 class EventMapper:
     def __init__(self, opencode_client: OpenCodeClient):

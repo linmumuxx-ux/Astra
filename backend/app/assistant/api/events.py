@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_session as get_db
 from app.assistant.services.assistant_service import AssistantService
+from app.database import get_session as get_db
 
 router = APIRouter(prefix="/conversations/{conversation_id}/events", tags=["Assistant Events"])
 

@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_session as get_db
 from app.assistant.schemas import OperationResponse
 from app.assistant.services.confirmation_service import ConfirmationService
+from app.database import get_session as get_db
 
 router = APIRouter(prefix="/operations", tags=["Assistant Operations"])
 

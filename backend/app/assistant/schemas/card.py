@@ -1,5 +1,7 @@
 from typing import Any
+
 from pydantic import BaseModel, Field
+
 
 class CardAction(BaseModel):
     type: str = Field(description="动作类型 (navigate, assistant_operation 等)")

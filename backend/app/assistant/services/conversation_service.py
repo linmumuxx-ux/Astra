@@ -1,10 +1,12 @@
 import uuid
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assistant.models import AssistantConversation
-from app.assistant.schemas import ConversationCreate
 from app.assistant.opencode.client import OpenCodeClient
+from app.assistant.schemas import ConversationCreate
+
 
 class ConversationService:
     def __init__(self, db: AsyncSession):
