@@ -92,6 +92,27 @@ cd backend
 ../.venv/bin/python -m app.mcp_server
 ```
 
+OpenCode 员工 Workspace 可通过项目级 `opencode.json` 接入该 stdio Server。`cwd` 与 Python 路径必须替换为实际 Astra 安装目录：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "astra_library": {
+      "type": "local",
+      "command": ["/opt/astra/.venv/bin/python", "-m", "app.mcp_server"],
+      "cwd": "/opt/astra/backend",
+      "environment": { "ASTRA_MCP_TRANSPORT": "stdio" },
+      "enabled": true,
+      "timeout": 10000
+    }
+  },
+  "permission": { "astra_library_*": "allow" }
+}
+```
+
+保存后运行 `opencode mcp list`，应显示 `astra_library connected`。OpenCode 会将五个工具注册为 `astra_library_library_*`。真实接入验收见 [`DIGITAL-LIBRARY-MCP-OPENCODE-2026-09-01.md`](../verification/DIGITAL-LIBRARY-MCP-OPENCODE-2026-09-01.md)。
+
 共享 Streamable HTTP 通过 `ASTRA_MCP_TRANSPORT=streamable-http` 启用，默认端点为 `http://127.0.0.1:8201/mcp`。Linux 使用 `deploy/systemd/astra-library-mcp.service`，Windows 快速启动器会在该传输模式下自动纳管 MCP 进程。
 
 ## 7. 验证结果
@@ -102,4 +123,5 @@ cd backend
 - Vue 类型检查与生产构建通过；
 - 11 项隔离 Chromium E2E 通过；
 - E2E 已验证 Markdown 中的 `<script>` 与 `onerror` 被清除，弹框关闭后背景滚动恢复；
-- Task → Knowledge 的后端关联与使用记录已保存，任务详情页的“知识调用”展示留给后续页面增量，不影响 V1 数据闭环。
+- Task → Knowledge 的后端关联与使用记录已保存，任务详情页的“知识调用”展示留给后续页面增量，不影响 V1 数据闭环；
+- OpenCode 1.18.25 已通过真实 stdio MCP 完成五 Tool 调用；Astra Coordinator 的正式 `opencode_server` 任务也完成 search/get/related/feedback 四 Tool 与事件持久化。
