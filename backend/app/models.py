@@ -477,3 +477,5 @@ class KnowledgeAudit(Base):
     actor_role: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+from app.assistant.models import AssistantConversation, AssistantMessage, AssistantMessagePart, AssistantContextRef, AssistantOperation, AssistantToolCall
