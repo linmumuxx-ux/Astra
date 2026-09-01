@@ -1,288 +1,352 @@
 <template>
-  <div v-if="task && workbench" class="page task-workbench-page" data-testid="task-detail-page">
-    <section class="cli-window">
-      <div class="workbench-breadcrumb">
-        <RouterLink to="/tasks"><ArrowLeft :size="15" /> 任务中心</RouterLink><ChevronRight :size="14" />
-        <span>{{ task.id }}</span>
-      </div>
+  <div v-if="task && workbench" class="page task-detail-page" data-testid="task-detail-page">
+    <section class="task-workspace">
+      <div class="task-shell">
+        <main class="task-main">
+          <header class="task-header">
+            <nav class="task-breadcrumb" aria-label="任务路径">
+              <RouterLink to="/">工作台</RouterLink><ChevronRight :size="14" />
+              <RouterLink to="/tasks">任务中心</RouterLink><ChevronRight :size="14" />
+              <span>{{ task.id }}</span>
+            </nav>
+            <div class="task-title-row">
+              <h2>{{ task.title }}</h2>
+              <span class="task-status" :data-tone="taskStatusTone"><Play v-if="task.status === 'RUNNING'" :size="14" /><CheckCircle2 v-else-if="task.status === 'COMPLETED'" :size="14" /><CircleAlert v-else :size="14" />{{ taskStatusLabel }}</span>
+              <button class="sidebar-toggle" type="button" aria-label="打开任务信息" @click="sidebarOpen = true"><PanelRightOpen :size="18" />任务信息</button>
+            </div>
+            <div class="task-meta">
+              <span><UserRound :size="15" />分配给：<i />{{ employeeName }}</span><b />
+              <span><Clock3 :size="15" />耗时：{{ formatTaskDuration(task) }}</span><b />
+              <span><CalendarDays :size="15" />创建时间：{{ formatTime(task.created_at) }}</span>
+            </div>
+          </header>
 
-      <header class="workbench-header">
-        <div class="workbench-title">
-          <div><span class="priority" :data-priority="task.priority">{{ priorityLabel(task.priority) }}</span><span>{{ taskTypeLabel(task.task_type) }} · {{ categoryName }}</span></div>
-          <h2>{{ task.title }}</h2>
-        </div>
-        <div class="header-actions">
-          <span class="cli-status" :data-status="task.status"><i />{{ currentStage }}</span>
-          <button class="icon-button" aria-label="导出任务结果" @click="exportResult"><Download :size="17" /></button>
-          <button class="icon-button" aria-label="更多操作"><Ellipsis :size="18" /></button>
-        </div>
-      </header>
-
-      <div class="workbench-tabs" role="tablist" aria-label="任务工作台视图">
-        <button :class="{ active: activeTab === 'flow' }" role="tab" @click="activeTab = 'flow'"><MessagesSquare :size="16" /> Session</button>
-        <button :class="{ active: activeTab === 'files' }" role="tab" @click="activeTab = 'files'"><Files :size="16" /> Files <span>{{ artifactItems.length }}</span></button>
-        <i :data-connected="streamConnected" /><small>{{ streamConnected ? 'live' : 'reconnecting' }}</small>
-      </div>
-
-      <main class="workbench-layout">
-        <section class="workbench-main">
-          <div v-if="activeTab === 'flow'" ref="flowViewport" class="workbench-flow" @scroll="trackScroll">
-            <button v-if="workbench.has_more_events" class="load-history" @click="loadOlder"><History :size="15" /> 加载更早会话</button>
-
-            <div class="cli-transcript">
-              <template v-for="item in displayStreamItems" :key="item.key">
-                <article v-if="item.kind === 'message'" class="cli-turn" :class="{ 'cli-task-prompt': isInitialMessage(item.data), 'cli-agent-turn': item.data.role === 'agent', 'cli-user-turn': item.data.role === 'user' && !isInitialMessage(item.data) }" :data-role="item.data.role">
-                  <header v-if="!isInitialMessage(item.data)"><strong>{{ messageHeading(item.data) }}</strong><span v-if="item.data.status !== 'APPLIED'">{{ messageStatusLabel(item.data.status) }}</span><time>{{ formatClock(item.data.created_at) }}</time></header>
-                  <p>{{ item.data.content }}</p>
-                  <div v-if="isInitialMessage(item.data) && task.attachments.length" class="attachments"><a v-for="attachment in task.attachments" :key="String(attachment.name)" :href="attachmentHref(attachment)" :download="String(attachment.name ?? '附件')"><Paperclip :size="14" />{{ attachment.name }}</a></div>
+          <div ref="conversationViewport" class="conversation-scroller" @scroll="trackScroll">
+            <button v-if="workbench.has_more_events" class="load-history" type="button" @click="loadOlder"><History :size="15" />加载更早会话</button>
+            <section class="conversation-list" aria-label="任务对话">
+              <template v-for="item in conversation.items" :key="`${item.kind}-${item.id}`">
+                <article v-if="item.kind === 'message'" class="conversation-turn" :class="`conversation-turn--${item.role}`">
+                  <span v-if="item.role === 'agent'" class="actor-avatar actor-avatar--agent"><Bot :size="19" /></span>
+                  <div class="turn-content">
+                    <header><strong>{{ item.role === 'user' ? '你' : employeeName }}</strong><span v-if="item.role === 'user' && item.status !== 'APPLIED'">{{ messageStatusLabel(item.status) }}</span><time>{{ formatClock(item.timestamp) }}</time></header>
+                    <p class="message-bubble">{{ item.content }}</p>
+                    <div v-if="item.initial && task.attachments.length" class="message-attachments">
+                      <a v-for="attachment in task.attachments" :key="String(attachment.name)" :href="attachmentHref(attachment)" :download="String(attachment.name ?? '附件')"><Paperclip :size="14" />{{ attachment.name }}</a>
+                    </div>
+                  </div>
+                  <span v-if="item.role === 'user'" class="actor-avatar actor-avatar--user">NR</span>
                 </article>
 
-                <article v-else-if="item.kind === 'inquiry'" class="cli-turn cli-inquiry">
-                  <header><strong># Questions</strong><span>{{ isInquiryOpen(item.data) ? '等待输入' : item.data.status === 'ANSWERED' ? '已回答' : '已关闭' }}</span><time>{{ formatClock(item.data.created_at) }}</time></header>
-                  <p class="inquiry-question">{{ item.data.question }}</p>
-                  <small v-if="item.data.description">{{ item.data.description }}</small>
-                  <div v-if="isInquiryOpen(item.data) && item.data.options.length" class="inquiry-options"><button v-for="option in item.data.options" :key="option.value ?? option.label" @click="answerOption(item.data.id, String(option.value ?? option.label))"><strong>{{ option.label ?? option.value }}</strong><small v-if="option.description">{{ option.description }}</small></button></div>
-                  <p v-if="item.data.answer" class="inquiry-answer">{{ item.data.answer }}</p>
+                <article v-else-if="item.kind === 'subtask'" class="conversation-turn conversation-turn--agent">
+                  <span class="actor-avatar actor-avatar--agent"><Bot :size="19" /></span>
+                  <div class="turn-content turn-content--wide">
+                    <header><strong>{{ employeeName }}</strong><time>{{ formatClock(item.timestamp) }}</time></header>
+                    <SubtaskCard :subtask="item" />
+                  </div>
                 </article>
 
-                <article v-else-if="item.kind === 'event'" class="cli-turn cli-event subagent-card" :data-tone="eventTone(item.data)">
-                  <header><span class="event-mark" /><strong>{{ eventTitle(item.data) }}</strong><time>{{ formatClock(item.data.timestamp) }}</time></header>
-                  <p>{{ platformCopy(item.data.summary) }}</p>
+                <article v-else class="conversation-turn conversation-turn--agent">
+                  <span class="actor-avatar actor-avatar--agent"><Bot :size="19" /></span>
+                  <div class="turn-content turn-content--wide">
+                    <header><strong>{{ employeeName }}</strong><time>{{ formatClock(item.timestamp) }}</time></header>
+                    <section class="inquiry-card" :data-open="isInquiryOpen(item.inquiry)">
+                      <div class="inquiry-card__title"><CircleHelp :size="18" /><strong>需要你的确认</strong><span>{{ isInquiryOpen(item.inquiry) ? '等待回答' : item.inquiry.status === 'ANSWERED' ? '已回答' : '已关闭' }}</span></div>
+                      <p>{{ item.inquiry.question }}</p><small v-if="item.inquiry.description">{{ item.inquiry.description }}</small>
+                      <div v-if="isInquiryOpen(item.inquiry) && item.inquiry.options.length" class="inquiry-options">
+                        <button v-for="option in item.inquiry.options" :key="option.value ?? option.label" type="button" @click="answerOption(item.inquiry.id, String(option.value ?? option.label))"><strong>{{ option.label ?? option.value }}</strong><small v-if="option.description">{{ option.description }}</small></button>
+                      </div>
+                      <div v-if="item.inquiry.answer" class="inquiry-answer"><CheckCircle2 :size="15" />你的回答：{{ item.inquiry.answer }}</div>
+                    </section>
+                  </div>
                 </article>
               </template>
 
-              <article v-if="failureVisible" class="cli-turn cli-failure">
-                <header><strong>Execution failed</strong><span>等待处理</span></header>
-                <p>{{ failureReason }}</p>
+              <article v-if="failureVisible" class="conversation-turn conversation-turn--agent">
+                <span class="actor-avatar actor-avatar--danger"><TriangleAlert :size="18" /></span>
+                <div class="turn-content turn-content--wide">
+                  <header><strong>{{ employeeName }}</strong><time>{{ formatClock(task.finished_at || task.updated_at) }}</time></header>
+                  <section class="failure-card"><div><TriangleAlert :size="18" /><strong>任务执行遇到问题</strong></div><p>{{ failureReason }}</p><small>你可以补充要求，让数字员工重新处理；技术细节可在运行详情中查看。</small></section>
+                </div>
               </article>
 
-              <article v-if="task.result" class="cli-turn cli-agent-turn cli-result">
-                <header><strong>Agent output</strong><span>{{ task.status === 'COMPLETED' ? '已完成' : '等待确认' }}</span><time>{{ formatClock(task.submitted_at) }}</time></header>
-                <p>{{ task.result.summary }}</p>
+              <article v-if="task.result" class="conversation-turn conversation-turn--agent">
+                <span class="actor-avatar actor-avatar--agent"><Bot :size="19" /></span>
+                <div class="turn-content turn-content--wide">
+                  <header><strong>{{ employeeName }}</strong><time>{{ formatClock(task.submitted_at) }}</time></header>
+                  <section class="result-card">
+                    <div class="result-card__title"><CheckCircle2 :size="19" /><strong>任务结果</strong><span>{{ task.status === 'PENDING_CONFIRMATION' ? '待你确认' : '已完成' }}</span></div>
+                    <p>{{ task.result.summary }}</p>
+                    <div v-if="task.acceptance_criteria.length" class="result-acceptance">
+                      <div><strong>验收标准</strong><span>{{ passedAcceptance }}/{{ task.acceptance_criteria.length }} 通过</span></div>
+                      <article v-for="criterion in task.acceptance_criteria" :key="criterion.id">
+                        <CheckCircle2 v-if="acceptanceResult(criterion.id)?.status === 'SATISFIED'" :size="15" /><CircleX v-else-if="acceptanceResult(criterion.id)?.status === 'UNSATISFIED'" :size="15" /><Circle v-else :size="15" /><span>{{ criterion.content }}</span>
+                      </article>
+                    </div>
+                    <small v-if="task.status === 'PENDING_CONFIRMATION'">请确认结果，或直接告诉数字员工需要修改的内容。</small>
+                  </section>
+                </div>
               </article>
 
-              <div class="cli-build-line"><span /> <strong>Build</strong><b>·</b>{{ employeeName }}<b>·</b>{{ formatTaskDuration(task) }}</div>
-            </div>
-            <div ref="flowEnd" />
+              <article v-if="showWorkingIndicator" class="conversation-turn conversation-turn--agent conversation-turn--working">
+                <span class="actor-avatar actor-avatar--agent"><Bot :size="19" /></span>
+                <div class="turn-content"><header><strong>{{ employeeName }}</strong><span class="typing"><i /><i /><i /></span></header><p class="working-copy">{{ safeCurrentWork }}</p></div>
+              </article>
+              <div ref="conversationEnd" class="conversation-end" />
+            </section>
           </div>
 
-          <div v-else class="artifact-workspace">
-            <header><div><h3># Files</h3><p>当前任务生成并关联的文件与证据。</p></div><span>{{ artifactItems.length }} items</span></header>
-            <div class="artifact-grid"><article v-for="artifact in artifactItems" :key="artifact.key"><span><FileCode2 v-if="artifact.kind === 'file'" :size="18" /><FileText v-else :size="18" /></span><div><strong>{{ artifact.name }}</strong><p>{{ artifact.path }}</p></div><small>{{ artifact.status }}</small></article></div>
-            <div v-if="!artifactItems.length" class="workspace-empty"><Files :size="28" /><strong>No files yet</strong><p>产物生成后会出现在这里。</p></div>
-          </div>
+          <button v-if="showJumpToLatest" class="jump-latest" type="button" @click="scrollToLatest('smooth')"><ArrowDown :size="15" />回到最新</button>
 
-          <button v-if="activeTab === 'flow' && showJumpToLatest" class="jump-latest" @click="scrollToLatest('smooth')"><ArrowDown :size="15" /> 回到最新</button>
-
-          <div class="workbench-composer">
+          <footer class="task-composer">
             <div v-if="composerNotice" class="composer-notice" :data-error="composerError"><CircleAlert :size="15" />{{ composerNotice }}</div>
-            <div v-if="commandMenu" class="command-menu"><button v-for="command in quickCommands" :key="command.value" @click="chooseCommand(command.value)"><code>{{ command.value }}</code><span>{{ command.label }}</span></button></div>
-            <textarea ref="composer" v-model="messageText" :placeholder="composerPlaceholder" rows="2" aria-label="给数字员工的指令" @keydown.enter.exact.prevent="sendMessage" @input="commandMenu = messageText === '/'" />
-            <footer><div><button aria-label="快捷命令" @click="commandMenu = !commandMenu"><Slash :size="16" /></button><button aria-label="引用文件"><AtSign :size="16" /></button><strong>{{ employeeName }}</strong><span>· {{ currentStage }}</span></div><small>enter submit · shift+enter newline</small><button class="send-button" :disabled="sending || !messageText.trim()" aria-label="发送指令" @click="sendMessage"><LoaderCircle v-if="sending" class="spin" :size="17" /><Send v-else :size="17" /></button></footer>
-          </div>
-        </section>
+            <div class="composer-row">
+              <button class="composer-attach" type="button" aria-label="引用文件"><Paperclip :size="19" /></button>
+              <textarea ref="composer" v-model="messageText" :disabled="composerDisabled" :placeholder="composerPlaceholder" rows="2" aria-label="给数字员工的指令" @keydown.enter.exact.prevent="sendMessage" />
+              <button class="composer-send" type="button" :disabled="sending || composerDisabled || !messageText.trim()" aria-label="发送指令" @click="sendMessage"><LoaderCircle v-if="sending" class="spin" :size="19" /><Send v-else :size="19" /></button>
+            </div>
+            <div class="composer-actions">
+              <span><i :data-status="task.status" />{{ employeeName }} · {{ taskStatusLabel }}</span>
+              <div>
+                <button v-if="canStop" class="action-button action-button--danger" type="button" @click="stopDialogOpen = true"><Square :size="15" />停止任务</button>
+                <button v-if="task.status === 'RUNNING'" class="action-button" type="button" @click="focusComposer"><PenLine :size="15" />补充要求</button>
+                <button v-if="task.status === 'PENDING_CONFIRMATION'" class="action-button action-button--primary" type="button" :disabled="performingAction" @click="perform('confirm')"><CheckCircle2 :size="15" />确认完成</button>
+                <button v-if="['PENDING_CONFIRMATION','COMPLETED'].includes(task.status)" class="action-button" type="button" @click="requestRevision"><PenLine :size="15" />要求修改</button>
+                <button v-if="failureVisible" class="action-button action-button--primary" type="button" @click="requestRetry"><RotateCcw :size="15" />重新处理</button>
+                <button v-if="task.result" class="action-button" type="button" @click="exportResult"><Download :size="15" />导出结果</button>
+              </div>
+            </div>
+          </footer>
+        </main>
 
-        <aside class="workbench-rail">
-          <section class="context-title"><p class="context-heading">{{ task.title }}</p><p>{{ taskTypeLabel(task.task_type) }} · {{ categoryName }}</p></section>
-
-          <section class="usage-panel">
-            <h3>Context</h3>
-            <p><strong>{{ formatTokens(usage?.summary.total_tokens) }}</strong> tokens</p>
-            <p>{{ usage?.summary.tool_call_count ?? 0 }} tools · {{ workbench.runs.length }} runs</p>
-            <small v-if="usage?.tools.length">{{ usage.tools.map((tool) => tool.tool_name).join(' · ') }}</small>
-          </section>
-
-          <section class="context-section task-context"><h3>Task</h3><p>{{ currentStage }}</p><small>{{ task.completion_policy === 'MANUAL_CONFIRM' ? '人工确认' : '自动完成' }}</small></section>
-
-          <section class="context-section employee-context"><h3>Agent</h3><p><i :data-status="employeeStatus" /> <strong>{{ employeeName }}</strong></p><small>{{ employeeRole }}</small><small>{{ currentWork }}</small></section>
-
-          <section class="context-section agent-list-card">
-            <header><h3>Subagent <span v-if="subagents.length">({{ subagents.length }})</span></h3><button v-if="subagents.length" @click="scrollToAgents">locate</button></header>
-            <div v-if="subagents.length" class="agent-list"><article v-for="agent in subagents" :key="agent.name"><i :data-status="agent.status" /><div><strong>{{ agentDisplayName(agent.name) }}</strong><small>{{ agent.role }}</small></div><span>{{ agent.statusLabel }}</span></article></div>
-            <p v-else class="cli-muted">main agent only</p>
-          </section>
-
-          <section class="context-section artifact-list-card">
-            <header><h3>Files <span>({{ artifactItems.length }})</span></h3><button v-if="artifactItems.length" @click="activeTab = 'files'">open</button></header>
-            <div v-if="artifactItems.length"><article v-for="artifact in artifactItems.slice(0, 5)" :key="artifact.key"><span><strong>{{ artifact.name }}</strong><small>{{ artifact.path }}</small></span><b>{{ artifact.status }}</b></article></div>
-            <p v-else class="cli-muted">no files</p>
-          </section>
-
-          <section v-if="task.acceptance_criteria.length" class="context-section acceptance-card">
-            <header><h3>Acceptance</h3><span>{{ passedAcceptance }} / {{ task.acceptance_criteria.length }}</span></header>
-            <article v-for="criterion in task.acceptance_criteria" :key="criterion.id"><Check v-if="acceptanceResult(criterion.id)?.status === 'SATISFIED'" :size="14" /><CircleX v-else-if="acceptanceResult(criterion.id)?.status === 'UNSATISFIED'" :size="14" /><span v-else>·</span><div><strong>{{ criterion.content }}</strong><p v-if="acceptanceResult(criterion.id)">{{ acceptanceStatusLabel(acceptanceResult(criterion.id)!.status) }} · {{ acceptanceResult(criterion.id)!.description || '无补充说明' }}</p><p v-else>等待员工提交结果</p></div></article>
-          </section>
-
-          <details class="runtime-info"><summary>运行信息</summary><div><small>Task Session</small><code>{{ workbench.session.id }}</code></div><div v-if="latestRun"><small>Run</small><RouterLink :to="`/runs/${latestRun.id}`">{{ latestRun.id }}</RouterLink></div><div><small>Environment</small><span>{{ environmentLabel(task.execution_environment_snapshot) }}</span></div></details>
-
-          <section class="context-actions"><button v-if="task.status === 'RUNNING'" @click="perform('pause')">pause</button><button v-if="['WAIT_HUMAN','SUSPENDED'].includes(task.status)" @click="focusComposer">continue</button><button v-if="task.status === 'EXECUTION_ERROR'" @click="perform('recover')">recover</button><button v-if="task.status === 'FAILED'" @click="prepareCommand('/retry')">retry</button><button v-if="task.status === 'PENDING_CONFIRMATION'" @click="perform('confirm')">confirm</button><button @click="exportResult">export</button><button v-if="canCancel" class="danger" @click="perform('cancel')">stop</button></section>
-
-          <footer class="context-footer"><span :data-connected="streamConnected" /> NEXUS Runtime</footer>
-        </aside>
-      </main>
+        <div v-if="sidebarOpen" class="task-sidebar-backdrop" @click="sidebarOpen = false" />
+        <TaskSidebar :class="{ 'is-open': sidebarOpen }" :task="task" :employee-name="employeeName" :employee-role="employeeRole" :task-status-label="taskStatusLabel" :subtasks="conversation.subtasks" :artifacts="artifactItems" :latest-run-id="latestRun?.id ?? null" @close="sidebarOpen = false" />
+      </div>
     </section>
+
+    <div v-if="stopDialogOpen" class="dialog-backdrop" role="presentation" @click.self="stopDialogOpen = false">
+      <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="stop-dialog-title">
+        <span><Square :size="20" /></span><div><h3 id="stop-dialog-title">确定停止任务？</h3><p>数字员工会停止当前执行，已经产生的消息、文件和运行记录仍会保留。</p></div>
+        <footer><button type="button" @click="stopDialogOpen = false">继续执行</button><button class="confirm-stop" type="button" :disabled="performingAction" @click="confirmStop"><LoaderCircle v-if="performingAction" class="spin" :size="16" />确认停止</button></footer>
+      </section>
+    </div>
   </div>
-  <div v-else class="page workbench-loading"><LoaderCircle class="spin" :size="24" /><span>正在加载任务工作台…</span></div>
+  <div v-else class="page task-detail-loading"><LoaderCircle class="spin" :size="24" /><span>正在加载任务工作区…</span></div>
 </template>
 
 <script setup lang="ts">
-import { ArrowDown, ArrowLeft, AtSign, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, CircleHelp, CircleX, Download, Ellipsis, FileCode2, FileText, Files, History, LoaderCircle, MessageSquareText, MessagesSquare, Paperclip, Pause, Play, RefreshCw, RotateCcw, Send, Slash, Sparkles, Square, TerminalSquare, TriangleAlert, Wrench } from 'lucide-vue-next'
+import { ArrowDown, Bot, CalendarDays, CheckCircle2, ChevronRight, Circle, CircleAlert, CircleHelp, CircleX, Clock3, Download, History, LoaderCircle, PanelRightOpen, Paperclip, PenLine, Play, RotateCcw, Send, Square, TriangleAlert, UserRound } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api } from '@/api/client'
-import type { AcceptanceResult, RuntimeEvent, RunInquiry, SessionMessage, TaskUsage, TaskWorkbench } from '@/api/types'
-import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
-import EmployeePortrait from '@/components/office/EmployeePortrait.vue'
+import type { AcceptanceResult, RunInquiry, SessionMessage, TaskWorkbench } from '@/api/types'
 import { useAstraStore } from '@/stores/astra'
-import { acceptanceStatusLabel, employeeDisplayName, environmentLabel, evidenceKindLabel, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, formatTaskDuration, formatTime, platformCopy, statusTone } from '@/utils/format'
+import { buildTaskConversation } from './task-detail/conversation'
+import SubtaskCard from './task-detail/SubtaskCard.vue'
+import TaskSidebar, { type SidebarArtifact } from './task-detail/TaskSidebar.vue'
 
-type StreamItem = { key: string; kind: 'event'; timestamp: string; data: RuntimeEvent } | { key: string; kind: 'message'; timestamp: string; data: SessionMessage } | { key: string; kind: 'inquiry'; timestamp: string; data: RunInquiry } | { key: string; kind: 'operations'; timestamp: string; data: RuntimeEvent[] }
-const route = useRoute(); const store = useAstraStore(); const workbench = ref<TaskWorkbench | null>(null); const usage = ref<TaskUsage | null>(null); const activeTab = ref<'flow' | 'files'>('flow'); const messageText = ref(''); const sending = ref(false); const composerNotice = ref(''); const composerError = ref(false); const commandMenu = ref(false); const streamConnected = ref(false); const showJumpToLatest = ref(false); const flowViewport = ref<HTMLElement | null>(null); const flowEnd = ref<HTMLElement | null>(null); const composer = ref<HTMLTextAreaElement | null>(null)
-let eventSource: EventSource | null = null; let refreshTimer = 0; let stayAtLatest = true
-const task = computed(() => workbench.value?.task ?? null); const employee = computed(() => store.employees.find((item) => item.id === task.value?.employee_id)); const employeeName = computed(() => employeeDisplayName(employee.value?.name ?? task.value?.employee_id ?? '等待分配')); const employeeRole = computed(() => employee.value?.role ?? '自主任务执行'); const employeeStatus = computed(() => employee.value?.status ?? 'OFFLINE'); const employeeStatusLabel = computed(() => statusLabel(employeeStatus.value)); const categoryName = computed(() => store.categories.find((item) => item.id === task.value?.category_id)?.name ?? '未分类'); const activeInquiry = computed(() => [...(workbench.value?.inquiries ?? [])].reverse().find(isInquiryOpen) ?? null); const latestRun = computed(() => workbench.value?.runs[0] ?? null)
-const failureVisible = computed(() => !!task.value && ['FAILED', 'EXECUTION_ERROR'].includes(task.value.status)); const failureReason = computed(() => String(task.value?.execution_error?.reason ?? task.value?.failure_reason ?? '执行未达到预期，请查看最近操作并补充处理要求。')); const canCancel = computed(() => !!task.value && ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.value.status)); const latestInstruction = computed(() => workbench.value?.messages.filter((item) => item.role === 'user').at(-1)?.content ?? ''); const resultFileCount = computed(() => task.value?.result?.files.length ?? 0); const passedAcceptance = computed(() => task.value?.result?.acceptance_results.filter((item) => item.status === 'SATISFIED').length ?? 0); const failedAcceptance = computed(() => task.value?.result?.acceptance_results.filter((item) => item.status === 'UNSATISFIED').length ?? 0)
-const progressStep = computed(() => !task.value ? 1 : task.value.status === 'COMPLETED' ? 5 : ['PENDING_CONFIRMATION', 'WAIT_HUMAN', 'FAILED', 'EXECUTION_ERROR'].includes(task.value.status) ? 4 : task.value.status === 'RUNNING' ? (workbench.value?.events.some((item) => item.event_type.startsWith('tool.')) ? 3 : 2) : 1)
-const currentStage = computed(() => ({ READY: '等待领取', RUNNING: 'Agent 执行中', WAIT_HUMAN: '等待你的确认', SUSPENDED: '任务已暂停', PENDING_CONFIRMATION: '结果待确认', EXECUTION_ERROR: '失败修复', FAILED: '任务未完成', COMPLETED: '任务已完成', CANCELLED: '任务已终止' }[task.value?.status ?? 'READY'] ?? '任务处理中'))
-const latestAgentMessage = computed(() => [...(workbench.value?.messages ?? [])].reverse().find((item) => item.role === 'agent') ?? null)
-const currentWork = computed(() => activeInquiry.value ? `等待用户回答：${activeInquiry.value.question}` : task.value?.status === 'COMPLETED' ? '任务已完成，可在当前会话中继续提出后续要求。' : platformCopy(task.value?.current_progress ?? '等待任务开始'))
-const latestOutput = computed(() => latestAgentMessage.value?.content ?? task.value?.result?.summary ?? '尚无可展示输出')
-const resultRepeatedByAgentMessage = computed(() => !!task.value?.result?.summary && latestAgentMessage.value?.content.trim() === task.value.result.summary.trim())
-const composerPlaceholder = computed(() => task.value?.status === 'WAIT_HUMAN' ? `请回答：${activeInquiry.value?.question ?? '补充继续执行所需的信息'}` : task.value?.status === 'COMPLETED' ? '继续优化、增加场景，或提出新的要求…' : task.value?.status === 'RUNNING' ? '继续输入要求；将在当前不可中断操作完成后生效…' : '直接告诉数字员工下一步怎么处理…')
-const quickCommands = [{ value: '/status', label: '查看当前状态' }, { value: '/pause', label: '暂停任务' }, { value: '/continue', label: '继续执行' }, { value: '/retry', label: '重试失败步骤' }, { value: '/agents', label: '查看 Agent' }, { value: '/files', label: '查看文件' }, { value: '/stop', label: '终止任务' }]
+const route = useRoute()
+const store = useAstraStore()
+const workbench = ref<TaskWorkbench | null>(null)
+const messageText = ref('')
+const sending = ref(false)
+const performingAction = ref(false)
+const composerNotice = ref('')
+const composerError = ref(false)
+const sidebarOpen = ref(false)
+const stopDialogOpen = ref(false)
+const showJumpToLatest = ref(false)
+const streamConnected = ref(false)
+const conversationViewport = ref<HTMLElement | null>(null)
+const conversationEnd = ref<HTMLElement | null>(null)
+const composer = ref<HTMLTextAreaElement | null>(null)
+let eventSource: EventSource | null = null
+let refreshTimer = 0
+let stayAtLatest = true
 
-const semanticEvents = computed(() => {
-  const blockEvents = (workbench.value?.blocks ?? []).flatMap((block) => block.events)
-  return blockEvents.length ? blockEvents : (workbench.value?.events ?? [])
+const task = computed(() => workbench.value?.task ?? null)
+const employee = computed(() => store.employees.find((item) => item.id === task.value?.employee_id))
+const employeeName = computed(() => employeeDisplayName(employee.value?.name ?? task.value?.employee_id ?? '等待分配'))
+const employeeRole = computed(() => employee.value?.role ?? '自主任务执行')
+const conversation = computed(() => workbench.value ? buildTaskConversation(workbench.value) : { items: [], subtasks: [] })
+const latestRun = computed(() => workbench.value?.runs[0] ?? null)
+const activeInquiry = computed(() => [...(workbench.value?.inquiries ?? [])].reverse().find(isInquiryOpen) ?? null)
+const failureVisible = computed(() => !!task.value && ['FAILED', 'EXECUTION_ERROR'].includes(task.value.status))
+const failureReason = computed(() => String(task.value?.execution_error?.reason ?? task.value?.failure_reason ?? '执行没有达到预期，请补充要求后重新处理。'))
+const passedAcceptance = computed(() => task.value?.result?.acceptance_results.filter((item) => item.status === 'SATISFIED').length ?? 0)
+const canStop = computed(() => !!task.value && ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.value.status))
+const composerDisabled = computed(() => task.value?.status === 'CANCELLED')
+const showWorkingIndicator = computed(() => task.value?.status === 'RUNNING' && !activeInquiry.value)
+const taskStatusLabel = computed(() => ({ READY: '等待领取', RUNNING: '执行中', WAIT_HUMAN: '等待输入', SUSPENDED: '已暂停', PENDING_CONFIRMATION: '待你确认', COMPLETED: '已完成', FAILED: '执行失败', EXECUTION_ERROR: '执行异常', CANCELLED: '已停止' }[task.value?.status ?? 'READY']))
+const taskStatusTone = computed(() => statusTone(task.value?.status ?? 'READY'))
+const safeCurrentWork = computed(() => {
+  if (activeInquiry.value) return `等待你的回答：${activeInquiry.value.question}`
+  const progress = platformCopy(task.value?.current_progress)
+  if (!progress || progress.length > 150 || progress.includes('当前任务：') || progress.includes('员工工作空间：')) return '正在分析任务并推进执行…'
+  return progress
 })
-const streamItems = computed<StreamItem[]>(() => {
-  if (!workbench.value) return []
-  if (workbench.value.blocks?.length) {
-    const items: StreamItem[] = []
-    for (const block of workbench.value.blocks) {
-      if (block.visibility !== 'primary') continue
-      if (block.block_type === 'message' && block.message) items.push({ key: block.id, kind: 'message', timestamp: block.timestamp, data: block.message })
-      else if (block.block_type === 'inquiry' && block.inquiry) items.push({ key: block.id, kind: 'inquiry', timestamp: block.timestamp, data: block.inquiry })
-      else if (block.block_type === 'operation_group' && block.events.length) items.push({ key: block.id, kind: 'operations', timestamp: block.timestamp, data: block.events })
-      else if (block.block_type === 'event' && block.events[0]) {
-        const event = block.events[0]
-        const repeatsResultSummary = !!task.value?.result?.summary && event.summary.trim() === task.value.result.summary.trim()
-        if (!repeatsResultSummary) items.push({ key: block.id, kind: 'event', timestamp: block.timestamp, data: event })
-      }
-    }
-    return items
+const composerPlaceholder = computed(() => {
+  if (composerDisabled.value) return '任务已停止，无法继续输入'
+  if (task.value?.status === 'WAIT_HUMAN') return `请回答：${activeInquiry.value?.question ?? '补充继续执行所需的信息'}`
+  if (task.value?.status === 'PENDING_CONFIRMATION') return '继续告诉数字员工如何处理…'
+  if (task.value?.status === 'RUNNING') return '补充说明或调整要求…'
+  if (task.value?.status === 'COMPLETED') return '继续提出新的要求…'
+  if (failureVisible.value) return '说明需要重新处理的内容…'
+  return '告诉数字员工下一步怎么处理…'
+})
+const artifactItems = computed<SidebarArtifact[]>(() => {
+  if (!workbench.value || !task.value) return []
+  const items: SidebarArtifact[] = []
+  const known = new Set<string>()
+  for (const artifact of workbench.value.artifacts) {
+    if (['work_record', 'log'].includes(artifact.kind)) continue
+    known.add(artifact.path)
+    items.push({ key: `evidence-${artifact.id}`, name: artifact.name, path: artifact.path, size: artifact.size })
   }
-  const items: StreamItem[] = []
-  for (const event of workbench.value.events) {
-    const repeatsResultSummary = !!task.value?.result?.summary && event.summary.trim() === task.value.result.summary.trim()
-    if (['tool.', 'message.', 'inquiry.', 'runtime.'].some((prefix) => event.event_type.startsWith(prefix)) || repeatsResultSummary) continue
-    items.push({ key: event.id, kind: 'event', timestamp: event.timestamp, data: event })
+  for (const file of task.value.result?.files ?? []) {
+    if (known.has(file)) continue
+    items.push({ key: `file-${file}`, name: file.split(/[\\/]/).at(-1) || file, path: file, size: null })
   }
-  for (const message of workbench.value.messages) items.push({ key: message.id, kind: 'message', timestamp: message.created_at, data: message })
-  for (const inquiry of workbench.value.inquiries) items.push({ key: inquiry.id, kind: 'inquiry', timestamp: inquiry.created_at, data: inquiry })
-  const grouped = new Map<string, RuntimeEvent[]>()
-  for (const event of workbench.value.events.filter((item) => item.event_type.startsWith('tool.'))) {
-    const key = event.run_id ?? 'unassigned'
-    grouped.set(key, [...(grouped.get(key) ?? []), event])
-  }
-  for (const [runId, operations] of grouped) items.push({ key: `operations-${runId}`, kind: 'operations', timestamp: operations[0].timestamp, data: operations })
-  return items.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+  return items
 })
-const displayStreamItems = computed(() => {
-  const questions = new Set((workbench.value?.inquiries ?? []).map((item) => item.question.trim()))
-  const answers = new Set((workbench.value?.inquiries ?? []).map((item) => item.answer?.trim()).filter((item): item is string => !!item))
-  return streamItems.value.filter((item) => {
-    if (item.kind === 'operations') return false
-    if (item.kind === 'event') return item.data.event_type.startsWith('subagent.')
-    if (item.kind === 'inquiry') return true
-    const content = item.data.content.trim()
-    if (item.data.role === 'agent' && task.value?.result && item.data.id === latestAgentMessage.value?.id) return false
-    if (item.data.role === 'agent' && questions.has(content)) return false
-    if (item.data.role === 'user' && !isInitialMessage(item.data) && answers.has(content)) return false
-    return true
-  })
-})
-const subagents = computed(() => {
-  const agents = new Map<string, RuntimeEvent>()
-  for (const event of semanticEvents.value) if (event.event_type.startsWith('subagent.') && event.agent_name) agents.set(event.agent_name, event)
-  return [...agents.entries()].map(([name, event]) => ({
-    name,
-    role: String(event.payload.description ?? event.payload.role ?? '专项执行角色'),
-    status: event.event_type.endsWith('completed') ? 'completed' : event.event_type.endsWith('failed') ? 'failed' : 'running',
-    statusLabel: event.event_type.endsWith('completed') ? '已完成' : event.event_type.endsWith('failed') ? '失败' : '执行中',
-  }))
-})
-const artifactItems = computed(() => { const items = (workbench.value?.artifacts ?? []).map((item, index) => ({ key: `evidence-${item.id}`, name: item.kind === 'work_record' ? `${evidenceKindLabel(item.kind)} ${index + 1}` : item.name, path: item.kind === 'work_record' ? '任务运行证据' : item.path, status: evidenceKindLabel(item.kind), kind: 'evidence' })); const known = new Set((workbench.value?.artifacts ?? []).map((item) => item.path)); for (const file of task.value?.result?.files ?? []) if (!known.has(file)) items.push({ key: `file-${file}`, name: file.split('/').at(-1) ?? file, path: file, status: '已生成', kind: 'file' }); return items })
-const acceptanceResult = (id: string): AcceptanceResult | undefined => task.value?.result?.acceptance_results.find((item) => item.criterion_id === id); const attachmentHref = (item: Record<string, unknown>) => String(item.content ?? item.url ?? '#'); const formatClock = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value)) : '—'; const messageStatusLabel = (status: string) => ({ PENDING: '等待生效', QUEUED: '已排队', APPLIED: '已生效', ANSWERED: '已回答' }[status] ?? '已收到'); const isInquiryOpen = (inquiry: RunInquiry) => ['OPEN', 'PENDING'].includes(inquiry.status); const isInitialMessage = (message: SessionMessage) => message.id === workbench.value?.messages[0]?.id; const messageHeading = (message: SessionMessage) => message.role === 'agent' ? '数字员工' : isInitialMessage(message) ? '你 · 原始任务' : '你'; const agentDisplayName = (name: string) => name === task.value?.employee_id ? employeeName.value : name; const runStatusLabel = (status: string) => ({ CREATED: '等待执行', RUNNING: '执行中', WAITING_INPUT: '等待输入', COMPLETED: '已完成', PASSED: '已完成', FAILED: '失败', BLOCKED: '等待输入', CANCELLED: '已终止' }[status] ?? status)
-const eventTitle = (event: RuntimeEvent) => ({ 'run.created': '任务已进入执行队列', 'run.started': '开始执行', 'run.resumed': '收到回答，继续原 Run', 'run.waiting_input': '等待你的输入', 'run.paused': '任务已暂停', 'run.failed': '执行遇到异常', 'run.completed': '本轮执行完成', 'agent.started': `${agentDisplayName(event.agent_name ?? 'Agent')} 开始工作`, 'agent.progress': '正在推进任务', 'agent.completed': 'Agent 已提交处理结果', 'agent.failed': 'Agent 执行失败', 'subagent.started': `${agentDisplayName(event.agent_name ?? 'Subagent')} 开始工作`, 'subagent.completed': `${agentDisplayName(event.agent_name ?? 'Subagent')} 已完成`, 'subagent.failed': `${agentDisplayName(event.agent_name ?? 'Subagent')} 执行失败`, 'artifact.created': '已生成任务产物' }[event.event_type] ?? '任务状态更新'); const eventTone = (event: RuntimeEvent) => event.event_type.endsWith('failed') ? 'danger' : event.event_type.endsWith('completed') ? 'success' : event.event_type.endsWith('waiting_input') || event.event_type.endsWith('paused') ? 'warning' : 'normal'; const eventIcon = (event: RuntimeEvent) => event.event_type.endsWith('failed') ? TriangleAlert : event.event_type.endsWith('completed') ? CheckCircle2 : event.event_type.startsWith('agent.') || event.event_type.startsWith('subagent.') ? Sparkles : TerminalSquare
-const toolName = (event: RuntimeEvent) => String(event.payload.tool ?? 'Tool'); const toolTitle = (event: RuntimeEvent) => String(event.payload.title ?? operationVerb(toolName(event))); const toolTarget = (event: RuntimeEvent) => { const input = event.payload.input; if (typeof input === 'string') return input; if (input && typeof input === 'object') { const value = input as Record<string, unknown>; return String(value.filePath ?? value.path ?? value.command ?? JSON.stringify(input)) } return '—' }; const toolTone = (event: RuntimeEvent) => toolName(event).toLowerCase().replace(/[^a-z]/g, ''); const operationVerb = (tool: string) => ({ read: '读取文件', grep: '搜索内容', edit: '修改文件', write: '写入文件', bash: '执行命令', search: '检索信息', api: '调用接口' }[tool.toLowerCase()] ?? '执行操作'); const operationStatus = (event: RuntimeEvent) => event.event_type.endsWith('completed') ? '已完成' : event.event_type.endsWith('failed') ? '失败' : '执行中'; const operationSummary = (events: RuntimeEvent[]) => { const counts = new Map<string, number>(); for (const event of events) { const name = toolName(event).toLowerCase(); counts.set(name, (counts.get(name) ?? 0) + 1) } const labels: Record<string, string> = { read: '读取文件', grep: '搜索', search: '检索', edit: '修改文件', write: '写入文件', bash: '执行命令', shell: '执行命令', api: '调用接口' }; return [...counts.entries()].map(([name, count]) => `${labels[name] ?? operationVerb(name)} ${count} 次`).join(' · ') }
 
-async function load(initial = false) { const [nextWorkbench, nextUsage] = await Promise.all([api.taskWorkbench(String(route.params.id)), api.taskUsage(String(route.params.id))]); workbench.value = nextWorkbench; usage.value = nextUsage; await store.refresh(); await nextTick(); if (initial || stayAtLatest) scrollToLatest() }
-async function loadOlder() { if (!workbench.value?.events.length) return; const older = await api.taskWorkbench(String(route.params.id), workbench.value.events[0].sequence); workbench.value = { ...workbench.value, events: [...older.events, ...workbench.value.events], has_more_events: older.has_more_events } }
-function connectStream() { eventSource?.close(); const base = import.meta.env.VITE_API_BASE ?? ''; const sequence = workbench.value?.events.at(-1)?.sequence ?? 0; eventSource = new EventSource(`${base}/api/tasks/${route.params.id}/workspace/stream?after_sequence=${sequence}`); eventSource.addEventListener('connected', () => { streamConnected.value = true }); eventSource.addEventListener('update', () => { window.clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => load(), 180) }); eventSource.onerror = () => { streamConnected.value = false } }
-function scrollToLatest(behavior: ScrollBehavior = 'auto') { const viewport = flowViewport.value; if (!viewport) return; stayAtLatest = true; showJumpToLatest.value = false; viewport.scrollTo({ top: viewport.scrollHeight, behavior }) }
-function trackScroll() { const viewport = flowViewport.value; if (!viewport) return; const constrainedAtTop = !!viewport.style.height && viewport.scrollTop === 0; stayAtLatest = !constrainedAtTop && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 32; showJumpToLatest.value = !stayAtLatest }
-async function sendMessage() { const content = messageText.value.trim(); if (!content || sending.value || !task.value) return; sending.value = true; composerNotice.value = ''; composerError.value = false; try { const wasRunning = task.value.status === 'RUNNING'; const wasWaiting = task.value.status === 'WAIT_HUMAN'; workbench.value = await api.postTaskMessage(task.value.id, content); messageText.value = ''; commandMenu.value = false; composerNotice.value = wasRunning ? '已收到你的指令，将在当前不可中断操作完成后生效。' : wasWaiting ? '回答已提交，原 Run 将从等待点继续执行。' : '指令已加入当前任务会话。'; stayAtLatest = true; await nextTick(); scrollToLatest('smooth') } catch (reason) { composerError.value = true; composerNotice.value = reason instanceof Error ? reason.message : '指令发送失败' } finally { sending.value = false } }
-async function answerOption(inquiryId: string, answer: string) { sending.value = true; try { workbench.value = await api.answerInquiry(inquiryId, answer); composerNotice.value = '已提交选择，任务将继续执行。' } catch (reason) { composerError.value = true; composerNotice.value = reason instanceof Error ? reason.message : '提交失败' } finally { sending.value = false } }
-function chooseCommand(command: string) { messageText.value = command; commandMenu.value = false; composer.value?.focus() } function focusComposer() { activeTab.value = 'flow'; nextTick(() => composer.value?.focus()) } function prepareCommand(command: string) { messageText.value = command; focusComposer() } function scrollToAgents() { activeTab.value = 'flow'; nextTick(() => flowViewport.value?.querySelector('.subagent-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' })) }
-async function perform(action: string) { if (!task.value) return; if (action === 'cancel' && !window.confirm('确定终止这项任务吗？已产生的工作记录仍会保留。')) return; try { await api.taskAction(task.value.id, action, action === 'cancel' ? { reason: '用户在任务工作台终止任务' } : {}); await load() } catch (reason) { composerError.value = true; composerNotice.value = reason instanceof Error ? reason.message : '操作失败' } }
-function exportResult() { if (!workbench.value) return; const body = JSON.stringify({ task: workbench.value.task, session: workbench.value.session, runs: workbench.value.runs, result: workbench.value.task.result, artifacts: artifactItems.value }, null, 2); const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([body], { type: 'application/json' })); link.download = `${workbench.value.task.id}-result.json`; link.click(); URL.revokeObjectURL(link.href) }
-onMounted(async () => { await load(true); connectStream() }); onBeforeUnmount(() => { eventSource?.close(); window.clearTimeout(refreshTimer) })
+const acceptanceResult = (criterionId: string): AcceptanceResult | undefined => task.value?.result?.acceptance_results.find((item) => item.criterion_id === criterionId)
+const isInquiryOpen = (inquiry: RunInquiry) => ['OPEN', 'PENDING'].includes(inquiry.status)
+const messageStatusLabel = (status: SessionMessage['status']) => ({ PENDING: '等待生效', QUEUED: '已排队', ANSWERED: '已回答', APPLIED: '已生效' }[status])
+const attachmentHref = (item: Record<string, unknown>) => String(item.content ?? item.url ?? '#')
+const formatClock = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value)) : '—'
+
+async function load(initial = false) {
+  const shouldFollow = initial || stayAtLatest
+  workbench.value = await api.taskWorkbench(String(route.params.id))
+  if (initial && !store.employees.length) await store.refresh()
+  await nextTick()
+  if (shouldFollow) scrollToLatest()
+}
+
+async function loadOlder() {
+  if (!workbench.value?.events.length || !conversationViewport.value) return
+  const viewport = conversationViewport.value
+  const previousHeight = viewport.scrollHeight
+  const older = await api.taskWorkbench(String(route.params.id), workbench.value.events[0].sequence)
+  const known = new Set(workbench.value.events.map((event) => event.id))
+  workbench.value = { ...workbench.value, events: [...older.events.filter((event) => !known.has(event.id)), ...workbench.value.events], has_more_events: older.has_more_events }
+  await nextTick()
+  viewport.scrollTop += viewport.scrollHeight - previousHeight
+}
+
+function connectStream() {
+  eventSource?.close()
+  const base = import.meta.env.VITE_API_BASE ?? ''
+  const sequence = workbench.value?.events.at(-1)?.sequence ?? 0
+  eventSource = new EventSource(`${base}/api/tasks/${route.params.id}/workspace/stream?after_sequence=${sequence}`)
+  eventSource.addEventListener('connected', () => { streamConnected.value = true })
+  eventSource.addEventListener('update', () => { window.clearTimeout(refreshTimer); refreshTimer = window.setTimeout(() => load(), 180) })
+  eventSource.onerror = () => { streamConnected.value = false }
+}
+
+function scrollToLatest(behavior: ScrollBehavior = 'auto') {
+  const viewport = conversationViewport.value
+  if (!viewport) return
+  stayAtLatest = true
+  showJumpToLatest.value = false
+  viewport.scrollTo({ top: viewport.scrollHeight, behavior })
+}
+
+function trackScroll() {
+  const viewport = conversationViewport.value
+  if (!viewport) return
+  const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+  stayAtLatest = distance < 72
+  showJumpToLatest.value = !stayAtLatest
+}
+
+async function sendMessage() {
+  const content = messageText.value.trim()
+  if (!content || sending.value || !task.value || composerDisabled.value) return
+  sending.value = true
+  composerNotice.value = ''
+  composerError.value = false
+  try {
+    const wasRunning = task.value.status === 'RUNNING'
+    const wasWaiting = task.value.status === 'WAIT_HUMAN'
+    workbench.value = await api.postTaskMessage(task.value.id, content)
+    messageText.value = ''
+    composerNotice.value = wasRunning ? '补充要求已收到，将在当前操作结束后生效。' : wasWaiting ? '回答已提交，数字员工将继续执行。' : '要求已发送给数字员工。'
+    await nextTick()
+    scrollToLatest('smooth')
+  } catch (reason) {
+    composerError.value = true
+    composerNotice.value = reason instanceof Error ? reason.message : '发送失败'
+  } finally {
+    sending.value = false
+  }
+}
+
+async function answerOption(inquiryId: string, answer: string) {
+  sending.value = true
+  try {
+    workbench.value = await api.answerInquiry(inquiryId, answer)
+    composerNotice.value = '选择已提交，数字员工将继续执行。'
+    await nextTick()
+    scrollToLatest('smooth')
+  } catch (reason) {
+    composerError.value = true
+    composerNotice.value = reason instanceof Error ? reason.message : '提交失败'
+  } finally {
+    sending.value = false
+  }
+}
+
+function focusComposer() { nextTick(() => composer.value?.focus()) }
+function requestRevision() { messageText.value = '请根据以下要求修改结果：'; focusComposer() }
+function requestRetry() { messageText.value = '请重新处理这个任务，并修复上一次执行中遇到的问题：'; focusComposer() }
+
+async function perform(action: string) {
+  if (!task.value || performingAction.value) return
+  performingAction.value = true
+  composerError.value = false
+  try {
+    await api.taskAction(task.value.id, action, action === 'cancel' ? { reason: '用户在任务工作区停止任务' } : {})
+    composerNotice.value = action === 'confirm' ? '任务结果已确认。' : action === 'cancel' ? '任务已停止。' : '操作已完成。'
+    await load()
+  } catch (reason) {
+    composerError.value = true
+    composerNotice.value = reason instanceof Error ? reason.message : '操作失败'
+  } finally {
+    performingAction.value = false
+  }
+}
+
+async function confirmStop() { await perform('cancel'); stopDialogOpen.value = false }
+
+function exportResult() {
+  if (!workbench.value) return
+  const body = JSON.stringify({ task: workbench.value.task, result: workbench.value.task.result, artifacts: artifactItems.value }, null, 2)
+  const link = document.createElement('a')
+  const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }))
+  link.href = url
+  link.download = `${workbench.value.task.id}-result.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+onMounted(async () => { await load(true); connectStream() })
+onBeforeUnmount(() => { eventSource?.close(); window.clearTimeout(refreshTimer) })
 </script>
 
 <style scoped>
-.task-workbench-page{max-width:2200px;padding-top:20px}.workbench-breadcrumb{display:flex;align-items:center;gap:6px;margin-bottom:8px;color:var(--astra-text-muted);font-size:14px}.workbench-breadcrumb a{display:inline-flex;align-items:center;gap:5px}.workbench-breadcrumb strong{color:var(--astra-text-secondary);font-weight:550}.workbench-header{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:72px}.workbench-title{min-width:0}.workbench-title>div{display:flex;align-items:center;gap:8px;color:var(--astra-text-muted);font-size:14px}.workbench-title h2{overflow:hidden;margin:5px 0 0;font:700 24px/1.25 var(--astra-font-display);text-overflow:ellipsis;white-space:nowrap}.header-actions{display:flex;align-items:center;gap:8px}.workbench-tabs{display:flex;align-items:center;min-height:46px;margin-bottom:12px;border-bottom:1px solid var(--astra-border)}.workbench-tabs button{display:inline-flex;align-items:center;gap:7px;align-self:stretch;padding:0 16px;color:var(--astra-text-muted);border:0;border-bottom:2px solid transparent;background:transparent;cursor:pointer}.workbench-tabs button.active{color:var(--astra-text-primary);border-bottom-color:var(--astra-primary);font-weight:650}.workbench-tabs button span{padding:1px 6px;border-radius:10px;background:var(--astra-bg-elevated);font-size:12px}.workbench-tabs>i{width:7px;height:7px;margin-left:auto;border-radius:50%;background:var(--astra-warning)}.workbench-tabs>i[data-connected=true]{background:var(--astra-success)}.workbench-tabs>small{margin-left:6px;color:var(--astra-text-muted)}
-.workbench-layout{display:grid;grid-template-columns:minmax(0,2.15fr) minmax(330px,.85fr);gap:16px;align-items:start}.workbench-main{min-width:0;border:1px solid var(--astra-border);border-radius:13px;background:var(--astra-bg-panel);box-shadow:var(--astra-shadow-panel)}.workbench-flow{height:clamp(380px,calc(100vh - 370px),650px);min-height:0;padding:18px 20px 28px;overflow:auto;scroll-behavior:smooth}.load-history{display:flex;align-items:center;gap:6px;margin:0 auto 14px;padding:7px 12px;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:16px;background:var(--astra-primary-soft);cursor:pointer}.flow-objective{display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;margin:0 2px 14px}.objective-avatar{display:grid;place-items:center;width:34px;height:34px;color:#fff;border-radius:50%;background:linear-gradient(135deg,var(--astra-primary),#0b7c4c)}.flow-objective>div,.flow-card{padding:12px 14px;border:1px solid var(--astra-border);border-radius:10px;background:#fff}.flow-objective>div{background:linear-gradient(135deg,#f8fbfa,#f2f7f5)}.flow-objective header,.flow-card>header{display:flex;align-items:center;gap:8px}.flow-objective time,.flow-card header time{margin-left:auto;color:var(--astra-text-muted);font-size:13px}.flow-objective p,.flow-card>p{margin:6px 0 0;color:var(--astra-text-secondary);white-space:pre-wrap}.attachments{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}.attachments a{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:6px;background:var(--astra-primary-soft);font-size:13px}
-.flow-timeline{position:relative;padding-left:2px}.flow-timeline:before{content:"";position:absolute;top:10px;bottom:10px;left:18px;width:1px;background:#d9e3df}.flow-entry{position:relative;display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;margin:0 0 10px}.timeline-node{z-index:1;display:grid;place-items:center;width:28px;height:28px;margin:10px 0 0 4px;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:50%;background:#fff}.flow-entry[data-tone=success] .timeline-node{color:var(--astra-success)}.flow-entry[data-tone=warning] .timeline-node,.inquiry-entry .timeline-node{color:var(--astra-warning);border-color:#ebbd8f}.flow-entry[data-tone=danger] .timeline-node{color:var(--astra-danger);border-color:#e9adb3}.flow-card header strong{font-size:15px}.flow-card header span{padding:2px 7px;color:var(--astra-primary-bright);border-radius:9px;background:var(--astra-primary-soft);font-size:12px}.agent-card{border-left:2px solid var(--astra-primary);background:linear-gradient(90deg,rgba(24,184,117,.045),#fff 22%)}.message-entry .timeline-node{color:var(--astra-info)}.message-card{background:#f5f9ff}.message-card header span{color:var(--astra-info);background:#eaf3fe}.inquiry-card{border-color:#e9bd90;background:linear-gradient(135deg,#fffcf6,#fff)}.inquiry-question{color:var(--astra-text-primary)!important;font-weight:600}.inquiry-card>small{display:block;margin-top:5px;color:var(--astra-text-muted)}.inquiry-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:12px}.inquiry-options button{display:grid;gap:3px;padding:11px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;text-align:left;cursor:pointer}.inquiry-options button:hover{border-color:var(--astra-primary);background:var(--astra-primary-soft)}.inquiry-options small{color:var(--astra-text-muted)}.inquiry-answer{display:flex;align-items:center;gap:5px;color:var(--astra-success)!important}.failure-card{border-color:#e9adb3;background:var(--astra-danger-soft)}.failure-card header span{color:var(--astra-danger);background:#fbecee}.failure-card dl{display:grid;grid-template-columns:repeat(3,1fr);margin:12px 0 0;border-top:1px solid #efcbd0}.failure-card dl div{min-width:0;padding:10px 10px 0 0}.failure-card dt{color:var(--astra-text-muted);font-size:12px}.failure-card dd{overflow:hidden;margin:2px 0 0;text-overflow:ellipsis;white-space:nowrap}.result-card{border-color:var(--astra-primary-border);background:linear-gradient(135deg,var(--astra-success-soft),#fff 45%)}.result-metrics{display:grid;grid-template-columns:repeat(5,1fr);margin-top:14px;padding-top:12px;border-top:1px solid var(--astra-primary-border)}.result-metrics div{padding:0 10px;border-right:1px solid var(--astra-border)}.result-metrics div:first-child{padding-left:0}.result-metrics div:last-child{border:0}.result-metrics small{display:block;color:var(--astra-text-muted)}.result-metrics strong{display:block;margin-top:2px}
-.operations-card{padding:0;overflow:hidden}.operations-card>summary{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:11px 13px;cursor:pointer;list-style:none}.operations-card>summary::-webkit-details-marker{display:none}.operations-card summary>span{display:grid}.operations-card summary small{color:var(--astra-text-muted)}.operations-card summary time{color:var(--astra-text-muted);font-size:13px}.operations-card[open] summary>svg{transform:rotate(180deg)}.operation-rows{border-top:1px solid var(--astra-border)}.operation-rows article{display:grid;grid-template-columns:62px 112px minmax(0,1fr) 60px;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #edf1ef}.operation-rows b{justify-self:start;padding:2px 7px;color:var(--astra-info);border-radius:5px;background:#eaf3fe;font:650 12px ui-monospace,monospace}.operation-rows b[data-tool=edit],.operation-rows b[data-tool=write]{color:#5a42bd;background:#f0ecfb}.operation-rows b[data-tool=bash]{color:#8a5a25;background:var(--astra-warning-soft)}.operation-rows code{overflow:hidden;color:var(--astra-text-muted);text-overflow:ellipsis;white-space:nowrap}.operation-rows small{justify-self:end;color:var(--astra-primary-bright)}.operation-rows small[data-status$=failed]{color:var(--astra-danger)}.agent-context{margin-top:10px;padding-top:9px;border-top:1px solid var(--astra-border)}.agent-context>summary{color:var(--astra-primary-bright);cursor:pointer;font-size:13px}.agent-context>div{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:9px}.agent-context section{padding:9px;border:1px solid var(--astra-border);border-radius:7px;background:#f8fbfa}.agent-context section small{color:var(--astra-text-muted)}.agent-context section p{margin:3px 0 0;color:var(--astra-text-secondary)}
-.workbench-composer{position:relative;z-index:3;margin:0 14px 14px;padding:10px 12px 9px;border:1px solid var(--astra-border-hover);border-radius:11px;background:#fff;box-shadow:0 -10px 30px rgba(28,58,49,.07)}.workbench-composer:focus-within{border-color:var(--astra-primary);box-shadow:0 0 0 3px var(--astra-primary-soft)}.workbench-composer textarea{width:100%;min-height:50px;padding:2px 4px;color:var(--astra-text-primary);border:0;outline:0;background:transparent;resize:none}.workbench-composer footer{display:flex;align-items:center;gap:10px}.workbench-composer footer>div{display:flex;align-items:center;gap:5px}.workbench-composer footer button{display:grid;place-items:center;width:31px;height:31px;color:var(--astra-text-muted);border:0;border-radius:7px;background:transparent;cursor:pointer}.workbench-composer footer span{margin-left:3px;color:var(--astra-text-muted);font-size:13px}.workbench-composer footer>small{margin-left:auto;color:var(--astra-text-muted)}.workbench-composer .send-button{color:#fff;background:linear-gradient(135deg,var(--astra-primary),#0b7b4d)}.workbench-composer .send-button:disabled{opacity:.4}.composer-notice{display:flex;align-items:center;gap:6px;margin:-1px -2px 8px;padding:7px 9px;color:var(--astra-primary-bright);border-radius:6px;background:var(--astra-primary-soft);font-size:13px}.composer-notice[data-error=true]{color:var(--astra-danger);background:var(--astra-danger-soft)}.command-menu{position:absolute;right:10px;bottom:calc(100% + 7px);display:grid;width:270px;padding:6px;border:1px solid var(--astra-border);border-radius:10px;background:#fff;box-shadow:var(--astra-shadow-panel)}.command-menu button{display:grid;grid-template-columns:78px 1fr;padding:8px;color:var(--astra-text-secondary);border:0;border-radius:6px;background:transparent;text-align:left;cursor:pointer}.command-menu button:hover{background:var(--astra-primary-soft)}.command-menu code{color:var(--astra-primary-bright)}
-.artifact-workspace{min-height:610px;padding:22px}.artifact-workspace>header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}.artifact-workspace h3{margin:0}.artifact-workspace header p{margin:3px 0 0;color:var(--astra-text-muted)}.artifact-workspace header>span{padding:4px 9px;color:var(--astra-primary-bright);border-radius:10px;background:var(--astra-primary-soft)}.artifact-grid{display:grid;gap:8px}.artifact-grid article{display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:center;gap:10px;padding:12px;border:1px solid var(--astra-border);border-radius:9px}.artifact-grid article>span{display:grid;place-items:center;width:36px;height:36px;color:var(--astra-primary-bright);border-radius:8px;background:var(--astra-primary-soft)}.artifact-grid p{overflow:hidden;margin:2px 0 0;color:var(--astra-text-muted);text-overflow:ellipsis;white-space:nowrap}.artifact-grid small{color:var(--astra-success)}.workspace-empty{display:grid;justify-items:center;padding:100px 20px;color:var(--astra-text-muted)}.workspace-empty strong{margin-top:9px;color:var(--astra-text-secondary)}.workspace-empty p{margin:3px 0 0}
-.workbench-rail{display:grid;gap:10px}.rail-card{padding:15px 16px;border:1px solid var(--astra-border);border-radius:11px;background:var(--astra-bg-panel);box-shadow:0 5px 18px rgba(28,58,49,.055)}.rail-card>header{display:flex;align-items:center;gap:8px;margin-bottom:11px}.rail-card h3{margin:0;font:650 16px var(--astra-font-display)}.rail-card header>span{margin-left:auto;color:var(--astra-primary-bright);font-size:13px}.rail-card header>button{margin-left:auto;color:var(--astra-primary-bright);border:0;background:transparent;cursor:pointer;font-size:13px}.stage-label{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;color:var(--astra-text-muted);font-size:13px}.stage-label strong{color:var(--astra-primary-bright)}.stage-label b{color:var(--astra-text-secondary)}.stage-track{display:flex;align-items:center;justify-content:space-between;margin:13px 4px 15px;background:linear-gradient(var(--astra-border),var(--astra-border)) center/calc(100% - 12px) 2px no-repeat}.stage-track i{width:10px;height:10px;border:2px solid #cbd8d3;border-radius:50%;background:#fff}.stage-track i[data-active=true]{border-color:var(--astra-primary);background:var(--astra-primary)}.stage-track i[data-current=true]{width:14px;height:14px;border:3px solid var(--astra-primary);background:#fff;box-shadow:0 0 0 3px var(--astra-primary-soft)}.execution-overview dl{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px;margin:0}.execution-overview dl div{min-width:0}.execution-overview dt{color:var(--astra-text-muted);font-size:12px}.execution-overview dd{overflow:hidden;margin:1px 0 0;color:var(--astra-text-secondary);text-overflow:ellipsis;white-space:nowrap}.execution-overview dd a{color:var(--astra-primary-bright)}.mono{font:12px ui-monospace,monospace}
-.employee-card-compact header>span{color:var(--astra-success)}.employee-card-compact header>span:before{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:currentColor}.employee-card-compact>div{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:11px}.employee-card-compact :deep(.employee-portrait){width:56px;height:56px;border-radius:16px 9px}.employee-card-compact section{min-width:0}.employee-card-compact section strong{display:block}.employee-card-compact section p{margin:1px 0;color:var(--astra-text-secondary)}.employee-card-compact section small{display:block;overflow:hidden;color:var(--astra-text-muted);text-overflow:ellipsis;white-space:nowrap}.rail-empty{margin:0;padding:10px;color:var(--astra-text-muted);border:1px dashed var(--astra-border);border-radius:7px;font-size:13px}.agent-list article{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:8px;padding:7px 0}.agent-list i{width:7px;height:7px;border-radius:50%;background:var(--astra-primary)}.agent-list i[data-status=completed]{background:var(--astra-success)}.agent-list i[data-status=failed]{background:var(--astra-danger)}.agent-list div{display:grid}.agent-list small{color:var(--astra-text-muted)}.agent-list article>span{color:var(--astra-primary-bright);font-size:12px}.artifact-list-card article{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:7px;padding:7px 0}.artifact-list-card article>svg{color:var(--astra-primary-bright)}.artifact-list-card article>span{display:grid;min-width:0}.artifact-list-card article strong,.artifact-list-card article small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.artifact-list-card article small{color:var(--astra-text-muted)}.artifact-list-card article b{color:var(--astra-success);font-size:12px;font-weight:500}.acceptance-card article{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-top:1px solid #edf1ef}.acceptance-card article>svg{flex:none;margin-top:2px;color:var(--astra-text-muted)}.acceptance-card article>svg.lucide-check-circle{color:var(--astra-success)}.acceptance-card article>svg.lucide-circle-x{color:var(--astra-danger)}.acceptance-card article strong{display:block;font-size:13px}.acceptance-card article p{margin:2px 0 0;color:var(--astra-text-muted);font-size:12px}.usage-compact{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.usage-compact div{display:grid;padding:8px;border:1px solid var(--astra-border);border-radius:7px;background:#f8fbfa}.usage-compact small{color:var(--astra-text-muted)}.usage-panel>p{margin:9px 0 0;color:var(--astra-text-muted);font-size:12px}.quick-actions-card>div{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.quick-actions-card button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:7px;background:#fff;cursor:pointer}.quick-actions-card .action-primary{color:var(--astra-primary-bright);border-color:var(--astra-primary-border);background:var(--astra-primary-soft)}.quick-actions-card .action-danger{color:var(--astra-danger);border-color:#edbcc1;background:var(--astra-danger-soft)}.workbench-loading{display:flex;align-items:center;justify-content:center;gap:9px;min-height:60vh;color:var(--astra-text-muted)}
-.workbench-main{position:relative}.workbench-flow{padding-bottom:40px}.agent-card,.subagent-card{border-left:2px solid var(--astra-primary);background:linear-gradient(90deg,rgba(24,184,117,.045),#fff 22%)}.message-entry[data-role=user] .message-card{background:linear-gradient(135deg,#f8fbfa,#f2f7f5)}.message-entry[data-role=agent] .message-card{border-left:2px solid var(--astra-info)}.jump-latest{position:absolute;z-index:5;right:28px;bottom:124px;display:flex;align-items:center;gap:5px;padding:7px 11px;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:18px;background:#fff;box-shadow:var(--astra-shadow-panel);cursor:pointer}.workbench-composer{position:sticky;bottom:0;z-index:4}.runtime-info{margin-top:12px;padding-top:10px;border-top:1px solid var(--astra-border)}.runtime-info>summary{color:var(--astra-text-muted);cursor:pointer;font-size:12px}.runtime-info>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:7px;margin-top:7px}.runtime-info small{color:var(--astra-text-muted)}.runtime-info code,.runtime-info a{overflow:hidden;color:var(--astra-text-secondary);font:12px ui-monospace,monospace;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:1320px){.workbench-layout{grid-template-columns:minmax(0,1.7fr) minmax(310px,.8fr)}.result-metrics{grid-template-columns:repeat(3,1fr);row-gap:10px}}@media(max-width:1080px){.workbench-layout{grid-template-columns:1fr}.workbench-flow{height:auto;max-height:720px}.workbench-rail{grid-template-columns:repeat(2,minmax(0,1fr))}.execution-overview,.quick-actions-card{grid-column:1/-1}}@media(max-width:760px){.task-workbench-page{padding-top:14px}.workbench-header{align-items:flex-start}.workbench-title h2{white-space:normal}.header-actions .icon-button,.workbench-tabs small,.workbench-tabs>i{display:none}.workbench-flow{min-height:480px;padding:14px 10px 22px}.flow-objective,.flow-entry{grid-template-columns:31px minmax(0,1fr);gap:7px}.flow-timeline:before{left:14px}.timeline-node{width:26px;height:26px;margin-left:1px}.result-metrics,.failure-card dl,.agent-context>div,.inquiry-options{grid-template-columns:1fr}.operation-rows article{grid-template-columns:52px minmax(0,1fr) 52px}.operation-rows code{grid-column:2/-1}.workbench-rail{grid-template-columns:1fr}.execution-overview,.quick-actions-card{grid-column:auto}.workbench-composer footer>small{display:none}}
-/* OpenCode-inspired task session: the transcript is primary; runtime details stay contextual. */
-.task-workbench-page{
-  --cli-bg:#202631;
-  --cli-bg-deep:#1b2029;
-  --cli-bg-soft:#272e3a;
-  --cli-line:#394250;
-  --cli-text:#e7eaf0;
-  --cli-text-soft:#aab1bc;
-  --cli-muted:#747d8a;
-  --cli-accent:#f17845;
-  --cli-green:#6dcc8b;
-  --cli-red:#ef747a;
-  --cli-blue:#6aa7e8;
-  max-width:none;
-  padding:12px 14px 16px;
-}
-.cli-window{
-  overflow:hidden;
-  color:var(--cli-text);
-  border:1px solid #343c48;
-  border-radius:16px;
-  background:var(--cli-bg);
-  box-shadow:0 22px 52px rgba(14,18,25,.24);
-  font-family:"SFMono-Regular",Consolas,"Liberation Mono","Noto Sans Mono CJK SC",monospace;
-}
-.workbench-breadcrumb{height:40px;margin:0;padding:0 24px;color:var(--cli-muted);border-bottom:1px solid var(--cli-line);font-size:12px}.workbench-breadcrumb a,.workbench-breadcrumb strong{color:var(--cli-text-soft)}
-.workbench-header{min-height:70px;padding:9px 24px;border-bottom:1px solid rgba(57,66,80,.72)}.workbench-title>div{color:var(--cli-muted);font-size:12px}.workbench-title h2{margin-top:7px;color:var(--cli-text);font:650 19px/1.25 inherit;letter-spacing:-.015em}.priority{color:var(--cli-accent)!important;background:transparent!important}.header-actions .icon-button{color:var(--cli-text-soft);border:0;background:transparent}.header-actions .icon-button:hover{color:var(--cli-text);background:var(--cli-bg-soft)}
-.cli-status{display:inline-flex;align-items:center;gap:7px;color:var(--cli-text-soft);font-size:12px}.cli-status i{width:7px;height:7px;border-radius:1px;background:var(--cli-blue)}.cli-status[data-status=COMPLETED] i{background:var(--cli-green)}.cli-status[data-status=WAIT_HUMAN] i,.cli-status[data-status=PENDING_CONFIRMATION] i,.cli-status[data-status=SUSPENDED] i{background:var(--cli-accent)}.cli-status[data-status=FAILED] i,.cli-status[data-status=EXECUTION_ERROR] i,.cli-status[data-status=CANCELLED] i{background:var(--cli-red)}
-.workbench-tabs{min-height:39px;margin:0;padding:0 15px;border-bottom:1px solid var(--cli-line)}.workbench-tabs button{gap:6px;padding:0 11px;color:var(--cli-muted);font:600 12px inherit}.workbench-tabs button.active{color:var(--cli-text);border-bottom-color:var(--cli-accent)}.workbench-tabs button span{padding:0;color:var(--cli-muted);background:transparent}.workbench-tabs>i{width:6px;height:6px;background:var(--cli-accent)}.workbench-tabs>i[data-connected=true]{background:var(--cli-blue)}.workbench-tabs>small{color:var(--cli-muted);font-size:11px}
-.workbench-layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:0;align-items:stretch}.workbench-main{position:relative;display:flex;min-width:0;height:clamp(620px,calc(100vh - 184px),900px);flex-direction:column;border:0;border-radius:0;background:var(--cli-bg);box-shadow:none}.workbench-flow{flex:1;height:auto;min-height:0;padding:0;overflow:auto;scrollbar-color:#46505e transparent;scroll-behavior:smooth}.load-history{margin:14px auto 0;color:var(--cli-text-soft);border:0;background:transparent;font:12px inherit}.load-history:hover{color:var(--cli-text)}
-.cli-transcript{display:flex;min-height:100%;max-width:1120px;flex-direction:column;padding:26px clamp(28px,4vw,68px) 18px}.cli-turn{position:relative;margin:0 0 25px;color:var(--cli-text-soft)}.cli-turn header{display:flex;align-items:center;gap:9px;margin-bottom:8px}.cli-turn header strong{color:var(--cli-text);font-size:13px}.cli-turn header span{color:var(--cli-accent);font-size:11px}.cli-turn time{margin-left:auto;color:var(--cli-muted);font-size:11px}.cli-turn p{margin:0;color:var(--cli-text-soft);font:14px/1.72 inherit;white-space:pre-wrap;word-break:break-word}.cli-task-prompt{padding:7px 8px 7px 19px;border-left:2px solid var(--cli-accent)}.cli-task-prompt p{color:var(--cli-text);font-size:15px;line-height:1.8}.cli-user-turn header strong{color:var(--cli-accent)}.cli-user-turn{padding-left:20px;border-left:2px solid rgba(241,120,69,.65)}.cli-agent-turn header strong{color:var(--cli-text)}.cli-agent-turn p{color:#c4cad3}.cli-event{padding-left:20px}.cli-event header{margin-bottom:5px}.cli-event .event-mark{width:7px;height:7px;border:1px solid var(--cli-accent);background:rgba(241,120,69,.3)}.cli-event[data-tone=success] .event-mark{border-color:var(--cli-green);background:rgba(109,204,139,.28)}.cli-event p{padding-left:16px;color:var(--cli-muted);font-size:13px}.cli-inquiry{margin-top:auto;padding:20px 8px 8px 20px;border-left:2px solid var(--cli-accent)}.cli-inquiry header strong{color:var(--cli-text-soft)}.cli-inquiry .inquiry-question{color:var(--cli-text);font-weight:650}.cli-inquiry>small{display:block;margin-top:6px;color:var(--cli-muted);line-height:1.5}.inquiry-answer{margin-top:8px!important;color:var(--cli-text)!important;font-weight:650!important}.inquiry-options{display:grid;grid-template-columns:1fr;gap:3px;margin-top:12px}.inquiry-options button{display:grid;gap:2px;padding:7px 10px;color:var(--cli-text-soft);border:0;border-left:2px solid transparent;border-radius:0;background:transparent;font:12px/1.5 inherit;text-align:left;cursor:pointer}.inquiry-options button:hover{color:var(--cli-text);border-left-color:var(--cli-accent);background:rgba(255,255,255,.025)}.inquiry-options small{color:var(--cli-muted)}.cli-failure{padding:10px 14px;border-left:2px solid var(--cli-red);background:rgba(239,116,122,.035)}.cli-failure header strong,.cli-failure header span{color:var(--cli-red)}.cli-result{padding-top:4px}.cli-build-line{display:flex;align-items:center;gap:8px;margin-top:auto;padding-top:18px;color:var(--cli-muted);font-size:12px}.cli-build-line>span{width:7px;height:7px;border:1px solid var(--cli-accent);background:rgba(241,120,69,.28)}.cli-build-line strong{color:var(--cli-text)}.cli-build-line b{color:#596270;font-weight:400}.attachments{gap:10px}.attachments a{padding:4px 0;color:var(--cli-blue);border:0;border-radius:0;background:transparent;font-size:12px}
-.workbench-composer{position:relative;bottom:auto;z-index:4;flex:none;margin:0;padding:12px 20px 10px;border:0;border-top:1px solid rgba(57,66,80,.72);border-radius:0;background:var(--cli-bg);box-shadow:0 -12px 30px rgba(17,21,28,.14)}.workbench-composer:before{content:"";position:absolute;top:14px;bottom:13px;left:20px;width:2px;background:var(--cli-accent)}.workbench-composer:focus-within{border-color:var(--cli-line);box-shadow:0 -12px 30px rgba(17,21,28,.14)}.workbench-composer textarea{box-sizing:border-box;width:100%;min-height:48px;padding:3px 12px 5px 22px;color:var(--cli-text);border:0;outline:0;background:transparent;font:13px/1.6 inherit;caret-color:var(--cli-text);resize:none}.workbench-composer textarea::placeholder{color:#697281}.workbench-composer footer{padding-left:12px}.workbench-composer footer>div{gap:3px}.workbench-composer footer button{color:var(--cli-muted);border-radius:3px;background:transparent}.workbench-composer footer button:hover{color:var(--cli-text);background:var(--cli-bg-soft)}.workbench-composer footer strong{margin-left:4px;color:var(--cli-accent);font-size:11px}.workbench-composer footer span,.workbench-composer footer>small{color:var(--cli-muted);font-size:10px}.workbench-composer .send-button{color:var(--cli-text);background:transparent}.workbench-composer .send-button:not(:disabled){color:var(--cli-accent)}.composer-notice{margin:0 0 8px 14px;padding:6px 9px;color:var(--cli-green);border-radius:2px;background:rgba(109,204,139,.08);font-size:11px}.composer-notice[data-error=true]{color:var(--cli-red);background:rgba(239,116,122,.08)}.command-menu{right:16px;bottom:calc(100% + 7px);width:275px;border-color:var(--cli-line);border-radius:4px;background:var(--cli-bg-soft);box-shadow:0 16px 35px rgba(0,0,0,.3)}.command-menu button{color:var(--cli-text-soft);border-radius:2px}.command-menu button:hover{background:rgba(255,255,255,.04)}.command-menu code{color:var(--cli-accent)}
-.jump-latest{right:292px;bottom:98px;padding:6px 10px;color:var(--cli-text);border:1px solid var(--cli-line);border-radius:3px;background:var(--cli-bg-soft);box-shadow:0 7px 18px rgba(0,0,0,.2);font:11px inherit}.jump-latest:hover{border-color:var(--cli-accent)}
-.artifact-workspace{flex:1;min-height:0;padding:32px clamp(28px,4vw,68px);overflow:auto}.artifact-workspace>header{margin-bottom:26px}.artifact-workspace h3{color:var(--cli-text);font:650 15px inherit}.artifact-workspace header p{color:var(--cli-muted);font-size:12px}.artifact-workspace header>span{color:var(--cli-muted);border:0;border-radius:0;background:transparent;font-size:11px}.artifact-grid{gap:0}.artifact-grid article{grid-template-columns:25px minmax(0,1fr) auto;gap:10px;padding:10px 0;border:0;border-bottom:1px solid rgba(57,66,80,.65);border-radius:0}.artifact-grid article>span{width:auto;height:auto;color:var(--cli-blue);border-radius:0;background:transparent}.artifact-grid strong{color:var(--cli-text);font-size:12px}.artifact-grid p{color:var(--cli-muted);font-size:11px}.artifact-grid small{color:var(--cli-green);font-size:10px}.workspace-empty{color:var(--cli-muted)}.workspace-empty strong{color:var(--cli-text-soft)}
-.workbench-rail{display:block;height:clamp(620px,calc(100vh - 184px),900px);padding:23px 22px;overflow:auto;color:var(--cli-text-soft);border-left:1px solid var(--cli-line);background:var(--cli-bg);scrollbar-color:#46505e transparent}.workbench-rail h2,.workbench-rail h3,.workbench-rail p{font-family:inherit}.context-title{margin-bottom:25px}.context-title .context-heading{margin:0;color:var(--cli-text);font-size:13px;line-height:1.55}.context-title p{margin:5px 0 0;color:var(--cli-muted);font-size:10px}.usage-panel{display:block;grid-column:auto;margin-bottom:24px}.usage-panel h3,.context-section h3{margin:0 0 7px;color:var(--cli-text);font-size:12px}.usage-panel p{margin:2px 0!important;color:var(--cli-muted)!important;font-size:11px!important}.usage-panel p strong{color:var(--cli-text-soft);font-size:13px}.usage-panel>small{display:block;margin-top:4px;color:var(--cli-muted);font-size:10px;line-height:1.5}.context-section{margin:0 0 22px}.context-section>header{display:flex;align-items:center;margin-bottom:7px}.context-section>header h3{margin:0}.context-section>header>span,.context-section>header h3 span{color:var(--cli-muted);font-weight:400}.context-section header button{margin-left:auto;padding:0;color:var(--cli-blue);border:0;background:transparent;font:10px inherit;cursor:pointer}.employee-context p{display:flex;align-items:center;gap:7px;margin:0;color:var(--cli-text-soft);font-size:11px}.employee-context p i{width:6px;height:6px;border-radius:50%;background:var(--cli-blue)}.employee-context p i[data-status=WAIT_HUMAN]{background:var(--cli-accent)}.employee-context p i[data-status=OFFLINE],.employee-context p i[data-status=ERROR]{background:var(--cli-red)}.employee-context>small{display:block;margin-top:3px;color:var(--cli-muted);font-size:10px;line-height:1.5}.agent-list article{grid-template-columns:7px minmax(0,1fr) auto;gap:7px;padding:5px 0}.agent-list i{width:6px;height:6px;background:var(--cli-blue)}.agent-list div strong{color:var(--cli-text-soft);font-size:11px}.agent-list small{color:var(--cli-muted);font-size:9px}.agent-list article>span{color:var(--cli-green);font-size:10px}.cli-muted{margin:0;color:var(--cli-muted);font-size:10px}.artifact-list-card article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:5px 0}.artifact-list-card article>span{display:grid;min-width:0}.artifact-list-card strong{overflow:hidden;color:var(--cli-text-soft);font-size:10px;text-overflow:ellipsis;white-space:nowrap}.artifact-list-card small{overflow:hidden;color:var(--cli-muted);font-size:9px;text-overflow:ellipsis;white-space:nowrap}.artifact-list-card b{color:var(--cli-green);font-size:9px;font-weight:400}.acceptance-card article{display:grid;grid-template-columns:15px minmax(0,1fr);gap:6px;padding:6px 0;border:0}.acceptance-card article>svg{margin-top:1px;color:var(--cli-green)}.acceptance-card article>span{color:var(--cli-muted)}.acceptance-card article strong{display:block;color:var(--cli-text-soft);font-size:10px;line-height:1.45}.acceptance-card article p{margin:2px 0 0;color:var(--cli-muted);font-size:9px;line-height:1.4}.runtime-info{margin:0 0 18px;padding:9px 0 0;border-top:1px solid var(--cli-line)}.runtime-info>summary{color:var(--cli-muted);font:10px inherit;cursor:pointer}.runtime-info>div{display:grid;grid-template-columns:72px minmax(0,1fr);gap:7px;margin-top:7px}.runtime-info small{color:var(--cli-muted);font-size:9px}.runtime-info code,.runtime-info a,.runtime-info span{overflow:hidden;color:var(--cli-text-soft);font:9px/1.4 inherit;text-overflow:ellipsis;white-space:nowrap}.runtime-info a{color:var(--cli-blue)}.context-actions{display:flex;flex-wrap:wrap;gap:5px;padding-top:4px}.context-actions button{padding:4px 7px;color:var(--cli-muted);border:1px solid var(--cli-line);border-radius:2px;background:transparent;font:9px inherit;cursor:pointer}.context-actions button:hover{color:var(--cli-text);border-color:#596474}.context-actions .danger{color:var(--cli-red)}.context-footer{display:flex;align-items:center;gap:7px;margin-top:26px;color:var(--cli-muted);font-size:9px}.context-footer span{width:6px;height:6px;border-radius:50%;background:var(--cli-accent)}.context-footer span[data-connected=true]{background:var(--cli-blue)}
-.workbench-loading{color:var(--cli-muted)}
-@media(max-width:1100px){.workbench-layout{grid-template-columns:minmax(0,1fr) 225px}.workbench-main,.workbench-rail{height:clamp(590px,calc(100vh - 180px),840px)}.workbench-rail{display:block;padding:20px 16px}.jump-latest{right:247px}}
-@media(max-width:800px){.task-workbench-page{padding:7px}.cli-window{border-radius:10px}.workbench-header{align-items:flex-start;padding:8px 14px}.workbench-title h2{font-size:16px;white-space:normal}.header-actions .icon-button{display:none}.workbench-breadcrumb{padding:0 14px}.workbench-layout{grid-template-columns:1fr}.workbench-main{height:calc(100vh - 164px);min-height:550px}.workbench-rail{display:none}.cli-transcript{padding:22px 18px}.jump-latest{right:18px}.workbench-composer{padding-right:12px;padding-left:12px}.workbench-composer:before{left:12px}.workbench-composer footer>small{display:none}}
-.workbench-main,.workbench-rail{height:clamp(480px,calc(100vh - 236px),900px)}
-.cli-event.subagent-card{border-left:0;background:transparent}
-.cli-inquiry .inquiry-question{color:var(--cli-text)!important}
-.cli-transcript{min-height:max(100%,260px)}
-.task-context p{margin:0;color:var(--cli-text-soft);font-size:11px}.task-context small{display:block;margin-top:3px;color:var(--cli-muted);font-size:10px}
-@media(max-width:1100px){.workbench-main,.workbench-rail{height:clamp(480px,calc(100vh - 236px),840px)}}
-@media(max-width:800px){.workbench-main{height:calc(100vh - 164px);min-height:550px}}
+.task-detail-page{height:calc(100dvh - 80px);min-height:620px;padding:0;overflow:hidden;background:#fff}.task-workspace{display:flex;height:100%;min-width:0;flex-direction:column;overflow:hidden;background:#fff}
+.task-header{flex:none;padding:15px clamp(20px,3vw,38px) 16px;border-bottom:1px solid var(--astra-border);background:linear-gradient(135deg,#fff 72%,#f5fbf8)}.task-breadcrumb{display:flex;align-items:center;gap:7px;margin-bottom:13px;color:var(--astra-text-muted);font-size:12px}.task-breadcrumb a:hover{color:var(--astra-primary-bright)}.task-title-row{display:flex;align-items:center;gap:15px}.task-title-row h2{min-width:0;margin:0;font:650 clamp(20px,2vw,27px)/1.3 var(--astra-font-display);letter-spacing:-.025em}.task-status{display:inline-flex;flex:none;align-items:center;gap:6px;padding:6px 11px;color:var(--astra-info);border-radius:9px;background:color-mix(in srgb,var(--astra-info) 11%,transparent);font-size:13px;font-weight:650;white-space:nowrap}.task-status[data-tone=success]{color:var(--astra-success);background:var(--astra-success-soft)}.task-status[data-tone=warning]{color:var(--astra-warning);background:var(--astra-warning-soft)}.task-status[data-tone=danger]{color:var(--astra-danger);background:var(--astra-danger-soft)}.task-meta{display:flex;align-items:center;gap:12px;margin-top:13px;color:var(--astra-text-muted);font-size:12px}.task-meta span{display:inline-flex;align-items:center;gap:6px}.task-meta span i{width:7px;height:7px;border-radius:50%;background:var(--astra-success)}.task-meta>b{width:1px;height:16px;background:var(--astra-border)}.sidebar-toggle{display:none;align-items:center;gap:6px;margin-left:auto;padding:7px 10px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;cursor:pointer}
+.task-shell{position:relative;display:grid;min-height:0;flex:1;grid-template-columns:minmax(0,1fr) 340px;overflow:hidden}.task-main{position:relative;display:flex;min-width:0;min-height:0;flex-direction:column;background:#fff}.conversation-scroller{min-height:0;flex:1;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.load-history{display:flex;align-items:center;gap:6px;margin:13px auto 0;padding:7px 11px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:18px;background:#fff;font-size:12px;cursor:pointer}.load-history:hover{color:var(--astra-primary-bright);border-color:var(--astra-primary-border)}.conversation-list{width:min(100%,920px);min-height:100%;margin:0 auto;padding:24px clamp(20px,4vw,52px) 36px}
+.conversation-turn{display:flex;align-items:flex-start;gap:12px;margin-bottom:22px}.conversation-turn--user{justify-content:flex-end}.actor-avatar{display:grid;flex:none;place-items:center;width:42px;height:42px;border-radius:50%;font-size:13px;font-weight:700}.actor-avatar--agent{color:var(--astra-primary-bright);background:var(--astra-primary-soft)}.actor-avatar--user{color:#0d7b50;background:#e4f5ec}.actor-avatar--danger{color:var(--astra-danger);background:var(--astra-danger-soft)}.turn-content{display:grid;max-width:min(72%,720px);min-width:0}.turn-content--wide{width:min(100%,720px);max-width:none}.turn-content>header{display:flex;align-items:center;gap:8px;min-height:20px;margin-bottom:5px;color:var(--astra-text-muted);font-size:11px}.turn-content>header strong{color:var(--astra-text-secondary);font-size:12px}.turn-content>header span{color:var(--astra-primary-bright)}.turn-content>header time{margin-left:auto}.conversation-turn--user .turn-content>header{justify-content:flex-end}.message-bubble{margin:0;padding:12px 15px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:4px 13px 13px 13px;background:#fff;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}.conversation-turn--user .message-bubble{border-color:#d8e9e1;border-radius:13px 4px 13px 13px;background:linear-gradient(135deg,#f0f9f5,#eaf6f0)}.message-attachments{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;margin-top:7px}.message-attachments a{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;color:var(--astra-primary-bright);border-radius:6px;background:var(--astra-primary-soft);font-size:11px}
+.inquiry-card{width:min(100%,720px);padding:15px 16px;border:1px solid color-mix(in srgb,var(--astra-warning) 30%,var(--astra-border));border-radius:12px;background:#fffdf8}.inquiry-card__title{display:flex;align-items:center;gap:7px;color:var(--astra-warning)}.inquiry-card__title strong{color:var(--astra-text-primary);font-size:14px}.inquiry-card__title span{margin-left:auto;padding:3px 7px;border-radius:999px;background:var(--astra-warning-soft);font-size:11px}.inquiry-card>p{margin:10px 0 0;font-size:14px;line-height:1.65}.inquiry-card>small{display:block;margin-top:4px;color:var(--astra-text-muted);font-size:12px}.inquiry-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.inquiry-options button{display:grid;gap:2px;padding:10px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;text-align:left;cursor:pointer}.inquiry-options button:hover{color:var(--astra-primary-bright);border-color:var(--astra-primary-border);background:var(--astra-primary-soft)}.inquiry-options small{color:var(--astra-text-muted)}.inquiry-answer{display:flex;align-items:center;gap:6px;margin-top:12px;padding:8px 10px;color:var(--astra-success);border-radius:7px;background:var(--astra-success-soft);font-size:12px}
+.failure-card,.result-card{width:min(100%,720px);padding:15px 16px;border:1px solid var(--astra-border);border-radius:12px;background:#fff}.failure-card{border-color:color-mix(in srgb,var(--astra-danger) 28%,var(--astra-border));background:linear-gradient(135deg,#fff,var(--astra-danger-soft))}.failure-card>div,.result-card__title{display:flex;align-items:center;gap:7px;color:var(--astra-danger)}.failure-card strong,.result-card__title strong{color:var(--astra-text-primary);font-size:14px}.failure-card p,.result-card>p{margin:9px 0 0;color:var(--astra-text-secondary);font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word}.failure-card small,.result-card>small{display:block;margin-top:10px;color:var(--astra-text-muted);font-size:11px}.result-card{background:linear-gradient(135deg,#fff,#f8fcfa)}.result-card__title{color:var(--astra-success)}.result-card__title span{margin-left:auto;color:var(--astra-success);font-size:11px}.result-acceptance{margin-top:13px;padding:10px 11px;border:1px solid #dfeae5;border-radius:8px;background:#fff}.result-acceptance>div{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}.result-acceptance>div strong{font-size:12px}.result-acceptance>div span{color:var(--astra-success);font-size:11px}.result-acceptance article{display:flex;align-items:flex-start;gap:7px;padding:5px 0;color:var(--astra-text-secondary);font-size:11px}.result-acceptance article svg{flex:none;margin-top:1px;color:var(--astra-text-muted)}.result-acceptance article svg.lucide-check-circle{color:var(--astra-success)}.result-acceptance article svg.lucide-circle-x{color:var(--astra-danger)}
+.conversation-turn--working{opacity:.88}.working-copy{margin:0;color:var(--astra-text-muted);font-size:12px}.typing{display:inline-flex!important;gap:3px!important}.typing i{width:4px;height:4px;border-radius:50%;background:var(--astra-primary);animation:typing 1.2s infinite}.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}.conversation-end{height:1px}.jump-latest{position:absolute;right:24px;bottom:132px;z-index:4;display:flex;align-items:center;gap:5px;padding:7px 11px;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:18px;background:#fff;box-shadow:var(--astra-shadow-panel);font-size:12px;cursor:pointer}
+.task-composer{flex:none;padding:11px clamp(18px,3vw,28px) 12px;border-top:1px solid var(--astra-border);background:#fbfdfc;box-shadow:0 -9px 28px rgba(28,58,49,.045)}.composer-notice{display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:7px 9px;color:var(--astra-success);border-radius:7px;background:var(--astra-success-soft);font-size:12px}.composer-notice[data-error=true]{color:var(--astra-danger);background:var(--astra-danger-soft)}.composer-row{display:grid;grid-template-columns:38px minmax(0,1fr) 38px;align-items:center;gap:6px;min-height:58px;padding:5px 8px;border:1px solid var(--astra-border-hover);border-radius:11px;background:#fff}.composer-row:focus-within{border-color:var(--astra-primary-border);box-shadow:0 0 0 3px var(--astra-primary-soft)}.composer-row textarea{width:100%;min-height:43px;max-height:110px;padding:8px 5px;color:var(--astra-text-primary);border:0;outline:0;background:transparent;line-height:1.55;resize:none}.composer-row textarea:disabled{cursor:not-allowed}.composer-attach,.composer-send{display:grid;place-items:center;width:36px;height:36px;color:var(--astra-text-muted);border:0;border-radius:8px;background:transparent;cursor:pointer}.composer-attach:hover{color:var(--astra-primary-bright);background:var(--astra-primary-soft)}.composer-send{color:var(--astra-primary-bright)}.composer-send:disabled{cursor:not-allowed;opacity:.35}.composer-actions{display:flex;align-items:center;gap:12px;margin-top:9px}.composer-actions>span{display:flex;align-items:center;gap:6px;color:var(--astra-text-muted);font-size:11px}.composer-actions>span i{width:7px;height:7px;border-radius:50%;background:var(--astra-success)}.composer-actions>span i[data-status=RUNNING]{background:var(--astra-info)}.composer-actions>span i[data-status=WAIT_HUMAN],.composer-actions>span i[data-status=PENDING_CONFIRMATION],.composer-actions>span i[data-status=SUSPENDED]{background:var(--astra-warning)}.composer-actions>span i[data-status=FAILED],.composer-actions>span i[data-status=EXECUTION_ERROR],.composer-actions>span i[data-status=CANCELLED]{background:var(--astra-danger)}.composer-actions>div{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px;margin-left:auto}.action-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;padding:0 11px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;font-size:12px;cursor:pointer}.action-button:hover{color:var(--astra-primary-bright);border-color:var(--astra-primary-border)}.action-button--primary{color:#fff;border-color:var(--astra-success);background:var(--astra-success)}.action-button--primary:hover{color:#fff}.action-button--danger{color:var(--astra-danger);border-color:color-mix(in srgb,var(--astra-danger) 38%,transparent);background:var(--astra-danger-soft)}
+.task-sidebar-backdrop{display:none}.dialog-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:20px;background:rgba(18,32,27,.32);backdrop-filter:blur(4px)}.confirm-dialog{display:grid;width:min(100%,440px);grid-template-columns:42px minmax(0,1fr);gap:13px;padding:20px;border:1px solid var(--astra-border);border-radius:14px;background:#fff;box-shadow:0 24px 70px rgba(28,58,49,.22)}.confirm-dialog>span{display:grid;place-items:center;width:40px;height:40px;color:var(--astra-danger);border-radius:50%;background:var(--astra-danger-soft)}.confirm-dialog h3{margin:0;font-size:17px}.confirm-dialog p{margin:5px 0 0;color:var(--astra-text-muted);font-size:12px;line-height:1.55}.confirm-dialog footer{display:flex;grid-column:1/-1;justify-content:flex-end;gap:8px;margin-top:5px}.confirm-dialog footer button{min-height:36px;padding:0 13px;color:var(--astra-text-secondary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;cursor:pointer}.confirm-dialog footer .confirm-stop{display:flex;align-items:center;gap:6px;color:#fff;border-color:var(--astra-danger);background:var(--astra-danger)}.task-detail-loading{display:flex;height:calc(100dvh - 80px);align-items:center;justify-content:center;gap:9px;color:var(--astra-text-muted);background:#fff}
+@keyframes typing{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}
+@media(max-width:1180px){.task-shell{grid-template-columns:minmax(0,1fr) 300px}}
+@media(max-width:900px){.task-shell{grid-template-columns:1fr}.sidebar-toggle{display:inline-flex}.task-sidebar{position:absolute;top:0;right:0;bottom:0;z-index:20;width:min(380px,92%);transform:translateX(102%);border-left:1px solid var(--astra-border);box-shadow:-18px 0 50px rgba(28,58,49,.16);transition:transform .2s ease}.task-sidebar.is-open{transform:translateX(0)}.task-sidebar-backdrop{position:absolute;inset:0;z-index:19;display:block;background:rgba(23,43,35,.18)}}
+@media(max-width:700px){.task-detail-page{height:calc(100dvh - 80px);min-height:520px}.task-header{padding:12px 15px}.task-breadcrumb{margin-bottom:9px}.task-title-row{align-items:flex-start;flex-wrap:wrap;gap:8px}.task-title-row h2{width:calc(100% - 108px);font-size:18px}.task-status{padding:5px 8px;font-size:11px}.sidebar-toggle{order:3;margin-left:0}.task-meta{flex-wrap:wrap;gap:7px 10px;margin-top:9px}.task-meta>b{display:none}.conversation-list{padding:18px 13px 24px}.conversation-turn{gap:8px;margin-bottom:18px}.actor-avatar{width:34px;height:34px}.turn-content{max-width:calc(100% - 42px)}.turn-content--wide{width:calc(100% - 42px)}.message-bubble{padding:10px 12px;font-size:13px}.inquiry-options{grid-template-columns:1fr}.task-composer{padding:9px 10px}.composer-actions{align-items:flex-start;flex-direction:column}.composer-actions>div{justify-content:flex-start;margin-left:0}.action-button{min-height:32px;padding:0 9px}.jump-latest{right:14px;bottom:164px}.task-sidebar{width:100%}}
 </style>

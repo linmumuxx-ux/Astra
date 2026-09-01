@@ -4,7 +4,7 @@
 
 ## 结论
 
-任务详情已从“运行事件时间线”调整为 OpenCode CLI 风格的持久任务会话。P0 询问任务能够在任务详情内完成 User Message → Agent Message → Inquiry → User Answer → 原 Run 恢复 → Agent Final Output 的完整闭环；usage、token、heartbeat、session metadata 不进入主会话流。
+任务详情已从“运行事件时间线”调整为借鉴 OpenCode CLI 信息布局、使用 NEXUS 原生浅色主题的持久任务会话。P0 询问任务能够在任务详情内完成 User Message → Agent Message → Inquiry → User Answer → 原 Run 恢复 → Agent Final Output 的完整闭环；usage、token、heartbeat、session metadata 不进入主会话流。
 
 ## 自动化证据
 
@@ -35,7 +35,7 @@
 
 浏览器复查确认：
 
-- 工作台为深色连续 Session，原始任务、Inquiry、回答、真实 Subagent 与简洁 Agent Output 可见；底部输入区持续可用。
+- 工作台使用 NEXUS 白底、品牌绿和现有状态色，保留 OpenCode 式连续 Session、右侧 Context 与底部常驻输入区；原始任务、Inquiry、回答、真实 Subagent 与简洁 Agent Output 可见。
 - `T-20260830-C5D9E8` 同时显示 `Subagent (1)`、`general 已完成子任务：Print hello world` 和任务结果，错误空状态不再出现。
-- `T-20260829-E81934` 的 Inquiry 正文计算颜色为 `rgb(231, 234, 240)`，问题、回答和最终输出可读。
+- `T-20260829-E81934` 的 Inquiry 使用 NEXUS 文本色与等待态橙色强调，问题、回答和最终输出可读。
 - 运行信息默认折叠；Tool、Run 生命周期、usage 和 Session 元数据不进入主会话。

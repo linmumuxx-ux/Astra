@@ -56,7 +56,7 @@ test('创建任务仅填写业务事实且高优先级默认人工确认', async
 
   await page.waitForURL(/\/tasks\/T-[A-Z0-9-]+$/)
   await expect(page.getByRole('heading', { name: title })).toBeVisible()
-  await expect(page.getByText('人工确认', { exact: true })).toBeVisible()
+  await expect(page.getByText('等待领取', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('任务信息正确保存')).toBeVisible()
 
   const taskId = new URL(page.url()).pathname.split('/').at(-1)!
@@ -111,16 +111,18 @@ test('运行记录列表可进入 Run 与任务详情', async ({ page }) => {
   await expect(detail).toContainText('160.8K')
 })
 
-test('完成任务展示结果、逐项验收和实际工作消耗', async ({ page }) => {
+test('完成任务展示会话结果、产出验收和固定视口', async ({ page }) => {
   await page.goto('/tasks/T-20260827-003')
   const detail = page.getByTestId('task-detail-page')
   await expect(detail).toBeVisible()
   await expect(detail.getByText('告警已展示接口与来源信息')).toBeVisible()
-  await expect(detail.getByText('满足 · 相关检查均通过')).toBeVisible()
-  await expect(detail.locator('.usage-panel')).toContainText('160.8K')
-  await expect(detail.locator('.usage-panel')).toContainText('bash')
-  await detail.locator('.workbench-flow').evaluate((element) => {
+  await expect(detail.getByText('相关检查均通过')).toBeVisible()
+  await expect(detail.getByRole('heading', { name: '产出与验收' })).toBeVisible()
+  await expect(detail).not.toContainText('160.8K')
+  await expect(detail).not.toContainText('bash')
+  await detail.locator('.conversation-scroller').evaluate((element) => {
     const viewport = element as HTMLElement
+    viewport.style.flex = '0 0 160px'
     viewport.style.height = '160px'
     viewport.scrollTop = 0
     element.dispatchEvent(new Event('scroll'))
@@ -129,9 +131,23 @@ test('完成任务展示结果、逐项验收和实际工作消耗', async ({ pa
   await expect(detail.getByLabel('给数字员工的指令')).toBeVisible()
   await detail.getByRole('button', { name: '回到最新' }).click()
   await expect(detail.getByRole('button', { name: '回到最新' })).toHaveCount(0)
-  await detail.locator('.runtime-info').click()
-  await expect(detail.getByRole('link', { name: 'RUN-DEMO-003' })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
-  await expect(detail.getByText('Agent 工作记录', { exact: true })).toBeVisible()
+  await expect(detail.getByRole('link', { name: '查看运行详情' })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
+  await expect(detail.getByText('Agent 工作记录', { exact: true })).toHaveCount(0)
+
+  const viewportHeight = await page.evaluate(() => window.innerHeight)
+  const workspaceBox = await detail.boundingBox()
+  const mainBox = await detail.locator('.task-main').boundingBox()
+  const sidebarBox = await detail.getByLabel('任务信息侧栏').boundingBox()
+  const composerBox = await detail.locator('.task-composer').boundingBox()
+  expect(workspaceBox?.height ?? Infinity).toBeLessThanOrEqual(viewportHeight)
+  expect(Math.abs((mainBox?.y ?? Infinity) - (sidebarBox?.y ?? -Infinity))).toBeLessThanOrEqual(1)
+  expect((composerBox?.y ?? Infinity) + (composerBox?.height ?? Infinity)).toBeLessThanOrEqual(viewportHeight + 1)
+
+  await page.setViewportSize({ width: 760, height: 800 })
+  await expect(detail.getByRole('button', { name: '打开任务信息' })).toBeVisible()
+  await detail.getByRole('button', { name: '打开任务信息' }).click()
+  await expect(detail.getByLabel('任务信息侧栏')).toBeVisible()
+  await expect(detail.getByRole('heading', { name: '任务概要' })).toBeVisible()
 })
 
 test('业务枚举和时间单位统一显示为中文', async ({ page }) => {
@@ -248,14 +264,14 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   expect(waitingEmployee.status).toBe('WAIT_HUMAN')
 
   const detail = page.getByTestId('task-detail-page')
-  await expect(detail.getByText('先向使用者询问要打印的答案，收到回答后打印该答案。')).toBeVisible()
+  await expect(detail.getByLabel('任务对话').getByText('先向使用者询问要打印的答案，收到回答后打印该答案。')).toBeVisible()
   await expect(detail.getByText('请告诉我这次需要打印的具体答案是什么？', { exact: true })).toBeVisible()
   await expect(detail.getByText('等待输入', { exact: true }).first()).toBeVisible()
   await expect(detail.getByText('运行元数据已更新')).toHaveCount(0)
   await expect(detail.getByText('模型用量')).toHaveCount(0)
   await detail.getByLabel('给数字员工的指令').fill('自动化验收答案')
   await detail.getByRole('button', { name: '发送指令' }).click()
-  await expect(detail.getByText('回答已提交，原 Run 将从等待点继续执行。')).toBeVisible()
+  await expect(detail.getByText('回答已提交，数字员工将继续执行。')).toBeVisible()
 
   await expect.poll(async () => {
     const response = await request.get(`/api/tasks/${taskId}`)
@@ -283,9 +299,10 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
 
   await page.reload()
   await expect(detail.getByRole('paragraph').filter({ hasText: '已打印用户答案：自动化验收答案' })).toBeVisible()
-  await expect(detail.getByText('满足 · 已按使用者回答打印自动化验收答案')).toBeVisible()
-  await expect(detail.locator('.runtime-info')).toContainText('运行信息')
-  await expect(detail.locator('.runtime-info code')).not.toBeVisible()
+  await expect(detail.getByText('打印使用者回答的具体答案').first()).toBeVisible()
+  await expect(detail.getByText('1/1 通过').first()).toBeVisible()
+  await expect(detail.getByRole('link', { name: '查看运行详情' })).toBeVisible()
+  await expect(detail.getByText('运行信息', { exact: true })).toHaveCount(0)
 
   await detail.getByLabel('给数字员工的指令').fill('请在同一任务中再次打印自动化验收答案')
   await detail.getByRole('button', { name: '发送指令' }).click()
@@ -366,7 +383,14 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
 
   await page.goto(`/tasks/${subagentTask.id}`)
   const subagentDetail = page.getByTestId('task-detail-page')
-  await expect(subagentDetail.getByRole('heading', { name: 'Subagent (1)' })).toBeVisible()
-  await expect(subagentDetail.getByText('general 已完成子任务：Print hello world')).toBeVisible()
+  await expect(subagentDetail.getByRole('heading', { name: '协作成员' })).toBeVisible()
+  const subtask = subagentDetail.getByRole('button', { name: /子任务 general.*Print hello world.*已完成/ })
+  await expect(subtask).toBeVisible()
+  await expect(subtask).toHaveAttribute('aria-expanded', 'false')
+  await subtask.click()
+  await expect(subtask).toHaveAttribute('aria-expanded', 'true')
+  await expect(subagentDetail.getByText('打印 hello world', { exact: true })).toHaveCount(0)
+  await expect(subagentDetail).not.toContainText('员工工作空间：')
+  await expect(subagentDetail).not.toContainText('当前任务：')
   await expect(subagentDetail.getByText('当前事件中未发现 Subagent 调用')).toHaveCount(0)
 })
