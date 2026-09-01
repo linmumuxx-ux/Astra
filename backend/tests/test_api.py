@@ -217,6 +217,7 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
                 "id": "astra-api-v03",
                 "name": "Astra API V0.4",
                 "role": "接口治理员工",
+                "default_work_area": "integration",
                 "task_types": ["ISSUE", "REQUIREMENT"],
                 "category_ids": [category_id],
                 "auto_claim": True,
@@ -235,10 +236,21 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
         employee = created.json()
         assert employee["task_types"] == ["ISSUE", "REQUIREMENT"]
         assert employee["category_ids"] == [category_id]
+        assert employee["default_work_area"] == "integration"
         assert employee["execution_environment"]["workspace_root"].endswith("employee-workspace")
         assert employee["execution_environment"]["model_name"] == "deepseek/deepseek-v4-flash"
         assert "skills" not in employee
         assert "capabilities" not in employee
+
+        area_updated = client.patch(
+            "/api/employees/astra-api-v03", json={"default_work_area": "meeting"}
+        )
+        assert area_updated.status_code == 200
+        assert area_updated.json()["default_work_area"] == "meeting"
+        invalid_area = client.patch(
+            "/api/employees/astra-api-v03", json={"default_work_area": "unknown-area"}
+        )
+        assert invalid_area.status_code == 422
 
         checked = client.post("/api/employees/astra-api-v03/environment/test")
         assert checked.status_code == 200

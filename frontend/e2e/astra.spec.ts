@@ -1,21 +1,33 @@
 import { expect, test } from '@playwright/test'
 
-test('总览展示数字办公室、真实指标和员工工作现场', async ({ page }) => {
+test('总览展示数字员工工作空间、消息通知和员工交互', async ({ page }) => {
   await page.goto('/')
   const dashboard = page.getByTestId('dashboard-page')
   await expect(dashboard).toBeVisible()
-  await expect(dashboard.getByRole('heading', { name: '总览', level: 2 })).toBeVisible()
-  await expect(page.getByTestId('dashboard-v03-metrics')).toContainText('工作中')
-  await expect(dashboard.getByRole('heading', { name: '数字办公区' })).toBeVisible()
-  const workstation = dashboard.getByRole('button', { name: /员工-01 测试平台开发/ })
-  await expect(workstation.locator('.employee-workstation img')).toBeVisible()
-  await expect(workstation).toContainText('工位 01')
-  await workstation.click()
-  await expect(dashboard.locator('.office-inspector')).toContainText('当前进展')
-  await expect(dashboard.locator('.office-inspector')).toContainText('当前任务')
-  await expect(dashboard.getByRole('link', { name: '员工详情' })).toBeVisible()
-  await expect(dashboard.getByRole('link', { name: '任务详情' })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '数字员工工作空间', level: 2 })).toBeVisible()
+  await expect(dashboard.getByRole('region', { name: '数字员工工作空间' })).toBeVisible()
+  const workspace = dashboard.getByRole('region', { name: '数字员工工作空间' })
+  await expect(workspace.getByText('开发办公区', { exact: true })).toBeVisible()
+  await expect(workspace.getByText('专项处理区', { exact: true })).toBeVisible()
+  await expect(dashboard.getByLabel('消息通知')).toBeVisible()
+  await expect(dashboard.getByLabel('实时动态')).toBeVisible()
+  const employee = dashboard.getByRole('button', { name: /员工-01 测试平台开发/ })
+  await expect(employee.locator('.employee-character__sprite')).toBeVisible()
+  await employee.click()
+  const popover = dashboard.getByRole('dialog', { name: '员工-01 基础信息' })
+  await expect(popover).toContainText('当前任务')
+  await expect(popover.getByRole('link', { name: '查看当前任务' })).toBeVisible()
+  await popover.getByRole('button', { name: '查看详情' }).click()
+  const drawer = page.getByRole('dialog', { name: '员工-01 员工详情' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByRole('heading', { name: '当前任务' })).toBeVisible()
+  await expect(drawer.getByRole('link', { name: '编辑配置' })).toHaveAttribute('href', '/settings?employee=astra-01')
+  await drawer.getByRole('button', { name: '关闭员工详情' }).click()
   await expect(page.locator('.error-banner')).toHaveCount(0)
+
+  const viewportHeight = await page.evaluate(() => window.innerHeight)
+  const dashboardHeight = await dashboard.evaluate((element) => element.getBoundingClientRect().height)
+  expect(dashboardHeight).toBeLessThanOrEqual(viewportHeight)
 })
 
 test('核心页面可从中文主导航访问', async ({ page }) => {
@@ -127,12 +139,15 @@ test('待处理角标与聚合队列一致并提供人工处理入口', async ({
   await expect(pending.getByRole('link', { name: '查看详情' })).toHaveAttribute('href', '/tasks/T-20260827-002')
 })
 
-test('员工列表可筛选异常并通过显式链接进入详情', async ({ page }) => {
+test('员工管理使用列表、筛选分页并优先打开详情抽屉', async ({ page }) => {
   await page.goto('/employees')
-  await page.getByRole('button', { name: '列表' }).click()
   await expect(page.getByLabel('员工状态').getByRole('option', { name: '异常' })).toHaveCount(1)
-
-  await page.getByRole('link', { name: /员工-01 astra-01/ }).click()
+  await expect(page.getByLabel('数字员工列表').getByRole('table')).toBeVisible()
+  await expect(page.getByLabel('员工列表分页')).toBeVisible()
+  await page.getByRole('button', { name: '查看 员工-01' }).click()
+  const drawer = page.getByRole('dialog', { name: '员工-01 员工详情' })
+  await expect(drawer).toBeVisible()
+  await drawer.getByRole('link', { name: '完整记录' }).click()
   const detail = page.getByTestId('employee-detail-page')
   await expect(detail).toBeVisible()
   await expect(detail.getByRole('heading', { name: '当前工作' })).toBeVisible()

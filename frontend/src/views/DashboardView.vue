@@ -1,77 +1,118 @@
 <template>
-  <div class="page dashboard-page" data-testid="dashboard-page">
-    <section class="page-intro">
-      <div><h2>总览</h2><p>实时掌握数字员工运行状态与工作进展</p></div>
-      <div class="intro-live"><strong :class="{ 'connection--offline': !dataHealthy }"><i /> {{ store.error ? '数据异常' : store.realtimeConnected ? '实时连接' : '正在重连' }}</strong><span>最后更新 {{ lastSync }}</span></div>
-    </section>
+  <div class="dashboard-page" data-testid="dashboard-page">
+    <h2 class="sr-only">数字员工工作空间</h2>
+    <section class="workspace-layout">
+      <div class="workspace-main">
+        <div class="workspace-controls" aria-label="工作空间筛选">
+          <label class="workspace-search">
+            <Search :size="15" />
+            <input v-model="query" aria-label="搜索员工名称或编号" placeholder="搜索员工" />
+            <button v-if="query" type="button" aria-label="清空员工搜索" @click="query = ''"><X :size="13" /></button>
+          </label>
+          <select v-model="statusFilter" aria-label="筛选员工状态">
+            <option value="">全部状态</option>
+            <option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <select v-model="areaFilter" aria-label="筛选工作区域">
+            <option value="">全部区域</option>
+            <option v-for="area in workspaceAreas" :key="area.id" :value="area.id">{{ area.name }}</option>
+          </select>
+          <button
+            class="workspace-help-filter"
+            :class="{ active: statusFilter === 'WAIT_HUMAN' }"
+            type="button"
+            :aria-label="`筛选需要人工处理的员工，当前 ${helpCount} 人`"
+            @click="toggleHelpFilter"
+          ><CircleAlert :size="15" /><span>待处理</span><strong>{{ helpCount }}</strong></button>
+        </div>
 
-    <section class="metrics-grid metrics-grid--status" data-testid="dashboard-v03-metrics">
-      <AstraMetricCard label="工作中" :value="employeeCount('WORKING')" unit="人" hint="正在处理工作" :icon="BriefcaseBusiness" tone="success" />
-      <AstraMetricCard label="空闲" :value="employeeCount('IDLE')" unit="人" hint="等待新任务" :icon="Activity" />
-      <AstraMetricCard label="等待人工" :value="employeeCount('WAIT_HUMAN')" unit="人" hint="需要补充信息" :icon="Hand" tone="warning" />
-      <AstraMetricCard label="执行异常" :value="employeeCount('ERROR')" unit="人" hint="工作现场已保留" :icon="CircleAlert" tone="danger" />
-      <AstraMetricCard label="今日完成" :value="store.metrics?.completed_today ?? '—'" unit="项" hint="员工已提交结果" :icon="BadgeCheck" tone="success" />
-      <article class="usage-brief"><div><span><Binary :size="17" /></span><small>今日模型用量</small><strong>{{ formatTokens(store.metrics?.today_tokens) }}</strong></div><div><span><Wrench :size="17" /></span><small>工具调用</small><strong>{{ store.metrics?.today_tool_calls ?? '—' }}</strong></div></article>
-    </section>
-
-    <section class="dashboard-grid">
-      <div class="dashboard-main">
-        <AstraPanel class="active-panel" title="数字办公区" subtitle="查看团队工作状态与任务进展" flush><DigitalOffice :employees="store.employees" :tasks="store.tasks" /></AstraPanel>
-        <section class="overview-bottom">
-          <AstraPanel title="分区概览"><div class="zone-summary"><article v-for="group in roleGroups" :key="group.role"><small>{{ group.label }}</small><strong>{{ group.count }}</strong><span>{{ group.working }} 人工作中</span></article></div></AstraPanel>
-          <AstraPanel title="系统运行指标"><div class="system-summary"><article><small>数字员工</small><strong>{{ store.employees.length }}</strong><span>已配置</span></article><article><small>当前任务</small><strong>{{ store.activeTasks.length }}</strong><span>未完成</span></article><article><small>待办事项</small><strong>{{ pendingTasks.length }}</strong><span>需要关注</span></article><article><small>数据连接</small><strong>{{ dataHealthy ? '正常' : '重连中' }}</strong><span>实时状态</span></article></div></AstraPanel>
-        </section>
+        <WorkspaceScene
+          :employees="filteredEmployees"
+          :tasks="store.tasks"
+          :selected-id="selectedId"
+          :empty-title="store.employees.length ? '没有匹配的数字员工' : '工作空间暂无数字员工'"
+          :empty-description="store.employees.length ? '调整搜索或筛选条件后重试。' : '创建员工后，他们会进入对应的办公区域。'"
+          :show-create="!store.employees.length"
+          @select="selectedId = $event"
+          @detail="openDetail"
+        />
+        <RealtimeActivityBar :events="store.events" :employees="store.employees" @select="selectFromActivity" />
       </div>
-
-      <aside class="dashboard-side">
-        <AstraPanel title="最近更新" subtitle="真实的任务与员工记录"><div class="event-feed"><article v-for="event in meaningfulEvents.slice(0, 5)" :key="event.id"><span class="event-dot" :data-tone="eventTone(event.event_type)"><component :is="eventIcon(event.event_type)" :size="13" /></span><div><strong>{{ eventSummary(event) }}</strong><p>{{ eventTaskTitle(event.task_id) }}</p></div><time>{{ formatTime(event.created_at) }}</time></article><AstraEmptyState v-if="!meaningfulEvents.length" :icon="Activity" title="暂无动态" description="员工工作后会显示在这里。" /></div></AstraPanel>
-        <AstraPanel title="待办事项"><div class="todo-list"><RouterLink v-for="task in pendingTasks.slice(0,4)" :key="task.id" :to="`/tasks/${task.id}`"><span><CircleAlert :size="15" /></span><div><strong>{{ task.title }}</strong><small>{{ platformCopy(task.current_progress) || '等待处理' }}</small></div></RouterLink><AstraEmptyState v-if="!pendingTasks.length" :icon="Check" title="暂无待办" description="需要处理的任务会显示在这里。" /></div></AstraPanel>
-      </aside>
+      <NotificationPanel :events="store.events" :tasks="store.tasks" />
     </section>
 
+    <EmployeeDetailDrawer :employee="detailEmployee" :tasks="store.tasks" @close="detailId = ''" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { Activity, BadgeCheck, Binary, BriefcaseBusiness, Check, CircleAlert, Hand, Play, Wrench } from 'lucide-vue-next'
-import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
-import type { AstraEvent } from '@/api/types'
-import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
-import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
-import AstraPanel from '@/components/astra/AstraPanel.vue'
-import DigitalOffice from '@/components/office/DigitalOffice.vue'
+import { CircleAlert, Search, X } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import EmployeeDetailDrawer from '@/components/employee/EmployeeDetailDrawer.vue'
+import NotificationPanel from '@/components/workspace/NotificationPanel.vue'
+import RealtimeActivityBar from '@/components/workspace/RealtimeActivityBar.vue'
+import WorkspaceScene from '@/components/workspace/WorkspaceScene.vue'
+import { employeeMatches, toEmployeeViewModel, workspaceAreas } from '@/features/employees/presentation'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, formatTokens, platformCopy } from '@/utils/format'
 
 const store = useAstraStore()
-const dataHealthy = computed(() => store.realtimeConnected && !store.error)
-const lastSync = computed(() => store.lastUpdated?.toLocaleTimeString('zh-CN', { hour12: false }) ?? '连接中')
-const employeeCount = (status: string) => store.employees.filter((employee) => employee.status === status).length
-const pendingTasks = computed(() => store.tasks.filter((task) => ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert))
-const visibleEventTypes = new Set(['TASK_ASSIGNED', 'TASK_RUNNING', 'WAIT_HUMAN', 'TASK_SUSPENDED', 'RESULT_SUBMITTED', 'TASK_COMPLETED', 'EXECUTION_ERROR', 'TASK_FAILED', 'TASK_CANCELLED'])
-const meaningfulEvents = computed(() => store.events.filter((event) => visibleEventTypes.has(event.event_type)))
-const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((employee) => employee.id === id)?.name ?? (id ?? '系统更新'))
-const eventTaskTitle = (id: string | null) => store.tasks.find((task) => task.id === id)?.title ?? '任务状态已更新'
-const eventSummary = (event: AstraEvent) => {
-  const name = employeeName(event.employee_id)
-  return ({
-    TASK_ASSIGNED: `${name} 已领取任务`,
-    TASK_RUNNING: `${name} 开始或恢复任务`,
-    WAIT_HUMAN: `${name} 请求人工协助`,
-    TASK_SUSPENDED: `${name} 暂停任务`,
-    RESULT_SUBMITTED: `${name} 提交任务结果`,
-    TASK_COMPLETED: `${name} 完成任务`,
-    EXECUTION_ERROR: `${name} 出现执行异常`,
-    TASK_FAILED: `${name} 任务执行失败`,
-    TASK_CANCELLED: '任务已取消',
-  }[event.event_type] ?? '任务状态已更新')
+const query = ref('')
+const statusFilter = ref('')
+const areaFilter = ref('')
+const selectedId = ref('')
+const detailId = ref('')
+const statusOptions = [
+  { value: 'WORKING', label: '工作中' },
+  { value: 'IDLE', label: '空闲' },
+  { value: 'WAIT_HUMAN', label: '需要人工处理' },
+  { value: 'PAUSED', label: '已暂停' },
+  { value: 'ERROR', label: '异常' },
+  { value: 'OFFLINE', label: '离线' },
+]
+const allModels = computed(() => store.employees.map((employee) => toEmployeeViewModel(employee, store.tasks)))
+const filteredModels = computed(() => allModels.value.filter((employee) =>
+  employeeMatches(employee, query.value)
+  && (!statusFilter.value || employee.status === statusFilter.value)
+  && (!areaFilter.value || employee.areaId === areaFilter.value),
+))
+const filteredEmployees = computed(() => filteredModels.value.map((employee) => employee.employee))
+const detailEmployee = computed(() => store.employees.find((employee) => employee.id === detailId.value) ?? null)
+const helpCount = computed(() => allModels.value.filter((employee) => employee.needHelp).length)
+function toggleHelpFilter() { statusFilter.value = statusFilter.value === 'WAIT_HUMAN' ? '' : 'WAIT_HUMAN' }
+function openDetail(id: string) { detailId.value = id }
+async function selectFromActivity(id: string) {
+  query.value = ''
+  statusFilter.value = ''
+  areaFilter.value = ''
+  await nextTick()
+  selectedId.value = id
 }
-const roleGroups = computed(() => {
-  const groups = new Map<string, { count: number; working: number }>()
-  for (const employee of store.employees) { const group = groups.get(employee.role) ?? { count: 0, working: 0 }; group.count += 1; if (employee.status === 'WORKING') group.working += 1; groups.set(employee.role, group) }
-  return [...groups.entries()].map(([role, value]) => ({ role, label: `${role.replace(/(?:数字)?员工$|专员$|工程师$/u, '').trim() || role}区`, ...value }))
+watch(query, (value) => {
+  if (!value.trim()) return
+  selectedId.value = filteredModels.value[0]?.id ?? ''
 })
-const eventIcon = (type: string) => type === 'WAIT_HUMAN' ? CircleAlert : type === 'TASK_COMPLETED' ? Check : Play
-const eventTone = (type: string) => type === 'WAIT_HUMAN' ? 'warning' : type === 'TASK_COMPLETED' ? 'success' : ['EXECUTION_ERROR', 'TASK_FAILED'].includes(type) ? 'danger' : 'info'
+watch(filteredModels, (employees) => {
+  if (selectedId.value && !employees.some((employee) => employee.id === selectedId.value)) selectedId.value = ''
+})
+onMounted(() => { if (!store.employees.length && !store.loading) store.refresh() })
 </script>
+
+<style scoped>
+.dashboard-page { height: calc(100vh - 60px); min-height: 620px; padding: 14px 18px 16px; overflow: hidden; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.workspace-layout { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.workspace-main { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.workspace-layout :deep(.notification-panel) { position: absolute; z-index: 205; top: 12px; right: 12px; width: 258px; height: min(470px,calc(100% - 132px)); background: rgba(255,255,255,.95); backdrop-filter: blur(10px); }
+.workspace-main :deep(.activity-bar) { right: 282px; }
+.workspace-controls { position: absolute; z-index: 210; top: 12px; right: 282px; display: flex; align-items: center; gap: 6px; max-width: calc(100% - 306px); padding: 5px; border: 1px solid rgba(201,219,211,.88); border-radius: 12px; background: rgba(255,255,255,.91); box-shadow: 0 8px 20px rgba(32,72,57,.10); backdrop-filter: blur(10px); }
+.workspace-search { display: flex; align-items: center; gap: 6px; width: 146px; height: 32px; padding: 0 8px; color: var(--astra-text-muted); border-radius: 8px; background: #f5f9f7; }
+.workspace-search input { min-width: 0; width: 100%; padding: 0; color: var(--astra-text-primary); border: 0; outline: 0; background: transparent; font-size: 11px; }
+.workspace-search button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; color: var(--astra-text-muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
+.workspace-controls select { width: 105px; height: 32px; padding: 0 25px 0 8px; color: var(--astra-text-secondary); border: 0; border-radius: 8px; outline: 0; background: #f5f9f7; font-size: 11px; }
+.workspace-help-filter { display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 8px; color: #9a5e18; border: 0; border-radius: 8px; background: #fff7eb; font-size: 10px; cursor: pointer; white-space: nowrap; }.workspace-help-filter.active { box-shadow: inset 0 0 0 1px #dfb577; background: #ffefd9; }.workspace-help-filter strong { font-size: 11px; }
+@media(max-width:1360px){.workspace-layout :deep(.notification-panel){width:226px}.workspace-main :deep(.activity-bar){right:250px}.workspace-controls{right:250px;max-width:calc(100% - 274px)}.workspace-controls select{width:92px}.workspace-search{width:124px}.workspace-help-filter span{display:none}}
+@media(max-height:800px){.dashboard-page{padding:9px 12px 11px}.workspace-layout :deep(.notification-panel){top:8px;right:8px;height:min(430px,calc(100% - 124px))}.workspace-main :deep(.activity-bar){right:278px}.workspace-controls{top:8px;right:278px;max-width:calc(100% - 294px)}.workspace-search{width:116px}}
+@media(max-width:1360px) and (max-height:800px){.workspace-main :deep(.activity-bar){right:246px}.workspace-controls{right:246px;max-width:calc(100% - 262px)}}
+@media(max-width:900px){.dashboard-page{height:auto;min-height:calc(100vh - 60px);overflow:visible}.workspace-layout{display:grid;grid-template-rows:minmax(660px,1fr) 340px;gap:10px}.workspace-main{position:relative;min-height:660px}.workspace-layout :deep(.notification-panel){position:relative;inset:auto;width:auto;height:auto}.workspace-main :deep(.activity-bar){right:14px}.workspace-controls{right:12px;max-width:calc(100% - 24px)}}
+@media(max-width:600px){.dashboard-page{padding:9px}.workspace-controls{right:6px;left:6px;max-width:none;overflow-x:auto}.workspace-controls select{flex:none}.workspace-help-filter{flex:none}}
+</style>

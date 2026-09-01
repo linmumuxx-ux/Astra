@@ -28,7 +28,7 @@ export const useAstraStore = defineStore('astra', () => {
     loading.value = true
     try {
       const [metricsValue, employeeValue, taskValue, categoryValue, eventValue] = await Promise.all([
-        api.metrics(), api.employees(), api.tasks(), api.categories(), api.events(12),
+        api.metrics(), api.employees(), api.tasks(), api.categories(), api.events(40),
       ])
       metrics.value = metricsValue
       employees.value = employeeValue

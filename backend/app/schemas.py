@@ -128,6 +128,9 @@ class EmployeeCreate(BaseModel):
     name: str
     role: str
     description: str = ""
+    default_work_area: Literal[
+        "development", "collaboration", "pantry", "integration", "meeting", "special"
+    ] = "development"
     task_types: list[TaskType] = Field(default_factory=lambda: list(TaskType))
     category_ids: list[str] = Field(default_factory=list)
     enabled: bool = True
@@ -141,6 +144,9 @@ class EmployeePatch(BaseModel):
     name: str | None = None
     role: str | None = None
     description: str | None = None
+    default_work_area: Literal[
+        "development", "collaboration", "pantry", "integration", "meeting", "special"
+    ] | None = None
     task_types: list[TaskType] | None = None
     category_ids: list[str] | None = None
     enabled: bool | None = None
@@ -154,6 +160,7 @@ class EmployeeRead(ORMModel):
     name: str
     role: str
     description: str
+    default_work_area: str
     status: str
     task_types: list[str]
     category_ids: list[str]

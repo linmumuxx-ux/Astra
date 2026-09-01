@@ -54,6 +54,9 @@ class DigitalEmployee(Base):
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
+    default_work_area: Mapped[str] = mapped_column(
+        String(32), default="development", server_default="development"
+    )
     status: Mapped[str] = mapped_column(String(32), default="OFFLINE", index=True)
     task_types: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["ISSUE", "REQUIREMENT"])
     category_ids: Mapped[list[str]] = mapped_column(JSON, default=list)

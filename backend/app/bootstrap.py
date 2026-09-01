@@ -79,6 +79,7 @@ async def bootstrap_employees(session: AsyncSession, config_path) -> None:
             name=item.get("name", item["id"]),
             role=item.get("role", "数字员工"),
             description=item.get("description", ""),
+            default_work_area=item.get("default_work_area", "development"),
             status=EmployeeStatus.IDLE,
             task_types=item.get("task_types", ["ISSUE", "REQUIREMENT"]),
             category_ids=item.get(

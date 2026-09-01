@@ -1,7 +1,7 @@
 <template>
   <div v-if="employee" class="page" data-testid="employee-detail-page">
     <div class="detail-nav"><RouterLink to="/employees"><ArrowLeft :size="14" /> 数字员工</RouterLink><span>/</span><strong>{{ employeeDisplayName(employee.name) }}</strong></div>
-    <section class="employee-hero"><div class="employee-avatar employee-avatar--hero"><Bot :size="42" /><i /></div><div class="employee-hero__identity"><div><span>{{ employee.id }}</span><AstraStatusBadge :status="employee.status" :pulse="employee.status === 'WORKING'" /></div><h2>{{ employeeDisplayName(employee.name) }}</h2><p>{{ employee.role }} · {{ employee.description }}</p></div><div class="hero-actions"><RouterLink class="button" :to="`/settings?employee=${employee.id}`"><Settings2 :size="14" /> 编辑配置</RouterLink><button v-if="employee.status !== 'PAUSED' && !employee.current_task_count" class="button" @click="employeeAction('pause')"><Pause :size="14" /> 暂停员工</button><button v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" class="button button--primary" @click="employeeAction('resume')"><Play :size="14" /> 恢复员工</button></div></section>
+    <section class="employee-hero"><EmployeeAvatar :employee="employee" size="large" /><div class="employee-hero__identity"><div><span>{{ employee.id }}</span><AstraStatusBadge :status="employee.status" :pulse="employee.status === 'WORKING'" /></div><h2>{{ employeeDisplayName(employee.name) }}</h2><p>{{ employee.role }} · {{ employee.description }}</p></div><div class="hero-actions"><RouterLink class="button" :to="`/settings?employee=${employee.id}`"><Settings2 :size="14" /> 编辑配置</RouterLink><button v-if="employee.status !== 'PAUSED' && !employee.current_task_count" class="button" @click="employeeAction('pause')"><Pause :size="14" /> 暂停员工</button><button v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" class="button button--primary" @click="employeeAction('resume')"><Play :size="14" /> 恢复员工</button></div></section>
 
     <section class="metrics-grid metrics-grid--six"><AstraMetricCard label="今日 Token" :value="formatTokens(employee.today_usage.total_tokens)" hint="Agent 实际用量" :icon="Binary" /><AstraMetricCard label="工具调用" :value="employee.today_usage.tool_call_count ?? '—'" unit="次" hint="成功与失败均保留" :icon="Wrench" /><AstraMetricCard label="今日完成" :value="employee.today_completed" unit="项" hint="员工已提交结果" :icon="BadgeCheck" tone="success" /><AstraMetricCard label="处理中" :value="statusCount('RUNNING')" unit="项" hint="当前工作" :icon="Activity" /><AstraMetricCard label="等待人工" :value="statusCount('WAIT_HUMAN')" unit="项" hint="需要补充信息" :icon="Hand" tone="warning" /><AstraMetricCard label="今日工作时长" :value="formatDurationSeconds(employee.today_usage.duration_seconds)" hint="按运行记录汇总" :icon="Clock3" /></section>
 
@@ -27,7 +27,7 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, ArrowLeft, ArrowUpRight, BadgeCheck, Binary, Bot, CheckCircle2, CircleX, Clock3, Coffee, Hand, Pause, Play, RefreshCw, Server, Settings2, TerminalSquare, Wrench } from 'lucide-vue-next'
+import { Activity, ArrowLeft, ArrowUpRight, BadgeCheck, Binary, CheckCircle2, CircleX, Clock3, Coffee, Hand, Pause, Play, RefreshCw, Server, Settings2, TerminalSquare, Wrench } from 'lucide-vue-next'
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api } from '@/api/client'
@@ -36,6 +36,7 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
+import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import UsageTrendChart from '@/components/runtime/UsageTrendChart.vue'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, environmentLabel, formatDurationSeconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'

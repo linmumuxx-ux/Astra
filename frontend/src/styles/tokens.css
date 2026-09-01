@@ -1,11 +1,11 @@
 :root {
-  --astra-bg-base: #f0f4f2;
-  --astra-bg-sidebar: #f7f9f8;
+  --astra-bg-base: #f3f6f4;
+  --astra-bg-sidebar: #fbfcfb;
   --astra-bg-panel: #ffffff;
   --astra-bg-card: #ffffff;
   --astra-bg-elevated: #e7eeeb;
-  --astra-border: #cbd8d3;
-  --astra-border-hover: #a9c7bb;
+  --astra-border: #d7e1dd;
+  --astra-border-hover: #abcabf;
   --astra-primary: #159d65;
   --astra-primary-bright: #0c8553;
   --astra-primary-soft: rgba(24, 184, 117, .10);
@@ -33,5 +33,5 @@
   --astra-control-height: 42px;
   --astra-control-height-compact: 38px;
   --astra-content-gap: 16px;
-  --astra-shadow-panel: 0 10px 30px rgba(28, 58, 49, .09);
+  --astra-shadow-panel: 0 10px 30px rgba(28, 58, 49, .075);
 }

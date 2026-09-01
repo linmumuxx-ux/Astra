@@ -74,6 +74,7 @@ export interface Employee {
   name: string
   role: string
   description: string
+  default_work_area: 'development' | 'collaboration' | 'pantry' | 'integration' | 'meeting' | 'special'
   status: string
   task_types: TaskType[]
   category_ids: string[]
