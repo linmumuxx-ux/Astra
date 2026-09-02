@@ -10,7 +10,9 @@ async def nexus_operation_overview(params: dict[str, Any], user_id: str, db_sess
     task_result = await db_session.execute(select(Task.status, func.count()).group_by(Task.status))
     task_stats = {row[0]: row[1] for row in task_result.all()}
 
-    emp_result = await db_session.execute(select(DigitalEmployee.status, func.count()).group_by(DigitalEmployee.status))
+    emp_result = await db_session.execute(
+        select(DigitalEmployee.status, func.count()).group_by(DigitalEmployee.status)
+    )
     emp_stats = {row[0]: row[1] for row in emp_result.all()}
 
     return {

@@ -46,7 +46,7 @@ async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_ses
 
     op_id = f"OP-{uuid.uuid4().hex}"
 
-    # Try to build TaskCreate payload, but we just store the dict inside the request_json for ConfirmationService
+    # Try to build TaskCreate payload, but we just store the dict inside the request_json
     # Defaulting basic stuff
     task_payload = {
         "source": "manual",
@@ -62,7 +62,7 @@ async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_ses
     op = AssistantOperation(
         id=uuid.uuid4().hex,
         operation_id=op_id,
-        conversation_id=params.get("conversation_id", ""),  # FK constraint handled via UI properly passing it
+        conversation_id=params.get("conversation_id", ""),  # FK constraint handled via UI
         user_id=user_id,
         operation_type="task_create",
         risk_level="L1",

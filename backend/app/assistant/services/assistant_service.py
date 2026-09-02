@@ -1,15 +1,16 @@
-import uuid
 import json
+import uuid
 from collections.abc import AsyncGenerator
+
 from fastapi import Request
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.assistant.models import AssistantMessage, AssistantMessagePart
-from app.assistant.schemas import MessageCreate
 from app.assistant.opencode.client import OpenCodeClient
 from app.assistant.opencode.event_mapper import EventMapper
+from app.assistant.schemas import MessageCreate
 from app.assistant.services.conversation_service import ConversationService
 
 

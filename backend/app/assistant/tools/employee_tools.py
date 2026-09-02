@@ -23,7 +23,7 @@ async def nexus_employee_search(params: dict[str, Any], user_id: str, db_session
 
 async def nexus_employee_recommend(params: dict[str, Any], user_id: str, db_session) -> dict[str, Any]:
     # Basic recommend randomly matching type
-    result = await db_session.execute(select(DigitalEmployee).where(DigitalEmployee.enabled == True).limit(3))
+    result = await db_session.execute(select(DigitalEmployee).where(DigitalEmployee.enabled).limit(3))
     employees = result.scalars().all()
     return {
         "recommendations": [
