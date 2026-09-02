@@ -4,12 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assistant.models import AssistantOperation
 from app.models import utcnow
+from app.schemas import TaskCreate
+from app.services import TaskService
 
-# from app.services import TaskService
 
 class ConfirmationService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.task_service = TaskService(db)
 
     async def get_operation(self, operation_id: str) -> AssistantOperation | None:
         result = await self.db.execute(
@@ -39,10 +41,12 @@ class ConfirmationService:
 
         try:
             if op.operation_type == "task_create":
-                # Mock execution, in real life call TaskService
-                op.result_json = {"task_id": "TASK-XXX", "status": "PENDING"}
+                task_payload = TaskCreate(**op.request_json)
+                task = await self.task_service.create(task_payload)
+                op.result_json = {"task_id": task.id, "status": task.status}
             elif op.operation_type == "task_cancel":
-                op.result_json = {"status": "CANCELLED"}
+                # Implementation depends on TaskService interface
+                op.result_json = {"status": "CANCEL_REQUESTED"}
             else:
                 op.result_json = {"message": "Executed"}
 

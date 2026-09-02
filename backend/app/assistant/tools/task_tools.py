@@ -1,43 +1,74 @@
 import uuid
 from typing import Any
 
+from sqlalchemy import select
 
-# In a real implementation, these would interact with TaskService and models
-async def nexus_task_search(params: dict[str, Any]) -> dict[str, Any]:
+from app.models import Task
+
+
+async def nexus_task_search(params: dict[str, Any], user_id: str, db_session) -> dict[str, Any]:
+    query = select(Task).order_by(Task.created_at.desc()).limit(params.get("limit", 20))
+    # Simple search mockup
+    if params.get("keyword"):
+        query = query.where(Task.title.contains(params["keyword"]))
+    if params.get("task_id"):
+        query = query.where(Task.id == params["task_id"])
+
+    result = await db_session.execute(query)
+    tasks = result.scalars().all()
+
     return {
         "items": [
-            {"id": "TASK-001", "title": "Example Task 1", "status": "COMPLETED"},
-            {"id": "TASK-002", "title": "Example Task 2", "status": "RUNNING"}
+            {"id": t.id, "title": t.title, "status": t.status, "employee_id": t.employee_id}
+            for t in tasks
         ],
-        "total": 2
+        "total": len(tasks)
     }
 
-async def nexus_task_get(params: dict[str, Any]) -> dict[str, Any]:
+async def nexus_task_get(params: dict[str, Any], user_id: str, db_session) -> dict[str, Any]:
     task_id = params.get("task_id")
+    result = await db_session.execute(select(Task).where(Task.id == task_id))
+    task = result.scalar_one_or_none()
+
+    if not task:
+        return {"error": "Task not found"}
+
     return {
-        "id": task_id,
-        "title": f"Task {task_id}",
-        "status": "RUNNING"
+        "id": task.id,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "employee_id": task.employee_id
     }
 
 async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_session) -> dict[str, Any]:
     from app.assistant.models import AssistantOperation
 
     op_id = f"OP-{uuid.uuid4().hex}"
+
+    # Try to build TaskCreate payload, but we just store the dict inside the request_json for ConfirmationService
+    # Defaulting basic stuff
+    task_payload = {
+        "source": "manual",
+        "task_type": params.get("task_type", "ISSUE"),
+        "category_id": params.get("category_id", "default"),
+        "title": params.get("title", "New Task"),
+        "description": params.get("description", "Created by Assistant"),
+        "acceptance_criteria": params.get("acceptance_criteria", [{"content": "Done"}]),
+        "employee_id": params.get("employee_id"),
+        "priority": params.get("priority", "MEDIUM")
+    }
+
     op = AssistantOperation(
         id=uuid.uuid4().hex,
         operation_id=op_id,
-        conversation_id=params.get("conversation_id", ""),
+        conversation_id=params.get("conversation_id", ""),  # FK constraint handled via UI properly passing it
         user_id=user_id,
         operation_type="task_create",
         risk_level="L1",
-        status="PREPARED",
-        request_json=params,
-        preview_json={
-            "task_type": params.get("task_type"),
-            "employee_id": params.get("employee_id"),
-            "inputs": params.get("inputs", {})
-        }
+        status="WAITING_CONFIRM",
+        request_json=task_payload,
+        preview_json=task_payload
     )
     db_session.add(op)
     await db_session.commit()
@@ -59,8 +90,8 @@ async def nexus_task_cancel(params: dict[str, Any], user_id: str, db_session) ->
         user_id=user_id,
         operation_type="task_cancel",
         risk_level="L2",
-        status="PREPARED",
-        request_json=params,
+        status="WAITING_CONFIRM",
+        request_json={"task_id": params.get("task_id")},
         preview_json={"task_id": params.get("task_id")}
     )
     db_session.add(op)
