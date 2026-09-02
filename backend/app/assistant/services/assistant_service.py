@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.assistant.models import AssistantMessage
 from app.assistant.opencode.client import OpenCodeClient
@@ -19,7 +20,9 @@ class AssistantService:
         self.event_mapper = EventMapper(self.opencode_client)
         self.conversation_service = ConversationService(db)
 
-    async def send_message(self, conversation_id: str, user_id: str, message_in: MessageCreate) -> AssistantMessage:
+    async def send_message(
+        self, conversation_id: str, user_id: str, message_in: MessageCreate
+    ) -> AssistantMessage:
         conv = await self.conversation_service.get_conversation(conversation_id)
         if not conv or conv.user_id != user_id:
             raise ValueError("Conversation not found")
@@ -65,6 +68,7 @@ class AssistantService:
         result = await self.db.execute(
             select(AssistantMessage)
             .where(AssistantMessage.conversation_id == conversation_id)
+            .options(selectinload(AssistantMessage.parts))
             .order_by(AssistantMessage.created_at.asc())
         )
         return list(result.scalars().all())

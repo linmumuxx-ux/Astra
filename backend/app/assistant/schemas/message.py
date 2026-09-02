@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class MessagePartBase(BaseModel):
-    part_type: str = Field(description="片段类型 (TEXT, TASK_CARD, EMPLOYEE_CARD, RUN_CARD, KNOWLEDGE_CARD, CONFIRM_CARD, STATUS, ERROR)")
+    part_type: str = Field(description="片段类型")
     seq: int = Field(default=0, description="序号")
     payload_json: dict[str, Any] = Field(default_factory=dict, description="内容或卡片数据")
 

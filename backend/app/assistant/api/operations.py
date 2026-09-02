@@ -22,7 +22,7 @@ async def confirm_operation(operation_id: str, request: Request, db: AsyncSessio
     try:
         return await service.confirm_operation(operation_id, user_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.post("/{operation_id}/cancel", response_model=OperationResponse)
 async def cancel_operation(operation_id: str, request: Request, db: AsyncSession = Depends(get_db)):
@@ -31,4 +31,4 @@ async def cancel_operation(operation_id: str, request: Request, db: AsyncSession
     try:
         return await service.cancel_operation(operation_id, user_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

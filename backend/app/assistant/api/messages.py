@@ -9,13 +9,15 @@ from app.database import get_session as get_db
 router = APIRouter(prefix="/conversations/{conversation_id}/messages", tags=["Assistant Messages"])
 
 @router.post("", response_model=MessageResponse)
-async def create_message(conversation_id: str, message_in: MessageCreate, request: Request, db: AsyncSession = Depends(get_db)):
+async def create_message(
+    conversation_id: str, message_in: MessageCreate, request: Request, db: AsyncSession = Depends(get_db)
+):
     user_id = request.headers.get("X-Astra-User-Id", "admin")
     service = AssistantService(db)
     try:
         return await service.send_message(conversation_id, user_id, message_in)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.get("", response_model=list[MessageResponse])
 async def list_messages(conversation_id: str, db: AsyncSession = Depends(get_db)):

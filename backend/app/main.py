@@ -7,7 +7,6 @@ from app.api.library_routes import library_error_handler
 from app.api.library_routes import router as library_router
 from app.api.routes import router
 from app.assistant.api import router as assistant_router
-from app.assistant.mcp.server import AssistantMCPServer
 from app.bootstrap import bootstrap_categories, bootstrap_employees, bootstrap_knowledge_spaces
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
@@ -33,13 +32,8 @@ async def lifespan(_: FastAPI):
     async with SessionLocal() as session:
         await audit_incomplete_tasks(session, settings)
 
-    # Start MCP Server in background
-    import asyncio
-    mcp_server = AssistantMCPServer()
-    mcp_task = asyncio.create_task(mcp_server.run())
 
     yield
-    mcp_task.cancel()
 
 
 

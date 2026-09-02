@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -9,7 +10,15 @@ class OpenCodeClientError(Exception):
     pass
 
 class OpenCodeClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:4096", username: str | None = None, password: str | None = None):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        username: str | None = None,
+        password: str | None = None
+    ):
+        base_url = base_url or os.environ.get("OPENCODE_SERVER_URL", "http://127.0.0.1:4096")
+        username = username or os.environ.get("OPENCODE_SERVER_USERNAME")
+        password = password or os.environ.get("OPENCODE_SERVER_PASSWORD")
         self.base_url = base_url
         self.auth = (username, password) if username and password else None
 

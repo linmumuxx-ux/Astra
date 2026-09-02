@@ -34,7 +34,7 @@ class AssistantMessage(Base):
     role: Mapped[str] = mapped_column(String(32)) # USER, ASSISTANT, SYSTEM
     message_type: Mapped[str] = mapped_column(String(32)) # TEXT, CARD, STATUS, ERROR
     content: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(String(32), default="COMPLETED") # PENDING, STREAMING, COMPLETED, FAILED
+    status: Mapped[str] = mapped_column(String(32), default="COMPLETED")
     opencode_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)

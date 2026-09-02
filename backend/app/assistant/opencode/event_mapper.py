@@ -9,7 +9,9 @@ class EventMapper:
     def __init__(self, opencode_client: OpenCodeClient):
         self.client = opencode_client
 
-    async def stream_and_map(self, opencode_session_id: str, conversation_id: str) -> AsyncGenerator[str, None]:
+    async def stream_and_map(
+        self, opencode_session_id: str, conversation_id: str
+    ) -> AsyncGenerator[str, None]:
         async for event in self.client.stream_events(opencode_session_id):
             mapped_event = self._map_event(event, conversation_id)
             if mapped_event:

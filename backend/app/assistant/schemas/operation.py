@@ -16,7 +16,7 @@ class OperationResponse(OperationBase):
     conversation_id: str
     message_id: str | None = None
     user_id: str
-    status: str = Field(description="状态 (PREPARED, WAITING_CONFIRM, CONFIRMED, EXECUTING, SUCCESS, FAILED, CANCELLED, EXPIRED)")
+    status: str = Field(description="状态")
     result_json: dict[str, Any] = Field(default_factory=dict)
     expires_at: datetime | None = None
     confirmed_at: datetime | None = None
