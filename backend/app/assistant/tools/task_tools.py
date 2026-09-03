@@ -8,7 +8,6 @@ from app.models import Task
 
 async def nexus_task_search(params: dict[str, Any], user_id: str, db_session) -> dict[str, Any]:
     query = select(Task).order_by(Task.created_at.desc()).limit(params.get("limit", 20))
-    # Simple search mockup
     if params.get("keyword"):
         query = query.where(Task.title.contains(params["keyword"]))
     if params.get("task_id"):
@@ -19,7 +18,8 @@ async def nexus_task_search(params: dict[str, Any], user_id: str, db_session) ->
 
     return {
         "items": [
-            {"id": t.id, "title": t.title, "status": t.status, "employee_id": t.employee_id}
+            {"id": t.id, "title": t.title, "status": getattr(t.status, "value", t.status),
+             "employee_id": t.employee_id}
             for t in tasks
         ],
         "total": len(tasks)
@@ -37,7 +37,7 @@ async def nexus_task_get(params: dict[str, Any], user_id: str, db_session) -> di
         "id": task.id,
         "title": task.title,
         "description": task.description,
-        "status": task.status,
+        "status": task.status.value if hasattr(task.status, 'value') else task.status,
         "employee_id": task.employee_id
     }
 
@@ -46,8 +46,7 @@ async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_ses
 
     op_id = f"OP-{uuid.uuid4().hex}"
 
-    # Try to build TaskCreate payload, but we just store the dict inside the request_json
-    # Defaulting basic stuff
+    # Properly construct TaskCreate kwargs based on Astra's real requirements
     task_payload = {
         "source": "manual",
         "task_type": params.get("task_type", "ISSUE"),
