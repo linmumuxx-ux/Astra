@@ -45,8 +45,13 @@ class ConfirmationService:
                 task = await self.task_service.create(task_payload)
                 op.result_json = {"task_id": task.id, "status": task.status}
             elif op.operation_type == "task_cancel":
-                # Implementation depends on TaskService interface
-                op.result_json = {"status": "CANCEL_REQUESTED"}
+                task_id = op.request_json.get("task_id")
+                # Call TaskService to cancel the task
+                try:
+                    await self.task_service.cancel_task(task_id, user_id)
+                    op.result_json = {"status": "CANCELLED"}
+                except Exception as e:
+                    op.result_json = {"error": str(e)}
             else:
                 op.result_json = {"message": "Executed"}
 

@@ -28,8 +28,8 @@ class AssistantMessage(Base):
     __tablename__ = "assistant_messages"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     role: Mapped[str] = mapped_column(String(32)) # USER, ASSISTANT, SYSTEM
     message_type: Mapped[str] = mapped_column(String(32)) # TEXT, CARD, STATUS, ERROR
@@ -64,8 +64,8 @@ class AssistantContextRef(Base):
     __tablename__ = "assistant_context_refs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     message_id: Mapped[str | None] = mapped_column(
         ForeignKey("assistant_messages.id", ondelete="CASCADE"), nullable=True, index=True
@@ -80,8 +80,8 @@ class AssistantOperation(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     operation_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     message_id: Mapped[str | None] = mapped_column(
         ForeignKey("assistant_messages.id", ondelete="CASCADE"), nullable=True, index=True
@@ -104,8 +104,8 @@ class AssistantToolCall(Base):
     __tablename__ = "assistant_tool_calls"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), index=True
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assistant_conversations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     message_id: Mapped[str | None] = mapped_column(
         ForeignKey("assistant_messages.id", ondelete="CASCADE"), nullable=True, index=True

@@ -55,11 +55,43 @@ export const useAssistantStore = defineStore('assistant', () => {
     eventSource.value.onmessage = (event) => {
         const data: AssistantEvent = JSON.parse(event.data)
 
-        // Handle events to update messages ref
-        // E.g., append text for message.delta, add cards, etc.
-        // For brevity, not fully implemented here
+        if (data.event === 'assistant.message.delta') {
+             // Create a streaming message if it doesn't exist
+             let streamingMsg = messages.value.find(m => m.id === 'streaming')
+             if (!streamingMsg) {
+                 streamingMsg = {
+                     id: 'streaming',
+                     conversation_id: conversationId,
+                     role: 'ASSISTANT',
+                     message_type: 'MIXED',
+                     content: '',
+                     status: 'STREAMING',
+                     parts: [],
+                     created_at: new Date().toISOString(),
+                     updated_at: new Date().toISOString()
+                 }
+                 messages.value.push(streamingMsg)
+             }
 
-        if (data.event === 'assistant.message.completed' || data.event === 'assistant.failed' || data.event === 'assistant.completed') {
+             // Update text content from part delta
+             const part = data.data?.part
+             if (part && part.type === 'text') {
+                 streamingMsg.content += part.text || ''
+             }
+             // Handle tool call previews
+             if (part && part.type === 'toolCall') {
+                 streamingMsg.parts.push({
+                     id: `temp-part-${Date.now()}`,
+                     message_id: 'streaming',
+                     part_type: 'STATUS',
+                     seq: streamingMsg.parts.length,
+                     payload_json: { text: `Running tool: ${part.name}` },
+                     created_at: new Date().toISOString()
+                 })
+             }
+        } else if (data.event === 'assistant.message.completed') {
+             // When session is idle, reload messages to get the persisted cards
+             loadConversation(conversationId)
              isStreaming.value = false
              if (eventSource.value) {
                  eventSource.value.close()

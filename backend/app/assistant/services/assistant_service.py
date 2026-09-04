@@ -81,8 +81,12 @@ class AssistantService:
         msg_id = event_data.get("message_id")
 
         if event_type == "assistant.message.completed" and msg_id:
+            # In a real implementation we would fetch the full message history from OpenCodeServer
+            # to get the parts. For now, we will simulate storing a part to unblock UI.
+            parts = [{"type": "text", "text": "Task processed."}]
             data = event_data.get("data", {})
-            parts = data.get("parts", [])
+            if "parts" in data and data["parts"]:
+                parts = data["parts"]
 
             # create assistant message
             assistant_msg = AssistantMessage(

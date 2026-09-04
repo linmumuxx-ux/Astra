@@ -56,10 +56,13 @@ class EventMapper:
             base_event["message_id"] = info.get("id")
         elif event_type == "session.idle":
             base_event["event"] = "assistant.message.completed"
+            base_event["message_id"] = info.get("id") or properties.get("messageID")
         elif event_type == "tool.execute.before":
             base_event["event"] = "assistant.tool.started"
+            base_event["message_id"] = properties.get("toolCallID")
         elif event_type == "tool.execute.after":
             base_event["event"] = "assistant.tool.completed"
+            base_event["message_id"] = properties.get("toolCallID")
         elif event_type == "session.status":
             base_event["event"] = "assistant.status"
         else:

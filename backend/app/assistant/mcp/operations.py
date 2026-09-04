@@ -7,6 +7,7 @@ def register_operation_tools(server: Server, SessionLocal):
     async def nexus_operation_overview(
         start_time: str | None = None, end_time: str | None = None
     ):
-        return await operation_tools.nexus_operation_overview(
-            {"start_time": start_time, "end_time": end_time}
-        )
+        async with SessionLocal() as db_session:
+            return await operation_tools.nexus_operation_overview(
+                {"start_time": start_time, "end_time": end_time}, "admin", db_session
+            )

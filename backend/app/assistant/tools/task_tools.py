@@ -50,10 +50,10 @@ async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_ses
     task_payload = {
         "source": "manual",
         "task_type": params.get("task_type", "ISSUE"),
-        "category_id": params.get("category_id", "default"),
-        "title": params.get("title", "New Task"),
-        "description": params.get("description", "Created by Assistant"),
-        "acceptance_criteria": params.get("acceptance_criteria", [{"content": "Done"}]),
+        "category_id": params.get("category_id") or "default",
+        "title": params.get("title") or "New Task",
+        "description": params.get("description") or "Created by Assistant",
+        "acceptance_criteria": [{"content": c} for c in (params.get("acceptance_criteria") or ["Done"])],
         "employee_id": params.get("employee_id"),
         "priority": params.get("priority", "MEDIUM")
     }
@@ -61,7 +61,7 @@ async def nexus_task_prepare_create(params: dict[str, Any], user_id: str, db_ses
     op = AssistantOperation(
         id=uuid.uuid4().hex,
         operation_id=op_id,
-        conversation_id=params.get("conversation_id", ""),  # FK constraint handled via UI
+        conversation_id=params.get("conversation_id") or None,
         user_id=user_id,
         operation_type="task_create",
         risk_level="L1",

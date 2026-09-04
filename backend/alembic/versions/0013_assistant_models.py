@@ -30,7 +30,7 @@ def upgrade() -> None:
 
     op.create_table('assistant_messages',
     sa.Column('id', sa.String(length=64), nullable=False),
-    sa.Column('conversation_id', sa.String(length=64), nullable=False),
+    sa.Column('conversation_id', sa.String(length=64), nullable=True),
     sa.Column('role', sa.String(length=32), nullable=False),
     sa.Column('message_type', sa.String(length=32), nullable=False),
     sa.Column('content', sa.Text(), nullable=False),
@@ -45,7 +45,7 @@ def upgrade() -> None:
 
     op.create_table('assistant_context_refs',
     sa.Column('id', sa.String(length=64), nullable=False),
-    sa.Column('conversation_id', sa.String(length=64), nullable=False),
+    sa.Column('conversation_id', sa.String(length=64), nullable=True),
     sa.Column('message_id', sa.String(length=64), nullable=True),
     sa.Column('ref_type', sa.String(length=64), nullable=False),
     sa.Column('ref_id', sa.String(length=128), nullable=False),
@@ -72,7 +72,7 @@ def upgrade() -> None:
     op.create_table('assistant_operations',
     sa.Column('id', sa.String(length=64), nullable=False),
     sa.Column('operation_id', sa.String(length=128), nullable=False),
-    sa.Column('conversation_id', sa.String(length=64), nullable=False),
+    sa.Column('conversation_id', sa.String(length=64), nullable=True),
     sa.Column('message_id', sa.String(length=64), nullable=True),
     sa.Column('user_id', sa.String(length=120), nullable=False),
     sa.Column('operation_type', sa.String(length=64), nullable=False),
@@ -98,7 +98,7 @@ def upgrade() -> None:
 
     op.create_table('assistant_tool_calls',
     sa.Column('id', sa.String(length=64), nullable=False),
-    sa.Column('conversation_id', sa.String(length=64), nullable=False),
+    sa.Column('conversation_id', sa.String(length=64), nullable=True),
     sa.Column('message_id', sa.String(length=64), nullable=True),
     sa.Column('opencode_session_id', sa.String(length=128), nullable=True),
     sa.Column('tool_name', sa.String(length=128), nullable=False),

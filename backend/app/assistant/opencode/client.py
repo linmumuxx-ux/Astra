@@ -38,9 +38,9 @@ class OpenCodeClient:
                 {"type": "text", "text": prompt}
             ]
         }
-        # Assuming context might be passed via system or another property based on OpenCode docs
+        # Pass context into system message if provided
         if context:
-            pass # Skipping for now to strictly follow parts schema
+            payload["system"] = str(context)
 
         async with httpx.AsyncClient(auth=self.auth) as client:
             resp = await client.post(f"{self.base_url}/session/{session_id}/prompt_async", json=payload)
