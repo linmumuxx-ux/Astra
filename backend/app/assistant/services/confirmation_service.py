@@ -46,12 +46,33 @@ class ConfirmationService:
                 op.result_json = {"task_id": task.id, "status": task.status}
             elif op.operation_type == "task_cancel":
                 task_id = op.request_json.get("task_id")
-                # Call TaskService to cancel the task
-                try:
-                    await self.task_service.cancel_task(task_id, user_id)
-                    op.result_json = {"status": "CANCELLED"}
-                except Exception as e:
-                    op.result_json = {"error": str(e)}
+                from app.api.routes import (
+                    _abort_opencode_session,
+                    _cancel_active_runs,
+                    require_task,
+                    transition_task,
+                )
+                from app.domain import TaskStatus
+                task = await require_task(task_id, self.db)
+                runtime_aborted = await _abort_opencode_session(task, self.db)
+                await transition_task(
+                    task,
+                    TaskStatus.CANCELLED,
+                    "任务已由平台助手取消",
+                    self.db,
+                    None,
+                    "任务已取消",
+                )
+                await _cancel_active_runs(task.id, self.db)
+                if runtime_aborted:
+                    await self.task_service.add_event(
+                        task,
+                        "OPENCODE_ABORTED",
+                        "runtime",
+                        "OpenCode Session 已中止",
+                        {"session_id": task.opencode_session_id, "reason": "cancel"},
+                    )
+                op.result_json = {"status": "CANCELLED"}
             else:
                 op.result_json = {"message": "Executed"}
 

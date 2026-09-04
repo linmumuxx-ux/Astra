@@ -1,21 +1,28 @@
 import uuid
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assistant.models import AssistantConversation
-from app.assistant.opencode.client import OpenCodeClient
 from app.assistant.schemas import ConversationCreate
+from app.config.settings import get_settings
+from app.executors.opencode_server import OpenCodeServerClient
 
 
 class ConversationService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.opencode_client = OpenCodeClient()
+        self.settings = get_settings()
+        self.opencode_client = OpenCodeServerClient(self.settings)
 
     async def create_conversation(self, user_id: str, data: ConversationCreate) -> AssistantConversation:
         # 1. Create OpenCode Session
-        opencode_session_id = await self.opencode_client.create_session()
+        directory = Path(__file__).parent.parent / "workspace"
+        directory.mkdir(parents=True, exist_ok=True)
+        opencode_session_id = await self.opencode_client.create_session(
+            directory, title=data.title, model_name=self.settings.opencode_model, agent="platform-assistant"
+        )
 
         # 2. Save Conversation
         conv_id = f"CONV-{uuid.uuid4().hex[:8].upper()}"

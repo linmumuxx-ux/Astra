@@ -56,7 +56,6 @@ export const useAssistantStore = defineStore('assistant', () => {
         const data: AssistantEvent = JSON.parse(event.data)
 
         if (data.event === 'assistant.message.delta') {
-             // Create a streaming message if it doesn't exist
              let streamingMsg = messages.value.find(m => m.id === 'streaming')
              if (!streamingMsg) {
                  streamingMsg = {
@@ -73,24 +72,28 @@ export const useAssistantStore = defineStore('assistant', () => {
                  messages.value.push(streamingMsg)
              }
 
-             // Update text content from part delta
+             const info = data.data?.info
+             if (info && info.role === 'assistant') {
+                 // For message.updated
+             }
              const part = data.data?.part
              if (part && part.type === 'text') {
-                 streamingMsg.content += part.text || ''
+                 // Ensure we handle streaming properly if needed, but reloading at end usually solves the bulk
+                 streamingMsg.content = part.text || streamingMsg.content
              }
-             // Handle tool call previews
-             if (part && part.type === 'toolCall') {
+        } else if (data.event === 'assistant.tool.started') {
+             let streamingMsg = messages.value.find(m => m.id === 'streaming')
+             if (streamingMsg) {
                  streamingMsg.parts.push({
                      id: `temp-part-${Date.now()}`,
                      message_id: 'streaming',
                      part_type: 'STATUS',
                      seq: streamingMsg.parts.length,
-                     payload_json: { text: `Running tool: ${part.name}` },
+                     payload_json: { text: `Running tool...` },
                      created_at: new Date().toISOString()
                  })
              }
         } else if (data.event === 'assistant.message.completed') {
-             // When session is idle, reload messages to get the persisted cards
              loadConversation(conversationId)
              isStreaming.value = false
              if (eventSource.value) {

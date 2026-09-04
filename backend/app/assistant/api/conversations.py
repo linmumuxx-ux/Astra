@@ -27,15 +27,20 @@ async def list_conversations(request: Request, db: AsyncSession = Depends(get_db
     return await service.list_conversations(user_id)
 
 @router.get("/{conversation_id}", response_model=ConversationResponse)
-async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_db)):
+async def get_conversation(conversation_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    user_id = request.headers.get("X-Astra-User-Id", "admin")
     service = ConversationService(db)
     conv = await service.get_conversation(conversation_id)
-    if not conv:
+    if not conv or conv.user_id != user_id:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
 
 @router.delete("/{conversation_id}")
-async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_conversation(conversation_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    user_id = request.headers.get("X-Astra-User-Id", "admin")
     service = ConversationService(db)
+    conv = await service.get_conversation(conversation_id)
+    if not conv or conv.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
     await service.delete_conversation(conversation_id)
     return {"status": "ok"}

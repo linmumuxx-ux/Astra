@@ -1,6 +1,7 @@
 import json
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from fastapi import Request
 from sqlalchemy import select
@@ -8,16 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.assistant.models import AssistantMessage, AssistantMessagePart
-from app.assistant.opencode.client import OpenCodeClient
 from app.assistant.opencode.event_mapper import EventMapper
 from app.assistant.schemas import MessageCreate
 from app.assistant.services.conversation_service import ConversationService
+from app.config.settings import get_settings
+from app.executors.opencode_server import OpenCodeServerClient
 
 
 class AssistantService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.opencode_client = OpenCodeClient()
+        self.settings = get_settings()
+        self.opencode_client = OpenCodeServerClient(self.settings)
         self.event_mapper = EventMapper(self.opencode_client)
         self.conversation_service = ConversationService(db)
 
@@ -41,6 +44,18 @@ class AssistantService:
         self.db.add(msg)
         await self.db.commit()
         await self.db.refresh(msg)
+        msg_dict = {
+            "id": msg.id,
+            "conversation_id": msg.conversation_id,
+            "role": msg.role,
+            "message_type": msg.message_type,
+            "content": msg.content,
+            "status": msg.status,
+            "opencode_message_id": msg.opencode_message_id,
+            "created_at": msg.created_at,
+            "updated_at": msg.updated_at,
+            "parts": []
+        }
 
         # 2. Build Agent Context
         context = {
@@ -50,9 +65,16 @@ class AssistantService:
         }
 
         # 3. Send async prompt to OpenCode
-        await self.opencode_client.prompt_async(conv.opencode_session_id, message_in.content, context)
+        directory = Path(__file__).parent.parent / "workspace"
+        await self.opencode_client.prompt(
+            directory=directory,
+            session_id=conv.opencode_session_id,
+            prompt=message_in.content,
+            agent=None,  # OpenCode handles agent fallback/config natively
+            system=str(context) if context else None
+        )
 
-        return msg
+        return msg_dict
 
     async def stream_events(self, conversation_id: str, request: Request) -> AsyncGenerator[str, None]:
         conv = await self.conversation_service.get_conversation(conversation_id)
@@ -60,7 +82,10 @@ class AssistantService:
             yield "data: {\"error\": \"Conversation not found\"}\n\n"
             return
 
-        async for sse_msg in self.event_mapper.stream_and_map(conv.opencode_session_id, conversation_id):
+        directory = Path(__file__).parent.parent / "workspace"
+        async for sse_msg in self.event_mapper.stream_and_map(
+            conv.opencode_session_id, conversation_id, directory
+        ):
             if await request.is_disconnected():
                 break
 
@@ -78,61 +103,90 @@ class AssistantService:
 
     async def _persist_event(self, conversation_id: str, event_data: dict):
         event_type = event_data.get("event")
-        msg_id = event_data.get("message_id")
 
-        if event_type == "assistant.message.completed" and msg_id:
-            # In a real implementation we would fetch the full message history from OpenCodeServer
-            # to get the parts. For now, we will simulate storing a part to unblock UI.
-            parts = [{"type": "text", "text": "Task processed."}]
-            data = event_data.get("data", {})
-            if "parts" in data and data["parts"]:
-                parts = data["parts"]
+        # We only persist the final message state when the session is idle
+        if event_type == "assistant.message.completed":
+            conv = await self.conversation_service.get_conversation(conversation_id)
+            if not conv:
+                return
+            directory = Path(__file__).parent.parent / "workspace"
+            try:
+                # Fetch full message history from OpenCode
+                oc_messages = await self.opencode_client.messages(directory, conv.opencode_session_id)
+                if not oc_messages:
+                    return
+                # We expect the last message to be the assistant's reply
+                last_oc_msg = oc_messages[-1]
+                if last_oc_msg.get("role") != "assistant":
+                    return
 
-            # create assistant message
-            assistant_msg = AssistantMessage(
-                id=f"MSG-{uuid.uuid4().hex[:8].upper()}",
-                conversation_id=conversation_id,
-                role="ASSISTANT",
-                message_type="MIXED",
-                status="COMPLETED",
-                opencode_message_id=msg_id
-            )
-            self.db.add(assistant_msg)
+                msg_id = last_oc_msg.get("id")
+                # Ensure we don't save duplicates
+                existing_msg = await self.db.execute(
+                    select(AssistantMessage).where(AssistantMessage.opencode_message_id == msg_id)
+                )
+                if existing_msg.scalar_one_or_none():
+                    return
 
-            # parse parts
-            for i, p in enumerate(parts):
-                part_type = p.get("type", "TEXT").upper()
-                if part_type == "TOOL":
-                    # Simple heuristic
-                    content_val = p.get("content", {})
-                    if "operation_id" in content_val:
-                        part_type = "CONFIRM_CARD"
-                    elif "items" in content_val and len(content_val["items"]) > 0:
-                        part_type = "TASK_CARD"
-                        content_val = content_val["items"][0]
+                assistant_msg = AssistantMessage(
+                    id=f"MSG-{uuid.uuid4().hex[:8].upper()}",
+                    conversation_id=conversation_id,
+                    role="ASSISTANT",
+                    message_type="MIXED",
+                    status="COMPLETED",
+                    opencode_message_id=msg_id
+                )
+                self.db.add(assistant_msg)
+
+                parts = last_oc_msg.get("parts", [])
+                for i, p in enumerate(parts):
+                    part_type = p.get("type", "text").upper()
+                    if part_type == "TOOL":
+                        # OpenCode Tool part structure:
+                        # {"type": "tool", "tool": "nexus_task_search", "state": {"output": {...}}}
+                        tool_name = p.get("tool", "")
+                        state = p.get("state", {})
+                        output = state.get("output", {})
+
+                        if "prepare_create" in tool_name or "cancel" in tool_name:
+                            part_type = "CONFIRM_CARD"
+                        elif "task_" in tool_name and "items" in output and len(output["items"]) > 0:
+                            part_type = "TASK_CARD"
+                            output = output["items"][0]
+                        elif "employee_" in tool_name and "items" in output and len(output["items"]) > 0:
+                            part_type = "EMPLOYEE_CARD"
+                            output = output["items"][0]
+                        elif "run_" in tool_name and "items" in output and len(output["items"]) > 0:
+                            part_type = "RUN_CARD"
+                            output = output["items"][0]
+                        elif "knowledge_" in tool_name and "items" in output and len(output["items"]) > 0:
+                            part_type = "KNOWLEDGE_CARD"
+                            output = output["items"][0]
+                        else:
+                            part_type = "TEXT"
+
+                        msg_part = AssistantMessagePart(
+                            id=f"PRT-{uuid.uuid4().hex[:8].upper()}",
+                            message_id=assistant_msg.id,
+                            part_type=part_type,
+                            seq=i,
+                            payload_json=output
+                        )
+                        self.db.add(msg_part)
                     else:
-                        part_type = "TEXT"
+                        msg_part = AssistantMessagePart(
+                            id=f"PRT-{uuid.uuid4().hex[:8].upper()}",
+                            message_id=assistant_msg.id,
+                            part_type="TEXT",
+                            seq=i,
+                            payload_json={"text": p.get("text", "")}
+                        )
+                        self.db.add(msg_part)
 
-                    msg_part = AssistantMessagePart(
-                        id=f"PRT-{uuid.uuid4().hex[:8].upper()}",
-                        message_id=assistant_msg.id,
-                        part_type=part_type,
-                        seq=i,
-                        payload_json=content_val
-                    )
-                    self.db.add(msg_part)
-                else:
-                    msg_part = AssistantMessagePart(
-                        id=f"PRT-{uuid.uuid4().hex[:8].upper()}",
-                        message_id=assistant_msg.id,
-                        part_type="TEXT",
-                        seq=i,
-                        payload_json={"text": p.get("text", "")}
-                    )
-                    self.db.add(msg_part)
-
-            await self.db.commit()
-
+                await self.db.commit()
+            except Exception:
+                # Log error in real app
+                pass
     async def list_messages(self, conversation_id: str) -> list[AssistantMessage]:
         result = await self.db.execute(
             select(AssistantMessage)
@@ -145,4 +199,5 @@ class AssistantService:
     async def abort_generation(self, conversation_id: str) -> None:
         conv = await self.conversation_service.get_conversation(conversation_id)
         if conv:
-            await self.opencode_client.abort(conv.opencode_session_id)
+            directory = Path(__file__).parent.parent / "workspace"
+            await self.opencode_client.abort(directory, conv.opencode_session_id)
