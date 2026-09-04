@@ -9,7 +9,7 @@ from app.main import app
 class MockOpenCodeServerClient:
     def __init__(self, *args, **kwargs):
         self.auth = None
-    async def create_session(self, directory):
+    async def create_session(self, *args, **kwargs):
         return "ses_123"
     async def prompt(self, directory, session_id, prompt, agent, system):
         pass
