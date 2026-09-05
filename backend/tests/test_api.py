@@ -52,6 +52,66 @@ def test_task_api_uses_v04_business_fields_and_statuses():
         assert resumed.json()["status"] == "READY"
 
 
+def test_home_dashboard_exposes_only_aggregated_business_sections():
+    with TestClient(app) as client:
+        overview = client.get("/api/dashboard/overview")
+        assert overview.status_code == 200
+        assert set(overview.json()) == {
+            "employee_total",
+            "team_count",
+            "working_employees",
+            "running_tasks",
+            "completed_today",
+            "attention_total",
+        }
+
+        employees = client.get("/api/dashboard/employees")
+        assert employees.status_code == 200
+        for team in employees.json()["teams"]:
+            for employee in team["employees"]:
+                assert set(employee) == {
+                    "id",
+                    "name",
+                    "role",
+                    "status",
+                    "state",
+                    "state_label",
+                    "current_task",
+                }
+                assert "execution_environment" not in employee
+
+        attention = client.get("/api/dashboard/attention")
+        assert attention.status_code == 200
+        assert len(attention.json()["items"]) <= 5
+
+        tasks = client.get("/api/dashboard/tasks")
+        assert tasks.status_code == 200
+        assert len(tasks.json()["trend"]) == 7
+        assert len(tasks.json()["recent"]) <= 6
+        expected_recent_task_fields = {
+            "id",
+            "title",
+            "status",
+            "employee_id",
+            "employee_name",
+            "updated_at",
+        }
+        assert all(set(item) == expected_recent_task_fields for item in tasks.json()["recent"])
+
+        activity = client.get("/api/dashboard/activity")
+        assert activity.status_code == 200
+        assert all("message" not in item and "detail" not in item for item in activity.json()["items"])
+
+        knowledge = client.get(
+            "/api/dashboard/knowledge",
+            headers={"X-Astra-User-Id": "dashboard-viewer", "X-Astra-Role": "viewer"},
+        )
+        assert knowledge.status_code == 200
+        assert set(knowledge.json()) == {"today_added", "candidate_experiences", "total", "recent"}
+        assert knowledge.json()["candidate_experiences"] == 0
+        assert all(set(item) == {"id", "title"} for item in knowledge.json()["recent"])
+
+
 def test_task_workbench_keeps_one_session_for_messages_inquiries_and_follow_up_runs():
     with TestClient(app) as client:
         created = client.post(

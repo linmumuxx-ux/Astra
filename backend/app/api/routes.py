@@ -10,11 +10,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.library_routes import library_principal
 from app.config.settings import get_settings
+from app.dashboard import (
+    dashboard_activity,
+    dashboard_attention,
+    dashboard_employees,
+    dashboard_overview,
+    dashboard_tasks,
+)
 from app.database import SessionLocal, get_session
 from app.domain import CompletionPolicy, EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
 from app.executors.opencode_remote_server import RemoteOpenCodeServerExecutor
 from app.executors.opencode_server import OpenCodeServerClient
+from app.library_service import KnowledgeService, LibraryPrincipal
 from app.models import (
     DigitalEmployee,
     Event,
@@ -539,6 +548,39 @@ async def metrics(session: AsyncSession = Depends(get_session)) -> dict:
     return await dashboard_metrics(session)
 
 
+@router.get("/dashboard/overview")
+async def home_dashboard_overview(session: AsyncSession = Depends(get_session)) -> dict:
+    return await dashboard_overview(session)
+
+
+@router.get("/dashboard/employees")
+async def home_dashboard_employees(session: AsyncSession = Depends(get_session)) -> dict:
+    return await dashboard_employees(session)
+
+
+@router.get("/dashboard/attention")
+async def home_dashboard_attention(session: AsyncSession = Depends(get_session)) -> dict:
+    return await dashboard_attention(session)
+
+
+@router.get("/dashboard/tasks")
+async def home_dashboard_tasks(session: AsyncSession = Depends(get_session)) -> dict:
+    return await dashboard_tasks(session)
+
+
+@router.get("/dashboard/activity")
+async def home_dashboard_activity(session: AsyncSession = Depends(get_session)) -> dict:
+    return await dashboard_activity(session)
+
+
+@router.get("/dashboard/knowledge")
+async def home_dashboard_knowledge(
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+) -> dict:
+    return await KnowledgeService(session).dashboard_summary(principal)
+
+
 @router.get("/task-categories", response_model=list[TaskCategoryRead])
 async def list_task_categories(
     include_disabled: bool = False,
@@ -647,6 +689,15 @@ async def create_employee(payload: EmployeeCreate, session: AsyncSession = Depen
                 employee_id=employee.id,
                 **environment_payload,
                 status=EnvironmentStatus.UNKNOWN,
+            )
+        )
+        session.add(
+            Event(
+                employee_id=employee.id,
+                event_type="EMPLOYEE_CREATED",
+                phase="business",
+                message=f"新增数字员工：{employee.name}",
+                detail={"role": employee.role},
             )
         )
         await session.commit()

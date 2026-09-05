@@ -1,5 +1,11 @@
 import type {
   AstraEvent,
+  DashboardActivity,
+  DashboardAttention,
+  DashboardEmployees,
+  DashboardKnowledge,
+  DashboardOverview,
+  DashboardTasks,
   Employee,
   EmployeeUsage,
   Evidence,
@@ -45,6 +51,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   metrics: () => request<Metrics>('/api/system/metrics'),
+  dashboardOverview: () => request<DashboardOverview>('/api/dashboard/overview'),
+  dashboardEmployees: () => request<DashboardEmployees>('/api/dashboard/employees'),
+  dashboardAttention: () => request<DashboardAttention>('/api/dashboard/attention'),
+  dashboardTasks: () => request<DashboardTasks>('/api/dashboard/tasks'),
+  dashboardActivity: () => request<DashboardActivity>('/api/dashboard/activity'),
+  dashboardKnowledge: () => request<DashboardKnowledge>('/api/dashboard/knowledge'),
   categories: (includeDisabled = false) => request<TaskCategory[]>(`/api/task-categories${includeDisabled ? '?include_disabled=true' : ''}`),
   createCategory: (body: Record<string, unknown>) => request<TaskCategory>('/api/task-categories', { method: 'POST', body: JSON.stringify(body) }),
   updateCategory: (id: string, body: Record<string, unknown>) => request<TaskCategory>(`/api/task-categories/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),

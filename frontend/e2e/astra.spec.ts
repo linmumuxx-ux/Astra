@@ -1,47 +1,74 @@
 import { expect, test } from '@playwright/test'
 
-test('总览展示数字员工工作空间、消息通知和员工交互', async ({ page }) => {
+test('首页展示数据看板、业务导航和聚合数据', async ({ page }) => {
+  const requests: string[] = []
+  page.on('request', (request) => requests.push(new URL(request.url()).pathname))
+
   await page.goto('/')
   const dashboard = page.getByTestId('dashboard-page')
-  await expect(dashboard).toBeVisible()
-  await expect(dashboard.getByRole('heading', { name: '数字员工工作空间', level: 2 })).toBeVisible()
-  await expect(dashboard.getByRole('region', { name: '数字员工工作空间' })).toBeVisible()
-  const workspace = dashboard.getByRole('region', { name: '数字员工工作空间' })
-  await expect(workspace.getByText('开发办公区', { exact: true })).toBeVisible()
-  await expect(workspace.getByText('专项处理区', { exact: true })).toBeVisible()
-  await expect(dashboard.getByLabel('消息通知')).toBeVisible()
-  await expect(dashboard.getByLabel('实时动态')).toBeVisible()
-  const employee = dashboard.getByRole('button', { name: /员工-01 测试平台开发/ })
-  await expect(employee.locator('.employee-character__sprite')).toBeVisible()
-  await employee.click()
-  const popover = dashboard.getByRole('dialog', { name: '员工-01 基础信息' })
-  await expect(popover).toContainText('当前任务')
-  await expect(popover.getByRole('link', { name: '查看当前任务' })).toBeVisible()
-  await popover.getByRole('button', { name: '查看详情' }).click()
-  const drawer = page.getByRole('dialog', { name: '员工-01 员工详情' })
-  await expect(drawer).toBeVisible()
-  await expect(drawer.getByRole('heading', { name: '当前任务' })).toBeVisible()
-  await expect(drawer.getByRole('link', { name: '编辑配置' })).toHaveAttribute('href', '/settings?employee=astra-01')
-  await drawer.getByRole('button', { name: '关闭员工详情' }).click()
-  await expect(page.locator('.error-banner')).toHaveCount(0)
+  await expect(dashboard.getByRole('region', { name: '当前空间状态' })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '数字员工', level: 1 })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: /需要处理/, level: 1 })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '最近任务', level: 1 })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '最近动态', level: 1 })).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '数字图书馆', level: 1 })).toBeVisible()
+  await expect(dashboard.locator('.space-card')).toHaveCount(4)
+  await expect(dashboard.locator('.library-scene')).toHaveCount(1)
+  await expect(dashboard.getByRole('img', { name: '近 7 日完成任务数与任务总数趋势' })).toHaveCount(0)
+  await expect(dashboard.getByText('数字办公室')).toHaveCount(0)
+  await expect(dashboard.locator('canvas')).toHaveCount(0)
 
-  const viewportHeight = await page.evaluate(() => window.innerHeight)
-  const dashboardHeight = await dashboard.evaluate((element) => element.getBoundingClientRect().height)
-  expect(dashboardHeight).toBeLessThanOrEqual(viewportHeight)
+  const navigation = page.getByRole('navigation', { name: '主导航' })
+  for (const label of ['首页', '数字员工', '任务管理', '数字图书馆', '任务记录', '设置']) {
+    await expect(navigation.getByRole('link', { name: new RegExp(label) })).toBeVisible()
+  }
+  await expect(page.getByRole('link', { name: '消息通知' })).toBeVisible()
+  expect(requests).not.toContain('/api/events/stream')
+  expect(requests.some((path) => path === '/api/dashboard/overview')).toBeTruthy()
+
+  const refreshed = page.waitForResponse((response) => response.url().includes('/api/dashboard/overview'))
+  await dashboard.getByRole('button', { name: '刷新首页数据' }).click()
+  await refreshed
+  await expect(dashboard.getByText(/最近刷新 \d{2}:\d{2}/)).toBeVisible()
+
+  const pageSize = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }))
+  expect(pageSize.scrollWidth).toBeLessThanOrEqual(pageSize.clientWidth)
+})
+
+test('首页单模块失败不影响其他模块并保留筛选跳转', async ({ page }) => {
+  await page.route('**/api/dashboard/overview', (route) => route.fulfill({ json: { employee_total: 24, team_count: 3, working_employees: 8, running_tasks: 12, completed_today: 36, attention_total: 3 } }))
+  await page.route('**/api/dashboard/employees', (route) => route.fulfill({ json: { teams: [{ id: 'automation', name: '自动化工程', order: 10, employee_count: 1, employees: [{ id: 'dashboard-employee', name: '圆YY', role: '自动化工程师', status: 'WORKING', state: 'working', state_label: '执行中', current_task: { id: 'T-DASHBOARD', title: '自动化问题定位', status: 'RUNNING' } }] }] } }))
+  await page.route('**/api/dashboard/attention', (route) => route.fulfill({ json: { items: [] } }))
+  await page.route('**/api/dashboard/tasks', (route) => route.fulfill({ status: 503, json: { detail: '趋势服务不可用' } }))
+  await page.route('**/api/dashboard/activity', (route) => route.fulfill({ json: { items: [] } }))
+  await page.route('**/api/dashboard/knowledge', (route) => route.fulfill({ json: { today_added: 6, candidate_experiences: 4, total: 128, recent: [] } }))
+
+  await page.goto('/')
+  const dashboard = page.getByTestId('dashboard-page')
+  await expect(dashboard.locator('.summary-metrics').getByRole('link', { name: '24 名数字员工' })).toBeVisible()
+  await expect(dashboard.getByRole('region', { name: '自动化工程团队' })).toContainText('圆YY')
+  await expect(dashboard.getByText('正在执行', { exact: true })).toBeVisible()
+  await expect(dashboard.getByText('最近任务暂时无法获取')).toBeVisible()
+  await expect(dashboard.getByText('当前无需处理')).toBeVisible()
+  await expect(dashboard.locator('.library-scene')).toContainText('今天沉淀 6 条知识，4 条经验等待整理')
+
+  await dashboard.locator('.summary-metrics').getByRole('link', { name: '8 工作中' }).click()
+  await expect(page).toHaveURL(/\/employees\?status=WORKING$/)
+  await expect(page.getByLabel('员工状态')).toHaveValue('WORKING')
 })
 
 test('核心页面可从中文主导航访问', async ({ page }) => {
   await page.goto('/')
+  const navigation = page.getByRole('navigation', { name: '主导航' })
   const destinations = [
     { link: /^数字员工/, testId: 'employee-list-page', heading: '数字员工' },
-    { link: /^任务中心/, testId: 'task-list-page', heading: '任务中心' },
-    { link: /^运行记录/, testId: 'run-list-page', heading: '运行记录' },
+    { link: /^任务管理$/, testId: 'task-list-page', heading: '任务中心' },
+    { link: /^任务记录$/, testId: 'run-list-page', heading: '任务记录' },
     { link: /^数字图书馆/, testId: 'digital-library-page', heading: '数字图书馆' },
-    { link: /^配置中心/, testId: 'settings-page', heading: '配置中心' },
-    { link: /^待处理/, testId: 'intervention-page', heading: '待处理' },
+    { link: /^设置$/, testId: 'settings-page', heading: '配置中心' },
   ]
   for (const destination of destinations) {
-    await page.getByRole('link', { name: destination.link }).click()
+    await navigation.getByRole('link', { name: destination.link }).click()
     const content = page.getByTestId(destination.testId)
     await expect(content).toBeVisible()
     await expect(content.getByRole('heading', { name: destination.heading, level: 2 })).toBeVisible()
@@ -128,7 +155,7 @@ test('创建任务仅填写业务事实且高优先级默认人工确认', async
 test('待处理角标与聚合队列一致并提供人工处理入口', async ({ page }) => {
   await page.goto('/interventions')
   const pending = page.getByTestId('intervention-page')
-  await expect(page.getByRole('link', { name: /^待处理 3$/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: '消息通知' }).locator('b')).toHaveText('3')
   await expect(pending.getByText('3 项待处理')).toBeVisible()
   await expect(pending.getByRole('button', { name: '全部 3' })).toBeVisible()
   await expect(pending.getByRole('button', { name: '已挂起 1' })).toBeVisible()
@@ -157,7 +184,7 @@ test('员工管理使用列表、筛选分页并优先打开详情抽屉', async
   await expect(detail.getByText('暂无历史任务')).toBeVisible()
 })
 
-test('运行记录列表可进入 Run 与任务详情', async ({ page }) => {
+test('任务记录列表可进入 Run 与任务详情', async ({ page }) => {
   await page.goto('/runs')
   await expect(page.getByRole('link', { name: /RUN-DEMO-003/ })).toHaveAttribute('href', '/runs/RUN-DEMO-003')
   await expect(page.getByRole('link', { name: /完善接口变更防线告警信息/ })).toHaveAttribute('href', '/tasks/T-20260827-003')

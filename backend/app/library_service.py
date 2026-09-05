@@ -51,6 +51,7 @@ from app.models import (
     Task,
     utcnow,
 )
+from app.usage import day_bounds
 
 KNOWLEDGE_TYPES = {"document", "rule", "guide", "experience", "faq", "tool", "example"}
 KNOWLEDGE_STATUSES = {"draft", "candidate", "published", "archived", "rejected"}
@@ -288,6 +289,52 @@ class KnowledgeService:
             published_experiences=published_experiences or 0,
             candidate_experiences=candidates,
         )
+
+    async def dashboard_summary(self, principal: LibraryPrincipal) -> dict[str, object]:
+        """Return permission-aware counters for the lightweight dashboard card."""
+
+        scope_condition = await self._item_scope_condition(principal)
+        start, end = day_bounds()
+        today_conditions = [
+            KnowledgeItem.status.in_(principal.visible_statuses),
+            KnowledgeItem.created_at >= start,
+            KnowledgeItem.created_at < end,
+        ]
+        if scope_condition is not None:
+            today_conditions.append(scope_condition)
+        today_added = await self.session.scalar(select(func.count(KnowledgeItem.id)).where(*today_conditions))
+
+        total_conditions = [KnowledgeItem.status.in_(principal.visible_statuses)]
+        if scope_condition is not None:
+            total_conditions.append(scope_condition)
+        total = await self.session.scalar(select(func.count(KnowledgeItem.id)).where(*total_conditions))
+        recent_items = (
+            await self.session.scalars(
+                select(KnowledgeItem)
+                .where(*total_conditions)
+                .order_by(KnowledgeItem.updated_at.desc())
+                .limit(3)
+            )
+        ).all()
+
+        candidates = 0
+        if principal.can_review:
+            candidate_conditions = [
+                KnowledgeItem.type == "experience",
+                KnowledgeItem.status == "candidate",
+            ]
+            if scope_condition is not None:
+                candidate_conditions.append(scope_condition)
+            candidates = (
+                await self.session.scalar(select(func.count(KnowledgeItem.id)).where(*candidate_conditions))
+                or 0
+            )
+        return {
+            "today_added": today_added or 0,
+            "candidate_experiences": candidates,
+            "total": total or 0,
+            "recent": [{"id": item.id, "title": item.title} for item in recent_items],
+        }
 
     async def list_spaces(self, principal: LibraryPrincipal) -> list[KnowledgeSpaceRead]:
         count_statuses = principal.visible_statuses

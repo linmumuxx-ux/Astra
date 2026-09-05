@@ -13,7 +13,10 @@ import { computed } from 'vue'
 import type { Employee } from '@/api/types'
 import { employeeCharacterStyle } from '@/features/workspace/characterAssets'
 
-const props = withDefaults(defineProps<{ employee: Employee; size?: 'small' | 'medium' | 'large' }>(), { size: 'medium' })
+const props = withDefaults(defineProps<{
+  employee: Pick<Employee, 'id' | 'status'>
+  size?: 'small' | 'medium' | 'large'
+}>(), { size: 'medium' })
 const avatarStyle = computed(() => employeeCharacterStyle(props.employee.id, 'standing'))
 </script>
 

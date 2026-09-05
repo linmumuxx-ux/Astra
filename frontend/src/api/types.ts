@@ -418,3 +418,92 @@ export interface Metrics {
   task_status_distribution: Record<string, number>
   employee_status_distribution: Record<string, number>
 }
+
+export interface DashboardOverview {
+  employee_total: number
+  team_count: number
+  working_employees: number
+  running_tasks: number
+  completed_today: number
+  attention_total: number
+}
+
+export interface DashboardEmployee {
+  id: string
+  name: string
+  role: string
+  status: string
+  state: 'working' | 'idle' | 'waiting' | 'error'
+  state_label: '执行中' | '空闲' | '等待' | '异常'
+  current_task: { id: string; title: string; status: string } | null
+}
+
+export interface DashboardTeam {
+  id: string
+  name: string
+  order: number
+  employee_count: number
+  employees: DashboardEmployee[]
+}
+
+export interface DashboardEmployees {
+  teams: DashboardTeam[]
+}
+
+export interface DashboardAttentionItem {
+  task_id: string
+  task_title: string
+  employee_id: string | null
+  employee_name: string
+  status: 'execution_failed' | 'blocked' | 'waiting' | 'exception'
+  status_label: '执行失败' | '任务阻塞' | '等待处理' | '异常'
+  occurred_at: string
+}
+
+export interface DashboardAttention {
+  items: DashboardAttentionItem[]
+}
+
+export interface DashboardTaskTrendPoint {
+  date: string
+  total: number
+  completed: number
+}
+
+export interface DashboardTasks {
+  running: number
+  waiting: number
+  completed_today: number
+  failed_today: number
+  trend: DashboardTaskTrendPoint[]
+  recent: Array<{
+    id: string
+    title: string
+    status: string
+    employee_id: string | null
+    employee_name: string
+    updated_at: string
+  }>
+}
+
+export interface DashboardActivityItem {
+  id: number
+  employee_id: string | null
+  employee_name: string
+  kind: 'task_created' | 'task_started' | 'task_completed' | 'task_failed' | 'waiting_human' | 'schedule_triggered' | 'employee_created'
+  description: string
+  created_at: string
+  target_type: 'task' | 'employee' | null
+  target_id: string | null
+}
+
+export interface DashboardActivity {
+  items: DashboardActivityItem[]
+}
+
+export interface DashboardKnowledge {
+  today_added: number
+  candidate_experiences: number
+  total: number
+  recent: Array<{ id: string; title: string }>
+}

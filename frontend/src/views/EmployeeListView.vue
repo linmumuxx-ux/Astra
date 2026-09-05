@@ -51,7 +51,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, WifiOff } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeDetailDrawer from '@/components/employee/EmployeeDetailDrawer.vue'
@@ -60,8 +60,9 @@ import { useAstraStore } from '@/stores/astra'
 import { environmentLabel, formatTime, platformCopy } from '@/utils/format'
 
 const store = useAstraStore()
+const route = useRoute()
 const query = ref('')
-const status = ref('')
+const status = ref(typeof route.query.status === 'string' ? route.query.status : '')
 const role = ref('')
 const area = ref('')
 const enabled = ref('')
