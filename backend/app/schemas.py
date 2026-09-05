@@ -144,9 +144,9 @@ class EmployeePatch(BaseModel):
     name: str | None = None
     role: str | None = None
     description: str | None = None
-    default_work_area: Literal[
-        "development", "collaboration", "pantry", "integration", "meeting", "special"
-    ] | None = None
+    default_work_area: (
+        Literal["development", "collaboration", "pantry", "integration", "meeting", "special"] | None
+    ) = None
     task_types: list[TaskType] | None = None
     category_ids: list[str] | None = None
     enabled: bool | None = None

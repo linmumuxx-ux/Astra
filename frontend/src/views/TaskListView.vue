@@ -46,7 +46,7 @@
 <script setup lang="ts">
 import { Activity, ArrowDown, ArrowUp, CheckCircle2, Eye, Hand, Inbox, LoaderCircle, Pause, Play, Plus, RotateCcw, Search, SearchX, Trash2, X } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
@@ -55,10 +55,18 @@ import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, formatTime, platformCopy, priorityLabel, safeUUID, statusLabel, taskTypeLabel } from '@/utils/format'
 
-const store = useAstraStore(); const router = useRouter(); const dialogOpen = ref(false); const submitting = ref(false); const createError = ref('')
+const store = useAstraStore(); const route = useRoute(); const router = useRouter(); const dialogOpen = ref(false); const submitting = ref(false); const createError = ref('')
 const statuses: TaskStatus[] = ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'COMPLETED', 'FAILED', 'EXECUTION_ERROR', 'CANCELLED']
 const priorities: TaskPriority[] = ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW']
-const filters = reactive({ query: '', type: '', category: '', priority: '', status: '', employee: '', date: '' })
+const filters = reactive({
+  query: typeof route.query.q === 'string' ? route.query.q : '',
+  type: '',
+  category: '',
+  priority: '',
+  status: typeof route.query.status === 'string' ? route.query.status : '',
+  employee: typeof route.query.employee === 'string' ? route.query.employee : '',
+  date: typeof route.query.date === 'string' ? route.query.date : '',
+})
 const form = reactive({ title: '', task_type: 'ISSUE' as 'ISSUE' | 'REQUIREMENT', category_id: '', priority: 'MEDIUM' as TaskPriority, completion_policy: 'AUTO' as 'AUTO' | 'MANUAL_CONFIRM', description: '', employee_id: '' })
 const criteria = ref([{ key: safeUUID(), content: '' }])
 const attachments = ref<Array<{ name: string; size: number; content_type: string; content: string }>>([])

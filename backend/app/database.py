@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config.settings import get_settings
@@ -40,5 +40,13 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 async def init_database() -> None:
     from app.models import Base
 
+    def create_unversioned_schema(connection) -> None:
+        # Alembic owns upgrades for every versioned database. Calling create_all
+        # against an older revision would create future tables before their
+        # migration runs and make the subsequent upgrade fail with "table exists".
+        if inspect(connection).has_table("alembic_version"):
+            return
+        Base.metadata.create_all(connection)
+
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(create_unversioned_schema)

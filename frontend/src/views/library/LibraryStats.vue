@@ -35,8 +35,8 @@ defineEmits<{ select: [value: string] }>()
 .library-stats span { grid-row: 1 / 4; display: grid; place-items: center; width: 40px; height: 40px; color: var(--astra-primary-bright); border-radius: 10px; background: var(--astra-primary-soft); }
 .library-stats button[data-tone='warning'] span { color: var(--astra-warning); background: var(--astra-warning-soft); }
 .library-stats small { align-self: end; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
-.library-stats strong { color: var(--astra-text-primary); font: 700 28px var(--astra-font-display); line-height: 1.08; }
-.library-stats em { overflow: hidden; color: var(--astra-text-muted); font-size: 12px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.library-stats strong { color: var(--astra-text-primary); font: 700 var(--astra-font-kpi) var(--astra-font-display); line-height: 1.08; }
+.library-stats em { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-body); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1300px) { .library-stats { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 760px) { .library-stats { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 480px) { .library-stats { grid-template-columns: 1fr; } }

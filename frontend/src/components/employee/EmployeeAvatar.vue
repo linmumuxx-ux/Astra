@@ -15,9 +15,10 @@ import { employeeCharacterStyle } from '@/features/workspace/characterAssets'
 
 const props = withDefaults(defineProps<{
   employee: Pick<Employee, 'id' | 'status'>
+  characterIndex?: number
   size?: 'small' | 'medium' | 'large'
-}>(), { size: 'medium' })
-const avatarStyle = computed(() => employeeCharacterStyle(props.employee.id, 'standing'))
+}>(), { characterIndex: undefined, size: 'medium' })
+const avatarStyle = computed(() => employeeCharacterStyle(props.employee.id, 'standing', props.characterIndex))
 </script>
 
 <style scoped>

@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.library_routes import library_error_handler
 from app.api.library_routes import router as library_router
 from app.api.routes import router
+from app.assistant.api import router as assistant_router
+from app.assistant.orchestrator import AssistantOrchestrator, get_orchestrator, set_orchestrator
 from app.bootstrap import bootstrap_categories, bootstrap_employees, bootstrap_knowledge_spaces
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
@@ -30,7 +32,22 @@ async def lifespan(_: FastAPI):
             await bootstrap_employees(session, settings.resolved_config_dir)
     async with SessionLocal() as session:
         await audit_incomplete_tasks(session, settings)
-    yield
+    # 平台助手是增强能力：启动失败不得影响核心任务执行链。
+    # 已注入 Orchestrator（测试 / 嵌入式部署）时保持原有实例。
+    if settings.assistant_enabled and get_orchestrator() is None:
+        try:
+            orchestrator = AssistantOrchestrator(settings)
+            set_orchestrator(orchestrator)
+            await orchestrator.start()
+        except Exception:
+            set_orchestrator(None)
+    try:
+        yield
+    finally:
+        orchestrator = get_orchestrator()
+        if orchestrator:
+            await orchestrator.stop()
+            set_orchestrator(None)
 
 
 app = FastAPI(
@@ -48,4 +65,5 @@ app.add_middleware(
 )
 app.include_router(router)
 app.include_router(library_router)
+app.include_router(assistant_router)
 app.add_exception_handler(LibraryError, library_error_handler)

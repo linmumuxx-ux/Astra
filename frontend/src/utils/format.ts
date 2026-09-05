@@ -1,5 +1,5 @@
 const STATUS_LABEL: Record<string, string> = {
-  OFFLINE: '离线', IDLE: '空闲', WORKING: '工作中', WAIT_HUMAN: '需要人工处理', PAUSED: '已暂停', ERROR: '异常',
+  OFFLINE: '离线', IDLE: '空闲', WORKING: '工作中', COLLABORATING: '协作中', WAITING: '等待中', NEED_HUMAN: '等待人工', WAIT_HUMAN: '需要人工处理', PAUSED: '已暂停', ERROR: '异常',
   READY: '待领取', RUNNING: '处理中', SUSPENDED: '已挂起', PENDING_CONFIRMATION: '待确认', EXECUTION_ERROR: '执行异常', COMPLETED: '已完成', FAILED: '未完成', CANCELLED: '已取消',
   PASSED: '完成', BLOCKED: '阻塞', WAITING_INPUT: '等待输入',
   AVAILABLE: '正常', CHECKING: '检查中', UNAVAILABLE: '不可用', UNKNOWN: '未检查',
@@ -23,8 +23,8 @@ export const priorityLabel = (value: string) => ({ VERY_HIGH: '很高', HIGH: '�
 export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', UNSATISFIED: '未满足', UNCONFIRMED: '无法确认' }[value] ?? '无法确认')
 
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
-  if (['COMPLETED', 'PASSED', 'WORKING', 'AVAILABLE'].includes(status)) return 'success'
-  if (['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'PAUSED', 'WAITING_INPUT', 'BLOCKED'].includes(status)) return 'warning'
+  if (['COMPLETED', 'PASSED', 'WORKING', 'COLLABORATING', 'AVAILABLE'].includes(status)) return 'success'
+  if (['WAIT_HUMAN', 'NEED_HUMAN', 'WAITING', 'SUSPENDED', 'PENDING_CONFIRMATION', 'PAUSED', 'WAITING_INPUT', 'BLOCKED'].includes(status)) return 'warning'
   if (['FAILED', 'EXECUTION_ERROR', 'ERROR', 'UNAVAILABLE'].includes(status)) return 'danger'
   if (['IDLE', 'CANCELLED', 'OFFLINE'].includes(status)) return 'neutral'
   if (['RUNNING', 'WORKING', 'CHECKING'].includes(status)) return 'info'

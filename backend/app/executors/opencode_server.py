@@ -67,11 +67,13 @@ class OpenCodeServerClient:
         *,
         base_url: str | None = None,
         auth: httpx.BasicAuth | None = None,
+        timeout_seconds: int | None = None,
     ):
         self.settings = settings or get_settings()
         self.manager = OpenCodeServerManager(self.settings)
         self.base_url = (base_url or self.manager.base_url).rstrip("/")
         self._auth = auth if base_url else self.manager.auth
+        self._timeout_seconds = timeout_seconds or self.settings.opencode_timeout_seconds
 
     @property
     def auth(self) -> httpx.BasicAuth | None:
@@ -79,7 +81,7 @@ class OpenCodeServerClient:
 
     def _timeout(self, *, stream: bool = False) -> httpx.Timeout:
         return httpx.Timeout(
-            None if stream else self.settings.opencode_timeout_seconds,
+            None if stream else self._timeout_seconds,
             connect=10,
         )
 
@@ -117,8 +119,7 @@ class OpenCodeServerClient:
             self.settings.opencode_server_min_version
         ):
             raise OpenCodeServerCapabilityError(
-                f"OpenCode {version} 低于已验证的最低版本 "
-                f"{self.settings.opencode_server_min_version}"
+                f"OpenCode {version} 低于已验证的最低版本 {self.settings.opencode_server_min_version}"
             )
         if payload.get("healthy") is not True:
             raise OpenCodeServerCapabilityError(

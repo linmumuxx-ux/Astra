@@ -127,9 +127,7 @@ class TaskCoordinator:
                 "opencode_server_port" not in task.execution_environment_snapshot
                 and employee.execution_environment
             ):
-                environment.opencode_server_port = (
-                    employee.execution_environment.opencode_server_port
-                )
+                environment.opencode_server_port = employee.execution_environment.opencode_server_port
             # Passwords never enter immutable task/run snapshots. Resolve the
             # current employee secret only at execution time.
             if employee.execution_environment:

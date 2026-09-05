@@ -39,9 +39,7 @@ def local_command(executable: str, arguments: list[str]) -> list[str]:
     return argv
 
 
-def windows_batch_command(
-    executable: str, arguments: list[str], comspec: str = "cmd.exe"
-) -> list[str]:
+def windows_batch_command(executable: str, arguments: list[str], comspec: str = "cmd.exe") -> list[str]:
     quoted = " ".join(_quote_for_cmd(argument) for argument in [executable, *arguments])
     return [comspec, "/d", "/s", "/c", quoted]
 
@@ -52,8 +50,7 @@ def _quote_for_cmd(argument: str) -> str:
     if not argument:
         return '""'
     needs_quotes = any(
-        character in argument
-        for character in (" ", "\t", "\n", "\r", '"', "^", "&", "|", "<", ">", "(", ")")
+        character in argument for character in (" ", "\t", "\n", "\r", '"', "^", "&", "|", "<", ">", "(", ")")
     )
     if not needs_quotes:
         return argument

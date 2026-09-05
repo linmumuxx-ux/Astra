@@ -93,10 +93,7 @@ class RemoteOpenCodeServerConnection:
             raise RuntimeError(f"远程 OpenCode Server 启动失败: {detail}")
 
     async def _wait_until_ready(self, client: OpenCodeServerClient) -> None:
-        deadline = (
-            asyncio.get_running_loop().time()
-            + self.settings.opencode_server_start_timeout_seconds
-        )
+        deadline = asyncio.get_running_loop().time() + self.settings.opencode_server_start_timeout_seconds
         last_error = "尚未检查"
         while asyncio.get_running_loop().time() < deadline:
             try:

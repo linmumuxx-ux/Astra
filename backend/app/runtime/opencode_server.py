@@ -75,8 +75,7 @@ class OpenCodeServerManager:
                     False,
                     version=version,
                     detail=(
-                        f"OpenCode {version} 低于已验证的最低版本 "
-                        f"{self.settings.opencode_server_min_version}"
+                        f"OpenCode {version} 低于已验证的最低版本 {self.settings.opencode_server_min_version}"
                     ),
                 )
             return OpenCodeServerHealth(

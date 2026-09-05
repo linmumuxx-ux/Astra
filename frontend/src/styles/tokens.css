@@ -24,12 +24,16 @@
   --astra-text-muted: #617771;
   --astra-font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --astra-font-display: "Avenir Next", Inter, ui-sans-serif, sans-serif;
-  --astra-font-helper: 14px;
-  --astra-font-control: 15px;
-  --astra-font-body: 16px;
+  /* Typography follows the dashboard hierarchy: micro → helper → control → body. */
+  --astra-font-micro: 9px;
+  --astra-font-helper: 10px;
+  --astra-font-control: 11px;
+  --astra-font-body: 12px;
+  --astra-font-label: 13px;
+  --astra-font-emphasis: 14px;
   --astra-font-section: 18px;
-  --astra-font-title: 24px;
-  --astra-font-kpi: 32px;
+  --astra-font-title: 22px;
+  --astra-font-kpi: 27px;
   --astra-control-height: 42px;
   --astra-control-height-compact: 38px;
   --astra-content-gap: 16px;

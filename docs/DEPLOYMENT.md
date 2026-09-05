@@ -20,6 +20,7 @@ Astra 使用主机原生进程部署，不包含容器部署配置。当前基�
 - FastAPI：REST API、SSE、员工环境检查；
 - Celery Worker + Beat：任务发现、分配、心跳、恢复扫描和 Agent 执行；
 - OpenCode Server：Session、Message、Event SSE、Child Session、Question 和 Abort；
+- 平台助手 OpenCode Server：独立的 4097 端口与 `nexus-assistant` 非代码工作区；
 - MySQL：分类、员工、环境、任务、Run、Token、Tool、事件和结果元数据；
 - Redis：Celery Broker 和 Result Backend；
 - Vue 管理台：Windows 快速部署使用已构建产物的本地预览服务，Linux 正式部署由 Nginx 托管；
@@ -99,6 +100,13 @@ ASTRA_OPENCODE_SERVER_PORT=4096
 ASTRA_OPENCODE_SERVER_USERNAME=opencode
 # 只绑定 loopback 时可留空；非 loopback 必须配置
 # ASTRA_OPENCODE_SERVER_PASSWORD=replace-with-a-strong-password
+
+ASTRA_ASSISTANT_ENABLED=true
+ASTRA_ASSISTANT_OPENCODE_HOSTNAME=127.0.0.1
+ASTRA_ASSISTANT_OPENCODE_PORT=4097
+ASTRA_ASSISTANT_WORKSPACE_DIR=nexus-assistant
+# 只绑定 loopback 时可留空；非 loopback 必须配置
+# ASTRA_ASSISTANT_OPENCODE_PASSWORD=replace-with-a-strong-password
 ```
 
 后端与 Celery 无论从项目根目录还是 `backend` 启动，都会读取这一个根目录 `.env`，不要再复制一份 `backend/.env`。不要提交真实数据库密码、任务源令牌或员工 SSH 密码。
@@ -115,6 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 - 管理台：`http://localhost:5173`
 - API：`http://localhost:8100/api/health`
 - API 文档：`http://localhost:8100/docs`
+- 平台助手健康状态：`http://localhost:8100/api/assistant/health`
 - 数字图书馆 MCP（启用 Streamable HTTP 时）：`http://127.0.0.1:8201/mcp`
 
 查看进程状态或停止：
@@ -124,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-windows.ps1
 ```
 
-日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器先启动 OpenCode Server 并等待 `/global/health`，再启动 Backend、Celery 和 Frontend；停止时使用 Windows 进程组与 `taskkill /T` 回收整棵进程树。
+日志位于 `ASTRA_LOG_DIR`。PID 记录位于 `ASTRA_RUNTIME_DIR\processes.json`。启动器先启动数字员工与平台助手各自的 OpenCode Server 并等待 `/global/health`，再启动 Backend、Celery 和 Frontend；助手启动失败时核心任务功能仍可启动，界面会显示助手降级状态。停止时使用 Windows 进程组与 `taskkill /T` 回收整棵进程树。
 
 Windows Worker 固定使用 `solo` 池并监听 Celery 默认队列。不要额外添加 `-Q astra`；当前任务没有路由到该自定义队列。运行时复用同一 Proactor 事件循环，以保证 asyncmy 连接池与 OpenCode HTTP/SSE 客户端在连续任务中稳定工作。
 
@@ -145,6 +154,7 @@ Windows 使用 `scripts\check-windows.ps1`，其他环境可直接运行：
 - Redis 连接；
 - 默认 Agent 是否可执行；
 - OpenCode Server 配置，以及已运行实例的健康状态；
+- 平台助手工作区、MCP 入口与独立 OpenCode Server 状态；
 - Workspace、日志目录和运行目录是否存在且可写。
 
 失败输出固定包含“检查项、当前值、失败原因、建议处理方式”，正常环境问题不会只显示 Python traceback。启动脚本会先迁移数据库，再执行同一自检；任一项失败时不启动平台。
@@ -190,7 +200,8 @@ cd /opt/astra/backend
 /opt/astra/.venv/bin/alembic current
 ```
 
-当前应到达 `0010_remote_opencode_server (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
+当前应到达 `0013_assistant (head)`。不要对结构来源不明的数据库直接执行 `alembic stamp`。
+如果旧的本地启动方式已在 0012 数据库中预建完整的助手表，0013 会校验表、列、索引和唯一约束后安全接管并保留数据；结构不完整或不一致时会拒绝升级并给出具体差异。
 
 ## 7. 员工 Agent 工作环境
 
@@ -249,11 +260,12 @@ sudo editor /etc/astra/astra.env
 
 sudo cp deploy/systemd/astra-backend.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-opencode.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-assistant-opencode.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-runtime.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-library-mcp.service /etc/systemd/system/
 sudo cp deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now astra-backend astra-opencode astra-runtime astra-library-mcp
+sudo systemctl enable --now astra-backend astra-opencode astra-assistant-opencode astra-runtime astra-library-mcp
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -287,7 +299,7 @@ Linux/macOS 构建机执行完整质量门禁：
 ./scripts/verify.sh
 ```
 
-门禁包含 Ruff、后端测试、前端类型检查、生产构建和 11 条隔离 Chromium E2E。E2E 会真实启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖数字图书馆安全 Markdown、配置保存、自动领取、员工模型以及“询问—等待回复—继续原会话—验收完成”。
+门禁包含 Ruff、后端全量测试、前端类型检查、生产构建和 13 项默认执行的隔离 Chromium E2E；另有 1 项真实平台助手 E2E 需显式启用。E2E 会真实启动 Redis、Celery Worker/Beat、Backend、Frontend 和可控 Agent，覆盖平台助手降级、数字图书馆安全 Markdown、配置保存、自动领取、员工模型以及“询问—等待回复—继续原会话—验收完成”。
 
 在允许访问真实模型的员工主机，可执行真实 OpenCode 冒烟验证：
 

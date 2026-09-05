@@ -1,65 +1,58 @@
 <template>
   <section class="activity-bar" aria-label="实时动态">
-    <header><div><Activity :size="15" /><strong>实时动态</strong><span>{{ activities.length ? `最近 ${activities.length} 条` : '暂无更新' }}</span></div><nav><button type="button" aria-label="上一组动态" :disabled="page === 0" @click="move(-1)"><ChevronLeft :size="16" /></button><button type="button" aria-label="下一组动态" :disabled="page >= lastPage" @click="move(1)"><ChevronRight :size="16" /></button></nav></header>
-    <div v-if="activities.length" class="activity-bar__viewport">
-      <div class="activity-bar__track" :style="{ transform: `translateX(-${page * 100}%)` }">
-        <button v-for="item in activities" :key="item.id" type="button" :data-tone="item.tone" @click="openActivity(item)">
-          <EmployeeAvatar v-if="item.employee" :employee="item.employee" size="small" />
-          <span v-else class="activity-bar__system"><Bell :size="15" /></span>
-          <span><strong>{{ item.employeeName }}</strong><em>{{ item.action }}</em><small>{{ relativeTime(item.createdAt) }}</small></span>
-          <CircleAlert v-if="item.tone === 'warning'" :size="15" />
-        </button>
-      </div>
+    <header><Activity :size="15" /><strong>实时动态</strong></header>
+    <div v-if="activities.length" class="activity-bar__items">
+      <button v-for="item in activities.slice(0, 5)" :key="item.id" type="button" :data-tone="item.tone" @click="openActivity(item)">
+        <i /><time>{{ formatClock(item.createdAt) }}</time><strong>{{ item.employeeName }}</strong><span>{{ item.action }}</span>
+      </button>
     </div>
     <div v-else class="activity-bar__empty">暂无实时动态</div>
+    <RouterLink class="activity-bar__more" to="/runs">查看更多<ChevronRight :size="14" /></RouterLink>
   </section>
 </template>
 
 <script setup lang="ts">
-import { Activity, Bell, ChevronLeft, ChevronRight, CircleAlert } from 'lucide-vue-next'
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { Activity, ChevronRight } from 'lucide-vue-next'
+import { computed } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import type { AstraEvent, Employee } from '@/api/types'
-import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import { employeeDisplayName, platformCopy } from '@/utils/format'
 
 const props = defineProps<{ events: AstraEvent[]; employees: Employee[] }>()
 const emit = defineEmits<{ select: [id: string] }>()
 const router = useRouter()
-const page = ref(0)
-const viewportWidth = ref(window.innerWidth)
-const itemsPerPage = computed(() => viewportWidth.value < 1450 ? 3 : viewportWidth.value < 1800 ? 4 : 5)
-const activityTypes = new Set(['TASK_ASSIGNED', 'TASK_RUNNING', 'TASK_SUSPENDED', 'EMPLOYEE_STATUS_CHANGED'])
+const activityTypes = new Set([
+  'TASK_ASSIGNED', 'TASK_RUNNING', 'TASK_SUSPENDED', 'WAIT_HUMAN',
+  'TASK_COMPLETED', 'RESULT_SUBMITTED', 'TASK_FAILED', 'EXECUTION_ERROR', 'EMPLOYEE_STATUS_CHANGED',
+])
 const activities = computed(() => props.events
   .filter((event) => activityTypes.has(event.event_type))
   .map((event) => {
     const employee = props.employees.find((item) => item.id === event.employee_id)
-    const action = ({ TASK_ASSIGNED: '领取了新任务', TASK_RUNNING: '开始处理任务', TASK_SUSPENDED: '已暂停当前任务', EMPLOYEE_STATUS_CHANGED: platformCopy(event.message) || '状态已更新' }[event.event_type] ?? platformCopy(event.message))
-    return { id: event.id, employee, employeeId: event.employee_id, employeeName: employeeDisplayName(employee?.name ?? (event.employee_id || '系统')), taskId: event.task_id, action, createdAt: event.created_at, tone: event.event_type === 'TASK_SUSPENDED' ? 'warning' : 'normal' }
+    const action = ({
+      TASK_ASSIGNED: '领取了新任务', TASK_RUNNING: '开始处理任务', TASK_SUSPENDED: '暂停了当前任务',
+      WAIT_HUMAN: '等待人工确认', TASK_COMPLETED: '完成了任务', RESULT_SUBMITTED: '生成了任务结果',
+      TASK_FAILED: '任务执行失败', EXECUTION_ERROR: '执行发生异常',
+      EMPLOYEE_STATUS_CHANGED: platformCopy(event.message) || '状态已更新',
+    }[event.event_type] ?? platformCopy(event.message))
+    const tone = ['WAIT_HUMAN', 'TASK_SUSPENDED'].includes(event.event_type)
+      ? 'warning'
+      : ['TASK_FAILED', 'EXECUTION_ERROR'].includes(event.event_type) ? 'danger' : 'normal'
+    return { id: event.id, employeeId: event.employee_id, employeeName: employeeDisplayName(employee?.name ?? (event.employee_id || '系统')), taskId: event.task_id, action, createdAt: event.created_at, tone }
   }))
-const lastPage = computed(() => Math.max(0, Math.ceil(activities.value.length / itemsPerPage.value) - 1))
-function move(direction: number) { page.value = Math.min(lastPage.value, Math.max(0, page.value + direction)) }
-function openActivity(item: (typeof activities.value)[number]) { if (item.employeeId) emit('select', item.employeeId); else if (item.taskId) router.push(`/tasks/${item.taskId}`) }
-function relativeTime(value: string) {
-  const raw = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(raw).getTime()) / 60_000))
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes} 分钟前`
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`
-  return `${Math.floor(minutes / 1440)} 天前`
+
+function openActivity(item: (typeof activities.value)[number]) {
+  if (item.employeeId) emit('select', item.employeeId)
+  else if (item.taskId) router.push(`/tasks/${item.taskId}`)
 }
-function handleResize() { viewportWidth.value = window.innerWidth; page.value = Math.min(page.value, lastPage.value) }
-onMounted(() => window.addEventListener('resize', handleResize))
-onBeforeUnmount(() => window.removeEventListener('resize', handleResize))
+function formatClock(value: string) {
+  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`
+  return new Date(normalized).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+}
 </script>
 
 <style scoped>
-.activity-bar { position: absolute; z-index: 25; right: 14px; bottom: 12px; left: 14px; height: 104px; overflow: hidden; border: 1px solid rgba(205,221,214,.95); border-radius: 14px; background: rgba(255,255,255,.95); box-shadow: 0 12px 28px rgba(35,70,59,.13); backdrop-filter: blur(10px); }
-.activity-bar > header { display: flex; align-items: center; justify-content: space-between; min-height: 33px; padding: 5px 8px 4px 14px; border-bottom: 1px solid var(--astra-border); }.activity-bar > header > div { display: flex; align-items: center; gap: 7px; color: var(--astra-primary); }.activity-bar > header strong { color: var(--astra-text-primary); font-size: 12px; }.activity-bar > header span { color: var(--astra-text-muted); font-size: 10px; }.activity-bar nav { display: flex; gap: 4px; }.activity-bar nav button { display: grid; place-items: center; width: 27px; height: 27px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: white; cursor: pointer; }.activity-bar nav button:disabled { opacity: .35; cursor: default; }
-.activity-bar__viewport { height: 70px; overflow: hidden; }.activity-bar__track { display: grid; grid-auto-columns: calc((100% - 36px) / 4); grid-auto-flow: column; gap: 12px; height: 100%; padding: 6px 12px 7px; transition: transform .25s ease; }.activity-bar__track > button { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 4px 8px; color: inherit; text-align: left; border: 0; border-right: 1px solid var(--astra-border); background: transparent; cursor: pointer; }.activity-bar__track > button:last-child { border-right: 0; }.activity-bar__track > button > span:nth-child(2) { display: grid; min-width: 0; }.activity-bar__track strong,.activity-bar__track em,.activity-bar__track small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.activity-bar__track strong { color: var(--astra-text-primary); font-size: 11px; }.activity-bar__track em { color: var(--astra-text-secondary); font-size: 10px; font-style: normal; }.activity-bar__track small { color: var(--astra-text-muted); font-size: 9px; }.activity-bar__track > button > svg { color: var(--astra-warning); }
-.activity-bar__system { display: grid; place-items: center; width: 34px; height: 34px; color: var(--astra-primary); border-radius: 11px; background: var(--astra-primary-soft); }.activity-bar__empty { display: grid; place-items: center; height: 68px; color: var(--astra-text-muted); font-size: 12px; }
-@media(min-width:1800px){.activity-bar__track{grid-auto-columns:calc((100% - 48px)/5)}}
-@media(max-width:1450px){.activity-bar__track{grid-auto-columns:calc((100% - 24px)/3)}}
-@media(max-width:900px){.activity-bar{height:94px}.activity-bar__viewport{height:60px}.activity-bar__track{grid-auto-columns:calc((100% - 12px)/2)}}
-@media(max-width:600px){.activity-bar__track{grid-auto-columns:100%}}
+.activity-bar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;width:min(1430px,calc(100% - 170px));height:55px;min-width:0;padding:0 18px;border:1px solid rgba(215,228,222,.88);border-bottom:0;border-left:0;border-radius:0 15px 0 0;background:rgba(255,255,255,.91);box-shadow:0 -9px 30px rgba(39,72,60,.09);backdrop-filter:blur(15px)}.activity-bar>header{display:flex;align-items:center;gap:9px;padding-right:19px;color:#fff;border-right:1px solid #dce7e2}.activity-bar>header>svg{box-sizing:content-box;padding:8px;border-radius:8px;background:#18ae73}.activity-bar>header strong{color:#23463d;font-size:12px;white-space:nowrap}.activity-bar__items{display:flex;align-items:center;min-width:0;overflow:hidden}.activity-bar__items button{display:flex;align-items:center;gap:7px;min-width:0;flex:1 1 0;height:35px;padding:0 16px;color:#566c65;border:0;border-right:1px solid #e1eae6;background:transparent;font-size:10px;cursor:pointer;transition:background-color .16s ease}.activity-bar__items button:hover{background:rgba(235,248,242,.78)}.activity-bar__items i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--astra-primary)}.activity-bar__items button[data-tone='warning'] i{background:var(--astra-warning)}.activity-bar__items button[data-tone='danger'] i{background:var(--astra-danger)}.activity-bar__items time{flex:none;color:#879790;font-variant-numeric:tabular-nums}.activity-bar__items strong{flex:none;max-width:66px;overflow:hidden;color:#34554c;text-overflow:ellipsis;white-space:nowrap}.activity-bar__items span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.activity-bar__empty{padding-left:18px;color:#86968f;font-size:10px}.activity-bar__more{display:flex;align-items:center;gap:2px;padding-left:14px;color:#2b8a68;font-size:10px;white-space:nowrap}
+@media(max-width:900px){.activity-bar__items button:nth-child(n+4){display:none}.activity-bar{padding-inline:12px}.activity-bar>header{padding-right:10px}.activity-bar__items button{padding-inline:9px}}
+@media(max-width:600px){.activity-bar{width:100%;height:48px;padding-inline:9px;border-radius:0}.activity-bar>header{padding-right:8px}.activity-bar>header>svg{padding:6px}.activity-bar__items button:nth-child(n+2){display:none}.activity-bar__items button{padding-inline:8px}.activity-bar__items strong{max-width:90px}.activity-bar__more{display:none}}
 </style>

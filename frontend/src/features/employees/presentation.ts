@@ -1,10 +1,10 @@
 import type { Employee, Task } from '@/api/types'
 import {
-  isWorkspaceAreaId,
   workspaceAreaMap,
   workspaceAreas,
   type WorkspaceAreaId,
 } from '@/features/workspace/sceneLayout'
+import { taskWorkspaceArea } from '@/features/workspace/taskAreaMapping'
 import { employeeDisplayName, platformCopy } from '@/utils/format'
 
 export { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/sceneLayout'
@@ -53,18 +53,7 @@ export function employeeCurrentTask(employeeId: string, tasks: Task[]): Task | u
 }
 
 export function employeeAreaId(employee: Employee, task?: Task): WorkspaceAreaId {
-  const taskText = `${task?.title ?? ''}${task?.current_progress ?? ''}`
-  if (task && /(会议|评审会|复盘会|汇报会)/u.test(taskText)) return 'meeting'
-  if (task && /(协作|讨论|联合分析|方案评审)/u.test(taskText)) return 'collaboration'
-  if (task && /(自动化|集成|接口|流水线|部署)/u.test(taskText)) return 'integration'
-  if (task && /(专项|排查|修复|应急|故障)/u.test(taskText)) return 'special'
-  if (isWorkspaceAreaId(employee.default_work_area)) return employee.default_work_area
-
-  const responsibility = `${employee.role}${employee.description}`
-  if (/(自动化|集成|接口|流水线|部署)/u.test(responsibility)) return 'integration'
-  if (/(协作|产品|管理|运营|治理|分析)/u.test(responsibility)) return 'collaboration'
-  if (/(专项|排查|修复|应急|防线)/u.test(responsibility)) return 'special'
-  return 'development'
+  return taskWorkspaceArea(task, employee)
 }
 
 export function toEmployeeViewModel(employee: Employee, tasks: Task[]): EmployeeViewModel {

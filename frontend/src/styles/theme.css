@@ -1,6 +1,6 @@
 @import "tailwindcss";
 * { box-sizing: border-box; }
-html { color-scheme: dark; background: var(--astra-bg-base); }
+html { color-scheme: light; background: var(--astra-bg-base); }
 body { margin: 0; min-width: 320px; min-height: 100vh; color: var(--astra-text-primary); background: var(--astra-bg-base); font: var(--astra-font-body)/1.55 var(--astra-font-sans); -webkit-font-smoothing: antialiased; }
 body.overlay-open { overflow: hidden; }
 button, input, select, textarea { font-family: inherit; font-size: var(--astra-font-control); line-height: 1.4; }
@@ -305,7 +305,7 @@ main { min-width: 0; }
 .run-summary strong,
 .usage-kpis strong,
 .token-breakdown strong,
-.metrics-grid--six .metric-card__value strong { font-size: 28px; }
+.metrics-grid--six .metric-card__value strong { font-size: var(--astra-font-kpi); }
 
 .button--compact,
 .search-box--small,

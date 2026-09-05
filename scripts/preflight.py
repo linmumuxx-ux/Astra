@@ -22,9 +22,7 @@ class CheckResult:
     suggestion: str
 
 
-def result(
-    item: str, passed: bool, current: object, reason: str, suggestion: str
-) -> CheckResult:
+def result(item: str, passed: bool, current: object, reason: str, suggestion: str) -> CheckResult:
     return CheckResult(item, passed, str(current), reason, suggestion)
 
 
@@ -74,9 +72,7 @@ def check_dependencies() -> CheckResult:
 def check_writable_directory(item: str, path: Path) -> CheckResult:
     try:
         path.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=".astra-check-", dir=path, delete=False
-        ) as probe:
+        with tempfile.NamedTemporaryFile(prefix=".astra-check-", dir=path, delete=False) as probe:
             probe_path = Path(probe.name)
             probe.write(b"ok")
         probe_path.unlink()
@@ -131,12 +127,8 @@ async def check_database(settings) -> list[CheckResult]:
                         "MySQL 字符集",
                         charset_ok,
                         f"MySQL {row[0]} / database={row[1]} / connection={row[2]} / {row[3]}",
-                        "数据库与连接字符集均为 utf8mb4"
-                        if charset_ok
-                        else "数据库或连接字符集不是 utf8mb4",
-                        "无需处理"
-                        if charset_ok
-                        else "将 Astra 数据库和连接字符集调整为 utf8mb4",
+                        "数据库与连接字符集均为 utf8mb4" if charset_ok else "数据库或连接字符集不是 utf8mb4",
+                        "无需处理" if charset_ok else "将 Astra 数据库和连接字符集调整为 utf8mb4",
                     )
                 )
 
@@ -172,15 +164,11 @@ async def check_database(settings) -> list[CheckResult]:
                     "表结构与迁移已到最新"
                     if migration_ok
                     else f"缺少表: {missing_tables or '无'}; head={head_revision}",
-                    "无需处理"
-                    if migration_ok
-                    else "在 backend 目录执行 python -m alembic upgrade head",
+                    "无需处理" if migration_ok else "在 backend 目录执行 python -m alembic upgrade head",
                 )
             )
     except Exception as exc:  # noqa: BLE001 - convert driver errors into actionable checks
-        detail = str(exc).replace(
-            settings.sqlalchemy_database_url, settings.database_description
-        )
+        detail = str(exc).replace(settings.sqlalchemy_database_url, settings.database_description)
         checks.append(
             result(
                 "数据库连接",
@@ -214,9 +202,7 @@ async def check_redis(settings) -> CheckResult:
             await client.ping()
         finally:
             await client.aclose()
-        return result(
-            "Redis 连接", True, settings.redis_description, "连接成功", "无需处理"
-        )
+        return result("Redis 连接", True, settings.redis_description, "连接成功", "无需处理")
     except Exception as exc:  # noqa: BLE001 - Redis clients expose multiple error types
         return result(
             "Redis 连接",
@@ -320,6 +306,63 @@ async def check_opencode_runtime(settings) -> CheckResult:
     )
 
 
+async def check_assistant_runtime(settings) -> CheckResult:
+    if not settings.assistant_enabled:
+        return result(
+            "平台助手 Runtime",
+            True,
+            "disabled",
+            "已显式关闭平台助手",
+            "无需处理",
+        )
+
+    from app.assistant.server import AssistantOpenCodeServerManager
+
+    manager = AssistantOpenCodeServerManager(settings)
+    if not manager.workspace.is_dir() or not (manager.workspace / "opencode.json").is_file():
+        return result(
+            "平台助手 Runtime",
+            False,
+            manager.workspace,
+            "助手工作区或 opencode.json 不存在",
+            "确认 ASTRA_ASSISTANT_WORKSPACE_DIR 指向完整的 nexus-assistant 目录",
+        )
+    entrypoint = manager.mcp_entrypoint
+    if not entrypoint.is_file():
+        return result(
+            "平台助手 Runtime",
+            False,
+            entrypoint,
+            "当前 Python 环境中缺少助手 MCP 入口",
+            "使用当前 Python 执行 python -m pip install -e backend",
+        )
+
+    health = await manager.health()
+    if health.healthy:
+        return result(
+            "平台助手 Runtime",
+            True,
+            manager.base_url,
+            f"助手 OpenCode Server 已就绪，版本 {health.version or '未知'}",
+            "无需处理",
+        )
+    if not settings.assistant_opencode_url:
+        return result(
+            "平台助手 Runtime",
+            True,
+            manager.base_url,
+            "本机受管助手 Server 将由 Astra 启动器启动并执行健康检查",
+            "无需处理",
+        )
+    return result(
+        "平台助手 Runtime",
+        False,
+        manager.base_url,
+        f"外部助手 OpenCode Server 不可用：{health.detail}",
+        "启动 ASTRA_ASSISTANT_OPENCODE_URL 指定的 Server 并检查认证",
+    )
+
+
 def print_results(checks: list[CheckResult]) -> None:
     for check in checks:
         marker = "PASS" if check.passed else "FAIL"
@@ -363,13 +406,12 @@ async def main() -> int:
         return 1
     checks.extend(
         [
-            check_writable_directory(
-                "Astra Workspace 目录", settings.resolved_workspace_root
-            ),
+            check_writable_directory("Astra Workspace 目录", settings.resolved_workspace_root),
             check_writable_directory("日志目录", settings.resolved_log_dir),
             check_writable_directory("运行状态目录", settings.resolved_runtime_dir),
             await check_agent(settings),
             await check_opencode_runtime(settings),
+            await check_assistant_runtime(settings),
             await check_redis(settings),
         ]
     )

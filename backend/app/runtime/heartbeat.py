@@ -13,9 +13,7 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
         (
             await session.execute(
                 select(DigitalEmployee).where(
-                    DigitalEmployee.status.not_in(
-                        [EmployeeStatus.PAUSED, EmployeeStatus.ERROR]
-                    )
+                    DigitalEmployee.status.not_in([EmployeeStatus.PAUSED, EmployeeStatus.ERROR])
                 )
             )
         )
@@ -29,9 +27,7 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
                 select(Task.status)
                 .where(
                     Task.employee_id == employee.id,
-                    Task.status.in_(
-                        [TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN, TaskStatus.EXECUTION_ERROR]
-                    ),
+                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN, TaskStatus.EXECUTION_ERROR]),
                 )
                 .order_by(Task.updated_at.desc())
                 .limit(1)

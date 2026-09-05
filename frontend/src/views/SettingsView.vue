@@ -36,7 +36,7 @@
 
     <section v-else-if="tab === 'categories'" class="category-settings"><AstraPanel title="任务分类" subtitle="分类用于表示任务所属的业务领域"><template #action><button class="button button--compact" @click="createCategory"><Plus :size="14" /> 新增分类</button></template><div class="category-editor"><article v-for="category in categories" :key="category.id"><div><input v-model.trim="category.name" aria-label="分类名称" /><input v-model.trim="category.description" aria-label="分类说明" /></div><label>排序<input v-model.number="category.sort_order" type="number" /></label><label class="inline-switch"><input v-model="category.enabled" type="checkbox" />{{ category.enabled ? '已启用' : '已停用' }}</label><button class="button button--compact" @click="saveCategory(category)"><Save :size="13" /> 保存</button></article></div></AstraPanel></section>
 
-    <section v-else-if="tab === 'system'" class="config-grid"><AstraPanel title="运行设置"><dl class="config-list"><div><dt>任务发现 / 分配</dt><dd>30 秒 / 5 秒</dd></div><div><dt>无活动提示</dt><dd>15 分钟（不改变任务状态）</dd></div><div><dt>员工并发</dt><dd>每人 1 项任务</dd></div></dl></AstraPanel><AstraPanel title="界面偏好"><label class="check-row"><input v-model="reducedMotion" type="checkbox" @change="saveMotion" /><span><strong>减少动效</strong><small>关闭数字办公室的工作动画，适合长时间观看。</small></span></label></AstraPanel><AstraPanel title="Agent 执行边界"><dl class="config-list"><div><dt>工作空间</dt><dd>属于员工并长期复用</dd></div><div><dt>会话</dt><dd>每项任务独立，挂起与恢复时保留</dd></div><div><dt>工作方式</dt><dd>由员工自己的 Agent 自主决定</dd></div></dl></AstraPanel></section>
+    <section v-else-if="tab === 'system'" class="config-grid"><AstraPanel title="运行设置"><dl class="config-list"><div><dt>任务发现 / 分配</dt><dd>30 秒 / 5 秒</dd></div><div><dt>无活动提示</dt><dd>15 分钟（不改变任务状态）</dd></div><div><dt>员工并发</dt><dd>每人 1 项任务</dd></div></dl></AstraPanel><AstraPanel title="平台助手" subtitle="助手异常时入口仍保留，不影响任务与员工功能"><dl class="config-list"><div><dt>助手服务</dt><dd>{{ assistantHealth ? (assistantHealth.available ? '正常' : '异常') : '检测中…' }}</dd></div><div><dt>助手 OpenCode</dt><dd>{{ assistantHealth ? (assistantHealth.opencode_healthy ? `正常（${assistantHealth.opencode_version || '未知版本'}）` : '不可用') : '检测中…' }}</dd></div><div v-if="assistantHealth && !assistantHealth.available"><dt>说明</dt><dd>{{ assistantHealth.detail || '助手服务暂不可用，平台其他功能不受影响。' }}</dd></div></dl></AstraPanel><AstraPanel title="界面偏好"><label class="check-row"><input v-model="reducedMotion" type="checkbox" @change="saveMotion" /><span><strong>减少动效</strong><small>关闭数字办公室的工作动画，适合长时间观看。</small></span></label></AstraPanel><AstraPanel title="Agent 执行边界"><dl class="config-list"><div><dt>工作空间</dt><dd>属于员工并长期复用</dd></div><div><dt>会话</dt><dd>每项任务独立，挂起与恢复时保留</dd></div><div><dt>工作方式</dt><dd>由员工自己的 Agent 自主决定</dd></div></dl></AstraPanel></section>
     <section v-else class="config-grid"><AstraPanel v-for="group in activeConfig" :key="group.title" :title="group.title"><dl class="config-list"><div v-for="item in group.items" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl></AstraPanel></section>
   </div>
 </template>
@@ -47,6 +47,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
+import { assistantApi } from '@/features/assistant/api'
+import type { AssistantHealth } from '@/features/assistant/types'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
@@ -57,6 +59,22 @@ import { employeeDisplayName, statusLabel } from '@/utils/format'
 const route = useRoute(); const router = useRouter(); const store = useAstraStore(); const tab = ref('employees'); const employeeTab = ref('basic'); const selectedId = ref(''); const creating = ref(false); const saving = ref(false); const testing = ref(false); const statusChanging = ref(false); const message = ref(''); const messageIsError = ref(false); const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([]); const categories = ref<TaskCategory[]>([])
 const reducedMotion = ref(localStorage.getItem('astra-reduced-motion') === 'true')
 function saveMotion() { localStorage.setItem('astra-reduced-motion', String(reducedMotion.value)) }
+const assistantHealth = ref<AssistantHealth | null>(null)
+onMounted(() => {
+  assistantApi
+    .health()
+    .then((health) => (assistantHealth.value = health))
+    .catch(() => {
+      assistantHealth.value = {
+        available: false,
+        assistant: 'unreachable',
+        opencode_healthy: false,
+        opencode_version: null,
+        opencode_url: '',
+        detail: '助手服务不可达',
+      }
+    })
+})
 const tabs = [{ id: 'employees', label: '员工配置', icon: Bot }, { id: 'categories', label: '任务分类', icon: FolderTree }, { id: 'sources', label: '任务来源', icon: Database }, { id: 'system', label: '系统设置', icon: SlidersHorizontal }]
 const employeeTabs = [{ id: 'basic', label: '基本信息' }, { id: 'scope', label: '工作范围' }, { id: 'environment', label: '工作环境' }, { id: 'policy', label: '工作策略' }]
 const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 Agent 工作环境', description: '', host: '', port: 22, username: '', ssh_password: '', opencode_server_port: 4096, opencode_path: 'opencode', model_name: '', workspace_root: '', labels: [] as string[] })

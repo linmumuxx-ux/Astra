@@ -9,6 +9,7 @@ REDIS_URL="${ASTRA_REDIS_URL:-redis://localhost:6379/0}"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/astra-runtime.XXXXXX")"
 REDIS_PID=""
 OPENCODE_PID=""
+ASSISTANT_PID=""
 
 cleanup() {
   local exit_code=$?
@@ -20,6 +21,10 @@ cleanup() {
   if [[ -n "$OPENCODE_PID" ]]; then
     kill "$OPENCODE_PID" 2>/dev/null || true
     wait "$OPENCODE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$ASSISTANT_PID" ]]; then
+    kill "$ASSISTANT_PID" 2>/dev/null || true
+    wait "$ASSISTANT_PID" 2>/dev/null || true
   fi
   rm -rf "$RUNTIME_DIR"
   exit "$exit_code"
@@ -75,6 +80,19 @@ if [[ "${ASTRA_EXECUTOR_TYPE:-opencode_server}" == "opencode_server" ]]; then
   fi
 fi
 
+assistant_ready() {
+  (cd "$BACKEND_DIR" && "$PYTHON_BIN" - <<'PY') >/dev/null 2>&1
+import asyncio
+
+from app.assistant.client import AssistantOpenCodeClient
+
+try:
+    raise SystemExit(0 if asyncio.run(AssistantOpenCodeClient().health()).get("healthy") else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
 if ! redis_ready; then
   if [[ "$REDIS_URL" != "redis://localhost:6379/0" && "$REDIS_URL" != "redis://127.0.0.1:6379/0" ]]; then
     echo "无法连接 ASTRA_REDIS_URL 指定的 Redis，请先启动并检查该服务。" >&2
@@ -105,6 +123,33 @@ if ! redis_ready; then
   if ! redis_ready; then
     echo "Redis 启动失败，日志：$RUNTIME_DIR/redis.log" >&2
     exit 1
+  fi
+fi
+
+# 平台助手使用独立 OpenCode Server（默认 127.0.0.1:4097，目录 nexus-assistant）。
+# 助手是增强能力：启动失败不阻塞核心运行时。
+if [[ "${ASTRA_ASSISTANT_ENABLED:-true}" != "false" ]]; then
+  if assistant_ready; then
+    echo "助手 OpenCode Server: 已连接"
+  elif [[ -n "${ASTRA_ASSISTANT_OPENCODE_URL:-}" ]]; then
+    echo "无法连接 ASTRA_ASSISTANT_OPENCODE_URL 指定的助手 OpenCode Server（不影响平台核心功能）。" >&2
+  else
+    ASSISTANT_PORT="${ASTRA_ASSISTANT_OPENCODE_PORT:-4097}"
+    echo "启动助手 OpenCode Server（nexus-assistant，:$ASSISTANT_PORT）..."
+    (cd "$BACKEND_DIR" && "$PYTHON_BIN" -m app.assistant.server) \
+      >"$RUNTIME_DIR/assistant-opencode.log" 2>&1 &
+    ASSISTANT_PID=$!
+    for _ in {1..60}; do
+      if assistant_ready; then
+        break
+      fi
+      sleep 0.25
+    done
+    if assistant_ready; then
+      echo "助手 OpenCode Server: 已连接"
+    else
+      echo "助手 OpenCode Server 启动失败（不影响平台核心功能），日志：$RUNTIME_DIR/assistant-opencode.log" >&2
+    fi
   fi
 fi
 

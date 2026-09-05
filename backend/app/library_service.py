@@ -193,9 +193,7 @@ class KnowledgeService:
 
     async def _visible_space_ids(self, principal: LibraryPrincipal) -> list[str]:
         spaces = (
-            await self.session.scalars(
-                select(KnowledgeSpace).where(KnowledgeSpace.status == "active")
-            )
+            await self.session.scalars(select(KnowledgeSpace).where(KnowledgeSpace.status == "active"))
         ).all()
         return [space.id for space in spaces if _scope_allowed(space, principal)]
 
@@ -277,9 +275,7 @@ class KnowledgeService:
             if scope_condition is not None:
                 candidate_conditions.append(scope_condition)
             candidates = (
-                await self.session.scalar(
-                    select(func.count(KnowledgeItem.id)).where(*candidate_conditions)
-                )
+                await self.session.scalar(select(func.count(KnowledgeItem.id)).where(*candidate_conditions))
                 or 0
             )
         return LibraryStats(

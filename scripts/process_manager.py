@@ -16,9 +16,10 @@ BACKEND_ROOT = PROJECT_ROOT / "backend"
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.config.settings import get_settings
-from app.executors.process import local_command
-from app.runtime.opencode_server import OpenCodeServerManager
+from app.assistant.server import AssistantOpenCodeServerManager  # noqa: E402
+from app.config.settings import get_settings  # noqa: E402
+from app.executors.process import local_command  # noqa: E402
+from app.runtime.opencode_server import OpenCodeServerManager  # noqa: E402
 
 settings = get_settings()
 PID_FILE = settings.resolved_runtime_dir / "processes.json"
@@ -27,9 +28,7 @@ PID_FILE = settings.resolved_runtime_dir / "processes.json"
 def process_exists(pid: int) -> bool:
     if os.name == "nt":
         process_query_limited_information = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(
-            process_query_limited_information, False, pid
-        )
+        handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
             return False
         ctypes.windll.kernel32.CloseHandle(handle)
@@ -52,9 +51,7 @@ def load_processes() -> dict[str, dict]:
 
 def save_processes(processes: dict[str, dict]) -> None:
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(
-        json.dumps(processes, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    PID_FILE.write_text(json.dumps(processes, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def spawn(
@@ -68,9 +65,7 @@ def spawn(
     log_path = settings.resolved_log_dir / f"{name}.log"
     creation_options = {}
     if os.name == "nt":
-        creation_options["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        )
+        creation_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
     else:
         creation_options["start_new_session"] = True
     with log_path.open("ab") as log:
@@ -115,10 +110,7 @@ def command_status() -> int:
     for name, info in processes.items():
         running = process_exists(int(info["pid"]))
         all_running = all_running and running
-        print(
-            f"[{'运行中' if running else '已停止'}] {name}: PID={info['pid']} "
-            f"日志={info['log']}"
-        )
+        print(f"[{'运行中' if running else '已停止'}] {name}: PID={info['pid']} 日志={info['log']}")
     return 0 if all_running else 1
 
 
@@ -134,11 +126,7 @@ def command_stop() -> int:
 
 
 def command_start() -> int:
-    active = {
-        name: info
-        for name, info in load_processes().items()
-        if process_exists(int(info["pid"]))
-    }
+    active = {name: info for name, info in load_processes().items() if process_exists(int(info["pid"]))}
     if active:
         print("Astra 已在运行，请先执行 stop。")
         command_status()
@@ -149,9 +137,7 @@ def command_start() -> int:
         print("启动失败：未找到 npm。建议：安装 Node.js 20+ 并加入 PATH。")
         return 1
     if not (FRONTEND_ROOT / "dist" / "index.html").is_file():
-        print(
-            "启动失败：缺少前端生产构建。建议：先运行 Windows 安装脚本或 npm run build。"
-        )
+        print("启动失败：缺少前端生产构建。建议：先运行 Windows 安装脚本或 npm run build。")
         return 1
 
     subprocess.run(
@@ -178,6 +164,30 @@ def command_start() -> int:
             print(f"启动失败：OpenCode Server 未就绪：{exc}")
             return 1
         print(f"OpenCode Server 已就绪：{health.version or '未知版本'}")
+
+    if settings.assistant_enabled:
+        assistant_manager = AssistantOpenCodeServerManager(settings)
+        assistant_health = asyncio.run(assistant_manager.health())
+        if assistant_health.healthy:
+            print(f"助手 OpenCode Server 已就绪：{assistant_health.version or '未知版本'}")
+        elif settings.assistant_opencode_url:
+            print(f"警告：外部助手 OpenCode Server 不可用（不影响平台核心功能）：{assistant_health.detail}")
+        else:
+            try:
+                processes["assistant-opencode"] = spawn(
+                    "assistant-opencode",
+                    assistant_manager.command(),
+                    assistant_manager.workspace,
+                    environment=assistant_manager.process_environment(),
+                )
+                assistant_health = asyncio.run(assistant_manager.wait_until_ready())
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                assistant_process = processes.pop("assistant-opencode", None)
+                if assistant_process:
+                    stop_pid(int(assistant_process["pid"]))
+                print(f"警告：助手 OpenCode Server 启动失败（不影响平台核心功能）：{exc}")
+            else:
+                print(f"助手 OpenCode Server 已就绪：{assistant_health.version or '未知版本'}")
 
     schedule_path = settings.resolved_runtime_dir / "celerybeat-schedule"
     processes.update(

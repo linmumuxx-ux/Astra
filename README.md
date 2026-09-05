@@ -51,7 +51,7 @@ uvicorn app.main:app --reload --port 8100
 ./scripts/runtime.sh
 ```
 
-该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会启动并检查 OpenCode Server，同时复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。
+该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会启动并检查数字员工和平台助手各自的 OpenCode Server，同时复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。助手启动失败时会降级，不阻断核心任务运行。
 
 再开一个终端启动管理台：
 
@@ -99,8 +99,10 @@ npm run dev
 - [V0.4 实现与需求映射](docs/implementation-brief.md)
 - [数字办公室设计说明与参考案例](docs/design/DIGITAL_OFFICE.md)
 - [持续任务工作台设计与实现](docs/design/TASK_WORKBENCH.md)
+- [平台助手方案设计](docs/design/PLATFORM_ASSISTANT.md)
+- [平台助手真实验收报告](docs/verification/PLATFORM-ASSISTANT-2026-09-04.md)
 - [持续任务工作台语义与 HITL 验收报告](docs/verification/TASK-WORKBENCH-2026-08-30.md)
 - [V0.4 功能、系统 E2E 与真实 Agent 验收报告](docs/verification/E2E-V0.4-2026-08-28.md)
 - [原始需求资料](docs/requirements/README.md)
 
-V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端测试、前端类型检查与生产构建、10 条 Chromium E2E；可重复系统 E2E 显式使用隔离的 CLI fixture。另已使用 OpenCode 1.18.25 + `opencode/glm-5.1` 真实验收 Server Session、SSE、Tool、Subagent、Question/Resume、Abort、并发隔离和 Astra Coordinator 端到端执行。
+V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端全量测试、前端类型检查与生产构建，以及 13 项默认执行的 Chromium E2E；另有 1 项真实平台助手 E2E 在显式启用后运行。可重复系统 E2E 显式使用隔离的 CLI fixture。另已使用 OpenCode 1.18.25 + `opencode/glm-5.1` 真实验收 Server Session、SSE、Tool、Subagent、Question/Resume、Abort、并发隔离和 Astra Coordinator 端到端执行。

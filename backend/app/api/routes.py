@@ -501,9 +501,7 @@ async def _abort_opencode_session(task: Task, session: AsyncSession) -> bool:
             environment = environment_from_snapshot(snapshot, task.employee_id)
             environment.ssh_password = employee.execution_environment.ssh_password
             if "opencode_server_port" not in snapshot:
-                environment.opencode_server_port = (
-                    employee.execution_environment.opencode_server_port
-                )
+                environment.opencode_server_port = employee.execution_environment.opencode_server_port
             executor = RemoteOpenCodeServerExecutor(
                 environment,
                 settings,
