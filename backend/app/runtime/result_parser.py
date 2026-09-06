@@ -155,7 +155,7 @@ def build_work_result(
                 "description": "员工未提交可识别的逐项验收结论，请人工核对处理结果",
                 "evidence": [],
             }
-        if evidence_path not in parsed["evidence"]:
+        if evidence_path and evidence_path not in parsed["evidence"]:
             parsed["evidence"].append(evidence_path)
         acceptance_results.append(parsed)
 

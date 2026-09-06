@@ -207,7 +207,15 @@ async def employee_get(session: AsyncSession, employee_id: str) -> dict[str, Any
                 select(Task)
                 .where(
                     Task.employee_id == employee.id,
-                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN, TaskStatus.EXECUTION_ERROR]),
+                    Task.status.in_(
+                        [
+                            TaskStatus.ASSIGNED,
+                            TaskStatus.QUEUED,
+                            TaskStatus.RUNNING,
+                            TaskStatus.WAIT_HUMAN,
+                            TaskStatus.EXECUTION_ERROR,
+                        ]
+                    ),
                 )
                 .order_by(Task.created_at.desc())
                 .limit(5)
@@ -268,7 +276,11 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "status": run.status,
         "model_name": run.model_name,
         "exit_code": run.exit_code,
+        "worker_id": run.worker_id,
+        "executor_status": run.executor_status,
+        "failure_type": run.failure_type,
         "total_tokens": run.total_tokens,
+        "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
     }
@@ -300,7 +312,11 @@ async def run_get(session: AsyncSession, run_id: str) -> dict[str, Any]:
 
 async def run_failure_summary(session: AsyncSession, *, task_id: str | None = None) -> dict[str, Any]:
     """后端汇总失败现场，再交给模型解释。"""
-    query = select(Run).where(Run.status.in_([RunStatus.FAILED, RunStatus.BLOCKED]))
+    query = select(Run).where(
+        Run.status.in_(
+            [RunStatus.FAILED, RunStatus.TIMEOUT, RunStatus.LOST, RunStatus.BLOCKED]
+        )
+    )
     if task_id:
         query = query.where(Run.task_id == task_id)
     runs = (await session.execute(query.order_by(Run.started_at.desc()).limit(5))).scalars().all()
@@ -313,7 +329,7 @@ async def run_failure_summary(session: AsyncSession, *, task_id: str | None = No
                 **_run_summary(run),
                 "executor_type": run.executor_type,
                 "task_status": task.status if task else None,
-                "execution_error": error.get("message") or error.get("error"),
+                "execution_error": error.get("reason") or error.get("message") or error.get("error"),
                 "failure_reason": task.failure_reason if task else None,
                 "current_progress": task.current_progress if task else None,
             }

@@ -23,6 +23,8 @@ ATTENTION_STATUSES = {
 }
 ACTIVE_TASK_STATUSES = {
     TaskStatus.READY,
+    TaskStatus.ASSIGNED,
+    TaskStatus.QUEUED,
     TaskStatus.RUNNING,
     TaskStatus.WAIT_HUMAN,
     TaskStatus.SUSPENDED,
@@ -41,8 +43,10 @@ TASK_PRIORITY = {
     TaskStatus.EXECUTION_ERROR: 0,
     TaskStatus.WAIT_HUMAN: 1,
     TaskStatus.RUNNING: 2,
-    TaskStatus.SUSPENDED: 3,
-    TaskStatus.READY: 4,
+    TaskStatus.QUEUED: 3,
+    TaskStatus.SUSPENDED: 4,
+    TaskStatus.ASSIGNED: 5,
+    TaskStatus.READY: 6,
 }
 KNOWN_TEAMS = (
     ("automation", "自动化工程", 10, re.compile(r"自动化|集成|接口"), {"automation", "integration"}),

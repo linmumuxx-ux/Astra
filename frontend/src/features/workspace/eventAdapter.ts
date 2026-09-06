@@ -26,7 +26,7 @@ export interface WorkspaceEmployee {
   hasError: boolean
 }
 
-const ACTIVE_TASK_STATUSES = new Set(['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'])
+const ACTIVE_TASK_STATUSES = new Set(['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'])
 const COMPLETION_EVENT_TYPES = new Set(['TASK_COMPLETED', 'RESULT_SUBMITTED'])
 const ERROR_EVENT_TYPES = new Set(['TASK_FAILED', 'EXECUTION_ERROR'])
 
@@ -37,7 +37,7 @@ function timestamp(value: string | null | undefined): number {
 }
 
 export function currentEmployeeTask(employeeId: string, tasks: Task[]): Task | undefined {
-  const order: Record<string, number> = { WAIT_HUMAN: 0, PENDING_CONFIRMATION: 1, EXECUTION_ERROR: 2, RUNNING: 3, SUSPENDED: 4, READY: 5 }
+  const order: Record<string, number> = { WAIT_HUMAN: 0, PENDING_CONFIRMATION: 1, EXECUTION_ERROR: 2, RUNNING: 3, QUEUED: 4, SUSPENDED: 5, ASSIGNED: 6, READY: 7 }
   return tasks
     .filter((task) => task.employee_id === employeeId && ACTIVE_TASK_STATUSES.has(task.status))
     .sort((left, right) => (order[left.status] ?? 5) - (order[right.status] ?? 5) || timestamp(right.updated_at) - timestamp(left.updated_at))[0]

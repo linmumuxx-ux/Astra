@@ -1,5 +1,5 @@
 [Unit]
-Description=Astra Celery worker and scheduler
+Description=Astra Celery control worker
 After=network-online.target astra-backend.service astra-opencode.service
 Wants=network-online.target
 Requires=astra-backend.service astra-opencode.service
@@ -11,7 +11,7 @@ Group=astra
 WorkingDirectory=/opt/astra/backend
 EnvironmentFile=/etc/astra/astra.env
 StateDirectory=astra
-ExecStart=/opt/astra/.venv/bin/celery -A app.runtime.celery_app:celery worker --beat --loglevel=INFO --pool=solo --hostname=astra-runtime@%H --schedule=/var/lib/astra/celerybeat-schedule
+ExecStart=/opt/astra/.venv/bin/celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=control --hostname=astra-control@%H
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=90

@@ -1,101 +1,127 @@
 <template>
-  <div class="page" data-testid="settings-page">
-    <section class="page-intro compact-intro"><div><h2>配置中心</h2><p>管理员工工作范围、Agent 工作环境、任务分类和平台设置。</p></div><span class="config-mode"><LockKeyhole :size="13" /> 远程密码不会回显</span></section>
-    <nav class="settings-tabs"><button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id"><component :is="item.icon" :size="14" />{{ item.label }}</button></nav>
-
-    <section v-if="tab === 'employees'" class="settings-layout settings-layout--v03">
-      <AstraPanel title="员工配置" subtitle="每位员工拥有自己的工作范围与长期工作空间"><template #action><button class="icon-button" aria-label="新增员工" @click="beginCreate"><Plus :size="15" /></button></template><div class="settings-employee-list"><button v-for="employee in store.employees" :key="employee.id" class="settings-employee" :class="{ active: !creating && selectedId === employee.id }" @click="selectEmployee(employee.id)"><EmployeeAvatar :employee="employee" size="small" /><div><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></div><AstraStatusBadge :status="employee.status" /></button><button class="settings-new" @click="beginCreate"><Plus :size="14" /> 新建员工</button></div></AstraPanel>
-
-      <AstraPanel :title="creating ? '创建数字员工' : `${employeeDisplayName(selectedEmployee?.name)} 配置`" subtitle="配置只描述员工负责的工作和工作环境"><template #action><div v-if="!creating && selectedEmployee" class="settings-statuses"><span>员工</span><AstraStatusBadge :status="selectedEmployee.status" /><span>环境</span><AstraStatusBadge :status="selectedEmployee.execution_environment?.status ?? 'UNKNOWN'" /></div></template>
-        <nav class="sub-tabs"><button v-for="item in employeeTabs" :key="item.id" :class="{ active: employeeTab === item.id }" @click="employeeTab = item.id">{{ item.label }}</button></nav>
-        <form class="config-form config-form--editable" @submit.prevent="save">
-          <div v-if="employeeTab === 'basic'"><div class="form-grid"><label>员工 ID<input v-model.trim="form.id" :readonly="!creating" required placeholder="employee-04" /></label><label>员工名称<input v-model.trim="form.name" required placeholder="员工-04" /></label></div><div class="form-grid"><label>岗位<input v-model.trim="form.role" required placeholder="测试平台开发" /></label><label>默认办公区域<select v-model="form.default_work_area" required><option v-for="area in workspaceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select><small>无特定任务场景时，员工会出现在这个区域。</small></label></div><label>说明<textarea v-model="form.description" rows="4" placeholder="说明该员工的工作职责与边界" /></label><label class="check-row"><input v-model="form.enabled" type="checkbox" /><span><strong>启用员工</strong><small>停用后不再自动分配新任务</small></span></label><div v-if="!creating && selectedEmployee" class="employee-state-action"><div><strong>运行状态：{{ statusLabel(selectedEmployee.status) }}</strong><small>{{ selectedEmployee.current_task_count ? '员工有正在处理的任务，请先处理任务后再暂停。' : '暂停后不再领取任务；恢复后重新进入空闲队列。' }}</small></div><button type="button" class="button button--compact" :disabled="statusChanging || (selectedEmployee.status !== 'PAUSED' && selectedEmployee.current_task_count > 0)" @click="toggleEmployeeStatus">{{ selectedEmployee.status === 'PAUSED' ? '恢复员工' : '暂停员工' }}</button></div></div>
-
-          <div v-else-if="employeeTab === 'scope'" class="scope-config"><fieldset><legend>支持任务类型</legend><label class="check-row"><input v-model="form.task_types" type="checkbox" value="ISSUE" /><span><strong>问题</strong><small>缺陷、故障、异常或已有能力失效</small></span></label><label class="check-row"><input v-model="form.task_types" type="checkbox" value="REQUIREMENT" /><span><strong>需求</strong><small>新功能、能力增强、改造、优化或重构</small></span></label></fieldset><fieldset><legend>支持任务分类</legend><label v-for="category in categories.filter((item) => item.enabled)" :key="category.id" class="check-row"><input v-model="form.category_ids" type="checkbox" :value="category.id" /><span><strong>{{ category.name }}</strong><small>{{ category.description }}</small></span></label></fieldset></div>
-
-          <div v-else-if="employeeTab === 'environment'" data-testid="environment-form">
-            <div class="environment-mode"><button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地</strong><small>NEXUS 所在主机</small></button><button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong><small>SSH 隧道连接 Server</small></button></div>
-            <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><label>Agent 可执行文件<input v-model.trim="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /><small>正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。</small></label></div>
-            <div class="form-grid"><label>Agent 模型<input v-model.trim="form.environment.model_name" placeholder="opencode/glm-5.1" /><small>留空时使用 Agent 自身或平台默认模型。</small></label><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
-            <label>工作空间<input v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /><small>支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。</small></label>
-            <template v-if="form.environment.mode === 'LINUX_REMOTE'">
-              <div class="form-grid"><label>SSH Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>SSH Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div>
-              <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="nexus" /></label><label>SSH 密码<input v-model="form.environment.ssh_password" :required="creating || !selectedEmployee?.execution_environment?.has_ssh_password" type="password" autocomplete="new-password" :placeholder="selectedEmployee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></label></div>
-              <label>OpenCode Server Port<input v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /><small>默认 4096，仅监听远程 127.0.0.1，并通过 SSH 隧道访问；无需开放防火墙端口。</small></label>
-            </template>
-            <div class="environment-security"><ShieldCheck :size="15" /><span>SSH 密码保存在部署数据库中且接口不回显；远程 OpenCode Server 只绑定 Linux loopback，不对公网暴露。</span></div>
-            <div v-if="checks.length" class="environment-checks"><article v-for="check in checks" :key="check.name"><CheckCircle2 v-if="check.passed" :size="14" /><CircleX v-else :size="14" /><div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div></article></div>
-          </div>
-
-          <div v-else><div class="policy-grid"><label class="check-row"><input v-model="form.auto_claim" type="checkbox" /><span><strong>自动领取任务</strong><small>空闲时可以领取匹配的新任务</small></span></label><label class="check-row"><input v-model="form.auto_execute" type="checkbox" /><span><strong>允许自主执行</strong><small>领取后自动启动任务独立执行会话</small></span></label></div><label>最大自动重试次数<input v-model.number="form.max_auto_retries" type="number" min="0" max="20" /><small>用于 Agent 执行异常时的恢复上限；员工工作方法不由 Astra 规定。</small></label><div class="form-note">每位员工同时只处理一项任务。</div></div>
-
-          <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div><footer class="config-actions"><button v-if="!creating" type="button" class="button" :disabled="testing || saving" @click="testEnvironment"><RefreshCw :size="14" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</button><button type="button" class="button" @click="resetForm">取消</button><button class="button button--primary" :disabled="saving"><Save :size="14" /> {{ saving ? '保存中' : '保存配置' }}</button></footer>
-        </form>
-      </AstraPanel>
+  <div class="page settings-page" data-testid="settings-page">
+    <section class="page-intro compact-intro">
+      <div><h2>配置中心</h2><p>管理员工工作范围、Agent 工作环境、任务分类和平台设置。</p></div>
+      <span class="config-mode"><LockKeyhole :size="13" /> 远程密码不会回显</span>
     </section>
 
-    <section v-else-if="tab === 'categories'" class="category-settings"><AstraPanel title="任务分类" subtitle="分类用于表示任务所属的业务领域"><template #action><button class="button button--compact" @click="createCategory"><Plus :size="14" /> 新增分类</button></template><div class="category-editor"><article v-for="category in categories" :key="category.id"><div><input v-model.trim="category.name" aria-label="分类名称" /><input v-model.trim="category.description" aria-label="分类说明" /></div><label>排序<input v-model.number="category.sort_order" type="number" /></label><label class="inline-switch"><input v-model="category.enabled" type="checkbox" />{{ category.enabled ? '已启用' : '已停用' }}</label><button class="button button--compact" @click="saveCategory(category)"><Save :size="13" /> 保存</button></article></div></AstraPanel></section>
+    <nav class="settings-tabs">
+      <button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="switchTab(item.id)"><component :is="item.icon" :size="14" />{{ item.label }}</button>
+    </nav>
 
-    <section v-else-if="tab === 'system'" class="config-grid"><AstraPanel title="运行设置"><dl class="config-list"><div><dt>任务发现 / 分配</dt><dd>30 秒 / 5 秒</dd></div><div><dt>无活动提示</dt><dd>15 分钟（不改变任务状态）</dd></div><div><dt>员工并发</dt><dd>每人 1 项任务</dd></div></dl></AstraPanel><AstraPanel title="平台助手" subtitle="助手异常时入口仍保留，不影响任务与员工功能"><dl class="config-list"><div><dt>助手服务</dt><dd>{{ assistantHealth ? (assistantHealth.available ? '正常' : '异常') : '检测中…' }}</dd></div><div><dt>助手 OpenCode</dt><dd>{{ assistantHealth ? (assistantHealth.opencode_healthy ? `正常（${assistantHealth.opencode_version || '未知版本'}）` : '不可用') : '检测中…' }}</dd></div><div v-if="assistantHealth && !assistantHealth.available"><dt>说明</dt><dd>{{ assistantHealth.detail || '助手服务暂不可用，平台其他功能不受影响。' }}</dd></div></dl></AstraPanel><AstraPanel title="界面偏好"><label class="check-row"><input v-model="reducedMotion" type="checkbox" @change="saveMotion" /><span><strong>减少动效</strong><small>关闭数字办公室的工作动画，适合长时间观看。</small></span></label></AstraPanel><AstraPanel title="Agent 执行边界"><dl class="config-list"><div><dt>工作空间</dt><dd>属于员工并长期复用</dd></div><div><dt>会话</dt><dd>每项任务独立，挂起与恢复时保留</dd></div><div><dt>工作方式</dt><dd>由员工自己的 Agent 自主决定</dd></div></dl></AstraPanel></section>
-    <section v-else class="config-grid"><AstraPanel v-for="group in activeConfig" :key="group.title" :title="group.title"><dl class="config-list"><div v-for="item in group.items" :key="item.label"><dt>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl></AstraPanel></section>
+    <section v-if="tab === 'employees'" class="settings-layout settings-layout--v03">
+      <AstraPanel title="员工配置" subtitle="左侧选择员工，右侧维护配置；运行状态由系统维护">
+        <template #action><button class="button button--compact button--primary" @click="beginCreate"><Plus :size="13" /> 新建员工</button></template>
+        <div class="settings-employee-toolbar">
+          <div class="search-box search-box--small"><Search :size="13" /><input v-model="employeeQuery" placeholder="搜索员工" aria-label="搜索员工" /></div>
+          <select v-model="employeeEnabledFilter" aria-label="配置状态筛选"><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select>
+        </div>
+        <div class="settings-employee-list">
+          <button v-for="employee in filteredEmployees" :key="employee.id" class="settings-employee" :class="{ active: !creating && selectedId === employee.id }" @click="selectEmployee(employee.id)">
+            <EmployeeAvatar :employee="employee" size="small" /><div><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></div><AstraStatusBadge :status="employee.status" />
+          </button>
+          <button class="settings-new" @click="beginCreate"><Plus :size="14" /> 新建员工</button>
+          <AstraEmptyState v-if="!filteredEmployees.length" class="settings-empty" :icon="SearchX" title="无匹配员工" description="调整搜索或状态筛选后重试。" />
+        </div>
+      </AstraPanel>
+
+      <EmployeeConfig ref="employeeConfigRef" :employee="selectedEmployee" :creating="creating" :categories="store.categories" @saved="onEmployeeSaved" />
+    </section>
+
+    <section v-else-if="tab === 'categories'"><div class="config-tab"><CategoryConfig ref="categoryRef" /></div></section>
+    <section v-else-if="tab === 'sources'"><div class="config-tab"><SourceConfig /></div></section>
+    <section v-else><SystemSettings ref="systemRef" /></section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { Bot, CheckCircle2, CircleX, Database, FolderTree, Laptop, LockKeyhole, Plus, RefreshCw, Save, Server, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-vue-next'
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { api } from '@/api/client'
-import type { Employee, TaskCategory, TaskType } from '@/api/types'
-import { assistantApi } from '@/features/assistant/api'
-import type { AssistantHealth } from '@/features/assistant/types'
+import { Bot, Database, FolderTree, LockKeyhole, Plus, Search, SearchX, SlidersHorizontal } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
-import { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/sceneLayout'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, statusLabel } from '@/utils/format'
+import { employeeDisplayName } from '@/utils/format'
+import CategoryConfig from '@/views/settings/CategoryConfig.vue'
+import EmployeeConfig from '@/views/settings/EmployeeConfig.vue'
+import SourceConfig from '@/views/settings/SourceConfig.vue'
+import SystemSettings from '@/views/settings/SystemSettings.vue'
 
-const route = useRoute(); const router = useRouter(); const store = useAstraStore(); const tab = ref('employees'); const employeeTab = ref('basic'); const selectedId = ref(''); const creating = ref(false); const saving = ref(false); const testing = ref(false); const statusChanging = ref(false); const message = ref(''); const messageIsError = ref(false); const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([]); const categories = ref<TaskCategory[]>([])
-const reducedMotion = ref(localStorage.getItem('astra-reduced-motion') === 'true')
-function saveMotion() { localStorage.setItem('astra-reduced-motion', String(reducedMotion.value)) }
-const assistantHealth = ref<AssistantHealth | null>(null)
-onMounted(() => {
-  assistantApi
-    .health()
-    .then((health) => (assistantHealth.value = health))
-    .catch(() => {
-      assistantHealth.value = {
-        available: false,
-        assistant: 'unreachable',
-        opencode_healthy: false,
-        opencode_version: null,
-        opencode_url: '',
-        detail: '助手服务不可达',
-      }
-    })
+const route = useRoute(); const router = useRouter(); const store = useAstraStore()
+const tab = ref('employees')
+const selectedId = ref('')
+const creating = ref(false)
+const employeeQuery = ref('')
+const employeeEnabledFilter = ref('')
+const employeeConfigRef = ref<InstanceType<typeof EmployeeConfig> | null>(null)
+const categoryRef = ref<InstanceType<typeof CategoryConfig> | null>(null)
+const systemRef = ref<InstanceType<typeof SystemSettings> | null>(null)
+
+const tabs = [
+  { id: 'employees', label: '员工配置', icon: Bot },
+  { id: 'categories', label: '任务分类', icon: FolderTree },
+  { id: 'sources', label: '任务来源', icon: Database },
+  { id: 'system', label: '系统设置', icon: SlidersHorizontal },
+]
+
+const selectedEmployee = computed(() => store.employees.find((employee) => employee.id === selectedId.value) ?? null)
+const filteredEmployees = computed(() => {
+  const query = employeeQuery.value.trim().toLowerCase()
+  return store.employees.filter((employee) =>
+    (!query || `${employee.id}${employee.name}${employee.role}`.toLowerCase().includes(query))
+    && (!employeeEnabledFilter.value || String(employee.enabled) === employeeEnabledFilter.value)
+  )
 })
-const tabs = [{ id: 'employees', label: '员工配置', icon: Bot }, { id: 'categories', label: '任务分类', icon: FolderTree }, { id: 'sources', label: '任务来源', icon: Database }, { id: 'system', label: '系统设置', icon: SlidersHorizontal }]
-const employeeTabs = [{ id: 'basic', label: '基本信息' }, { id: 'scope', label: '工作范围' }, { id: 'environment', label: '工作环境' }, { id: 'policy', label: '工作策略' }]
-const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 Agent 工作环境', description: '', host: '', port: 22, username: '', ssh_password: '', opencode_server_port: 4096, opencode_path: 'opencode', model_name: '', workspace_root: '', labels: [] as string[] })
-const form = reactive({ id: '', name: '', role: '', description: '', default_work_area: 'development' as WorkspaceAreaId, task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, max_auto_retries: 3, environment: emptyEnvironment() })
-const selectedEmployee = computed(() => store.employees.find((employee) => employee.id === selectedId.value))
-function fill(employee?: Employee) { const environment = employee?.execution_environment; Object.assign(form, { id: employee?.id ?? '', name: employee?.name ?? '', role: employee?.role ?? '', description: employee?.description ?? '', default_work_area: employee?.default_work_area ?? 'development', task_types: [...(employee?.task_types ?? ['ISSUE', 'REQUIREMENT'])], category_ids: [...(employee?.category_ids ?? categories.value.filter((item) => item.enabled).map((item) => item.id))], enabled: employee?.enabled ?? true, auto_claim: employee?.auto_claim ?? true, auto_execute: employee?.auto_execute ?? true, max_auto_retries: employee?.max_auto_retries ?? 3, environment: environment ? { mode: environment.mode, name: environment.name, description: environment.description, host: environment.host ?? '', port: environment.port, username: environment.username ?? '', ssh_password: '', opencode_server_port: environment.opencode_server_port ?? 4096, opencode_path: environment.opencode_path, model_name: environment.model_name ?? '', workspace_root: environment.workspace_root, labels: [...environment.labels] } : emptyEnvironment() }); checks.value = []; message.value = '' }
-function selectEmployee(id: string) { creating.value = false; selectedId.value = id; fill(store.employees.find((item) => item.id === id)); router.replace({ query: { employee: id } }) }
-function beginCreate() { creating.value = true; selectedId.value = ''; employeeTab.value = 'basic'; fill(); router.replace({ query: { create: '1' } }) }
-function resetForm() { creating.value ? beginCreate() : fill(selectedEmployee.value) }
-function setMode(mode: 'LOCAL' | 'LINUX_REMOTE') { form.environment.mode = mode }
-function environmentPayload() { return { ...form.environment, host: form.environment.mode === 'LOCAL' ? null : form.environment.host || null, username: form.environment.mode === 'LOCAL' ? null : form.environment.username || null, ssh_password: form.environment.mode === 'LINUX_REMOTE' ? form.environment.ssh_password || null : null, model_name: form.environment.model_name || null } }
-function employeePayload() { return { name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute, max_auto_retries: form.max_auto_retries } }
-function normalizedEnvironment(value: ReturnType<typeof environmentPayload> | Employee['execution_environment']) { return value ? { mode: value.mode, name: value.name, description: value.description ?? '', host: value.host ?? null, port: Number(value.port), username: value.username ?? null, opencode_server_port: Number(value.opencode_server_port ?? 4096), opencode_path: value.opencode_path, model_name: value.model_name ?? null, workspace_root: value.workspace_root, labels: [...(value.labels ?? [])] } : null }
-function environmentChanged() { return Boolean(form.environment.ssh_password) || JSON.stringify(normalizedEnvironment(environmentPayload())) !== JSON.stringify(normalizedEnvironment(selectedEmployee.value?.execution_environment ?? null)) }
-async function save() { saving.value = true; message.value = ''; messageIsError.value = false; try { if (!form.task_types.length || !form.category_ids.length) throw new Error('工作范围至少需要一种任务类型和一个任务分类'); let employeeId = selectedId.value; let shouldCheckEnvironment = false; if (creating.value) { const created = await api.createEmployee({ id: form.id, ...employeePayload(), execution_environment: environmentPayload() }); employeeId = created.id; shouldCheckEnvironment = true } else { await api.updateEmployee(employeeId, employeePayload()); if (environmentChanged()) { await api.updateEnvironment(employeeId, environmentPayload()); shouldCheckEnvironment = true } } const checkResult = shouldCheckEnvironment ? await api.testEnvironment(employeeId) : null; await store.refresh(); creating.value = false; selectedId.value = employeeId; fill(store.employees.find((item) => item.id === employeeId)); router.replace({ query: { employee: employeeId } }); if (checkResult) { checks.value = checkResult.checks; messageIsError.value = checkResult.status !== 'AVAILABLE'; message.value = checkResult.status === 'AVAILABLE' ? '配置已保存，工作环境检测正常。' : '配置已保存，但工作环境检测异常，请查看检查项。' } else { message.value = '配置已保存，工作环境状态保持不变。' } } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '保存失败' } finally { saving.value = false } }
-async function testEnvironment() { testing.value = true; try { const result = await api.testEnvironment(selectedId.value); checks.value = result.checks; message.value = result.status === 'AVAILABLE' ? '环境正常，可以处理新任务。' : '环境异常，请根据检查项处理。'; messageIsError.value = result.status !== 'AVAILABLE'; await store.refresh() } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '检测失败' } finally { testing.value = false } }
-async function toggleEmployeeStatus() { if (!selectedEmployee.value) return; statusChanging.value = true; message.value = ''; try { const action = selectedEmployee.value.status === 'PAUSED' ? 'resume' : 'pause'; await api.employeeAction(selectedEmployee.value.id, action); await store.refresh(); message.value = action === 'resume' ? '员工已恢复，可以继续领取任务。' : '员工已暂停，不会领取新任务。' } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '状态更新失败' } finally { statusChanging.value = false } }
-async function loadCategories() { categories.value = await api.categories(true) }
-async function createCategory() { const name = window.prompt('请输入新分类名称：'); if (!name) return; await api.createCategory({ name, description: '', enabled: true, sort_order: (categories.value.at(-1)?.sort_order ?? 0) + 10 }); await loadCategories(); await store.refresh() }
-async function saveCategory(category: TaskCategory) { await api.updateCategory(category.id, { name: category.name, description: category.description, enabled: category.enabled, sort_order: category.sort_order }); await loadCategories(); await store.refresh() }
-onMounted(async () => { await Promise.all([store.refresh(), loadCategories()]); if (route.query.create === '1') beginCreate(); else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? '')) })
-const configs = { sources: [{ title: '任务来源', items: [{ label: '手工创建', value: '已启用' }, { label: 'nr_test_system', value: '可配置导入与结果回填' }, { label: '唯一标识', value: '来源 + 外部任务 ID' }] }], system: [{ title: '运行设置', items: [{ label: '任务发现间隔', value: '30 秒' }, { label: '任务分配间隔', value: '5 秒' }, { label: '员工心跳间隔', value: '10 秒' }, { label: '员工并发', value: '每人 1 项任务' }] }, { title: 'Agent 执行边界', items: [{ label: '工作空间', value: '属于员工并长期复用' }, { label: '会话', value: '每项任务独立' }, { label: '工作方式', value: '由员工自己的 Agent 自主决定' }, { label: '用量数据', value: '只记录 Agent 实际返回值' }] }] }
-const activeConfig = computed(() => configs[tab.value as keyof typeof configs] ?? [])
+
+function isEmployeeDirty(): boolean { return employeeConfigRef.value?.getDirty?.() ?? false }
+function guardEmployeeChange() {
+  if (isEmployeeDirty() && !window.confirm('有未保存的员工配置修改，确定放弃并切换吗？')) return false
+  return true
+}
+
+function selectEmployee(id: string) {
+  if (!guardEmployeeChange()) return
+  creating.value = false; selectedId.value = id
+  router.replace({ query: { employee: id } })
+}
+function beginCreate() {
+  if (!guardEmployeeChange()) return
+  creating.value = true; selectedId.value = ''
+  router.replace({ query: { create: '1' } })
+}
+function switchTab(next: string) {
+  if (next === tab.value) return
+  if (isEmployeeDirty() && tab.value === 'employees' && !guardEmployeeChange()) return
+  tab.value = next
+  router.replace({ query: { ...route.query, tab: next } })
+}
+function onEmployeeSaved(id: string) {
+  creating.value = false; selectedId.value = id
+  router.replace({ query: { employee: id } })
+}
+
+onMounted(async () => {
+  if (!store.employees.length) await store.refresh()
+  const tabFromQuery = typeof route.query.tab === 'string' ? route.query.tab : 'employees'
+  if (tabs.some((item) => item.id === tabFromQuery)) tab.value = tabFromQuery
+  if (route.query.create === '1') beginCreate()
+  else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? ''))
+})
+
+onBeforeRouteLeave(() => {
+  if (isEmployeeDirty() && tab.value === 'employees') return window.confirm('有未保存的员工配置修改，确定离开吗？')
+  return true
+})
 </script>
+
+<style scoped>
+.settings-page { padding-bottom: 96px; }
+.settings-employee-toolbar { display: grid; gap: 8px; margin-bottom: 12px; }
+.settings-employee-toolbar select { width: 100%; height: 38px; padding: 0 10px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 8px; outline: none; background: var(--astra-bg-base); }
+.settings-employee { width: 100%; }
+.settings-empty { margin-top: 6px; }
+.config-tab { max-width: 1080px; }
+@media (max-width: 900px) { .settings-layout--v03 { grid-template-columns: 1fr; } }
+</style>

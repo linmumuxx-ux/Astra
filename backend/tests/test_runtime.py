@@ -4,13 +4,13 @@ import os
 import socket
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.routes import _cancel_active_runs
 from app.config.settings import Settings
 from app.database import SessionLocal, init_database
 from app.domain import EmployeeStatus, EnvironmentStatus, Priority, RunStatus, TaskStatus, TaskType
@@ -27,6 +27,7 @@ from app.models import (
     Evidence,
     OpenCodeExecutionEnvironment,
     Run,
+    RunDispatchOutbox,
     RunInquiry,
     SessionMessage,
     Task,
@@ -38,6 +39,8 @@ from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.environment import ExecutionEnvironmentRuntime, environment_snapshot
 from app.runtime.heartbeat import heartbeat_active_employees
+from app.runtime.lifecycle import RuntimeService
+from app.runtime.recovery import reconcile_runtime_state, watchdog_stale_runs
 from app.runtime.scout import TaskScout
 from app.runtime.ssh_client import SSHSession
 from app.schemas import TaskCreate
@@ -70,6 +73,29 @@ def new_task(**overrides) -> TaskCreate:
     return TaskCreate(**payload)
 
 
+async def queued_runtime(session, suffix: str) -> tuple[DigitalEmployee, Task, Run]:
+    employee = DigitalEmployee(
+        id=f"astra-runtime-{suffix}",
+        name=f"Runtime {suffix}",
+        role="运行时测试员工",
+        status=EmployeeStatus.IDLE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    session.add(employee)
+    await session.commit()
+    task = await TaskService(session).create(
+        new_task(employee_id=employee.id, title=f"运行时测试 {suffix}")
+    )
+    run = await RuntimeService(session).queue_new_run(
+        task,
+        employee,
+        current_progress="运行已排队",
+        message="测试运行排队",
+    )
+    return employee, task, run
+
+
 def fake_agent_launcher(tmp_path: Path, python_source: str, name: str) -> Path:
     script = tmp_path / f"{name}.py"
     script.write_text(python_source, encoding="utf-8")
@@ -96,6 +122,27 @@ async def test_create_task_records_ready_event(session):
     assert task.current_progress == "等待领取"
     events = (
         (await session.execute(select(Event).where(Event.task_id == task.id).order_by(Event.id)))
+        .scalars()
+        .all()
+    )
+    assert [event.event_type for event in events] == ["TASK_CREATED", "TASK_READY"]
+
+
+async def test_add_event_can_join_caller_transaction_without_implicit_commit(session):
+    task = await TaskService(session).create(new_task())
+    task_id = task.id
+
+    await TaskService(session).add_event(
+        task,
+        "TASK_ASSIGNED",
+        "work",
+        "尚未提交的领取事件",
+        commit=False,
+    )
+    await session.rollback()
+
+    events = (
+        (await session.execute(select(Event).where(Event.task_id == task_id).order_by(Event.id)))
         .scalars()
         .all()
     )
@@ -141,7 +188,7 @@ async def test_runtime_observer_persists_tool_and_subagent_semantics(session):
     assert events[-1].detail["child_session_id"] == "ses_child"
 
 
-async def test_cancel_active_runs_finishes_running_and_blocked_rows(session):
+async def test_stop_task_finishes_all_legacy_active_runs_and_inquiries(session):
     employee = DigitalEmployee(
         id="astra-cancel-runs",
         name="取消测试员工",
@@ -151,35 +198,58 @@ async def test_cancel_active_runs_finishes_running_and_blocked_rows(session):
     )
     session.add(employee)
     task = await TaskService(session).create(new_task(employee_id=employee.id))
-    session.add_all(
-        [
-            Run(
+    runs = [
+        Run(
                 id="RUN-CANCEL-RUNNING",
                 task_id=task.id,
                 employee_id=employee.id,
                 run_number=1,
                 status=RunStatus.RUNNING,
-            ),
-            Run(
+        ),
+        Run(
                 id="RUN-CANCEL-BLOCKED",
                 task_id=task.id,
                 employee_id=employee.id,
                 run_number=2,
                 status=RunStatus.BLOCKED,
-            ),
-        ]
+        ),
+    ]
+    session.add_all(runs)
+    await session.flush()
+    task.status = TaskStatus.RUNNING
+    task.active_run_id = runs[-1].id
+    employee.status = EmployeeStatus.WORKING
+    employee.current_task_count = 1
+    employee.active_run_id = runs[-1].id
+    inquiry = await WorkbenchService(session).create_inquiry(
+        task,
+        question="请补充信息",
+        run_id=runs[-1].id,
+        commit=False,
     )
     await session.commit()
 
-    await _cancel_active_runs(task.id, session)
+    await RuntimeService(session).stop_task(
+        task,
+        target=TaskStatus.CANCELLED,
+        current_progress="任务已取消",
+        message="测试停止",
+    )
 
-    runs = (
+    stored_runs = (
         (await session.execute(select(Run).where(Run.task_id == task.id).order_by(Run.run_number)))
         .scalars()
         .all()
     )
-    assert [run.status for run in runs] == [RunStatus.CANCELLED, RunStatus.CANCELLED]
-    assert all(run.finished_at is not None for run in runs)
+    await session.refresh(task)
+    await session.refresh(employee)
+    await session.refresh(inquiry)
+    assert [run.status for run in stored_runs] == [RunStatus.CANCELLED, RunStatus.CANCELLED]
+    assert all(run.finished_at is not None for run in stored_runs)
+    assert task.active_run_id is None
+    assert employee.active_run_id is None
+    assert employee.current_task_count == 0
+    assert inquiry.status == "CANCELLED"
 
 
 async def test_dispatcher_matches_type_and_category_and_limits_one_task(session, tmp_path):
@@ -218,7 +288,7 @@ async def test_dispatcher_matches_type_and_category_and_limits_one_task(session,
         await session.refresh(claimed)
 
     assert claimed_id == first_id
-    assert claimed.status == TaskStatus.READY
+    assert claimed.status == TaskStatus.ASSIGNED
     assert claimed.employee_id == "astra-test"
     assert claimed.claimed_at is not None
     assert claimed.execution_environment_snapshot["workspace_root"] == str(workspace)
@@ -259,12 +329,311 @@ async def test_heartbeat_recovers_offline_employee_then_dispatches_ready_task(se
     await session.refresh(employee)
     assert employee.status == EmployeeStatus.IDLE
     claimed = await Dispatcher(session).claim_once()
+    run = await session.scalar(select(Run).where(Run.task_id == task.id))
 
     await session.refresh(employee)
     assert heartbeat_ids == [employee.id]
     assert employee.status == EmployeeStatus.WORKING
     assert claimed and claimed.id == task.id
+    assert claimed.status == TaskStatus.QUEUED
     assert claimed.employee_id == employee.id
+    assert run and run.status == RunStatus.QUEUED
+    assert run.started_at is None
+
+
+async def test_failed_queue_publish_keeps_run_durably_queued(session, tmp_path, monkeypatch):
+    workspace = tmp_path / "queue-failure-workspace"
+    workspace.mkdir()
+    employee = DigitalEmployee(
+        id="astra-queue-failure",
+        name="队列失败员工",
+        role="测试员工",
+        status=EmployeeStatus.IDLE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    employee.execution_environment = OpenCodeExecutionEnvironment(
+        employee_id=employee.id,
+        mode="LOCAL",
+        name="队列失败环境",
+        workspace_root=str(workspace),
+        status=EnvironmentStatus.AVAILABLE,
+    )
+    session.add(employee)
+    await session.commit()
+    task = await TaskService(session).create(new_task(employee_id=employee.id))
+    task.execution_environment_snapshot = environment_snapshot(employee.execution_environment)
+    runtime = RuntimeService(session)
+    run = await runtime.queue_new_run(
+        task,
+        employee,
+        current_progress="运行已排队",
+        message="测试运行排队",
+    )
+
+    from app.runtime.celery_app import process_task
+
+    def fail_publish(*_args, **_kwargs):
+        raise OSError("redis unavailable")
+
+    monkeypatch.setattr(process_task, "apply_async", fail_publish)
+    published = await runtime.enqueue(task, run)
+    await session.refresh(task)
+    await session.refresh(run)
+    await session.refresh(employee)
+    outbox = await session.scalar(
+        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
+    )
+
+    assert published is False
+    assert task.status == TaskStatus.QUEUED
+    assert task.active_run_id == run.id
+    assert run.status == RunStatus.QUEUED
+    assert run.dispatch_attempt == 1
+    assert employee.current_task_count == 1
+    assert employee.active_run_id == run.id
+    assert outbox and outbox.status == "PENDING"
+    assert outbox.attempts == 1
+    assert outbox.next_retry_at is not None
+    assert outbox.last_error == "redis unavailable"
+    event = await session.scalar(
+        select(Event).where(Event.run_id == run.id, Event.event_type == "RUN_DISPATCH_FAILED")
+    )
+    assert event and event.detail["error"] == "redis unavailable"
+
+
+async def test_outbox_success_and_duplicate_worker_delivery_are_idempotent(session, monkeypatch):
+    employee, task, run = await queued_runtime(session, "outbox-success")
+
+    from app.runtime.celery_app import process_task
+
+    published: list[dict] = []
+
+    class Result:
+        id = "run-celery-fixed"
+
+    def publish(*args, **kwargs):
+        published.append({"args": args, "kwargs": kwargs})
+        return Result()
+
+    monkeypatch.setattr(process_task, "apply_async", publish)
+    runtime = RuntimeService(session)
+    assert await runtime.enqueue(task, run) is True
+    outbox = await session.scalar(
+        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
+    )
+    await session.refresh(run)
+    assert outbox and outbox.status == "SENT"
+    assert outbox.attempts == 1
+    assert run.celery_task_id == "run-celery-fixed"
+    assert published[0]["kwargs"] == {
+        "args": [run.id],
+        "queue": "agent",
+        "task_id": f"run-{run.id}",
+    }
+
+    claimed = await runtime.claim_run(run.id, worker_id="worker-a")
+    assert claimed is not None
+    _, _, claimed_run, token = claimed
+    assert claimed_run.status == RunStatus.STARTING
+    assert claimed_run.worker_id == "worker-a"
+    assert claimed_run.execution_token == token
+    assert await runtime.claim_run(run.id, worker_id="worker-b") is None
+
+
+async def test_execution_lease_heartbeat_and_finalize_clear_all_pointers(session):
+    employee, task, run = await queued_runtime(session, "lease-finalize")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="worker-finalize")
+    assert claimed is not None
+    task, employee, run, token = claimed
+
+    assert await runtime.mark_running(task, run, token) is True
+    assert await runtime.heartbeat(run.id, "wrong-token") is False
+    assert await runtime.heartbeat(run.id, token, executor_status="BUSY") is True
+    assert await runtime.finalize_run(
+        task,
+        employee,
+        run,
+        run_status=RunStatus.COMPLETED,
+        task_status=TaskStatus.COMPLETED,
+        current_progress="任务已完成",
+        message="测试终结",
+        execution_token=token,
+    )
+    await session.refresh(task)
+    await session.refresh(employee)
+    await session.refresh(run)
+    outbox = await session.scalar(
+        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
+    )
+
+    assert task.status == TaskStatus.COMPLETED
+    assert task.active_run_id is None
+    assert employee.status == EmployeeStatus.IDLE
+    assert employee.current_task_count == 0
+    assert employee.active_run_id is None
+    assert run.status == RunStatus.COMPLETED
+    assert run.executor_status == RunStatus.COMPLETED
+    assert run.finished_at is not None
+    assert outbox and outbox.status == "CANCELLED"
+    assert not await runtime.finalize_run(
+        task,
+        employee,
+        run,
+        run_status=RunStatus.COMPLETED,
+        task_status=TaskStatus.COMPLETED,
+        current_progress="任务已完成",
+        message="重复终结",
+        execution_token=token,
+    )
+
+
+async def test_watchdog_marks_stale_starting_run_lost(session):
+    employee, task, run = await queued_runtime(session, "starting-lost")
+    claimed = await RuntimeService(session).claim_run(run.id, worker_id="lost-worker")
+    assert claimed is not None
+    stale_at = datetime.now(UTC) - timedelta(minutes=10)
+    run.started_at = stale_at
+    run.heartbeat_at = stale_at
+    await session.commit()
+
+    changed = await watchdog_stale_runs(
+        session,
+        Settings(runtime_startup_timeout=10, runtime_heartbeat_timeout=10),
+    )
+    await session.refresh(task)
+    await session.refresh(employee)
+    await session.refresh(run)
+
+    assert changed == [run.id]
+    assert run.status == RunStatus.LOST
+    assert run.failure_type == "STARTUP_LEASE_LOST"
+    assert task.status == TaskStatus.EXECUTION_ERROR
+    assert task.active_run_id is None
+    assert employee.status == EmployeeStatus.ERROR
+    assert employee.active_run_id is None
+
+
+async def test_watchdog_never_replays_busy_session_then_marks_missing_session_lost(session):
+    employee, task, run = await queued_runtime(session, "running-lost")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="orphan-worker")
+    assert claimed is not None
+    task, employee, run, token = claimed
+    assert await runtime.mark_running(task, run, token)
+    run.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    run.opencode_session_id = "ses-orphan"
+    await session.commit()
+
+    async def busy_probe(*_args):
+        return "BUSY", None
+
+    settings = Settings(runtime_startup_timeout=10, runtime_heartbeat_timeout=10)
+    assert await watchdog_stale_runs(session, settings, status_probe=busy_probe) == []
+    await session.refresh(run)
+    await session.refresh(task)
+    assert run.status == RunStatus.RUNNING
+    assert run.executor_status == "ORPHANED_BUSY"
+    assert task.status == TaskStatus.RUNNING
+    assert task.active_run_id == run.id
+
+    async def missing_probe(*_args):
+        return "MISSING", None
+
+    assert await watchdog_stale_runs(session, settings, status_probe=missing_probe) == [run.id]
+    await session.refresh(run)
+    await session.refresh(task)
+    await session.refresh(employee)
+    assert run.status == RunStatus.LOST
+    assert run.failure_type == "WORKER_LEASE_LOST"
+    assert task.status == TaskStatus.EXECUTION_ERROR
+    assert employee.status == EmployeeStatus.ERROR
+
+
+async def test_watchdog_collects_idle_session_result_without_reexecution(session):
+    employee, task, run = await queued_runtime(session, "idle-result")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="result-worker")
+    assert claimed is not None
+    task, employee, run, token = claimed
+    assert await runtime.mark_running(task, run, token)
+    run.heartbeat_at = datetime.now(UTC) - timedelta(minutes=10)
+    run.opencode_session_id = "ses-finished"
+    await session.commit()
+
+    async def idle_probe(*_args):
+        return "IDLE", {"raw_text": "修复已完成"}
+
+    changed = await watchdog_stale_runs(
+        session,
+        Settings(runtime_startup_timeout=10, runtime_heartbeat_timeout=10),
+        status_probe=idle_probe,
+    )
+    await session.refresh(run)
+    await session.refresh(task)
+    await session.refresh(employee)
+
+    assert changed == [run.id]
+    assert run.status == RunStatus.COMPLETED
+    assert run.failure_type == "WORKER_LOST_RESULT_RECOVERED"
+    assert run.result["recovered"] is True
+    assert task.status == TaskStatus.COMPLETED
+    assert task.result["summary"] == "修复已完成"
+    assert task.active_run_id is None
+    assert employee.active_run_id is None
+
+
+async def test_reconciliation_repairs_leases_and_fake_running_projection(session):
+    employee = DigitalEmployee(
+        id="astra-reconcile",
+        name="Reconcile",
+        role="恢复测试员工",
+        status=EmployeeStatus.IDLE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    orphan_employee = DigitalEmployee(
+        id="astra-reconcile-orphan",
+        name="Orphan",
+        role="恢复测试员工",
+        status=EmployeeStatus.WORKING,
+        current_task_count=1,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+    )
+    session.add_all([employee, orphan_employee])
+    await session.commit()
+    task = await TaskService(session).create(new_task(employee_id=employee.id, title="租约修复"))
+    task.status = TaskStatus.QUEUED
+    run = Run(
+        id="RUN-RECONCILE",
+        task_id=task.id,
+        employee_id=employee.id,
+        run_number=1,
+        status=RunStatus.QUEUED,
+        queued_at=datetime.now(UTC),
+    )
+    orphan_task = await TaskService(session).create(
+        new_task(employee_id=orphan_employee.id, title="假运行修复")
+    )
+    orphan_task.status = TaskStatus.RUNNING
+    session.add(run)
+    await session.commit()
+
+    changed = await reconcile_runtime_state(session)
+    await session.refresh(task)
+    await session.refresh(employee)
+    await session.refresh(orphan_task)
+    await session.refresh(orphan_employee)
+
+    assert f"run:{run.id}" in changed
+    assert task.active_run_id == run.id
+    assert employee.active_run_id == run.id
+    assert employee.status == EmployeeStatus.WORKING
+    assert f"task:{orphan_task.id}" in changed
+    assert orphan_task.status == TaskStatus.EXECUTION_ERROR
+    assert orphan_employee.status == EmployeeStatus.ERROR
 
 
 async def test_heartbeat_restores_waiting_employee_from_active_task(session, tmp_path):
@@ -498,7 +867,15 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
         employee = await global_session.get(DigitalEmployee, employee_id)
-        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
+        runs = (
+            (
+                await global_session.execute(
+                    select(Run).where(Run.task_id == task_id).order_by(Run.run_number)
+                )
+            )
+            .scalars()
+            .all()
+        )
         evidence = (
             (await global_session.execute(select(Evidence).where(Evidence.task_id == task_id)))
             .scalars()
@@ -518,7 +895,14 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     assert task.result["acceptance_results"][0]["status"] == "UNCONFIRMED"
     assert employee and employee.status == EmployeeStatus.IDLE
     assert employee.current_task_count == 0
+    assert task.active_run_id is None
+    assert employee.active_run_id is None
     assert len(runs) == 2
+    assert runs[0].status == RunStatus.FAILED
+    assert runs[0].failure_type == "AUTO_RETRY"
+    assert runs[1].status == RunStatus.COMPLETED
+    assert runs[1].previous_run_id == runs[0].id
+    assert runs[0].execution_token != runs[1].execution_token
     assert sum(run.total_tokens or 0 for run in runs) == 210
     assert sum(item.call_count for item in tools) == 3
     assert len(evidence) == 2
@@ -646,10 +1030,10 @@ async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
             id=employee_id,
             name="异常回收员工",
             role="测试员工",
-            status=EmployeeStatus.WORKING,
+            status=EmployeeStatus.IDLE,
             task_types=["ISSUE"],
             category_ids=["testing-platform"],
-            current_task_count=1,
+            current_task_count=0,
         )
         global_session.add(employee)
         global_session.add(
@@ -664,10 +1048,17 @@ async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
         )
         await global_session.commit()
         task = await TaskService(global_session).create(new_task(employee_id=employee.id))
-        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        run = await RuntimeService(global_session).queue_new_run(
+            task,
+            employee,
+            current_progress="运行已排队",
+            message="异常测试运行已排队",
+        )
         task_id = task.id
+        run_id = run.id
 
-    await TaskCoordinator(executor=RaisingExecutor()).process(task_id)
+    await TaskCoordinator(executor=RaisingExecutor()).process(run_id)
+    await TaskCoordinator(executor=RaisingExecutor()).process(run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
@@ -676,7 +1067,9 @@ async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
 
     assert task and task.status == TaskStatus.EXECUTION_ERROR
     assert employee and employee.status == EmployeeStatus.ERROR
+    assert employee.current_task_count == 0
     assert run and run.status == RunStatus.FAILED
+    assert run.started_at is not None
     assert run.finished_at is not None
     assert run.result["stderr"] == "stream reader failed"
 

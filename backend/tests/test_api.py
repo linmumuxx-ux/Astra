@@ -1,12 +1,14 @@
 import asyncio
 import sys
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.domain import TaskStatus
 from app.main import app
-from app.models import Event, OpenCodeExecutionEnvironment, Task
+from app.models import Event, OpenCodeExecutionEnvironment, Run, Task
 
 
 def task_payload(**overrides):
@@ -423,3 +425,88 @@ def test_employee_can_submit_structured_completion():
         assert completed.status_code == 200
         assert completed.json()["status"] == "COMPLETED"
         assert completed.json()["result"]["acceptance_results"][0]["status"] == "SATISFIED"
+
+
+def test_rerun_creates_new_queued_run_and_rejects_double_click(monkeypatch, tmp_path):
+    class Published:
+        id = "run-published-test"
+
+    from app.runtime.celery_app import process_task
+
+    monkeypatch.setattr(process_task, "apply_async", lambda *args, **kwargs: Published())
+    employee_id = "astra-rerun-api"
+    old_run_id = "RUN-RERUN-OLD"
+    with TestClient(app) as client:
+        employee = client.post(
+            "/api/employees",
+            json={
+                "id": employee_id,
+                "name": "重新执行员工",
+                "role": "测试员工",
+                "category_ids": ["testing-platform"],
+                "auto_claim": False,
+                "auto_execute": False,
+                "execution_environment": {
+                    "mode": "LOCAL",
+                    "name": "重新执行环境",
+                    "workspace_root": str(tmp_path),
+                },
+            },
+        )
+        assert employee.status_code == 201
+        task = client.post(
+            "/api/tasks",
+            json=task_payload(employee_id=employee_id, title="重新执行 API"),
+        ).json()
+
+        async def mark_failed():
+            async with SessionLocal() as session:
+                row = await session.get(Task, task["id"])
+                environment = await session.scalar(
+                    select(OpenCodeExecutionEnvironment).where(
+                        OpenCodeExecutionEnvironment.employee_id == employee_id
+                    )
+                )
+                environment.status = "AVAILABLE"
+                row.status = TaskStatus.FAILED
+                row.opencode_session_id = "ses-old-failed"
+                row.result = {"summary": "旧运行失败"}
+                session.add(
+                    Run(
+                        id=old_run_id,
+                        task_id=row.id,
+                        employee_id=employee_id,
+                        run_number=1,
+                        status="FAILED",
+                        started_at=datetime.now(UTC),
+                        finished_at=datetime.now(UTC),
+                    )
+                )
+                await session.commit()
+
+        asyncio.run(mark_failed())
+        rerun = client.post(f"/api/tasks/{task['id']}/rerun")
+
+        assert rerun.status_code == 200
+        assert rerun.json()["status"] == "QUEUED"
+        assert rerun.json()["opencode_session_id"] is None
+        assert client.post(f"/api/tasks/{task['id']}/rerun").status_code == 409
+
+        async def load_runs():
+            async with SessionLocal() as session:
+                return (
+                    (
+                        await session.execute(
+                            select(Run)
+                            .where(Run.task_id == task["id"])
+                            .order_by(Run.run_number)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+        runs = asyncio.run(load_runs())
+        assert [run.status for run in runs] == ["FAILED", "QUEUED"]
+        assert runs[1].previous_run_id == old_run_id
+        assert runs[1].celery_task_id == "run-published-test"

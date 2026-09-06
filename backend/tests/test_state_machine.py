@@ -8,6 +8,10 @@ from app.state_machine import InvalidTransition, TaskStateMachine
     ("current", "target"),
     [
         (TaskStatus.READY, TaskStatus.RUNNING),
+        (TaskStatus.READY, TaskStatus.ASSIGNED),
+        (TaskStatus.READY, TaskStatus.QUEUED),
+        (TaskStatus.ASSIGNED, TaskStatus.QUEUED),
+        (TaskStatus.QUEUED, TaskStatus.RUNNING),
         (TaskStatus.READY, TaskStatus.SUSPENDED),
         (TaskStatus.RUNNING, TaskStatus.COMPLETED),
         (TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN),

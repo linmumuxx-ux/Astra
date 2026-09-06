@@ -16,7 +16,7 @@ export default createRouter({
     { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '总览' } },
     { path: '/employees', name: 'employees', component: EmployeeListView, meta: { title: '数字员工' } },
     { path: '/employees/:id', name: 'employee-detail', component: EmployeeDetailView, meta: { title: '员工详情' } },
-    { path: '/tasks', name: 'tasks', component: TaskListView, meta: { title: '任务中心' } },
+    { path: '/tasks', name: 'tasks', component: TaskListView, meta: { title: '任务管理' } },
     { path: '/tasks/:id', name: 'task-detail', component: TaskDetailView, meta: { title: '任务详情' } },
     { path: '/runs', name: 'runs', component: RunListView, meta: { title: '任务记录' } },
     { path: '/runs/:id', name: 'run-detail', component: RunDetailView, meta: { title: '运行详情' } },

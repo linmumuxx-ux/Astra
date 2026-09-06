@@ -16,6 +16,8 @@ from app.usage import load_runs, summarize_runs
 
 STATUS_EVENT = {
     TaskStatus.READY: "TASK_READY",
+    TaskStatus.ASSIGNED: "TASK_ASSIGNED",
+    TaskStatus.QUEUED: "TASK_QUEUED",
     TaskStatus.RUNNING: "TASK_RUNNING",
     TaskStatus.WAIT_HUMAN: "WAIT_HUMAN",
     TaskStatus.SUSPENDED: "TASK_SUSPENDED",
@@ -276,11 +278,13 @@ class TaskService:
         current_progress: str,
         message: str,
         detail: dict | None = None,
+        run_id: str | None = None,
         commit: bool = True,
     ) -> Task:
         previous = TaskStatus(task.status)
         if previous not in {TaskStatus.COMPLETED, TaskStatus.FAILED} or target not in {
             TaskStatus.READY,
+            TaskStatus.QUEUED,
             TaskStatus.RUNNING,
         }:
             raise ValueError(f"不允许从 {previous} 重新打开为 {target}")
@@ -291,6 +295,7 @@ class TaskService:
             current_progress=current_progress,
             message=message,
             detail={"reopened": True, **(detail or {})},
+            run_id=run_id,
             commit=commit,
         )
 
@@ -344,11 +349,14 @@ class TaskService:
         message: str,
         detail: dict | None = None,
         run_id: str | None = None,
+        *,
+        commit: bool = True,
     ) -> Event:
         event = await self._record(task, event_type, phase, message, detail, run_id)
-        await self.session.commit()
-        await self.session.refresh(event)
-        await event_bus.publish({"type": event_type, "task_id": task.id, "event_id": event.id})
+        if commit:
+            await self.session.commit()
+            await self.session.refresh(event)
+            await event_bus.publish({"type": event_type, "task_id": task.id, "event_id": event.id})
         return event
 
     async def _record(
@@ -380,6 +388,24 @@ class TaskService:
 class EmployeeService:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def reserve(employee: DigitalEmployee) -> None:
+        """Reserve the employee's single execution slot."""
+
+        employee.current_task_count = 1
+        employee.status = EmployeeStatus.WORKING
+
+    @staticmethod
+    def release(
+        employee: DigitalEmployee,
+        *,
+        status: EmployeeStatus = EmployeeStatus.IDLE,
+    ) -> None:
+        """Release the single execution slot idempotently."""
+
+        employee.current_task_count = 0
+        employee.status = status
 
     async def set_status(self, employee: DigitalEmployee, status: EmployeeStatus) -> None:
         employee.status = status.value

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -39,6 +41,8 @@ class KnowledgeSpaceRead(LibraryORMModel):
     status: str
     access_scope: str
     knowledge_count: int = 0
+    subtree_knowledge_count: int = 0
+    children: list[KnowledgeSpaceRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -111,6 +115,39 @@ class KnowledgePatch(BaseModel):
         return list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
 
 
+class SpaceMoveWrite(BaseModel):
+    target_parent_id: str | None = None
+
+
+class KnowledgeMoveWrite(BaseModel):
+    space_id: str
+
+
+class KnowledgeBatchMoveWrite(BaseModel):
+    knowledge_ids: list[str] = Field(min_length=1)
+    space_id: str
+
+
+class KnowledgeBatchIds(BaseModel):
+    knowledge_ids: list[str] = Field(min_length=1)
+
+
+class KnowledgeBatchPublishWrite(BaseModel):
+    knowledge_ids: list[str] = Field(min_length=1)
+    space_id: str
+    verification_status: VerificationStatus = "verified"
+
+
+class KnowledgeUsageRead(LibraryORMModel):
+    id: int
+    employee_id: str | None
+    employee_name: str | None = None
+    task_id: str | None
+    task_title: str | None = None
+    action: str
+    used_at: datetime
+
+
 class KnowledgePublishWrite(BaseModel):
     space_id: str
     title: str | None = Field(default=None, min_length=1, max_length=240)
@@ -141,6 +178,7 @@ class KnowledgeListItem(LibraryORMModel):
     status: KnowledgeStatus
     verification_status: VerificationStatus
     tags: list[str]
+    source_type: str | None = None
     source_task_id: str | None
     reference_count: int
     helpful_count: int

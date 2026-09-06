@@ -27,7 +27,7 @@ onMounted(() => {
 .assistant-launcher {
   position: fixed;
   right: 22px;
-  bottom: 22px;
+  bottom: 88px;
   width: 48px;
   height: 48px;
   border-radius: 50%;

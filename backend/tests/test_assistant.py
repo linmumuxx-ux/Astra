@@ -166,7 +166,7 @@ async def test_assistant_migration_adopts_complete_precreated_schema(tmp_path):
         )
     await upgraded_engine.dispose()
 
-    assert revision == "0013_assistant"
+    assert revision == "0015_runtime_orchestrator"
     assert title == "迁移前会话"
 
 

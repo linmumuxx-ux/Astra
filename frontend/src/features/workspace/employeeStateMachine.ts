@@ -28,7 +28,8 @@ export function resolveEmployeeState(employee: Employee, task?: Task, recentlyCo
   if (employee.status === 'ERROR' || task?.status === 'EXECUTION_ERROR' || task?.status === 'FAILED') return 'ERROR'
   if (employee.status === 'WAIT_HUMAN' || task?.status === 'WAIT_HUMAN' || task?.status === 'PENDING_CONFIRMATION') return 'NEED_HUMAN'
   if (task?.status === 'SUSPENDED' || employee.status === 'PAUSED') return 'WAITING'
-  if (task?.status === 'RUNNING' || task?.status === 'READY' || employee.status === 'WORKING') return 'WORKING'
+  if (task?.status === 'RUNNING' || task?.status === 'QUEUED' || employee.status === 'WORKING') return 'WORKING'
+  if (task?.status === 'ASSIGNED' || task?.status === 'READY') return 'WAITING'
   if (recentlyCompleted) return 'COMPLETED'
   return 'IDLE'
 }

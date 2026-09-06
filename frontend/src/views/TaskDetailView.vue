@@ -6,7 +6,7 @@
           <header class="task-header">
             <nav class="task-breadcrumb" aria-label="任务路径">
               <RouterLink to="/">工作台</RouterLink><ChevronRight :size="14" />
-              <RouterLink to="/tasks">任务中心</RouterLink><ChevronRight :size="14" />
+              <RouterLink to="/tasks">任务管理</RouterLink><ChevronRight :size="14" />
               <span>{{ task.id }}</span>
             </nav>
             <div class="task-title-row">
@@ -111,7 +111,7 @@
                 <button v-if="task.status === 'RUNNING'" class="action-button" type="button" @click="focusComposer"><PenLine :size="15" />补充要求</button>
                 <button v-if="task.status === 'PENDING_CONFIRMATION'" class="action-button action-button--primary" type="button" :disabled="performingAction" @click="perform('confirm')"><CheckCircle2 :size="15" />确认完成</button>
                 <button v-if="['PENDING_CONFIRMATION','COMPLETED'].includes(task.status)" class="action-button" type="button" @click="requestRevision"><PenLine :size="15" />要求修改</button>
-                <button v-if="failureVisible" class="action-button action-button--primary" type="button" @click="requestRetry"><RotateCcw :size="15" />重新处理</button>
+                <button v-if="canRerun" class="action-button action-button--primary" type="button" :disabled="performingAction" @click="requestRerun"><LoaderCircle v-if="performingAction" class="spin" :size="15" /><RotateCcw v-else :size="15" />重新执行</button>
                 <button v-if="task.result" class="action-button" type="button" @click="exportResult"><Download :size="15" />导出结果</button>
               </div>
             </div>
@@ -172,12 +172,13 @@ const conversation = computed(() => workbench.value ? buildTaskConversation(work
 const latestRun = computed(() => workbench.value?.runs[0] ?? null)
 const activeInquiry = computed(() => [...(workbench.value?.inquiries ?? [])].reverse().find(isInquiryOpen) ?? null)
 const failureVisible = computed(() => !!task.value && ['FAILED', 'EXECUTION_ERROR'].includes(task.value.status))
+const canRerun = computed(() => !!task.value && ['COMPLETED', 'FAILED', 'EXECUTION_ERROR'].includes(task.value.status))
 const failureReason = computed(() => String(task.value?.execution_error?.reason ?? task.value?.failure_reason ?? '执行没有达到预期，请补充要求后重新处理。'))
 const passedAcceptance = computed(() => task.value?.result?.acceptance_results.filter((item) => item.status === 'SATISFIED').length ?? 0)
-const canStop = computed(() => !!task.value && ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.value.status))
+const canStop = computed(() => !!task.value && ['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.value.status))
 const composerDisabled = computed(() => task.value?.status === 'CANCELLED')
 const showWorkingIndicator = computed(() => task.value?.status === 'RUNNING' && !activeInquiry.value)
-const taskStatusLabel = computed(() => ({ READY: '等待领取', RUNNING: '执行中', WAIT_HUMAN: '等待输入', SUSPENDED: '已暂停', PENDING_CONFIRMATION: '待你确认', COMPLETED: '已完成', FAILED: '执行失败', EXECUTION_ERROR: '执行异常', CANCELLED: '已停止' }[task.value?.status ?? 'READY']))
+const taskStatusLabel = computed(() => ({ READY: '等待领取', ASSIGNED: '等待启动', QUEUED: '等待执行', RUNNING: '执行中', WAIT_HUMAN: '等待输入', SUSPENDED: '已暂停', PENDING_CONFIRMATION: '待你确认', COMPLETED: '已完成', FAILED: '执行失败', EXECUTION_ERROR: '执行异常', CANCELLED: '已停止' }[task.value?.status ?? 'READY']))
 const taskStatusTone = computed(() => statusTone(task.value?.status ?? 'READY'))
 const safeCurrentWork = computed(() => {
   if (activeInquiry.value) return `等待你的回答：${activeInquiry.value.question}`
@@ -300,7 +301,7 @@ async function answerOption(inquiryId: string, answer: string) {
 
 function focusComposer() { nextTick(() => composer.value?.focus()) }
 function requestRevision() { messageText.value = '请根据以下要求修改结果：'; focusComposer() }
-function requestRetry() { messageText.value = '请重新处理这个任务，并修复上一次执行中遇到的问题：'; focusComposer() }
+function requestRerun() { void perform('rerun') }
 
 async function perform(action: string) {
   if (!task.value || performingAction.value) return
@@ -308,7 +309,7 @@ async function perform(action: string) {
   composerError.value = false
   try {
     await api.taskAction(task.value.id, action, action === 'cancel' ? { reason: '用户在任务工作区停止任务' } : {})
-    composerNotice.value = action === 'confirm' ? '任务结果已确认。' : action === 'cancel' ? '任务已停止。' : '操作已完成。'
+    composerNotice.value = action === 'confirm' ? '任务结果已确认。' : action === 'cancel' ? '任务已停止。' : action === 'rerun' ? '已创建新的运行并进入执行队列。' : '操作已完成。'
     await load()
   } catch (reason) {
     composerError.value = true

@@ -63,6 +63,8 @@ async def summarize_runs(session: AsyncSession, runs: list[Run]) -> dict:
     duration_seconds = 0
     now = datetime.now(UTC)
     for run in runs:
+        if not run.started_at:
+            continue
         end = _aware(run.finished_at) if run.finished_at else now
         duration_seconds += max(0, int((end - _aware(run.started_at)).total_seconds()))
 
@@ -129,7 +131,11 @@ async def employee_usage(session: AsyncSession, employee_id: str, days: int) -> 
     trend: list[dict] = []
     for offset in range(days):
         day = (start + timedelta(days=offset)).astimezone(timezone).date()
-        day_runs = [run for run in runs if _aware(run.started_at).astimezone(timezone).date() == day]
+        day_runs = [
+            run
+            for run in runs
+            if run.started_at and _aware(run.started_at).astimezone(timezone).date() == day
+        ]
         day_summary = await summarize_runs(session, day_runs)
         trend.append({"date": day.isoformat(), **day_summary})
     return {

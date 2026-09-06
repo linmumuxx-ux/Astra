@@ -181,6 +181,15 @@ class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
             status = await client.status(self.remote_workspace, run.opencode_session_id)
         return status.upper()
 
+    async def collect_result(self, run: Run) -> dict:
+        existing = run.result or {}
+        if existing.get("work_result") or not run.opencode_session_id:
+            return existing
+        async with self.connection() as client:
+            messages = await client.messages(self.remote_workspace, run.opencode_session_id)
+        raw_text = self._last_assistant_message(messages)
+        return {**existing, "raw_text": raw_text} if raw_text else existing
+
 
 async def test_remote_server(
     environment: OpenCodeExecutionEnvironment,

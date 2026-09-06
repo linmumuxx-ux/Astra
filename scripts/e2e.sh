@@ -9,10 +9,14 @@ BACKEND_LOG="$RUN_DIR/backend.log"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 REDIS_LOG="$RUN_DIR/redis.log"
 RUNTIME_LOG="$RUN_DIR/runtime.log"
+CONTROL_LOG="$RUN_DIR/control.log"
+BEAT_LOG="$RUN_DIR/beat.log"
 BACKEND_PID=""
 FRONTEND_PID=""
 REDIS_PID=""
 RUNTIME_PID=""
+CONTROL_PID=""
+BEAT_PID=""
 
 if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
@@ -37,10 +41,14 @@ cleanup() {
   trap - EXIT INT TERM
   [[ -z "$FRONTEND_PID" ]] || kill "$FRONTEND_PID" 2>/dev/null || true
   [[ -z "$RUNTIME_PID" ]] || kill "$RUNTIME_PID" 2>/dev/null || true
+  [[ -z "$CONTROL_PID" ]] || kill "$CONTROL_PID" 2>/dev/null || true
+  [[ -z "$BEAT_PID" ]] || kill "$BEAT_PID" 2>/dev/null || true
   [[ -z "$BACKEND_PID" ]] || kill "$BACKEND_PID" 2>/dev/null || true
   [[ -z "$REDIS_PID" ]] || kill "$REDIS_PID" 2>/dev/null || true
   [[ -z "$FRONTEND_PID" ]] || wait "$FRONTEND_PID" 2>/dev/null || true
   [[ -z "$RUNTIME_PID" ]] || wait "$RUNTIME_PID" 2>/dev/null || true
+  [[ -z "$CONTROL_PID" ]] || wait "$CONTROL_PID" 2>/dev/null || true
+  [[ -z "$BEAT_PID" ]] || wait "$BEAT_PID" 2>/dev/null || true
   [[ -z "$BACKEND_PID" ]] || wait "$BACKEND_PID" 2>/dev/null || true
   [[ -z "$REDIS_PID" ]] || wait "$REDIS_PID" 2>/dev/null || true
   if [[ $exit_code -ne 0 ]]; then
@@ -53,6 +61,8 @@ cleanup() {
     echo ""
     echo "E2E 失败，运行时日志："
     tail -n 120 "$RUNTIME_LOG" 2>/dev/null || true
+    tail -n 120 "$CONTROL_LOG" 2>/dev/null || true
+    tail -n 80 "$BEAT_LOG" 2>/dev/null || true
     echo ""
     echo "E2E 失败，Redis 日志："
     tail -n 40 "$REDIS_LOG" 2>/dev/null || true
@@ -96,11 +106,15 @@ wait_for_url() {
 wait_for_runtime() {
   for _ in $(seq 1 60); do
     if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
-      echo "任务运行时意外退出" >&2
+      echo "Agent Worker 意外退出" >&2
       return 1
     fi
-    if grep -q "ready\." "$RUNTIME_LOG" 2>/dev/null; then
-      echo "任务运行时已就绪"
+    if ! kill -0 "$CONTROL_PID" 2>/dev/null; then
+      echo "控制 Worker 意外退出" >&2
+      return 1
+    fi
+    if grep -q "ready\." "$RUNTIME_LOG" 2>/dev/null && grep -q "ready\." "$CONTROL_LOG" 2>/dev/null; then
+      echo "控制 Worker 与 Agent Worker 已就绪"
       return 0
     fi
     sleep 1
@@ -143,7 +157,19 @@ wait_for_url "后端" "http://127.0.0.1:$BACKEND_PORT/api/health"
 (
   cd "$ROOT_DIR/backend"
   runtime_environment
-  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --beat --loglevel=INFO --pool=solo --hostname="astra-e2e@%h" --schedule "$RUN_DIR/celerybeat-schedule"
+  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery beat --loglevel=INFO --schedule "$RUN_DIR/celerybeat-schedule"
+) >"$BEAT_LOG" 2>&1 &
+BEAT_PID=$!
+(
+  cd "$ROOT_DIR/backend"
+  runtime_environment
+  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=control --hostname="astra-e2e-control@%h"
+) >"$CONTROL_LOG" 2>&1 &
+CONTROL_PID=$!
+(
+  cd "$ROOT_DIR/backend"
+  runtime_environment
+  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=agent --hostname="astra-e2e-agent@%h"
 ) >"$RUNTIME_LOG" 2>&1 &
 RUNTIME_PID=$!
 wait_for_runtime

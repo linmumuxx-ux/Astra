@@ -169,6 +169,7 @@ class EmployeeRead(ORMModel):
     auto_execute: bool
     max_auto_retries: int
     current_task_count: int
+    active_run_id: str | None
     last_heartbeat: datetime | None
     online_since: datetime | None
     created_at: datetime
@@ -238,6 +239,7 @@ class TaskRead(ORMModel):
     completion_policy: str
     status: str
     employee_id: str | None
+    active_run_id: str | None
     opencode_session_id: str | None
     current_progress: str
     suspension: dict[str, Any] | None
@@ -298,12 +300,21 @@ class RunRead(ORMModel):
     id: str
     task_id: str
     employee_id: str
+    previous_run_id: str | None
     run_number: int
     status: str
     executor_type: str
     opencode_session_id: str | None
-    started_at: datetime
+    queued_at: datetime | None
+    dispatched_at: datetime | None
+    started_at: datetime | None
     finished_at: datetime | None
+    celery_task_id: str | None
+    dispatch_attempt: int
+    heartbeat_at: datetime | None
+    worker_id: str | None
+    executor_status: str | None
+    failure_type: str | None
     exit_code: int | None
     result: dict[str, Any] | None
     execution_environment_snapshot: dict[str, Any]

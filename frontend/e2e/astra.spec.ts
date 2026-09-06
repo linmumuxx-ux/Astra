@@ -62,7 +62,7 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
   const navigation = page.getByRole('navigation', { name: '主导航' })
   const destinations = [
     { link: /^数字员工/, testId: 'employee-list-page', heading: '数字员工' },
-    { link: /^任务管理$/, testId: 'task-list-page', heading: '任务中心' },
+    { link: /^任务管理$/, testId: 'task-list-page', heading: '任务管理' },
     { link: /^任务记录$/, testId: 'run-list-page', heading: '任务记录' },
     { link: /^数字图书馆/, testId: 'digital-library-page', heading: '数字图书馆' },
     { link: /^设置$/, testId: 'settings-page', heading: '配置中心' },
@@ -101,7 +101,7 @@ test('数字图书馆支持全局搜索、安全 Markdown 弹框和滚动恢复'
   const library = page.getByTestId('digital-library-page')
   await expect(library.getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
   await expect(library.getByRole('heading', { name: '知识空间', exact: true })).toBeVisible()
-  await library.getByLabel('全局知识搜索').fill('50004')
+  await library.getByLabel('知识库搜索').fill('50004')
   await expect(library.getByText(title, { exact: true })).toBeVisible()
   await library.getByText(title, { exact: true }).click()
 
@@ -115,6 +115,45 @@ test('数字图书馆支持全局搜索、安全 Markdown 弹框和滚动恢复'
   await dialog.getByRole('button', { name: '关闭知识详情' }).click()
   await expect(dialog).toHaveCount(0)
   expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden')
+})
+
+test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出现', async ({ page }) => {
+  await page.route('**/api/library/spaces', async (route) => {
+    const response = await route.fetch()
+    const spaces = await response.json()
+    const flatSpaces = spaces.map(({ children: _children, subtree_knowledge_count: _count, ...space }: Record<string, unknown>) => space)
+    await route.fulfill({ response, json: flatSpaces })
+  })
+  await page.route('**/api/library/knowledge/*/usages*', (route) => route.fulfill({
+    status: 404,
+    json: { detail: 'Not Found' },
+  }))
+
+  await page.goto('/library')
+  const library = page.getByTestId('digital-library-page')
+  await expect(library.getByText('公共知识库', { exact: true })).toBeVisible()
+  await expect(library.locator('.library-error')).toHaveCount(0)
+  await expect(library.getByText('新建子目录', { exact: true })).toHaveCount(0)
+
+  await library.locator('.knowledge-table-wrap tbody tr').first().click()
+  const detail = page.getByTestId('knowledge-detail-dialog')
+  await expect(detail).toBeVisible()
+  await expect(detail.locator('.detail-error')).toHaveCount(0)
+  await detail.getByRole('button', { name: '关闭知识详情' }).click()
+
+  await library.getByRole('button', { name: '更多目录操作' }).first().click()
+  await expect(library.getByText('新建子目录', { exact: true })).toBeVisible()
+  await expect(library.getByText('移动到…', { exact: true })).toHaveCount(0)
+
+  await page.route('**/api/library/permissions', (route) => route.fulfill({
+    json: { user_id: 'viewer-e2e', role: 'viewer', can_manage: false, can_review: false },
+  }))
+  await page.reload()
+  const statusFilter = library.getByLabel('知识状态')
+  await expect(statusFilter).toBeVisible()
+  const statusOptions = await statusFilter.locator('option').allTextContents()
+  expect(statusOptions).toEqual(['全部状态', '已发布'])
+  await expect(library.getByRole('button', { name: '更多目录操作' })).toHaveCount(0)
 })
 
 test('创建任务仅填写业务事实且高优先级默认人工确认', async ({ page, request }) => {

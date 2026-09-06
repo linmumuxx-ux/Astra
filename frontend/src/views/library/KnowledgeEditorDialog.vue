@@ -4,7 +4,7 @@
       <form class="knowledge-editor" role="dialog" aria-modal="true" aria-labelledby="knowledge-editor-title" @submit.prevent="save">
         <header><div><h3 id="knowledge-editor-title">新建知识</h3><p>知识先保存为草稿，经审核发布后才对数字员工可见。</p></div><button type="button" aria-label="关闭" @click="$emit('close')"><X :size="18" /></button></header>
         <div class="editor-body">
-          <div class="editor-grid"><label>知识标题 *<input v-model.trim="form.title" required maxlength="240" placeholder="请输入清晰、可检索的知识标题" /></label><label>目标空间 *<select v-model="form.space_id" required><option value="" disabled>请选择</option><option v-for="space in spaces" :key="space.id" :value="space.id">{{ space.name }}</option></select></label></div>
+          <div class="editor-grid"><label>知识标题 *<input v-model.trim="form.title" required maxlength="240" placeholder="请输入清晰、可检索的知识标题" /></label><label>所属目录 *<select v-model="form.space_id" required><option value="" disabled>请选择</option><option v-for="dir in directories" :key="dir.id" :value="dir.id">{{ dir.name }}</option></select></label></div>
           <div class="editor-grid editor-grid--three"><label>知识类型<select v-model="form.type"><option v-for="item in types" :key="item.value" :value="item.value">{{ item.label }}</option></select></label><label>验证状态<select v-model="form.verification_status"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label><label>标签<input v-model="form.tags" placeholder="用逗号分隔" /></label></div>
           <label>摘要<textarea v-model.trim="form.summary" rows="2" maxlength="4000" placeholder="用于列表与搜索结果的简短说明" /></label>
           <label class="markdown-field"><span>Markdown 正文 *<label class="file-button"><Upload :size="13" />导入 .md<input type="file" accept=".md,text/markdown,text/plain" @change="readMarkdown" /></label></span><textarea v-model="form.content_md" required rows="16" placeholder="## 问题现象\n\n说明知识内容……" /></label>
@@ -19,9 +19,9 @@
 <script setup lang="ts">
 import { LoaderCircle, Upload, X } from 'lucide-vue-next'
 import { onBeforeUnmount, reactive, watch } from 'vue'
-import type { KnowledgeSpace } from '@/api/types'
 
-const props = defineProps<{ open: boolean; spaces: KnowledgeSpace[]; saving: boolean; error: string; initialContent?: string; initialTitle?: string }>()
+
+const props = defineProps<{ open: boolean; directories: Array<{ id: string; name: string; level: number }>; saving: boolean; error: string; initialContent?: string; initialTitle?: string; initialSpaceId?: string }>()
 const emit = defineEmits<{ close: []; save: [payload: Record<string, unknown>] }>()
 const types = [{ value: 'document', label: '文档' }, { value: 'rule', label: '规范' }, { value: 'guide', label: '指南' }, { value: 'experience', label: '经验' }, { value: 'faq', label: 'FAQ' }, { value: 'tool', label: '工具' }, { value: 'example', label: '示例' }]
 const form = reactive({ space_id: '', title: '', type: 'document', verification_status: 'unverified', tags: '', summary: '', content_md: '' })
@@ -30,7 +30,7 @@ watch(() => props.open, (open) => {
   if (open) {
     previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    Object.assign(form, { space_id: props.spaces[0]?.id ?? '', title: props.initialTitle ?? '', type: 'document', verification_status: 'unverified', tags: '', summary: '', content_md: props.initialContent ?? '' })
+    Object.assign(form, { space_id: props.initialSpaceId || props.directories[0]?.id || '', title: props.initialTitle ?? '', type: 'document', verification_status: 'unverified', tags: '', summary: '', content_md: props.initialContent ?? '' })
   } else {
     document.body.style.overflow = previousOverflow
   }

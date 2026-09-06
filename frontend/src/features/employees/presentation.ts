@@ -43,10 +43,10 @@ const STATUS_DETAIL: Record<string, string> = {
   OFFLINE: '当前不可用',
 }
 
-const activeTaskStatuses = new Set(['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'])
+const activeTaskStatuses = new Set(['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'])
 
 export function employeeCurrentTask(employeeId: string, tasks: Task[]): Task | undefined {
-  const statusPriority: Record<string, number> = { WAIT_HUMAN: 0, EXECUTION_ERROR: 0, RUNNING: 0, SUSPENDED: 1, READY: 2 }
+  const statusPriority: Record<string, number> = { WAIT_HUMAN: 0, EXECUTION_ERROR: 0, RUNNING: 0, QUEUED: 1, SUSPENDED: 2, ASSIGNED: 3, READY: 4 }
   return tasks
     .filter((task) => task.employee_id === employeeId && activeTaskStatuses.has(task.status))
     .sort((left, right) => (statusPriority[left.status] ?? 3) - (statusPriority[right.status] ?? 3) || right.updated_at.localeCompare(left.updated_at))[0]

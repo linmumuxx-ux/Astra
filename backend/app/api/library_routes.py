@@ -6,11 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.library_schemas import (
+    KnowledgeBatchIds,
+    KnowledgeBatchMoveWrite,
+    KnowledgeBatchPublishWrite,
     KnowledgeCreate,
     KnowledgeDetail,
     KnowledgeFavoriteResult,
     KnowledgeFeedbackResult,
     KnowledgeFeedbackWrite,
+    KnowledgeMoveWrite,
     KnowledgePage,
     KnowledgePatch,
     KnowledgePublishWrite,
@@ -18,10 +22,12 @@ from app.library_schemas import (
     KnowledgeSpaceCreate,
     KnowledgeSpacePatch,
     KnowledgeSpaceRead,
+    KnowledgeUsageRead,
     LibraryStats,
     LibraryUsageRecent,
     LibraryUsageSummary,
     RelatedTaskRead,
+    SpaceMoveWrite,
 )
 from app.library_service import (
     KnowledgeService,
@@ -103,12 +109,33 @@ async def update_space(
     return await KnowledgeService(session).update_space(space_id, payload, principal)
 
 
+@router.post("/spaces/{space_id}/move", response_model=KnowledgeSpaceRead)
+async def move_space(
+    space_id: str,
+    payload: SpaceMoveWrite,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).move_space(space_id, payload.target_parent_id, principal)
+
+
+@router.delete("/spaces/{space_id}")
+async def delete_space(
+    space_id: str,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).delete_space(space_id, principal)
+
+
 @router.get("/knowledge", response_model=KnowledgePage)
 async def knowledge_list(
     space_id: str | None = None,
     type: str | None = None,
     status: str | None = None,
     verification_status: str | None = None,
+    source: str | None = None,
+    tag: str | None = None,
     keyword: str | None = None,
     sort: str = "updated_desc",
     page: Annotated[int, Query(ge=1)] = 1,
@@ -122,6 +149,8 @@ async def knowledge_list(
         type_=type,
         status=status,
         verification_status=verification_status,
+        source=source,
+        tag=tag,
         keyword=keyword,
         sort=sort,
         page=page,
@@ -155,6 +184,73 @@ async def update_knowledge(
     principal: LibraryPrincipal = Depends(library_principal),
 ):
     return await KnowledgeService(session).update_knowledge(knowledge_id, payload, principal)
+
+
+@router.post("/knowledge/{knowledge_id}/move", response_model=KnowledgeDetail)
+async def move_knowledge(
+    knowledge_id: str,
+    payload: KnowledgeMoveWrite,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).move_knowledge(knowledge_id, payload.space_id, principal)
+
+
+@router.post("/knowledge/batch-move")
+async def batch_move_knowledge(
+    payload: KnowledgeBatchMoveWrite,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).batch_move(payload.knowledge_ids, payload.space_id, principal)
+
+
+@router.post("/knowledge/batch-archive")
+async def batch_archive_knowledge(
+    payload: KnowledgeBatchIds,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).batch_archive(payload.knowledge_ids, principal)
+
+
+@router.post("/knowledge/batch-publish")
+async def batch_publish_knowledge(
+    payload: KnowledgeBatchPublishWrite,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).batch_publish(
+        payload.knowledge_ids, payload.space_id, payload.verification_status, principal
+    )
+
+
+@router.post("/knowledge/{knowledge_id}/archive", response_model=KnowledgeDetail)
+async def archive_knowledge(
+    knowledge_id: str,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).archive(knowledge_id, principal)
+
+
+@router.delete("/knowledge/{knowledge_id}")
+async def delete_knowledge(
+    knowledge_id: str,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).delete_knowledge(knowledge_id, principal)
+
+
+@router.get("/knowledge/{knowledge_id}/usages", response_model=list[KnowledgeUsageRead])
+async def knowledge_usages(
+    knowledge_id: str,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).knowledge_usages(knowledge_id, principal, limit)
 
 
 @router.post("/knowledge/{knowledge_id}/publish", response_model=KnowledgeDetail)

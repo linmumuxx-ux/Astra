@@ -587,4 +587,32 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                 await self.client.abort(workspace, run.opencode_session_id)
 
     async def collect_result(self, run: Run) -> dict[str, Any]:
-        return run.result or {}
+        existing = run.result or {}
+        if existing.get("work_result"):
+            return existing
+        session_id = run.opencode_session_id
+        workspace_value = (run.execution_environment_snapshot or {}).get("workspace_root")
+        if not session_id or not workspace_value:
+            return existing
+        workspace = self.settings.employee_workspace_path(workspace_value)
+        messages = await self.client.messages(workspace, session_id)
+        raw_text = self._last_assistant_message(messages)
+        return {**existing, "raw_text": raw_text} if raw_text else existing
+
+    @staticmethod
+    def _last_assistant_message(messages: list[dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            if str(info.get("role") or "").lower() != "assistant":
+                continue
+            parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+            texts = [
+                str(part.get("text") or "").strip()
+                for part in parts
+                if isinstance(part, dict)
+                and str(part.get("type") or "").lower() == "text"
+                and str(part.get("text") or "").strip()
+            ]
+            if texts:
+                return "\n".join(texts)
+        return ""

@@ -13,6 +13,8 @@ from app.models import DigitalEmployee, KnowledgeItem, Run, Task
 
 TASK_STATUS_LABEL = {
     "READY": "待领取",
+    "ASSIGNED": "待启动",
+    "QUEUED": "排队中",
     "RUNNING": "执行中",
     "WAIT_HUMAN": "待人工",
     "SUSPENDED": "已挂起",
@@ -33,12 +35,17 @@ EMPLOYEE_STATUS_LABEL = {
 }
 
 RUN_STATUS_LABEL = {
+    "QUEUED": "排队中",
+    "STARTING": "启动中",
     "RUNNING": "执行中",
     "WAITING_INPUT": "等待输入",
     "COMPLETED": "已完成",
     "PASSED": "已通过",
     "FAILED": "已失败",
     "BLOCKED": "受阻",
+    "SUSPENDED": "已挂起",
+    "TIMEOUT": "已超时",
+    "LOST": "运行丢失",
     "CANCELLED": "已取消",
 }
 
@@ -71,7 +78,15 @@ def task_card(task: Task) -> dict[str, Any]:
     if task.failure_reason:
         fields.append({"label": "失败原因", "value": task.failure_reason})
     actions = [_navigate("查看任务", f"/tasks/{task.id}")]
-    if task.status in {"RUNNING", "READY", "WAIT_HUMAN", "SUSPENDED", "EXECUTION_ERROR"}:
+    if task.status in {
+        "READY",
+        "ASSIGNED",
+        "QUEUED",
+        "RUNNING",
+        "WAIT_HUMAN",
+        "SUSPENDED",
+        "EXECUTION_ERROR",
+    }:
         actions.append(_operation("取消任务", "task_cancel"))
     if task.status == "EXECUTION_ERROR":
         actions.append(_operation("重试任务", "task_retry"))
@@ -119,6 +134,10 @@ def run_card(run: Run) -> dict[str, Any]:
     ]
     if run.exit_code is not None:
         fields.append({"label": "退出码", "value": str(run.exit_code)})
+    if run.failure_type:
+        fields.append({"label": "失败类型", "value": run.failure_type})
+    if run.worker_id:
+        fields.append({"label": "Worker", "value": run.worker_id})
     return {
         "card_type": "run",
         "id": run.id,

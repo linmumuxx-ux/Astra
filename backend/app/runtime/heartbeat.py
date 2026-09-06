@@ -27,18 +27,25 @@ async def heartbeat_active_employees(session: AsyncSession) -> list[str]:
                 select(Task.status)
                 .where(
                     Task.employee_id == employee.id,
-                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN, TaskStatus.EXECUTION_ERROR]),
+                    Task.status.in_(
+                        [
+                            TaskStatus.ASSIGNED,
+                            TaskStatus.QUEUED,
+                            TaskStatus.RUNNING,
+                            TaskStatus.WAIT_HUMAN,
+                            TaskStatus.EXECUTION_ERROR,
+                        ]
+                    ),
                 )
                 .order_by(Task.updated_at.desc())
                 .limit(1)
             )
-            employee.status = (
-                EmployeeStatus.WAIT_HUMAN
-                if active_task_status == TaskStatus.WAIT_HUMAN
-                else EmployeeStatus.WORKING
-                if employee.current_task_count
-                else EmployeeStatus.IDLE
-            )
+            if active_task_status == TaskStatus.WAIT_HUMAN:
+                employee.status = EmployeeStatus.WAIT_HUMAN
+            elif active_task_status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                employee.status = EmployeeStatus.WORKING
+            else:
+                employee.status = EmployeeStatus.IDLE
         employee.last_heartbeat = now
         employee.online_since = employee.online_since or now
     if employees:

@@ -262,15 +262,28 @@ sudo cp deploy/systemd/astra-backend.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-opencode.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-assistant-opencode.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-runtime.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-agent.service /etc/systemd/system/
+sudo cp deploy/systemd/astra-beat.service /etc/systemd/system/
 sudo cp deploy/systemd/astra-library-mcp.service /etc/systemd/system/
 sudo cp deploy/nginx-astra.conf /etc/nginx/conf.d/astra.conf
 sudo systemctl daemon-reload
-sudo systemctl enable --now astra-backend astra-opencode astra-assistant-opencode astra-runtime astra-library-mcp
+sudo systemctl enable --now astra-backend astra-opencode astra-assistant-opencode astra-runtime astra-agent astra-beat astra-library-mcp
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
 如果安装目录不是 `/opt/astra`，先修改 unit、Nginx 和环境文件中的路径。
+
+Beat 和控制 Worker 必须与 Agent Worker 同时受守护。前两者负责 Outbox 投递、Run watchdog 与状态对账；Agent Worker 只执行 `agent` 队列中的长任务。不要把三者合并成单个 `solo` Worker，否则长时间 Agent 会阻塞投递和恢复检查。可在受保护的环境文件中调整：
+
+```dotenv
+ASTRA_OUTBOX_INTERVAL=2
+ASTRA_OUTBOX_RETRY_SECONDS=5
+ASTRA_RUNTIME_STARTUP_TIMEOUT=120
+ASTRA_RUNTIME_HEARTBEAT_TIMEOUT=90
+```
+
+`STARTING` 超时会转为 `LOST`。`RUNNING` 心跳丢失后会先查询 OpenCode Session：Session 仍 busy 时保留现场且不重放 Prompt，idle 时尝试收集最终结果，Session 缺失或无结果时标记 `LOST`。有副作用的任务只能通过明确的“重新执行”创建新 Run，不会由 watchdog 自动重跑。
 
 数字图书馆 MCP 默认监听 loopback `127.0.0.1:8201/mcp`。生产环境必须通过受控网关或内网代理访问，并在受保护的环境文件中配置 `ASTRA_MCP_API_KEY`；非 loopback 监听但未配置该令牌时服务会拒绝启动。每次 Tool 调用还必须携带真实 `employee_id`，并按需携带 `task_id`、`run_id`，服务端会验证三者关联并写入使用审计。无需共享 HTTP 服务的本地 MCP Host 可保持 `ASTRA_MCP_TRANSPORT=stdio`，直接运行：
 

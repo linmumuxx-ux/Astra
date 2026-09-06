@@ -51,7 +51,9 @@ uvicorn app.main:app --reload --port 8100
 ./scripts/runtime.sh
 ```
 
-该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会启动并检查数字员工和平台助手各自的 OpenCode Server，同时复用 `ASTRA_REDIS_URL` 指定的 Redis；本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。助手启动失败时会降级，不阻断核心任务运行。
+该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会分别启动 Beat、控制 Worker 与 Agent Worker，长时间 Agent 执行不会阻塞领取、恢复和心跳；同时会启动并检查数字员工和平台助手各自的 OpenCode Server，并复用 `ASTRA_REDIS_URL` 指定的 Redis。本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。助手启动失败时会降级，不阻断核心任务运行。
+
+运行入队会在同一数据库事务中创建 Run、占用 Task/Employee 租约并写入 Outbox；Redis 短暂不可用时仍保持 `QUEUED`，由控制 Worker 重投。Agent Worker 以 execution token 及 Run heartbeat 报活；watchdog 发现心跳丢失时会先检查 OpenCode Session，仍在 busy 的 Session 不会重复执行，无法恢复时才标记 `LOST` 并等待明确重跑。
 
 再开一个终端启动管理台：
 

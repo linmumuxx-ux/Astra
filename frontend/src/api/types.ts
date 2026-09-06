@@ -1,6 +1,6 @@
 export type TaskType = 'ISSUE' | 'REQUIREMENT'
 export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
-export type TaskStatus = 'READY' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
+export type TaskStatus = 'READY' | 'ASSIGNED' | 'QUEUED' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
 export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
 export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
 
@@ -83,6 +83,7 @@ export interface Employee {
   auto_execute: boolean
   max_auto_retries: number
   current_task_count: number
+  active_run_id: string | null
   last_heartbeat: string | null
   online_since: string | null
   created_at: string
@@ -134,6 +135,7 @@ export interface Task {
   completion_policy: CompletionPolicy
   status: TaskStatus
   employee_id: string | null
+  active_run_id: string | null
   opencode_session_id: string | null
   current_progress: string
   result: WorkResult | null
@@ -160,12 +162,21 @@ export interface Run {
   id: string
   task_id: string
   employee_id: string
+  previous_run_id: string | null
   run_number: number
   status: string
   executor_type: string
   opencode_session_id: string | null
-  started_at: string
+  queued_at: string | null
+  dispatched_at: string | null
+  started_at: string | null
   finished_at: string | null
+  celery_task_id: string | null
+  dispatch_attempt: number
+  heartbeat_at: string | null
+  worker_id: string | null
+  executor_status: string | null
+  failure_type: string | null
   exit_code: number | null
   result: Record<string, unknown> | null
   execution_environment_snapshot: Record<string, unknown>
@@ -309,8 +320,20 @@ export interface KnowledgeSpace {
   status: string
   access_scope: string
   knowledge_count: number
+  subtree_knowledge_count: number
+  children: KnowledgeSpace[]
   created_at: string
   updated_at: string
+}
+
+export interface KnowledgeUsageRecord {
+  id: number
+  employee_id: string | null
+  employee_name: string | null
+  task_id: string | null
+  task_title: string | null
+  action: string
+  used_at: string
 }
 
 export interface KnowledgeListItem {
@@ -323,6 +346,7 @@ export interface KnowledgeListItem {
   status: KnowledgeStatus
   verification_status: VerificationStatus
   tags: string[]
+  source_type: string | null
   source_task_id: string | null
   reference_count: number
   helpful_count: number

@@ -343,6 +343,70 @@ async def seed_demo_data(session: AsyncSession) -> None:
     )
     session.add_all([active_run, run])
     await session.flush()
+    session.add_all(
+        [
+            Event(
+                task_id=task_id,
+                employee_id=employee_id,
+                run_id=run_id,
+                event_type="RUN_STATUS",
+                phase="run",
+                message=message,
+                detail={"status": status},
+                created_at=created_at,
+            )
+            for task_id, employee_id, run_id, status, message, created_at in (
+                (
+                    "T-20260827-001",
+                    "astra-01",
+                    "RUN-DEMO-001",
+                    "QUEUED",
+                    "运行状态变更为 QUEUED",
+                    now - timedelta(minutes=33),
+                ),
+                (
+                    "T-20260827-001",
+                    "astra-01",
+                    "RUN-DEMO-001",
+                    "STARTING",
+                    "运行状态变更为 STARTING",
+                    now - timedelta(minutes=31),
+                ),
+                (
+                    "T-20260827-001",
+                    "astra-01",
+                    "RUN-DEMO-001",
+                    "RUNNING",
+                    "运行状态变更为 RUNNING",
+                    now - timedelta(minutes=30),
+                ),
+                (
+                    "T-20260827-003",
+                    "astra-03",
+                    "RUN-DEMO-003",
+                    "QUEUED",
+                    "运行状态变更为 QUEUED",
+                    now - timedelta(hours=2, minutes=6),
+                ),
+                (
+                    "T-20260827-003",
+                    "astra-03",
+                    "RUN-DEMO-003",
+                    "RUNNING",
+                    "运行状态变更为 RUNNING",
+                    now - timedelta(hours=2),
+                ),
+                (
+                    "T-20260827-003",
+                    "astra-03",
+                    "RUN-DEMO-003",
+                    "PASSED",
+                    "运行状态变更为 PASSED",
+                    now - timedelta(hours=1, minutes=24),
+                ),
+            )
+        ]
+    )
     session.add(
         Evidence(
             task_id="T-20260827-003",

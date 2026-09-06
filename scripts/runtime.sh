@@ -10,10 +10,20 @@ RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/astra-runtime.XXXXXX")"
 REDIS_PID=""
 OPENCODE_PID=""
 ASSISTANT_PID=""
+BEAT_PID=""
+CONTROL_PID=""
 
 cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM
+  if [[ -n "$CONTROL_PID" ]]; then
+    kill "$CONTROL_PID" 2>/dev/null || true
+    wait "$CONTROL_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$BEAT_PID" ]]; then
+    kill "$BEAT_PID" 2>/dev/null || true
+    wait "$BEAT_PID" 2>/dev/null || true
+  fi
   if [[ -n "$REDIS_PID" ]]; then
     kill "$REDIS_PID" 2>/dev/null || true
     wait "$REDIS_PID" 2>/dev/null || true
@@ -153,15 +163,26 @@ if [[ "${ASTRA_ASSISTANT_ENABLED:-true}" != "false" ]]; then
   fi
 fi
 
-echo "Astra 调度运行时已启动。按 Ctrl+C 停止。"
+echo "Astra 调度控制面与 Agent 执行面已分离启动。按 Ctrl+C 停止。"
 echo "Redis: 已连接"
 if [[ "${ASTRA_EXECUTOR_TYPE:-opencode_server}" == "opencode_server" ]]; then
   echo "OpenCode Server: 已连接"
 fi
 cd "$BACKEND_DIR"
+"$CELERY_BIN" -A app.runtime.celery_app:celery beat \
+  --loglevel=INFO \
+  --schedule "$RUNTIME_DIR/celerybeat-schedule" \
+  >"$RUNTIME_DIR/celery-beat.log" 2>&1 &
+BEAT_PID=$!
 "$CELERY_BIN" -A app.runtime.celery_app:celery worker \
-  --beat \
   --loglevel=INFO \
   --pool=solo \
-  --hostname='astra-local@%h' \
-  --schedule "$RUNTIME_DIR/celerybeat-schedule"
+  --queues=control \
+  --hostname='astra-control@%h' \
+  >"$RUNTIME_DIR/celery-control.log" 2>&1 &
+CONTROL_PID=$!
+"$CELERY_BIN" -A app.runtime.celery_app:celery worker \
+  --loglevel=INFO \
+  --pool=solo \
+  --queues=agent \
+  --hostname='astra-agent@%h'

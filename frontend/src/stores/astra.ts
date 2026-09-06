@@ -20,7 +20,7 @@ export const useAstraStore = defineStore('astra', () => {
     tasks.value.filter(
       (task) =>
         task.employee_id &&
-        ['READY', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.status),
+        ['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.status),
     ),
   )
 

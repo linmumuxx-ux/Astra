@@ -49,7 +49,7 @@ const label = computed(() =>
   padding: 6px 14px;
   border-bottom: 1px solid var(--astra-border);
   color: var(--astra-text-muted);
-  font-size: 12px;
+  font-size: var(--astra-font-body);
   background: var(--astra-bg-sidebar);
 }
 .assistant-context__chip {

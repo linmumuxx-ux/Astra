@@ -42,6 +42,7 @@ from app.runtime.environment import (
     checks_status,
     environment_from_snapshot,
 )
+from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.recovery import environment_checked_after_error
 from app.schemas import (
     EmployeeCreate,
@@ -130,6 +131,10 @@ def runtime_event_type(event: Event) -> str:
     return {
         "TASK_CREATED": "run.created",
         "TASK_READY": "run.created",
+        "TASK_ASSIGNED": "run.assigned",
+        "TASK_QUEUED": "run.queued",
+        "RUN_DISPATCHED": "run.dispatched",
+        "RUN_DISPATCH_FAILED": "runtime.error",
         "TASK_RUNNING": "run.started",
         "WORK_STARTED": "agent.started",
         "OPENCODE_STARTED": "runtime.session",
@@ -153,6 +158,10 @@ def runtime_event_type(event: Event) -> str:
         "MESSAGE_AGENT": "message.agent",
         "WORK_RETRY": "run.resumed",
         "SESSION_RECOVERY": "run.resumed",
+        "RUN_CONTINUED": "run.resumed",
+        "RUN_ORPHANED_BUSY": "runtime.metadata",
+        "STATE_RECONCILED": "runtime.metadata",
+        "STATE_CONFLICT": "runtime.error",
         "TASK_SUSPENDED": "run.paused",
         "TASK_COMPLETED": "run.completed",
         "RESULT_SUBMITTED": "agent.completed",
@@ -443,39 +452,6 @@ async def load_task_workbench(
         runs=runs,
         has_more_events=has_more,
     )
-
-
-async def _cancel_active_runs(task_id: str, session: AsyncSession) -> None:
-    active_states = {
-        RunStatus.RUNNING.value,
-        RunStatus.WAITING_INPUT.value,
-        RunStatus.BLOCKED.value,
-    }
-    runs = (
-        (await session.execute(select(Run).where(Run.task_id == task_id, Run.status.in_(active_states))))
-        .scalars()
-        .all()
-    )
-    now = datetime.now(UTC)
-    for run in runs:
-        run.status = RunStatus.CANCELLED.value
-        run.finished_at = run.finished_at or now
-    task_session_ids = select(TaskSession.id).where(TaskSession.task_id == task_id)
-    inquiries = (
-        (
-            await session.execute(
-                select(RunInquiry).where(
-                    RunInquiry.session_id.in_(task_session_ids),
-                    RunInquiry.status.in_(["OPEN", "PENDING"]),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for inquiry in inquiries:
-        inquiry.status = "CANCELLED"
-    await session.commit()
 
 
 async def _abort_opencode_session(task: Task, session: AsyncSession) -> bool:
@@ -908,58 +884,27 @@ async def transition_task(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-async def enqueue_running_task(task: Task, session: AsyncSession) -> Task:
-    try:
-        from app.runtime.celery_app import process_task
-
-        process_task.delay(task.id)
-    except Exception as exc:
-        task.human_required_reason = f"运行队列不可用: {exc}"
-        result = await TaskService(session).transition(
-            task,
-            TaskStatus.WAIT_HUMAN,
-            current_progress="运行队列不可用，等待人工处理",
-            message="任务已恢复，但运行队列不可用",
-            detail={"error": str(exc)},
-        )
-        if task.employee_id:
-            employee = await session.get(DigitalEmployee, task.employee_id)
-            if employee:
-                employee.status = EmployeeStatus.WAIT_HUMAN
-                await session.commit()
-        return result
-    return task
-
-
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
 async def pause_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
     task = await require_task(task_id, session)
-    runtime_aborted = await _abort_opencode_session(task, session)
-    result = await transition_task(
+    result = await RuntimeService(session).stop_task(
         task,
-        TaskStatus.SUSPENDED,
-        "任务已由人工挂起",
-        session,
-        payload,
-        "任务已挂起",
+        target=TaskStatus.SUSPENDED,
+        message="任务已由人工挂起",
+        current_progress="任务已挂起",
+        detail={"reason": payload.reason if payload else None, "note": payload.note if payload else None},
     )
-    await _cancel_active_runs(task.id, session)
+    runtime_aborted = await _abort_opencode_session(result, session)
     if runtime_aborted:
         await TaskService(session).add_event(
-            task,
+            result,
             "OPENCODE_ABORTED",
             "runtime",
             "OpenCode Session 已中止",
-            {"session_id": task.opencode_session_id, "reason": "pause"},
+            {"session_id": result.opencode_session_id, "reason": "pause"},
         )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.status = EmployeeStatus.IDLE
-            employee.current_task_count = max(0, employee.current_task_count - 1)
-            await session.commit()
     return result
 
 
@@ -967,9 +912,12 @@ async def pause_task(
 async def resume_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
-    task = await require_task(task_id, session)
-    queue_for_employee = task.status == TaskStatus.SUSPENDED
-    target = TaskStatus.READY if queue_for_employee or not task.employee_id else TaskStatus.RUNNING
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status not in {TaskStatus.WAIT_HUMAN, TaskStatus.SUSPENDED}:
+        raise HTTPException(status_code=409, detail="只有等待人工或已挂起任务可以继续")
     task.human_required_reason = None
     if payload and payload.note:
         task.human_intervention = {
@@ -977,31 +925,69 @@ async def resume_task(
             "response": payload.note,
             "responded_at": datetime.now(UTC).isoformat(),
         }
-    if queue_for_employee:
-        task.claimed_at = None
+    if task.status == TaskStatus.SUSPENDED:
         task.suspension = {
             **(task.suspension or {}),
             "resume_note": payload.note if payload else None,
             "resumed_at": datetime.now(UTC).isoformat(),
         }
-    result = await transition_task(
-        task,
-        target,
-        "任务已继续",
-        session,
-        payload,
-        "已恢复并进入员工任务队列"
-        if queue_for_employee
-        else ("员工已继续处理" if task.employee_id else "等待领取"),
-    )
-    if target is TaskStatus.RUNNING and task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.status = EmployeeStatus.WORKING
-            employee.current_task_count = 1
-            await session.commit()
-        result = await enqueue_running_task(task, session)
-    return result
+    if not task.employee_id:
+        task.claimed_at = None
+        return await transition_task(
+            task,
+            TaskStatus.READY,
+            "任务已继续，等待员工领取",
+            session,
+            payload,
+            "等待领取",
+        )
+
+    employee = await require_employee(task.employee_id, session)
+    if (
+        not employee.execution_environment
+        or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
+    ):
+        RuntimeService.release_employee(employee)
+        task.claimed_at = None
+        return await transition_task(
+            task,
+            TaskStatus.READY,
+            "任务已继续，等待可用的员工工作环境",
+            session,
+            payload,
+            "等待领取",
+        )
+    try:
+        if task.status == TaskStatus.WAIT_HUMAN:
+            try:
+                run = await runtime.queue_waiting_run(
+                    task,
+                    employee,
+                    current_progress="已收到回复，运行正在排队继续",
+                    message="任务已收到人工回复并进入 Agent 队列",
+                    detail={"note": payload.note if payload else None},
+                )
+            except RuntimeStateError:
+                run = await runtime.queue_new_run(
+                    task,
+                    employee,
+                    current_progress="已收到回复，新运行正在排队",
+                    message="任务已收到人工回复并创建新运行",
+                    detail={"note": payload.note if payload else None},
+                )
+        else:
+            run = await runtime.queue_new_run(
+                task,
+                employee,
+                current_progress="任务已恢复，新运行正在排队",
+                message="已挂起任务创建新的继续运行",
+                detail={"note": payload.note if payload else None, "resume": True},
+            )
+    except RuntimeStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.enqueue(task, run)
+    await session.refresh(task)
+    return task
 
 
 @router.post("/tasks/{task_id}/suspend", response_model=TaskRead)
@@ -1011,7 +997,6 @@ async def suspend_task(
     session: AsyncSession = Depends(get_session),
 ):
     task = await require_task(task_id, session)
-    runtime_aborted = await _abort_opencode_session(task, session)
     task.suspension = {
         **payload.model_dump(),
         "employee_id": task.employee_id,
@@ -1019,28 +1004,22 @@ async def suspend_task(
         "last_activity_at": task.last_activity_at.isoformat() if task.last_activity_at else None,
         "suspended_at": datetime.now(UTC).isoformat(),
     }
-    result = await transition_task(
+    result = await RuntimeService(session).stop_task(
         task,
-        TaskStatus.SUSPENDED,
-        "任务已安全挂起",
-        session,
+        target=TaskStatus.SUSPENDED,
+        message="任务已安全挂起",
         current_progress=payload.current_state or task.current_progress,
+        detail=payload.model_dump(),
     )
-    await _cancel_active_runs(task.id, session)
+    runtime_aborted = await _abort_opencode_session(result, session)
     if runtime_aborted:
         await TaskService(session).add_event(
-            task,
+            result,
             "OPENCODE_ABORTED",
             "runtime",
             "OpenCode Session 已中止",
-            {"session_id": task.opencode_session_id, "reason": "suspend"},
+            {"session_id": result.opencode_session_id, "reason": "suspend"},
         )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.status = EmployeeStatus.IDLE
-            employee.current_task_count = max(0, employee.current_task_count - 1)
-            await session.commit()
     return result
 
 
@@ -1049,30 +1028,22 @@ async def cancel_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
     task = await require_task(task_id, session)
-    runtime_aborted = await _abort_opencode_session(task, session)
-    result = await transition_task(
+    result = await RuntimeService(session).stop_task(
         task,
-        TaskStatus.CANCELLED,
-        "任务已由人工取消",
-        session,
-        payload,
-        "任务已取消",
+        target=TaskStatus.CANCELLED,
+        message="任务已由人工取消",
+        current_progress="任务已取消",
+        detail={"reason": payload.reason if payload else None, "note": payload.note if payload else None},
     )
-    await _cancel_active_runs(task.id, session)
+    runtime_aborted = await _abort_opencode_session(result, session)
     if runtime_aborted:
         await TaskService(session).add_event(
-            task,
+            result,
             "OPENCODE_ABORTED",
             "runtime",
             "OpenCode Session 已中止",
-            {"session_id": task.opencode_session_id, "reason": "cancel"},
+            {"session_id": result.opencode_session_id, "reason": "cancel"},
         )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.current_task_count = max(0, employee.current_task_count - 1)
-            employee.status = EmployeeStatus.IDLE
-            await session.commit()
     return result
 
 
@@ -1080,7 +1051,10 @@ async def cancel_task(
 async def handoff_task(
     task_id: str, payload: TaskAction | None = None, session: AsyncSession = Depends(get_session)
 ):
-    task = await require_task(task_id, session)
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
     task.human_required_reason = (payload.reason if payload else None) or "人工主动接管"
     task.human_intervention = {
         "blocking_reason": task.human_required_reason,
@@ -1088,7 +1062,19 @@ async def handoff_task(
         "current_state": task.current_progress,
         "requested_input": (payload.note if payload else None) or "请人工检查并补充后继信息",
     }
-    result = await transition_task(
+    if task.employee_id:
+        employee = await runtime.lock_employee(task.employee_id)
+        run = await runtime.active_run(task.id)
+        if employee and run:
+            await runtime.mark_waiting(
+                task,
+                employee,
+                run,
+                current_progress="等待人工补充信息",
+                message="任务已转人工处理",
+            )
+            return task
+    return await transition_task(
         task,
         TaskStatus.WAIT_HUMAN,
         "任务已转人工处理",
@@ -1096,35 +1082,38 @@ async def handoff_task(
         payload,
         "等待人工补充信息",
     )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.status = EmployeeStatus.WAIT_HUMAN
-            await session.commit()
-    return result
 
 
 @router.post("/tasks/{task_id}/start", response_model=TaskRead)
 async def start_task(task_id: str, session: AsyncSession = Depends(get_session)):
-    task = await require_task(task_id, session)
-    if task.status != TaskStatus.READY or not task.employee_id:
-        raise HTTPException(status_code=409, detail="只有已分配且待领取的任务可以启动")
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if (
+        task.status != TaskStatus.ASSIGNED
+        and not (task.status == TaskStatus.READY and task.claimed_at)
+    ) or not task.employee_id:
+        raise HTTPException(status_code=409, detail="只有已分配且待启动的任务可以启动")
     employee = await require_employee(task.employee_id, session)
     if (
         not employee.execution_environment
         or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
     ):
         raise HTTPException(status_code=409, detail="员工 Agent 工作环境不可用")
-    employee.status = EmployeeStatus.WORKING
-    employee.current_task_count = 1
-    result = await transition_task(
-        task,
-        TaskStatus.RUNNING,
-        "员工开始处理任务",
-        session,
-        current_progress=f"{employee.name} 已开始处理",
-    )
-    return await enqueue_running_task(result, session)
+    try:
+        run = await runtime.queue_new_run(
+            task,
+            employee,
+            current_progress=f"{employee.name} 的运行已排队",
+            message="人工启动任务，运行已进入 Agent 队列",
+            detail={"dispatch": "manual"},
+        )
+    except RuntimeStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.enqueue(task, run)
+    await session.refresh(task)
+    return task
 
 
 @router.post("/tasks/{task_id}/progress", response_model=TaskRead)
@@ -1153,7 +1142,10 @@ async def request_human_intervention(
     payload: HumanInterventionWrite,
     session: AsyncSession = Depends(get_session),
 ):
-    task = await require_task(task_id, session)
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
     task.human_required_reason = payload.blocking_reason
     task.human_intervention = payload.model_dump()
     target = TaskStatus.SUSPENDED if payload.can_suspend else TaskStatus.WAIT_HUMAN
@@ -1168,21 +1160,43 @@ async def request_human_intervention(
             "last_activity_at": task.last_activity_at.isoformat() if task.last_activity_at else None,
             "suspended_at": datetime.now(UTC).isoformat(),
         }
-    result = await transition_task(
+    if payload.can_suspend:
+        result = await runtime.stop_task(
+            task,
+            target=TaskStatus.SUSPENDED,
+            current_progress=payload.current_state or "任务已安全挂起",
+            message="员工请求人工协助并安全挂起",
+            detail=payload.model_dump(),
+        )
+        runtime_aborted = await _abort_opencode_session(result, session)
+        if runtime_aborted:
+            await TaskService(session).add_event(
+                result,
+                "OPENCODE_ABORTED",
+                "runtime",
+                "OpenCode Session 已中止",
+                {"session_id": result.opencode_session_id, "reason": "request-human"},
+            )
+        return result
+    if task.employee_id:
+        employee = await runtime.lock_employee(task.employee_id)
+        run = await runtime.active_run(task.id)
+        if employee and run:
+            await runtime.mark_waiting(
+                task,
+                employee,
+                run,
+                current_progress=payload.current_state or "等待人工补充信息",
+                message="员工请求人工协助",
+            )
+            return task
+    return await transition_task(
         task,
         target,
-        "员工请求人工协助并安全挂起" if payload.can_suspend else "员工请求人工协助",
+        "员工请求人工协助",
         session,
         current_progress=payload.current_state or "等待人工补充信息",
     )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.status = EmployeeStatus.IDLE if payload.can_suspend else EmployeeStatus.WAIT_HUMAN
-            if payload.can_suspend:
-                employee.current_task_count = max(0, employee.current_task_count - 1)
-            await session.commit()
-    return result
 
 
 @router.post("/tasks/{task_id}/complete", response_model=TaskRead)
@@ -1191,7 +1205,10 @@ async def complete_task(
     payload: TaskCompletionWrite,
     session: AsyncSession = Depends(get_session),
 ):
-    task = await require_task(task_id, session)
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
     expected_ids = {item["id"] for item in task.acceptance_criteria}
     actual_ids = {item.criterion_id for item in payload.acceptance_results}
     if actual_ids != expected_ids or len(payload.acceptance_results) != len(expected_ids):
@@ -1203,7 +1220,28 @@ async def complete_task(
     task.submitted_at = datetime.now(UTC)
     requires_confirmation = task.completion_policy == CompletionPolicy.MANUAL_CONFIRM
     target = TaskStatus.PENDING_CONFIRMATION if requires_confirmation else TaskStatus.COMPLETED
-    result = await transition_task(
+    if task.employee_id:
+        employee = await runtime.lock_employee(task.employee_id)
+        run = await runtime.active_run(task.id)
+        if employee and run:
+            run.result = {**(run.result or {}), "work_result": task.result}
+            await runtime.finalize_run(
+                task,
+                employee,
+                run,
+                run_status=RunStatus.COMPLETED,
+                task_status=target,
+                current_progress=(
+                    "结果已提交，等待确认" if requires_confirmation else "任务已完成"
+                ),
+                message=(
+                    f"{task.employee_id} 已提交结果，等待确认"
+                    if requires_confirmation
+                    else f"{task.employee_id} 完成任务"
+                ),
+            )
+            return task
+    return await transition_task(
         task,
         target,
         (
@@ -1214,13 +1252,6 @@ async def complete_task(
         session,
         current_progress="结果已提交，等待确认" if requires_confirmation else "任务已完成",
     )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.current_task_count = max(0, employee.current_task_count - 1)
-            employee.status = EmployeeStatus.IDLE
-            await session.commit()
-    return result
 
 
 @router.post("/tasks/{task_id}/confirm", response_model=TaskRead)
@@ -1284,26 +1315,90 @@ async def reject_task(
 
 @router.post("/tasks/{task_id}/recover", response_model=TaskRead)
 async def recover_task(task_id: str, session: AsyncSession = Depends(get_session)):
-    task = await require_task(task_id, session)
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
     if task.status != TaskStatus.EXECUTION_ERROR or not task.employee_id:
         raise HTTPException(status_code=409, detail="只有已分配的执行异常任务可以恢复")
     employee = await require_employee(task.employee_id, session)
     if not environment_checked_after_error(task, employee):
         raise HTTPException(status_code=409, detail="请先重新测试员工工作环境，确认异常已恢复")
-    employee.status = EmployeeStatus.WORKING
-    employee.current_task_count = 1
     task.execution_error = {
         **(task.execution_error or {}),
         "recovered_at": datetime.now(UTC).isoformat(),
     }
-    result = await transition_task(
-        task,
-        TaskStatus.RUNNING,
-        "执行环境已恢复，继续原任务",
-        session,
-        current_progress="正在恢复原 Agent 会话",
+    try:
+        run = await runtime.queue_new_run(
+            task,
+            employee,
+            current_progress="执行环境已恢复，运行正在排队",
+            message="执行环境已恢复，创建继续运行",
+            detail={"recovery": "manual"},
+        )
+    except RuntimeStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.enqueue(task, run)
+    await session.refresh(task)
+    return task
+
+
+@router.post("/tasks/{task_id}/rerun", response_model=TaskRead)
+async def rerun_task(task_id: str, session: AsyncSession = Depends(get_session)):
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status not in {
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.EXECUTION_ERROR,
+    }:
+        raise HTTPException(status_code=409, detail="只有已完成或失败的任务可以重新执行")
+    if not task.employee_id:
+        raise HTTPException(status_code=409, detail="任务没有可重新执行的员工")
+    employee = await require_employee(task.employee_id, session)
+    if employee.status in {EmployeeStatus.OFFLINE, EmployeeStatus.PAUSED}:
+        raise HTTPException(status_code=409, detail="原员工当前不可用")
+    if (
+        not employee.execution_environment
+        or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
+    ):
+        raise HTTPException(status_code=409, detail="原员工的 Agent 工作环境不可用")
+
+    previous_run = await session.scalar(
+        select(Run).where(Run.task_id == task.id).order_by(Run.run_number.desc()).limit(1)
     )
-    return await enqueue_running_task(result, session)
+    now = datetime.now(UTC)
+    task.review_history = [
+        *(task.review_history or []),
+        {
+            "action": "RERUN",
+            "previous_run_id": previous_run.id if previous_run else None,
+            "previous_result": task.result,
+            "created_at": now.isoformat(),
+        },
+    ]
+    task.result = None
+    task.submitted_at = None
+    task.confirmed_at = None
+    task.failure_reason = None
+    task.execution_error = None
+    task.human_required_reason = None
+    try:
+        run = await runtime.queue_new_run(
+            task,
+            employee,
+            current_progress="重新执行已排队",
+            message="用户发起重新执行，已创建全新运行",
+            detail={"rerun": True, "previous_run_id": previous_run.id if previous_run else None},
+            reset_runtime_session=True,
+        )
+    except RuntimeStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.enqueue(task, run)
+    await session.refresh(task)
+    return task
 
 
 @router.post("/tasks/{task_id}/fail", response_model=TaskRead)
@@ -1312,9 +1407,27 @@ async def fail_task(
     payload: TaskAction,
     session: AsyncSession = Depends(get_session),
 ):
-    task = await require_task(task_id, session)
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
     task.failure_reason = payload.reason or "数字员工未能完成任务"
-    result = await transition_task(
+    if task.employee_id:
+        employee = await runtime.lock_employee(task.employee_id)
+        run = await runtime.active_run(task.id)
+        if employee and run:
+            await runtime.finalize_run(
+                task,
+                employee,
+                run,
+                run_status=RunStatus.FAILED,
+                task_status=TaskStatus.FAILED,
+                current_progress="任务未完成",
+                message="数字员工提交任务未完成",
+                failure_type="BUSINESS_FAILURE",
+            )
+            return task
+    return await transition_task(
         task,
         TaskStatus.FAILED,
         "数字员工提交任务未完成",
@@ -1322,13 +1435,6 @@ async def fail_task(
         payload,
         "任务未完成",
     )
-    if task.employee_id:
-        employee = await session.get(DigitalEmployee, task.employee_id)
-        if employee:
-            employee.current_task_count = max(0, employee.current_task_count - 1)
-            employee.status = EmployeeStatus.IDLE
-            await session.commit()
-    return result
 
 
 @router.get("/tasks/{task_id}/runs", response_model=list[RunRead])
@@ -1363,6 +1469,25 @@ async def get_run_usage(run_id: str, session: AsyncSession = Depends(get_session
         "summary": await summarize_runs(session, [run]),
         "tools": await tool_breakdown(session, [run]),
     }
+
+
+@router.get("/runs/{run_id}/events", response_model=list[EventRead])
+async def run_events(run_id: str, session: AsyncSession = Depends(get_session)):
+    """Expose the per-run event history for the status trajectory panel.
+
+    The Event table already carries run_id for lifecycle transitions (task
+    status changes, recovery syncs, run orphan detection). This is a pure read
+    surface for the Run detail drawer so the frontend can build a real state
+    timeline without inventing data.
+    """
+    run = await session.get(Run, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    return (
+        (await session.execute(select(Event).where(Event.run_id == run_id).order_by(Event.created_at)))
+        .scalars()
+        .all()
+    )
 
 
 @router.get("/tasks/{task_id}/usage")
@@ -1434,6 +1559,8 @@ async def continue_task_with_message(task: Task, content: str, session: AsyncSes
         await session.commit()
         return
 
+    runtime = RuntimeService(session)
+    task = await runtime.lock_task(task.id) or task
     now = datetime.now(UTC)
     task.review_history = [
         *(task.review_history or []),
@@ -1447,27 +1574,34 @@ async def continue_task_with_message(task: Task, content: str, session: AsyncSes
     task.submitted_at = None
     task.confirmed_at = None
     task.failure_reason = None
-    target = TaskStatus.READY
     employee = None
     if task.employee_id:
         employee = await require_employee(task.employee_id, session)
         if (
             employee.execution_environment
             and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+            and employee.status not in {EmployeeStatus.OFFLINE, EmployeeStatus.PAUSED}
         ):
-            employee.status = EmployeeStatus.WORKING
-            employee.current_task_count = 1
-            target = TaskStatus.RUNNING
-    task.claimed_at = None if target is TaskStatus.READY else task.claimed_at
-    continued = await TaskService(session).reopen(
+            try:
+                run = await runtime.queue_new_run(
+                    task,
+                    employee,
+                    message="用户在同一会话中提出继续处理要求",
+                    current_progress=f"已收到后续要求，运行已排队：{content[:200]}",
+                    detail={"note": content, "continue": True},
+                )
+            except RuntimeStateError:
+                return
+            await runtime.enqueue(task, run)
+            return
+    task.claimed_at = None
+    await TaskService(session).reopen(
         task,
-        target,
-        message="用户在同一会话中提出继续处理要求",
+        TaskStatus.READY,
+        message="用户提出继续处理要求，等待员工领取",
         current_progress=f"已收到后续要求：{content[:240]}",
         detail={"note": content},
     )
-    if target is TaskStatus.RUNNING:
-        await enqueue_running_task(continued, session)
 
 
 @router.post("/tasks/{task_id}/messages", response_model=TaskWorkbenchRead)
@@ -1550,7 +1684,11 @@ async def post_task_message(
         )
     await session.commit()
 
-    if command == "/pause" and task.status == TaskStatus.RUNNING:
+    if command == "/pause" and task.status in {
+        TaskStatus.ASSIGNED,
+        TaskStatus.QUEUED,
+        TaskStatus.RUNNING,
+    }:
         await pause_task(task.id, TaskAction(reason="用户通过会话暂停"), session)
     elif command == "/stop" and task.status not in {
         TaskStatus.COMPLETED,

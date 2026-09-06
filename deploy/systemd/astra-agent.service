@@ -1,0 +1,20 @@
+[Unit]
+Description=Astra Celery Agent execution worker
+After=network-online.target astra-backend.service astra-opencode.service
+Wants=network-online.target
+Requires=astra-backend.service astra-opencode.service
+
+[Service]
+Type=simple
+User=astra
+Group=astra
+WorkingDirectory=/opt/astra/backend
+EnvironmentFile=/etc/astra/astra.env
+StateDirectory=astra
+ExecStart=/opt/astra/.venv/bin/celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=agent --hostname=astra-agent@%H
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

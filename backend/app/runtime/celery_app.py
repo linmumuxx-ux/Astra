@@ -4,11 +4,17 @@ from celery import Celery
 
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
-from app.models import DigitalEmployee
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
-from app.runtime.recovery import audit_incomplete_tasks, recover_available_tasks
+from app.runtime.lifecycle import RuntimeService
+from app.runtime.recovery import (
+    audit_incomplete_tasks,
+    reconcile_runtime_state,
+    recover_available_tasks,
+    retry_stale_queued_runs,
+    watchdog_stale_runs,
+)
 from app.runtime.scout import TaskScout
 from app.sources.nr_test_system import NrTestSystemSource
 
@@ -19,6 +25,16 @@ celery.conf.update(
     result_serializer="json",
     accept_content=["json"],
     timezone="Asia/Shanghai",
+    task_default_queue="control",
+    task_routes={
+        "astra.process-task": {"queue": "agent"},
+        "astra.scout": {"queue": "control"},
+        "astra.dispatch": {"queue": "control"},
+        "astra.heartbeat-check": {"queue": "control"},
+        "astra.employee-heartbeat": {"queue": "control"},
+        "astra.recovery": {"queue": "control"},
+        "astra.outbox-dispatch": {"queue": "control"},
+    },
     beat_schedule={
         "astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval},
         "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
@@ -31,6 +47,10 @@ celery.conf.update(
             "schedule": settings.heartbeat_interval,
         },
         "astra-recovery": {"task": "astra.recovery", "schedule": settings.recovery_interval},
+        "astra-outbox-dispatch": {
+            "task": "astra.outbox-dispatch",
+            "schedule": settings.outbox_interval,
+        },
     },
 )
 
@@ -68,20 +88,30 @@ def dispatch() -> str | None:
         await init_database()
         async with SessionLocal() as session:
             task = await Dispatcher(session).claim_once()
-            if not task or not task.employee_id:
+            if not task:
                 return None
-            employee = await session.get(DigitalEmployee, task.employee_id)
-            return {"task_id": task.id, "auto_execute": bool(employee and employee.auto_execute)}
+            run = await RuntimeService(session).active_run(task.id)
+            if run:
+                await RuntimeService(session).enqueue(task, run)
+            return task.id
 
-    claimed = run_async(execute())
-    if claimed and claimed["auto_execute"]:
-        process_task.delay(claimed["task_id"])
-    return claimed["task_id"] if claimed else None
+    return run_async(execute())
 
 
-@celery.task(name="astra.process-task")
-def process_task(task_id: str) -> None:
-    run_async(TaskCoordinator().process(task_id))
+@celery.task(bind=True, name="astra.process-task")
+def process_task(self, run_id: str) -> None:
+    worker_id = str(getattr(self.request, "hostname", "") or "agent-worker")
+    run_async(TaskCoordinator().process(run_id, worker_id=worker_id))
+
+
+@celery.task(name="astra.outbox-dispatch")
+def outbox_dispatch() -> list[str]:
+    async def execute():
+        await init_database()
+        async with SessionLocal() as session:
+            return await RuntimeService(session).publish_pending_outbox()
+
+    return run_async(execute())
 
 
 @celery.task(name="astra.heartbeat-check")
@@ -109,9 +139,15 @@ def recovery() -> dict[str, list[str]]:
         async with SessionLocal() as session:
             inactive = await audit_incomplete_tasks(session, settings)
             resumed = await recover_available_tasks(session)
-            return {"inactive": inactive, "resumed": resumed}
+            redispatched = await retry_stale_queued_runs(session, settings)
+            watchdog = await watchdog_stale_runs(session, settings)
+            reconciled = await reconcile_runtime_state(session)
+            return {
+                "inactive": inactive,
+                "resumed": resumed,
+                "redispatched": redispatched,
+                "watchdog": watchdog,
+                "reconciled": reconciled,
+            }
 
-    result = run_async(execute())
-    for task_id in result["resumed"]:
-        process_task.delay(task_id)
-    return result
+    return run_async(execute())

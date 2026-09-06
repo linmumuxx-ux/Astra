@@ -7,7 +7,26 @@ class InvalidTransition(ValueError):
 
 class TaskStateMachine:
     transitions: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.READY: {TaskStatus.RUNNING, TaskStatus.SUSPENDED, TaskStatus.CANCELLED},
+        TaskStatus.READY: {
+            TaskStatus.ASSIGNED,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.SUSPENDED,
+            TaskStatus.CANCELLED,
+        },
+        TaskStatus.ASSIGNED: {
+            TaskStatus.READY,
+            TaskStatus.QUEUED,
+            TaskStatus.SUSPENDED,
+            TaskStatus.CANCELLED,
+        },
+        TaskStatus.QUEUED: {
+            TaskStatus.RUNNING,
+            TaskStatus.WAIT_HUMAN,
+            TaskStatus.SUSPENDED,
+            TaskStatus.EXECUTION_ERROR,
+            TaskStatus.CANCELLED,
+        },
         TaskStatus.RUNNING: {
             TaskStatus.COMPLETED,
             TaskStatus.PENDING_CONFIRMATION,
@@ -19,19 +38,27 @@ class TaskStateMachine:
         },
         TaskStatus.WAIT_HUMAN: {
             TaskStatus.READY,
+            TaskStatus.QUEUED,
             TaskStatus.RUNNING,
             TaskStatus.SUSPENDED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
         },
-        TaskStatus.SUSPENDED: {TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.CANCELLED},
+        TaskStatus.SUSPENDED: {
+            TaskStatus.READY,
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCELLED,
+        },
         TaskStatus.PENDING_CONFIRMATION: {
             TaskStatus.COMPLETED,
             TaskStatus.READY,
+            TaskStatus.QUEUED,
             TaskStatus.RUNNING,
             TaskStatus.CANCELLED,
         },
         TaskStatus.EXECUTION_ERROR: {
+            TaskStatus.QUEUED,
             TaskStatus.RUNNING,
             TaskStatus.SUSPENDED,
             TaskStatus.FAILED,

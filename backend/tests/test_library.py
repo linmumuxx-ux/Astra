@@ -265,17 +265,20 @@ def test_candidate_experience_mcp_flow_is_audited_and_immediately_searchable_aft
         assert second_feedback.created is False
 
         other_employee_id = unique("employee-library-other")
-        assert client.post(
-            "/api/employees",
-            json={
-                "id": other_employee_id,
-                "name": "其他知识员工",
-                "role": "关联校验员工",
-                "category_ids": ["testing-platform"],
-                "auto_claim": False,
-                "auto_execute": False,
-            },
-        ).status_code == 201
+        assert (
+            client.post(
+                "/api/employees",
+                json={
+                    "id": other_employee_id,
+                    "name": "其他知识员工",
+                    "role": "关联校验员工",
+                    "category_ids": ["testing-platform"],
+                    "auto_claim": False,
+                    "auto_execute": False,
+                },
+            ).status_code
+            == 201
+        )
 
         async def mismatched_context():
             async with SessionLocal() as session:

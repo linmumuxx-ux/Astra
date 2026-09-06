@@ -12,6 +12,8 @@ class EmployeeStatus(StrEnum):
 
 class TaskStatus(StrEnum):
     READY = "READY"
+    ASSIGNED = "ASSIGNED"
+    QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     WAIT_HUMAN = "WAIT_HUMAN"
     SUSPENDED = "SUSPENDED"
@@ -23,12 +25,17 @@ class TaskStatus(StrEnum):
 
 
 class RunStatus(StrEnum):
+    QUEUED = "QUEUED"
+    STARTING = "STARTING"
     RUNNING = "RUNNING"
     WAITING_INPUT = "WAITING_INPUT"
     COMPLETED = "COMPLETED"
     PASSED = "PASSED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+    SUSPENDED = "SUSPENDED"
+    TIMEOUT = "TIMEOUT"
+    LOST = "LOST"
     CANCELLED = "CANCELLED"
 
 
