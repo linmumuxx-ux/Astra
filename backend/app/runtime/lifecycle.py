@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, ExecutionMode, RunStatus, TaskStatus
+from app.domain import EmployeeStatus, ExecutionMode, RunStatus, RunTriggerReason, TaskStatus
 from app.event_bus import event_bus
 from app.models import (
     DigitalEmployee,
@@ -59,6 +59,27 @@ class RuntimeService:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _resolve_trigger_reason(
+        task: Task,
+        detail: dict | None,
+        explicit: RunTriggerReason | str | None,
+    ) -> str:
+        if explicit is not None:
+            return RunTriggerReason(str(explicit)).value
+        detail = detail or {}
+        if detail.get("rerun"):
+            return RunTriggerReason.USER_RERUN.value
+        if detail.get("continue"):
+            return RunTriggerReason.USER_CONTINUE.value
+        if detail.get("dispatch") == "manual":
+            return RunTriggerReason.MANUAL_START.value
+        if task.status in {TaskStatus.WAIT_HUMAN, TaskStatus.SUSPENDED}:
+            return RunTriggerReason.HUMAN_RESUME.value
+        if task.status == TaskStatus.EXECUTION_ERROR or detail.get("recovery"):
+            return RunTriggerReason.RECOVERY.value
+        return RunTriggerReason.INITIAL.value
 
     async def lock_task(self, task_id: str) -> Task | None:
         return await self.session.scalar(
@@ -199,7 +220,7 @@ class RuntimeService:
         current_progress: str,
         message: str,
         detail: dict | None = None,
-        trigger_reason: str = "INITIAL",
+        trigger_reason: RunTriggerReason | str | None = None,
         reset_runtime_session: bool = False,
         commit: bool = True,
     ) -> Run:
@@ -232,13 +253,14 @@ class RuntimeService:
             snapshot = environment_snapshot(environment) if environment else {}
         task.execution_environment_snapshot = snapshot
         now = datetime.now(UTC)
+        resolved_trigger = self._resolve_trigger_reason(task, detail, trigger_reason)
         run = Run(
             id=f"RUN-{uuid4().hex[:10].upper()}",
             task_id=task.id,
             employee_id=employee.id,
             previous_run_id=previous_run.id if previous_run else None,
             run_number=run_number,
-            trigger_reason=trigger_reason[:64],
+            trigger_reason=resolved_trigger,
             retry_index=0,
             status=RunStatus.QUEUED,
             executor_type=executor_type_for_snapshot(snapshot),
@@ -726,11 +748,11 @@ class RuntimeService:
             or 0
         ) + 1
         trigger_reason = {
-            "AUTO_RETRY": "AUTO_RETRY",
-            "SESSION_UNAVAILABLE": "SESSION_RECOVERY",
-        }.get(failure_type, "USER_CONTINUE")
+            "AUTO_RETRY": RunTriggerReason.AUTO_RETRY.value,
+            "SESSION_UNAVAILABLE": RunTriggerReason.SESSION_RECOVERY.value,
+        }.get(failure_type, RunTriggerReason.USER_CONTINUE.value)
         retry_index = 0
-        if trigger_reason == "AUTO_RETRY":
+        if trigger_reason == RunTriggerReason.AUTO_RETRY.value:
             retry_index = (
                 await self.session.scalar(
                     select(func.max(Run.retry_index)).where(Run.task_id == task.id)
