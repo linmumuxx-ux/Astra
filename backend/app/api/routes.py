@@ -1,11 +1,11 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import case, desc, func, literal_column, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -489,7 +489,9 @@ async def _abort_opencode_session(task: Task, session: AsyncSession) -> bool:
             )
         workspace = settings.employee_workspace_path(str(snapshot["workspace_root"]))
         return await asyncio.wait_for(
-            OpenCodeServerClient(settings).abort(workspace, task.opencode_session_id),
+            OpenCodeServerClient(
+                settings, base_url=f"http://127.0.0.1:{snapshot['opencode_server_port']}"
+            ).abort(workspace, task.opencode_session_id),
             timeout=3,
         )
     except Exception:
@@ -1450,6 +1452,108 @@ async def task_runs(task_id: str, session: AsyncSession = Depends(get_session)):
 @router.get("/runs", response_model=list[RunRead])
 async def list_runs(session: AsyncSession = Depends(get_session)):
     return (await session.execute(select(Run).order_by(Run.created_at.desc()).limit(200))).scalars().all()
+
+
+@router.get("/runs/page")
+async def paged_runs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    q: str = "",
+    category: str = "",
+    employee: str = "",
+    level: str = "",
+    retry: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    levels = {
+        "WAITING": ["QUEUED"],
+        "EXECUTING": ["STARTING", "RUNNING"],
+        "WAITING_INPUT": ["WAITING_INPUT"],
+        "PAUSED": ["SUSPENDED"],
+        "COMPLETED": ["COMPLETED", "PASSED"],
+        "FAILED": ["FAILED", "BLOCKED", "TIMEOUT", "LOST"],
+        "CANCELLED": ["CANCELLED"],
+    }
+    if level and level not in levels:
+        raise HTTPException(422, "无效运行状态")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, "开始日期不能晚于结束日期")
+    conditions = []
+    if q.strip():
+        conditions.append(
+            or_(
+                *[
+                    column.icontains(q.strip(), autoescape=True)
+                    for column in (Run.id, Run.task_id, Run.opencode_session_id)
+                ]
+            )
+        )
+    if category:
+        conditions.append(Task.category_id == category)
+    if employee:
+        conditions.append(Run.employee_id == employee)
+    if level:
+        conditions.append(Run.status.in_(levels[level]))
+    if retry is not None:
+        conditions.append(Run.previous_run_id.is_not(None) if retry else Run.previous_run_id.is_(None))
+    if date_from:
+        conditions.append(Run.created_at >= datetime.combine(date_from, time.min, UTC))
+    if date_to:
+        conditions.append(Run.created_at < datetime.combine(date_to + timedelta(days=1), time.min, UTC))
+    # Aggregate the entire matching set in SQL, before applying pagination.
+    if session.bind.dialect.name == "sqlite":
+        duration = (func.julianday(Run.finished_at) - func.julianday(Run.started_at)) * 86400
+    else:
+        duration = (
+            func.timestampdiff(literal_column("MICROSECOND"), Run.started_at, Run.finished_at) / 1000000
+        )
+
+    def count_when(condition):
+        return func.count(case((condition, 1)))
+
+    aggregate = (
+        select(
+            func.count(Run.id).label("run_count"),
+            func.count(func.distinct(Run.task_id)).label("task_count"),
+            count_when(Run.status.in_(levels["COMPLETED"])).label("completed_count"),
+            count_when(Run.status.in_(levels["FAILED"])).label("failed_count"),
+            count_when(Run.previous_run_id.is_not(None)).label("retry_count"),
+            count_when(Run.status == "WAITING_INPUT").label("waiting_input_count"),
+            func.avg(case((Run.started_at.is_not(None) & Run.finished_at.is_not(None), duration))).label(
+                "avg_duration_seconds"
+            ),
+            func.sum(Run.total_tokens).label("total_tokens"),
+        )
+        .select_from(Run)
+        .join(Task, Run.task_id == Task.id)
+        .where(*conditions)
+    )
+    stats = dict((await session.execute(aggregate)).mappings().one())
+    ended = stats["completed_count"] + stats["failed_count"]
+    stats["success_rate"] = round(stats["completed_count"] / ended * 100, 1) if ended else None
+    if stats["avg_duration_seconds"] is not None:
+        stats["avg_duration_seconds"] = round(stats["avg_duration_seconds"], 3)
+    records = (
+        await session.execute(
+            select(Run, Task.title)
+            .join(Task, Run.task_id == Task.id)
+            .where(*conditions)
+            .order_by(Run.created_at.desc(), Run.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return {
+        "items": [
+            {**RunRead.model_validate(run).model_dump(), "task_title": title} for run, title in records
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": stats["run_count"],
+        "stats": stats,
+    }
 
 
 @router.get("/runs/{run_id}", response_model=RunRead)

@@ -145,7 +145,7 @@ if [[ "${ASTRA_ASSISTANT_ENABLED:-true}" != "false" ]]; then
     echo "无法连接 ASTRA_ASSISTANT_OPENCODE_URL 指定的助手 OpenCode Server（不影响平台核心功能）。" >&2
   else
     ASSISTANT_PORT="${ASTRA_ASSISTANT_OPENCODE_PORT:-4097}"
-    echo "启动助手 OpenCode Server（nexus-assistant，:$ASSISTANT_PORT）..."
+    echo "启动助手 OpenCode Server（nexus-assistant，:${ASSISTANT_PORT}）..."
     (cd "$BACKEND_DIR" && "$PYTHON_BIN" -m app.assistant.server) \
       >"$RUNTIME_DIR/assistant-opencode.log" 2>&1 &
     ASSISTANT_PID=$!

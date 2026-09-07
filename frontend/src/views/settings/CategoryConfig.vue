@@ -1,86 +1,127 @@
 <template>
   <AstraPanel title="任务分类" subtitle="分类用于表示任务所属的业务领域">
-    <template #action><button class="button button--compact" @click="addRow"><Plus :size="14" /> 新增分类</button></template>
+    <template #action><button class="button button--compact" :disabled="loading || saving" @click="addRow"><Plus :size="14" /> 新增分类</button></template>
     <div class="config-table-wrap">
-      <table class="config-table">
+      <table class="config-table" :aria-busy="loading || saving">
         <thead><tr><th>分类名称</th><th>描述</th><th class="sort-col">排序</th><th>状态</th><th class="type-col">任务 / 问题 Prompt</th><th class="op-col">操作</th></tr></thead>
         <tbody>
-          <tr v-for="row in rows" :key="row.key">
-            <td><input v-model.trim="row.name" class="config-input" placeholder="分类名称" aria-label="分类名称" /></td>
-            <td><input v-model.trim="row.description" class="config-input" placeholder="分类说明" aria-label="分类说明" /></td>
-            <td class="sort-col"><input v-model.number="row.sort_order" class="config-number" type="number" min="0" aria-label="排序" /></td>
-            <td><AstraSwitch :model-value="row.enabled" @update:model-value="(value) => (row.enabled = value)" /></td>
+          <template v-for="row in rows" :key="row.key">
+          <tr :data-category-id="row.id">
+            <td><input :disabled="loading || saving" v-model.trim="row.name" class="config-input" placeholder="分类名称" aria-label="分类名称" /></td>
+            <td><input :disabled="loading || saving" v-model.trim="row.description" class="config-input" placeholder="分类说明" aria-label="分类说明" /></td>
+            <td class="sort-col"><input :disabled="loading || saving" v-model.number="row.sort_order" class="config-number" type="number" min="0" aria-label="排序" /></td>
+            <td><AstraSwitch :disabled="loading || saving" :label="row.enabled ? '启用' : '停用'" :model-value="row.enabled" @update:model-value="(value) => (row.enabled = value)" /></td>
             <td class="type-col">
-              <span class="prompt-chip" :data-set="row.taskPrompt">任务 Prompt：{{ row.taskPrompt ? '已配置' : '未配置' }}</span>
-              <span class="prompt-chip" :data-set="row.questionPrompt">问题 Prompt：{{ row.questionPrompt ? '已配置' : '未配置' }}</span>
+              <span class="prompt-chip" :data-set="Boolean(row.task_prompt.trim())">任务 Prompt：{{ row.task_prompt.trim() ? '已配置' : '未配置' }}</span>
+              <span class="prompt-chip" :data-set="Boolean(row.question_prompt.trim())">问题 Prompt：{{ row.question_prompt.trim() ? '已配置' : '未配置' }}</span>
             </td>
             <td class="op-col">
-              <button v-if="row.persisted === undefined" type="button" class="icon-button icon-button--mini" title="移除新增行" @click="rows.splice(rowIndex(row), 1)"><Trash2 :size="13" /></button>
+              <button type="button" class="button button--compact" :disabled="loading || saving" :aria-expanded="row.promptEditorOpen" :aria-controls="`category-prompts-${row.key}`" @click="row.promptEditorOpen = !row.promptEditorOpen">{{ row.promptEditorOpen ? '收起' : '编辑' }}</button>
+              <button v-if="!row.id" :disabled="saving" type="button" class="icon-button icon-button--mini" title="移除新增行" @click="rows.splice(rowIndex(row), 1)"><Trash2 :size="13" /></button>
             </td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="6"><div class="table-empty">暂无任务分类，点击右上角新增。</div></td></tr>
+          <tr v-if="row.promptEditorOpen">
+            <td colspan="6">
+              <section :id="`category-prompts-${row.key}`" class="prompt-editor" :aria-label="`${row.name || '新分类'}提示词编辑`">
+                <h3>{{ row.name || '新分类' }} · 提示词</h3>
+                <FormField label="任务提示词" v-slot="{ id }"><textarea :id="id" v-model="row.task_prompt" :disabled="saving" rows="6" /></FormField>
+                <FormField label="问题提示词" v-slot="{ id }"><textarea :id="id" v-model="row.question_prompt" :disabled="saving" rows="6" /></FormField>
+              </section>
+            </td>
+          </tr>
+          </template>
+          <tr v-if="loading"><td colspan="6"><div class="table-empty">正在加载任务分类…</div></td></tr>
+          <tr v-else-if="!rows.length && loaded"><td colspan="6"><div class="table-empty">暂无任务分类，点击右上角新增。</div></td></tr>
         </tbody>
       </table>
     </div>
 
-    <footer class="config-foot"><StickyActionBar v-if="dirty" :dirty="dirty" :saving="saving" save-label="保存分类" @save="save" @cancel="reset" /></footer>
-    <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div>
+    <footer class="config-foot"><StickyActionBar v-if="dirty" :dirty="dirty" :saving="saving" :disabled="loading || saving" save-label="保存分类" @save="save" @cancel="reset" /></footer>
+    <button v-if="!loaded && !loading" type="button" class="button" @click="load">重新加载</button>
+    <div v-if="message" role="status" class="form-message" :data-error="messageIsError">{{ message }}</div>
   </AstraPanel>
 </template>
 
 <script setup lang="ts">
 import { Plus, Trash2 } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
-import type { TaskCategory } from '@/api/types'
+import type { TaskCategory, TaskCategoryWrite } from '@/api/types'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import StickyActionBar from '@/components/astra/StickyActionBar.vue'
+import FormField from '@/components/forms/FormField.vue'
 import { useAstraStore } from '@/stores/astra'
 import { safeUUID } from '@/utils/format'
 
 const store = useAstraStore()
-interface Row { key: string; id: string | null; name: string; description: string; sort_order: number; enabled: boolean; taskPrompt: string | null; questionPrompt: string | null; persisted?: boolean; promptEditorOpen: boolean }
+interface Row {
+  key: string
+  id: string | null
+  name: string
+  description: string
+  sort_order: number | string
+  enabled: boolean
+  task_prompt: string
+  question_prompt: string
+  promptEditorOpen: boolean
+}
 const rows = ref<Row[]>([])
-const original = ref('')
+const original = ref<Record<string, string>>({})
+const loaded = ref(false)
+const loading = ref(true)
 const saving = ref(false)
 const message = ref('')
 const messageIsError = ref(false)
 
-function toRows(categories: TaskCategory[]) {
-  return categories.map((category) => ({ key: category.id, id: category.id, name: category.name, description: category.description, sort_order: category.sort_order, enabled: category.enabled, taskPrompt: null, questionPrompt: null, persisted: true, promptEditorOpen: false }))
+function toRow(category: TaskCategory, key = category.id): Row {
+  return { key, id: category.id, name: category.name, description: category.description ?? '', sort_order: category.sort_order ?? 0, enabled: category.enabled, task_prompt: category.task_prompt ?? '', question_prompt: category.question_prompt ?? '', promptEditorOpen: false }
 }
+function payload(row: Row): TaskCategoryWrite {
+  return { name: row.name.trim(), description: row.description.trim(), sort_order: Number(row.sort_order), enabled: row.enabled, task_prompt: row.task_prompt, question_prompt: row.question_prompt }
+}
+// Only persisted business fields count as edits; expanding the editor does not.
+function snapshot(row: Row) { return JSON.stringify({ ...payload(row), sort_order: row.sort_order }) }
+const dirty = computed(() => loaded.value && (rows.value.length !== Object.keys(original.value).length || rows.value.some(row => snapshot(row) !== original.value[row.key])))
 function addRow() {
-  const key = safeUUID()
-  rows.value.push({ key, id: null, name: '', description: '', sort_order: (rows.value.at(-1)?.sort_order ?? 0) + 10, enabled: true, taskPrompt: null, questionPrompt: null, persisted: undefined, promptEditorOpen: false })
+  rows.value.push({ key: safeUUID(), id: null, name: '', description: '', sort_order: Number(rows.value.at(-1)?.sort_order ?? 0) + 10, enabled: true, task_prompt: '', question_prompt: '', promptEditorOpen: false })
 }
 function rowIndex(row: Row) { return rows.value.indexOf(row) }
-function syncSnapshot() { original.value = JSON.stringify(rows.value.map((row) => ({ name: row.name, description: row.description, sort_order: row.sort_order, enabled: row.enabled }))) }
-const dirty = computed(() => JSON.stringify(rows.value.map((row) => ({ name: row.name, description: row.description, sort_order: row.sort_order, enabled: row.enabled }))) !== original.value)
-
 async function load() {
-  const categories = await api.categories(true)
-  rows.value = toRows(categories)
-  await store.refresh()
-  syncSnapshot()
+  loading.value = true; message.value = ''; messageIsError.value = false
+  try {
+    const nextRows = (await api.categories(true)).map(category => toRow(category))
+    // Commit normalized values and their baseline together, with no async gap.
+    rows.value = nextRows
+    original.value = Object.fromEntries(nextRows.map(row => [row.key, snapshot(row)]))
+    loaded.value = true
+  } catch (error) {
+    messageIsError.value = true
+    message.value = error instanceof Error ? error.message : '任务分类加载失败'
+  } finally { loading.value = false }
 }
 async function save() {
+  if (saving.value || loading.value || !dirty.value) return
   saving.value = true; message.value = ''; messageIsError.value = false
   try {
     for (const row of rows.value) {
       if (!row.name.trim()) throw new Error('分类名称不能为空')
-      const body = { name: row.name.trim(), description: row.description.trim(), enabled: row.enabled, sort_order: row.sort_order }
-      if (row.persisted) await api.updateCategory(row.id as string, body)
-      else await api.createCategory(body)
-      row.persisted = true
+      if (!Number.isInteger(row.sort_order) || Number(row.sort_order) < 0) throw new Error('排序必须为非负整数')
     }
-    await load()
+    for (const row of rows.value) {
+      if (snapshot(row) === original.value[row.key]) continue
+      const saved = row.id ? await api.updateCategory(row.id, payload(row)) : await api.createCategory(payload(row))
+      // Retain successful IDs/baselines if a later row fails; retry cannot duplicate a create.
+      Object.assign(row, toRow(saved, row.key), { promptEditorOpen: row.promptEditorOpen })
+      original.value[row.key] = snapshot(row)
+    }
+    await store.refresh()
     message.value = '任务分类已保存。'
   } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '保存失败' } finally { saving.value = false }
 }
-function reset() { load() }
-
-defineExpose({ load })
+function reset() { void load() }
+onMounted(load)
+defineExpose({ getDirty: () => dirty.value })
 </script>
 
 <style scoped>

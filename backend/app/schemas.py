@@ -102,6 +102,8 @@ class UsageSummary(BaseModel):
 class TaskCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
+    task_prompt: str | None = None
+    question_prompt: str | None = None
     enabled: bool = True
     sort_order: int = 0
 
@@ -109,6 +111,8 @@ class TaskCategoryCreate(BaseModel):
 class TaskCategoryPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = None
+    task_prompt: str | None = None
+    question_prompt: str | None = None
     enabled: bool | None = None
     sort_order: int | None = None
 
@@ -117,6 +121,8 @@ class TaskCategoryRead(ORMModel):
     id: str
     name: str
     description: str
+    task_prompt: str | None
+    question_prompt: str | None
     enabled: bool
     sort_order: int
     created_at: datetime

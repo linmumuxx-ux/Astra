@@ -21,9 +21,9 @@ from app.domain import (
     TaskStatus,
 )
 from app.executors.opencode_cli import OpenCodeCLIExecutor
+from app.executors.opencode_local_server import LocalOpenCodeServerExecutor
 from app.executors.opencode_remote import RemoteOpenCodeExecutor
 from app.executors.opencode_remote_server import RemoteOpenCodeServerExecutor
-from app.executors.opencode_server import OpenCodeServerExecutor
 from app.executors.process import terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import DigitalEmployee, Evidence, Run, SessionMessage, Task, ToolUsage
@@ -261,9 +261,8 @@ class TaskCoordinator:
                 model_name=environment.model_name,
                 event_callback=observe,
             )
-        return OpenCodeServerExecutor(
-            self.settings,
-            model_name=environment.model_name,
+        return LocalOpenCodeServerExecutor(
+            environment, self.settings,
             event_callback=observe,
         )
 

@@ -133,7 +133,8 @@ class ExecutionEnvironmentRuntime:
 
         root = self.settings.employee_workspace_path(environment.workspace_root)
         try:
-            root.mkdir(parents=True, exist_ok=True)
+            if not root.is_dir():
+                raise FileNotFoundError(f"Workspace 不存在：{root}")
             probe = root / f".astra-write-check-{uuid4().hex}"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
@@ -141,6 +142,34 @@ class ExecutionEnvironmentRuntime:
         except OSError as exc:
             workspace_ok, workspace_detail = False, str(exc)
         checks.append(CheckItem("Workspace 可用", workspace_ok, workspace_detail))
+        if self.settings.executor_type == "opencode_server":
+            from app.executors.opencode_server import OpenCodeServerClient
+
+            port = environment.opencode_server_port
+            if port in {self.settings.opencode_server_port, self.settings.assistant_opencode_port}:
+                checks.append(
+                    CheckItem("OpenCode Server", False, "端口与平台公共/助手 Serve 冲突，请配置独立端口")
+                )
+            else:
+                client = OpenCodeServerClient(self.settings, base_url=f"http://127.0.0.1:{port}")
+                try:
+                    health = await client.health()
+                    checks.append(
+                        CheckItem("OpenCode Server", True, f"健康：{port} · {health.get('version')}")
+                    )
+                except Exception as exc:
+                    import socket
+
+                    with socket.socket() as probe:
+                        probe.settimeout(1)
+                        occupied = probe.connect_ex(("127.0.0.1", port)) == 0
+                    checks.append(
+                        CheckItem(
+                            "OpenCode Server",
+                            not occupied,
+                            f"端口冲突或 Serve 异常：{exc}" if occupied else "未启动；任务执行时将自动启动",
+                        )
+                    )
         return checks
 
     async def _test_remote(self, environment: OpenCodeExecutionEnvironment) -> list[CheckItem]:
@@ -165,7 +194,7 @@ class ExecutionEnvironmentRuntime:
 
         root = shlex.quote(environment.workspace_root)
         code, _, stderr = await self.run_remote(
-            environment, f"mkdir -p {root} && test -d {root} && test -w {root}", timeout=20
+            environment, f"test -d {root} && test -w {root}", timeout=20
         )
         checks.append(
             CheckItem(

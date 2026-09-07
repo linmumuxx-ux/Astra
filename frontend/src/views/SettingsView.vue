@@ -94,6 +94,7 @@ function beginCreate() {
 function switchTab(next: string) {
   if (next === tab.value) return
   if (isEmployeeDirty() && tab.value === 'employees' && !guardEmployeeChange()) return
+  if (tab.value === 'categories' && categoryRef.value?.getDirty() && !window.confirm('有未保存的任务分类修改，确定放弃并切换吗？')) return
   tab.value = next
   router.replace({ query: { ...route.query, tab: next } })
 }
@@ -106,12 +107,16 @@ onMounted(async () => {
   if (!store.employees.length) await store.refresh()
   const tabFromQuery = typeof route.query.tab === 'string' ? route.query.tab : 'employees'
   if (tabs.some((item) => item.id === tabFromQuery)) tab.value = tabFromQuery
-  if (route.query.create === '1') beginCreate()
-  else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? ''))
+  selectedId.value = String(route.query.employee ?? store.employees[0]?.id ?? '')
+  if (tab.value === 'employees') {
+    if (route.query.create === '1') beginCreate()
+    else selectEmployee(String(route.query.employee ?? store.employees[0]?.id ?? ''))
+  }
 })
 
 onBeforeRouteLeave(() => {
   if (isEmployeeDirty() && tab.value === 'employees') return window.confirm('有未保存的员工配置修改，确定离开吗？')
+  if (tab.value === 'categories' && categoryRef.value?.getDirty()) return window.confirm('有未保存的任务分类修改，确定离开吗？')
   return true
 })
 </script>

@@ -166,7 +166,11 @@ async def test_assistant_migration_adopts_complete_precreated_schema(tmp_path):
         )
     await upgraded_engine.dispose()
 
-    assert revision == "0015_runtime_orchestrator"
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    expected_head = ScriptDirectory.from_config(Config(str(backend_root / "alembic.ini"))).get_current_head()
+    assert revision == expected_head
     assert title == "迁移前会话"
 
 

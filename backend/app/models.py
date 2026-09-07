@@ -41,6 +41,8 @@ class TaskCategory(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    task_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

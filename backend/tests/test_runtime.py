@@ -1119,18 +1119,21 @@ async def test_local_environment_check_reports_binary_and_workspace(tmp_path: Pa
     binary = fake_agent_launcher(binary_dir, 'print("fake-opencode-1.0")\n', "fake-opencode")
     environment = OpenCodeExecutionEnvironment(
         employee_id="astra-check",
+        opencode_server_port=54198,
         mode="LOCAL",
         name="本地检查",
         opencode_path=str(binary),
         workspace_root=str(tmp_path / "workspaces"),
     )
 
+    (tmp_path / "workspaces").mkdir()
     checks = await ExecutionEnvironmentRuntime().test(environment)
 
     assert [item.name for item in checks] == [
         "Agent 命令存在",
         "Agent 命令可启动",
         "Workspace 可用",
+        "OpenCode Server",
     ]
     assert all(item.passed for item in checks)
 

@@ -8,11 +8,15 @@ export interface TaskCategory {
   id: string
   name: string
   description: string
+  task_prompt: string | null
+  question_prompt: string | null
   enabled: boolean
   sort_order: number
   created_at: string
   updated_at: string
 }
+
+export type TaskCategoryWrite = Pick<TaskCategory, 'name' | 'description' | 'enabled' | 'sort_order' | 'task_prompt' | 'question_prompt'>
 
 export interface ExecutionEnvironment {
   id: number
@@ -530,4 +534,23 @@ export interface DashboardKnowledge {
   candidate_experiences: number
   total: number
   recent: Array<{ id: string; title: string }>
+}
+
+export interface RunStats {
+  run_count: number
+  task_count: number
+  completed_count: number
+  failed_count: number
+  retry_count: number
+  waiting_input_count: number
+  success_rate: number | null
+  avg_duration_seconds: number | null
+  total_tokens: number | null
+}
+export interface RunPage {
+  items: (Run & { task_title: string })[]
+  page: number
+  page_size: number
+  total: number
+  stats: RunStats
 }

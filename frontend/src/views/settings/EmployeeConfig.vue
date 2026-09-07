@@ -60,10 +60,10 @@
         <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><FormField label="Agent 可执行文件" help="正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /></FormField></div>
         <div class="form-grid"><FormField label="Agent 模型" help="留空时使用 Agent 自身或平台默认模型。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.model_name" placeholder="opencode/glm-5.1" /></FormField><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
         <FormField label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /></FormField>
+          <FormField label="OpenCode Server Port" help="人工配置固定端口，同一主机的员工须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" v-slot="{ id }"><input :id="id" v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /></FormField>
         <template v-if="form.environment.mode === 'LINUX_REMOTE'">
           <div class="form-grid"><label>SSH Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>SSH Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div>
           <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="nexus" /></label><FormField label="SSH 密码" help="SSH 密码保存在部署数据库中且接口不回显；已配置时留空保持不变。" v-slot="{ id }"><input :id="id" v-model="form.environment.ssh_password" :required="creating || !employee?.execution_environment?.has_ssh_password" type="password" autocomplete="new-password" :placeholder="employee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></FormField></div>
-          <FormField label="OpenCode Server Port" help="默认 4096，仅监听远程 127.0.0.1，并通过 SSH 隧道访问；无需开放防火墙端口。远程 OpenCode Server 不对公网暴露。" v-slot="{ id }"><input :id="id" v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /></FormField>
         </template>
 
         <div class="env-connection" v-if="!creating">
@@ -134,7 +134,7 @@ const paused = computed(() => props.employee?.status === 'PAUSED')
 const serverAddress = computed(() => {
   const env = selectedEnvironment.value
   if (!env) return '—'
-  return env.mode === 'LINUX_REMOTE' ? `${env.host ?? ''}:${env.port}` : '本地'
+  return env.mode === 'LINUX_REMOTE' ? `${env.host ?? ''} → 127.0.0.1:${env.opencode_server_port}（SSH）` : `127.0.0.1:${env.opencode_server_port}`
 })
 
 const EMPLOYEE_RUNTIME: Record<string, { label: string; tone: string }> = {

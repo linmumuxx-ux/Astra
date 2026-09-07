@@ -288,6 +288,7 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
                 "execution_environment": {
                     "mode": "LOCAL",
                     "name": "API 本地工作空间",
+                    "opencode_server_port": 54199,
                     "opencode_path": sys.executable,
                     "model_name": "deepseek/deepseek-v4-flash",
                     "workspace_root": str(tmp_path / "employee-workspace"),
@@ -314,6 +315,7 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
         )
         assert invalid_area.status_code == 422
 
+        (tmp_path / "employee-workspace").mkdir()
         checked = client.post("/api/employees/astra-api-v03/environment/test")
         assert checked.status_code == 200
         assert checked.json()["status"] == "AVAILABLE"

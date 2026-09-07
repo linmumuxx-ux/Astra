@@ -425,3 +425,26 @@ async def test_remote_executor_uses_remote_posix_workspace_and_structured_events
 
 async def _append(items: list[Any], value: Any) -> None:
     items.append(value)
+
+
+async def test_remote_environment_probe_does_not_start_absent_server(monkeypatch):
+    from app.executors import opencode_remote_server as remote
+
+    ssh = FakeSSHSession()
+
+    class UnavailableClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def health(self):
+            raise OpenCodeServerUnavailable("connection refused")
+
+    monkeypatch.setattr(remote, "OpenCodeServerClient", UnavailableClient)
+    passed, detail = await remote.test_remote_server(
+        remote_environment(),
+        settings(),
+        FakeRemoteRuntime(ssh),
+    )
+    assert passed and "未启动" in detail
+    assert ssh.commands == []
+    assert ssh.closed and ssh.tunnel.closed

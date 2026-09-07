@@ -53,13 +53,17 @@ class RemoteOpenCodeServerConnection:
             self.client = self.client_factory(self.tunnel.base_url)
             try:
                 await self.client.health()
-            except OpenCodeServerUnavailable:
+            except (OpenCodeServerUnavailable, OpenCodeServerCapabilityError):
                 await self._start_server(self.session)
                 await self._wait_until_ready(self.client)
             return self.client
-        except Exception:
+        except Exception as exc:
             await self.close()
-            raise
+            raise RuntimeError(
+                f"员工 {self.environment.employee_id}；环境 {self.environment.name} (LINUX_REMOTE)；"
+                f"Workspace={self.environment.workspace_root}；"
+                f"Server Port={self.environment.opencode_server_port}；启动方式=SSH；{exc}"
+            ) from exc
 
     async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
         await self.close()
@@ -83,6 +87,17 @@ class RemoteOpenCodeServerConnection:
             f"runtime_dir=/tmp/astra-opencode-server-$(id -u)-{port}; "
             'mkdir -p "$runtime_dir"; '
             f"mkdir -p {workspace}; cd {workspace}; "
+            'if test -f "$runtime_dir/server.pid"; then '
+            'old_pid=$(cat "$runtime_dir/server.pid"); '
+            'case "$old_pid" in (*[!0-9]*|"") ;; (*) '
+            'old_args=$(ps -p "$old_pid" -o args= 2>/dev/null || true); '
+            'old_cwd=$(readlink "/proc/$old_pid/cwd" 2>/dev/null || true); '
+            f'case "$old_args" in (*"serve --hostname 127.0.0.1 --port {port}") '
+            'if test "$old_cwd" = "$(pwd -P)"; then kill "$old_pid" 2>/dev/null || true; '
+            'sleep 1; fi ;; esac ;; esac; fi; '
+            'if command -v ss >/dev/null 2>&1; then '
+            f'if ss -ltnH "sport = :{port}" | grep -q .; then '
+            f'echo "端口冲突：{port} 已被占用" >&2; exit 1; fi; fi; '
             f"nohup {binary} serve --hostname 127.0.0.1 --port {port} "
             '>>"$runtime_dir/server.log" 2>&1 </dev/null & '
             'server_pid=$!; printf "%s\\n" "$server_pid" >"$runtime_dir/server.pid"'
@@ -104,7 +119,15 @@ class RemoteOpenCodeServerConnection:
             except Exception as exc:
                 last_error = str(exc)
                 await asyncio.sleep(0.2)
-        raise TimeoutError(f"远程 OpenCode Server 未就绪: {last_error}")
+        detail = ""
+        if self.session:
+            _, detail, _ = await self.session.run_command(
+                f'tail -c 2000 /tmp/astra-opencode-server-$(id -u)-'
+                f'{self.environment.opencode_server_port}/server.log'
+            )
+        raise TimeoutError(
+            f"远程 OpenCode Server 未就绪（请检查端口冲突与启动日志）: {last_error}；{detail}"
+        )
 
 
 class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
@@ -196,11 +219,23 @@ async def test_remote_server(
     settings: Settings,
     runtime: ExecutionEnvironmentRuntime,
 ) -> tuple[bool, str]:
-    """Start/probe the private remote Server as part of environment validation."""
-
+    """Probe only: an absent Serve does not invalidate an SSH environment."""
+    session = None
+    tunnel = None
     try:
-        async with RemoteOpenCodeServerConnection(environment, settings, runtime) as client:
-            health = await client.health()
+        session = await runtime.open_session(environment)
+        tunnel = await session.open_tunnel(
+            remote_host="127.0.0.1", remote_port=environment.opencode_server_port,
+        )
+        client = OpenCodeServerClient(settings, base_url=tunnel.base_url)
+        health = await client.health()
         return True, f"OpenCode {health.get('version') or 'unknown'} · SSH loopback tunnel"
+    except OpenCodeServerUnavailable:
+        return True, "Serve 未启动或不可访问；任务执行时将自动检测并启动"
     except Exception as exc:
         return False, str(exc)
+    finally:
+        if tunnel:
+            await tunnel.close()
+        if session:
+            await session.close()

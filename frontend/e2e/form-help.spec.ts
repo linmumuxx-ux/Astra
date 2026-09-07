@@ -120,7 +120,7 @@ test('知识编辑、分类、来源与人工补充表单保留字段和校验',
   }
   await page.goto('/interventions')
   await expect(page.getByRole('heading', { name: '待处理', exact: true }).first()).toBeVisible()
-  await page.locator('.intervention-queue').getByRole('button', { name: /新增回归场景自动化覆盖/ }).click()
+  await page.locator('.intervention-queue').getByRole('button', { name: /新增回调场景自动化覆盖/ }).click()
   await expect(page.getByLabel('补充信息', { exact: true })).toBeVisible()
   await expect(page.getByLabel('补充信息', { exact: true })).toHaveAttribute('required', '')
   await page.screenshot({ path: '../artifacts/form-help/intervention-form.png', fullPage: true })
