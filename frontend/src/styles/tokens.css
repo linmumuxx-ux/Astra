@@ -22,9 +22,13 @@
   --astra-text-primary: #102522;
   --astra-text-secondary: #3e5752;
   --astra-text-muted: #617771;
-  --astra-font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --astra-font-display: "Avenir Next", Inter, ui-sans-serif, sans-serif;
-  /* Typography follows the dashboard hierarchy: micro → helper → control → body. */
+  --astra-font-family: "Times New Roman", "Microsoft YaHei", "微软雅黑", serif;
+  --astra-font-sans: var(--astra-font-family);
+  --astra-font-display: var(--astra-font-family);
+  --astra-weight-regular: 400;
+  --astra-weight-bold: 700;
+  /* Latin/digits/punctuation use Times New Roman; CJK uses Microsoft YaHei.
+     Both fonts must be installed on the client. Keep the existing UI size scale. */
   --astra-font-micro: 9px;
   --astra-font-helper: 10px;
   --astra-font-control: 11px;
@@ -34,6 +38,21 @@
   --astra-font-section: 18px;
   --astra-font-title: 22px;
   --astra-font-kpi: 27px;
+  --astra-font-subtitle: 16px;
+  /* Existing compact scene and secondary metric sizes, centralized unchanged. */
+  --astra-font-size-6: 6px;
+  --astra-font-size-7: 7px;
+  --astra-font-size-8: 8px;
+  --astra-font-size-15: 15px;
+  --astra-font-size-16: 16px;
+  --astra-font-size-17: 17px;
+  --astra-font-size-18: 18px;
+  --astra-font-size-19: 19px;
+  --astra-font-size-20: 20px;
+  --astra-font-size-21: 21px;
+  --astra-font-size-23: 23px;
+  --astra-font-size-25: 25px;
+  --astra-font-size-30: 30px;
   --astra-control-height: 42px;
   --astra-control-height-compact: 38px;
   --astra-content-gap: 16px;

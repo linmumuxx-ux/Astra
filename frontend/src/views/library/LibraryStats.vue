@@ -36,7 +36,7 @@ defineEmits<{ select: [value: string] }>()
 .library-stats button[data-tone='warning'] span { color: var(--astra-warning); background: var(--astra-warning-soft); }
 .library-stats .stat-copy { display: grid; min-width: 0; }
 .library-stats small { color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
-.library-stats strong { color: var(--astra-text-primary); font: 700 var(--astra-font-emphasis) var(--astra-font-display); line-height: 1.1; }
+.library-stats strong { color: var(--astra-text-primary); font: var(--astra-weight-bold) var(--astra-font-emphasis) var(--astra-font-display); line-height: 1.1; }
 .library-stats em { overflow: hidden; margin-top: 1px; color: var(--astra-text-muted); font-size: var(--astra-font-micro); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1300px) { .library-stats { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 760px) { .library-stats { grid-template-columns: 1fr 1fr; } }

@@ -53,7 +53,7 @@ async function copy() {
   align-items: center;
   gap: 4px;
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--astra-font-family);
   font-size: var(--astra-font-helper);
 }
 .id-display__value {

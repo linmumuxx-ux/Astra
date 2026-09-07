@@ -47,17 +47,17 @@ const tone = computed(() => 'danger')
   color: var(--astra-danger); background: var(--astra-danger-soft);
 }
 .error-detail__summary { display: grid; gap: 1px; min-width: 0; margin-right: auto; }
-.error-detail__summary span { color: var(--astra-danger); font-size: var(--astra-font-helper); font-weight: 700; letter-spacing: 0.04em; }
+.error-detail__summary span { color: var(--astra-danger); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); letter-spacing: 0.04em; }
 .error-detail__summary strong { font-size: var(--astra-font-control); }
 .error-detail__summary p { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
 .error-detail__summary code {
   align-self: start; margin-top: 3px; padding: 1px 7px;
   color: var(--astra-danger); border-radius: 5px; background: rgba(255, 111, 125, 0.13);
-  font: 700 var(--astra-font-helper) ui-monospace, monospace;
+  font: var(--astra-weight-bold) var(--astra-font-helper) var(--astra-font-family);
 }
 .error-detail pre {
   max-height: 180px; margin: 10px 0 0; padding: 10px 12px; overflow: auto;
   color: #f0b7bc; border-radius: 8px; background: #2a1013;
-  font: var(--astra-font-helper)/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+  font: var(--astra-font-helper)/1.5 var(--astra-font-family); white-space: pre-wrap; word-break: break-word;
 }
 </style>

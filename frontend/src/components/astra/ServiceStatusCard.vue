@@ -88,6 +88,6 @@ const expanded = ref(false)
 .service-status-card__error pre {
   max-height: 160px; margin: 0; padding: 10px 12px; overflow: auto;
   color: #a9c1dd; border-radius: 8px; background: #050c15;
-  font: var(--astra-font-helper)/1.5 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+  font: var(--astra-font-helper)/1.5 var(--astra-font-family); white-space: pre-wrap; word-break: break-word;
 }
 </style>

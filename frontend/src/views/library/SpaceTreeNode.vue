@@ -82,14 +82,14 @@ function pick(action: 'create' | 'rename' | 'move' | 'delete') {
 .space-row { position: relative; display: flex; align-items: center; border-radius: 8px; }
 .space-main { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; min-height: 38px; padding: 0 8px; color: var(--astra-text-secondary); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
 .space-main:hover, .space-row.selected { background: #eef8f3; }
-.space-row.selected .space-main { color: var(--astra-primary-bright); font-weight: 600; }
+.space-row.selected .space-main { color: var(--astra-primary-bright); font-weight: var(--astra-weight-bold); }
 .space-caret { display: grid; place-items: center; flex: none; width: 16px; color: var(--astra-text-muted); }
 .space-caret i { display: block; width: 5px; height: 5px; border-radius: 50%; background: var(--astra-border-hover); }
 .space-caret svg { transition: transform .16s ease; }
 .space-caret.open svg { transform: rotate(90deg); }
 .space-label { display: flex; align-items: center; min-width: 0; gap: 7px; overflow: hidden; }
 .space-label em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.space-main strong { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: 600; }
+.space-main strong { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); }
 .space-actions { position: absolute; right: 6px; display: flex; }
 .space-actions button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 6px; background: var(--astra-bg-panel); cursor: pointer; }
 .space-actions button:hover { color: var(--astra-primary-bright); }

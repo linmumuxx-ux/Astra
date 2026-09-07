@@ -149,19 +149,19 @@ function flatten(nodes: KnowledgeSpace[], level = 0): Array<KnowledgeSpace & { l
 <style scoped>
 .space-panel { align-self: start; min-width: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: rgba(255,255,255,.96); box-shadow: var(--astra-shadow-panel); }
 .space-panel > header { display: flex; align-items: center; justify-content: space-between; min-height: 68px; padding: 13px 14px; border-bottom: 1px solid var(--astra-border); }
-.space-panel h3, .space-panel p { margin: 0; }.space-panel h3 { color: var(--astra-text-primary); font-size: var(--astra-font-section); }.space-panel p { margin-top: 3px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+.space-panel h3, .space-panel p { margin: 0; }.space-panel h3 { color: var(--astra-text-primary);  }.space-panel p { margin-top: 3px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .space-panel > header button, .space-form button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 7px; background: white; cursor: pointer; }
 .space-panel nav { display: grid; gap: 2px; max-height: min(560px, calc(100vh - 380px)); overflow-y: auto; padding: 8px; }
 .space-all { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 10px; color: var(--astra-text-secondary); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
 .space-all:hover, .space-all.selected { background: #eef8f3; }
-.space-all.selected { color: var(--astra-primary-bright); font-weight: 600; }
+.space-all.selected { color: var(--astra-primary-bright); font-weight: var(--astra-weight-bold); }
 .space-all span { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.space-all strong { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: 600; }
+.space-all strong { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); }
 .space-form { display: grid; grid-template-columns: minmax(0,1fr) 30px 30px; gap: 4px; padding: 8px; border-top: 1px solid var(--astra-border); }
 .space-form input { min-width: 0; height: 32px; padding: 0 8px; color: var(--astra-text-primary); border: 1px solid var(--astra-primary-border); border-radius: 7px; background: white; outline: none; }
 .move-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px; background: rgba(16,37,34,.38); backdrop-filter: blur(2px); }
 .move-card { width: min(420px,100%); padding: 18px; border: 1px solid var(--astra-border); border-radius: 13px; background: white; box-shadow: 0 24px 70px rgba(16,37,34,.22); }
-.move-card h3 { margin: 0; color: var(--astra-text-primary); font-size: var(--astra-font-section); }
+.move-card h3 { margin: 0; color: var(--astra-text-primary);  }
 .move-card header p { margin: 4px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .move-card label { display: grid; gap: 6px; margin-top: 14px; color: var(--astra-text-secondary); font-size: var(--astra-font-body); }
 .move-card select { min-height: 38px; padding: 0 9px; color: var(--astra-text-primary); border: 1px solid var(--astra-border); border-radius: 8px; background: white; }

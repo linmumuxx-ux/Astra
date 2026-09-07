@@ -36,7 +36,7 @@ const sources: SourceRow[] = [
 .config-table-wrap { overflow-x: auto; }
 .config-table { min-width: 900px; }
 .config-table td { border-top: 1px solid var(--astra-border); }
-.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: var(--astra-font-helper); }
+.mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 .narrow-col { width: 100px; }
 .table-empty { padding: 28px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-align: center; }
 .config-note { margin-top: 14px; }

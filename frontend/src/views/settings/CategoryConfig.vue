@@ -99,10 +99,10 @@ defineExpose({ load })
 .op-col { white-space: nowrap; }
 .table-empty { padding: 28px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-align: center; }
 .config-foot { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--astra-border); }
-.config-foot > span { display: inline-flex; align-items: center; gap: 7px; color: var(--astra-warning); font-size: var(--astra-font-helper); font-weight: 600; }
+.config-foot > span { display: inline-flex; align-items: center; gap: 7px; color: var(--astra-warning); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); }
 .config-foot > span i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .prompt-editor { position: relative; margin-top: 14px; padding: 14px; border: 1px solid var(--astra-primary-border); border-radius: 10px; background: var(--astra-primary-soft); }
-.prompt-editor h3 { margin: 0 0 10px; font: 700 var(--astra-font-label) var(--astra-font-display); }
+.prompt-editor h3 { margin: 0 0 10px; font: var(--astra-weight-bold) var(--astra-font-label) var(--astra-font-display); }
 .prompt-editor label { display: grid; gap: 6px; margin-bottom: 10px; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
 .prompt-editor textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--astra-border); border-radius: 8px; outline: none; background: var(--astra-bg-panel); resize: vertical; }
 .prompt-editor__close { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 28px; height: 28px; color: var(--astra-text-muted); border: 0; border-radius: 7px; background: transparent; cursor: pointer; }

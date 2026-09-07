@@ -19,18 +19,17 @@
         </div>
         <div class="form-grid">
           <label>岗位<input v-model.trim="form.role" required placeholder="测试平台开发" /></label>
-          <label>默认办公区域<select v-model="form.default_work_area" required><option v-for="area in workspaceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select><small>无特定任务场景时，员工会出现在这个区域。</small></label>
+          <FormField label="默认办公区域" help="无特定任务场景时，员工会出现在这个区域。" v-slot="{ id }"><select :id="id" v-model="form.default_work_area" required><option v-for="area in workspaceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select></FormField>
         </div>
         <label>说明<textarea v-model="form.description" rows="4" placeholder="说明该员工的工作职责与边界" /></label>
 
         <fieldset class="config-fieldset">
           <legend>配置状态</legend>
-          <label class="check-row"><AstraSwitch v-model="form.enabled" /><span><strong>启用员工</strong><small>停用后不再自动分配新任务</small></span></label>
+          <FormField class="check-row" label="启用员工" help="停用后不再自动分配新任务" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.enabled" /></FormField>
         </fieldset>
 
         <div v-if="!creating" class="runtime-card">
-          <div class="runtime-card__head"><strong>运行状态</strong><span>{{ runtimeMeta.label }}</span></div>
-          <small>由系统状态机维护（空闲 / 执行中 / 等待输入 / 异常），此表单不可直接修改。</small>
+          <div class="runtime-card__head"><FormLabel label="运行状态" help="由系统状态机维护（空闲 / 执行中 / 等待输入 / 异常），此表单不可直接修改。" /><span>{{ runtimeMeta.label }}</span></div>
           <div class="runtime-card__action">
             <span>{{ paused ? '员工已暂停接单，不会领取新任务。' : '员工可正常领取匹配任务。' }}</span>
             <button type="button" class="button button--compact" :class="{ 'button--warning': !paused }" :disabled="statusChanging || (!paused && currentTaskCount > 0)" @click="toggleRuntime">
@@ -43,29 +42,29 @@
       <div v-else-if="employeeTab === 'scope'" class="scope-config">
         <fieldset class="config-fieldset">
           <legend>支持任务类型</legend>
-          <label class="check-row"><AstraSwitch :model-value="hasType('ISSUE')" @update:model-value="toggleType('ISSUE')" /><span><strong>问题</strong><small>缺陷、故障、异常或已有能力失效</small></span></label>
-          <label class="check-row"><AstraSwitch :model-value="hasType('REQUIREMENT')" @update:model-value="toggleType('REQUIREMENT')" /><span><strong>需求</strong><small>新功能、能力增强、改造、优化或重构</small></span></label>
+          <FormField class="check-row" label="问题" help="缺陷、故障、异常或已有能力失效" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasType('ISSUE')" @update:model-value="toggleType('ISSUE')" /></FormField>
+          <FormField class="check-row" label="需求" help="新功能、能力增强、改造、优化或重构" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasType('REQUIREMENT')" @update:model-value="toggleType('REQUIREMENT')" /></FormField>
         </fieldset>
         <fieldset class="config-fieldset">
           <legend>支持任务分类</legend>
-          <label v-for="category in categories" :key="category.id" class="check-row"><AstraSwitch :model-value="hasCategory(category.id)" @update:model-value="toggleCategory(category.id)" /><span><strong>{{ category.name }}</strong><small>{{ category.description }}</small></span></label>
+          <FormField v-for="category in categories" :key="category.id" class="check-row" :label="category.name" :help="category.description" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasCategory(category.id)" @update:model-value="toggleCategory(category.id)" /></FormField>
         </fieldset>
       </div>
 
       <div v-else-if="employeeTab === 'environment'" data-testid="environment-form">
+        <FormLabel label="工作环境类型" help="本地：NEXUS 所在主机。Linux 远程：SSH 隧道连接 Server。" />
         <div class="environment-mode">
-          <button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地</strong><small>NEXUS 所在主机</small></button>
-          <button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong><small>SSH 隧道连接 Server</small></button>
+          <button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地</strong></button>
+          <button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong></button>
         </div>
-        <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><label>Agent 可执行文件<input v-model.trim="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /><small>正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。</small></label></div>
-        <div class="form-grid"><label>Agent 模型<input v-model.trim="form.environment.model_name" placeholder="opencode/glm-5.1" /><small>留空时使用 Agent 自身或平台默认模型。</small></label><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
-        <label>工作空间<input v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /><small>支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。</small></label>
+        <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><FormField label="Agent 可执行文件" help="正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /></FormField></div>
+        <div class="form-grid"><FormField label="Agent 模型" help="留空时使用 Agent 自身或平台默认模型。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.model_name" placeholder="opencode/glm-5.1" /></FormField><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
+        <FormField label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /></FormField>
         <template v-if="form.environment.mode === 'LINUX_REMOTE'">
           <div class="form-grid"><label>SSH Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>SSH Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div>
-          <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="nexus" /></label><label>SSH 密码<input v-model="form.environment.ssh_password" :required="creating || !employee?.execution_environment?.has_ssh_password" type="password" autocomplete="new-password" :placeholder="employee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></label></div>
-          <label>OpenCode Server Port<input v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /><small>默认 4096，仅监听远程 127.0.0.1，并通过 SSH 隧道访问；无需开放防火墙端口。</small></label>
+          <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="nexus" /></label><FormField label="SSH 密码" help="SSH 密码保存在部署数据库中且接口不回显；已配置时留空保持不变。" v-slot="{ id }"><input :id="id" v-model="form.environment.ssh_password" :required="creating || !employee?.execution_environment?.has_ssh_password" type="password" autocomplete="new-password" :placeholder="employee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></FormField></div>
+          <FormField label="OpenCode Server Port" help="默认 4096，仅监听远程 127.0.0.1，并通过 SSH 隧道访问；无需开放防火墙端口。远程 OpenCode Server 不对公网暴露。" v-slot="{ id }"><input :id="id" v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /></FormField>
         </template>
-        <div class="environment-security"><ShieldCheck :size="15" /><span>SSH 密码保存在部署数据库中且接口不回显；远程 OpenCode Server 只绑定 Linux loopback，不对公网暴露。</span></div>
 
         <div class="env-connection" v-if="!creating">
           <div class="env-connection__row"><strong>工作环境连接</strong><AstraStatusBadge :status="selectedEnvironmentStatus" /></div>
@@ -82,11 +81,10 @@
 
       <div v-else class="config-fieldset policy-block">
         <div class="policy-grid">
-          <label class="check-row"><AstraSwitch v-model="form.auto_claim" /><span><strong>自动领取任务</strong><small>空闲时可以领取匹配的新任务</small></span></label>
-          <label class="check-row"><AstraSwitch v-model="form.auto_execute" /><span><strong>允许自主执行</strong><small>领取后自动启动任务独立执行会话</small></span></label>
+          <FormField class="check-row" label="自动领取任务" help="空闲时可以领取匹配的新任务。每位员工同时只处理一项任务。" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_claim" /></FormField>
+          <FormField class="check-row" label="允许自主执行" help="领取后自动启动任务独立执行会话" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_execute" /></FormField>
         </div>
-        <label class="num-field">最大自动重试次数<input v-model.number="form.max_auto_retries" type="number" min="0" max="20" /><small>用于 Agent 执行异常时的恢复上限；员工工作方法不由 Astra 规定。</small></label>
-        <div class="form-note">每位员工同时只处理一项任务。</div>
+        <FormField class="num-field" label="最大自动重试次数" help="用于 Agent 执行异常时的恢复上限；员工工作方法不由 Astra 规定。" v-slot="{ id }"><input :id="id" v-model.number="form.max_auto_retries" type="number" min="0" max="20" /></FormField>
       </div>
 
       <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div>
@@ -97,7 +95,9 @@
 </template>
 
 <script setup lang="ts">
-import { CheckCircle2, CircleX, Laptop, RefreshCw, Server, ShieldCheck } from 'lucide-vue-next'
+import FormField from '@/components/forms/FormField.vue'
+import FormLabel from '@/components/forms/FormLabel.vue'
+import { CheckCircle2, CircleX, Laptop, RefreshCw, Server } from 'lucide-vue-next'
 import { computed, reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
@@ -252,7 +252,7 @@ defineExpose({ getDirty: () => isDirty.value, reset })
 
 <style scoped>
 .config-fieldset { border: 0; margin: 0 0 16px; padding: 0; }
-.config-fieldset legend { margin-bottom: 9px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
+.config-fieldset legend { margin-bottom: 9px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); text-transform: uppercase; letter-spacing: 0.08em; }
 .field-id > span { color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
 .field-id { gap: 7px; }
 .policy-block .policy-grid { margin-bottom: 12px; }
@@ -260,8 +260,7 @@ defineExpose({ getDirty: () => isDirty.value, reset })
 .runtime-card { display: grid; gap: 8px; padding: 13px 14px; border: 1px solid var(--astra-border); border-radius: 10px; background: rgba(76, 141, 255, 0.04); }
 .runtime-card__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .runtime-card__head strong { font-size: var(--astra-font-control); }
-.runtime-card__head span { color: var(--astra-primary-bright); font-size: var(--astra-font-control); font-weight: 700; }
-.runtime-card > small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+.runtime-card__head > span:not(.astra-form-label) { color: var(--astra-primary-bright); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); }
 .runtime-card__action { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .runtime-card__action span { color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
 .env-connection { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--astra-border); }

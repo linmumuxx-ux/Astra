@@ -192,7 +192,7 @@ onMounted(load)
 .run-stat.active { border-color: var(--astra-primary-border); background: var(--astra-primary-soft); box-shadow: inset 0 0 0 1px var(--astra-primary-border); }
 .run-stat > div { display: flex; align-items: baseline; gap: 6px; }
 .run-stat small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.run-stat strong { font: 650 var(--astra-font-kpi) var(--astra-font-display); letter-spacing: -.03em; }
+.run-stat strong { font: var(--astra-weight-bold) var(--astra-font-kpi) var(--astra-font-display); letter-spacing: -.03em; }
 .run-stat > div em { font-style: normal; color: var(--astra-text-muted); font-size: var(--astra-font-label); }
 .run-stat > span { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .run-stat[data-tone='success'] strong { color: var(--astra-success); }
@@ -200,15 +200,15 @@ onMounted(load)
 .run-secondary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin-bottom: 12px; }
 .run-secondary article { display: grid; padding: 10px 13px; border: 1px solid var(--astra-border); border-radius: 9px; background: var(--astra-bg-panel); }
 .run-secondary small, .run-secondary span { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.run-secondary strong { margin: 2px 0; font: 620 18px var(--astra-font-display); }
+.run-secondary strong { margin: 2px 0; font: var(--astra-weight-bold) var(--astra-font-size-18) var(--astra-font-display); }
 .run-filters { flex-wrap: wrap; }
 .run-filters select { min-width: 128px; }
 .run-filters .date-filter { height: 38px; }
 .range-sep { color: var(--astra-text-muted); }
 .run-table { min-width: 1040px; }
-.run-id-cell { font-family: ui-monospace, monospace; }
+.run-id-cell { font-family: var(--astra-font-family); }
 .task-cell { min-width: 0; }
-.task-cell__title { display: block; max-width: 280px; overflow: hidden; color: var(--astra-text-primary); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.task-cell__title { display: block; max-width: 280px; overflow: hidden; color: var(--astra-text-primary); font-weight: var(--astra-weight-bold); text-overflow: ellipsis; white-space: nowrap; }
 .task-cell__title:hover { color: var(--astra-primary-bright); }
 .task-cell__meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .task-cell__meta span { white-space: nowrap; }

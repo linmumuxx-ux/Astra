@@ -52,7 +52,7 @@ defineEmits<{ (e: 'save'): void; (e: 'cancel'): void }>()
   gap: 8px;
   color: var(--astra-warning);
   font-size: var(--astra-font-control);
-  font-weight: 600;
+  font-weight: var(--astra-weight-bold);
 }
 .sticky-action-bar__status i {
   width: 8px;

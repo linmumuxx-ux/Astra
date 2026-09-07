@@ -90,10 +90,10 @@
     <div v-if="dialogOpen" class="modal-backdrop" data-testid="task-create-modal" @click.self="dialogOpen = false">
       <form class="modal-card task-create-card" @submit.prevent="createTask">
         <header><div><h3>创建任务</h3><p>定义目标和验收标准，执行方式由数字员工决定。</p></div><button type="button" aria-label="关闭创建任务" @click="dialogOpen = false"><X :size="17" /></button></header>
-        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><label>完成策略<select v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select><small>很高/高优先级默认人工确认。</small></label></div></section>
+        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
         <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="5" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><label>附件<input type="file" multiple @change="selectFiles" /><small v-if="attachments.length">已选择 {{ attachments.map((item) => item.name).join('、') }}</small></label></section>
         <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-        <section class="form-section"><h4>执行员工</h4><label>分配方式<select v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select><small>自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。</small></label></section>
+        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
         <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
         <footer><button type="button" class="button" @click="dialogOpen = false">取消</button><button class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button></footer>
       </form>
@@ -109,6 +109,7 @@
 </template>
 
 <script setup lang="ts">
+import FormField from '@/components/forms/FormField.vue'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -285,14 +286,14 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 
 <style scoped>
 .task-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
-.task-head h2 { margin: 7px 0 5px; font: 620 var(--astra-font-title) var(--astra-font-display); letter-spacing: -.02em; }
+.task-head h2 { margin: 7px 0 5px; line-height: normal; letter-spacing: -.02em; }
 .task-head p { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-body); }
 
 .task-tabs { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; padding: 5px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); white-space: nowrap; overflow-x: auto; }
 .task-tabs button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 13px; color: var(--astra-text-secondary); border: 0; border-radius: 7px; background: transparent; font-size: var(--astra-font-control); cursor: pointer; transition: .14s ease; }
 .task-tabs button:hover { background: rgba(101,121,145,.08); }
-.task-tabs button.active { color: var(--astra-primary-bright); background: var(--astra-primary-soft); font-weight: 600; }
-.task-tabs b { min-width: 16px; padding: 1px 6px; border-radius: 8px; color: var(--astra-text-muted); background: rgba(101,121,145,.12); font-size: var(--astra-font-helper); font-weight: 600; text-align: center; }
+.task-tabs button.active { color: var(--astra-primary-bright); background: var(--astra-primary-soft); font-weight: var(--astra-weight-bold); }
+.task-tabs b { min-width: 16px; padding: 1px 6px; border-radius: 8px; color: var(--astra-text-muted); background: rgba(101,121,145,.12); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); text-align: center; }
 .task-tabs button.active b { color: var(--astra-primary-bright); background: rgba(24,184,117,.16); }
 
 .task-filters--more { margin-top: -6px; padding-top: 12px; border-top: 1px dashed var(--astra-border); }
@@ -303,7 +304,7 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .task-table-panel { width: 100%; }
 .task-table-wrap { position: relative; max-height: min(620px, calc(100vh - 360px)); overflow: auto; }
 .task-workbench-table { min-width: 1020px; table-layout: fixed; }
-.task-workbench-table thead th { position: sticky; top: 0; z-index: 6; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--astra-border); background: #f7faf8; color: var(--astra-text-muted); font-size: var(--astra-font-control); font-weight: 600; white-space: nowrap; }
+.task-workbench-table thead th { position: sticky; top: 0; z-index: 6; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--astra-border); background: #f7faf8; color: var(--astra-text-muted); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); white-space: nowrap; }
 .task-workbench-table th:nth-child(1) { width: auto; }
 .task-workbench-table th:nth-child(2) { width: 148px; }
 .task-workbench-table th:nth-child(3) { width: 116px; }
@@ -319,12 +320,12 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 
 .task-cell { min-width: 0; }
 .task-cell__title { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
-.task-cell__title strong { display: -webkit-box; overflow: hidden; color: var(--astra-text-primary); font-weight: 600; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; word-break: break-word; }
-.task-priority { flex: none; align-self: flex-start; margin-top: 1px; display: inline-flex; align-items: center; min-height: 17px; padding: 0 6px; border-radius: 5px; font-size: var(--astra-font-micro); font-weight: 700; }
+.task-cell__title strong { display: -webkit-box; overflow: hidden; color: var(--astra-text-primary); font-weight: var(--astra-weight-bold); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; word-break: break-word; }
+.task-priority { flex: none; align-self: flex-start; margin-top: 1px; display: inline-flex; align-items: center; min-height: 17px; padding: 0 6px; border-radius: 5px; font-size: var(--astra-font-micro); font-weight: var(--astra-weight-bold); }
 .task-priority[data-p='VERY_HIGH'] { color: var(--astra-danger); background: var(--astra-danger-soft); }
 .task-priority[data-p='HIGH'] { color: var(--astra-warning); background: var(--astra-warning-soft); }
 .task-cell__meta { display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); white-space: nowrap; }
-.task-cell__meta span { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.task-cell__meta span { font-family: var(--astra-font-family); }
 .task-cell__meta em { font-style: normal; }
 .task-cell__meta em:not(:empty)::before { content: '·'; margin-right: 7px; color: var(--astra-border-hover); }
 .task-cell__meta em:empty { display: none; }
@@ -334,7 +335,7 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .progress-cell span, .time-cell time { color: var(--astra-text-muted); }
 
 .actions-wrap { display: flex; align-items: center; gap: 6px; }
-.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: #fff; border: 0; border-radius: 7px; background: var(--astra-primary); font-size: var(--astra-font-control); font-weight: 600; cursor: pointer; white-space: nowrap; transition: .14s ease; }
+.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: #fff; border: 0; border-radius: 7px; background: var(--astra-primary); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); cursor: pointer; white-space: nowrap; transition: .14s ease; }
 .task-primary-btn[data-kind='view'] { color: var(--astra-text-secondary); border: 1px solid var(--astra-border); background: var(--astra-bg-panel); }
 .task-primary-btn[data-kind='view']:hover { border-color: var(--astra-border-hover); }
 .task-primary-btn:hover { filter: brightness(.96); }

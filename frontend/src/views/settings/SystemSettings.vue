@@ -3,7 +3,7 @@
     <section class="config-grid">
       <AstraPanel title="运行参数"><dl class="config-list"><div><dt>任务发现 / 分配</dt><dd>30 秒 / 5 秒</dd></div><div><dt>无活动提示</dt><dd>15 分钟（不改变任务状态）</dd></div><div><dt>员工并发</dt><dd>每人 1 项任务</dd></div></dl></AstraPanel>
       <AstraPanel title="平台助手配置" subtitle="助手异常时入口仍保留，不影响任务与员工功能"><dl class="config-list"><div><dt>助手服务</dt><dd>{{ assistantHealth ? (assistantHealth.available ? '正常' : '异常') : '检测中…' }}</dd></div><div><dt>助手 OpenCode</dt><dd>{{ assistantHealth ? (assistantHealth.opencode_healthy ? `正常（${assistantHealth.opencode_version || '未知版本'}）` : '不可用') : '检测中…' }}</dd></div></dl></AstraPanel>
-      <AstraPanel title="界面偏好"><label class="config-row"><AstraSwitch v-model="reducedMotion" @update:model-value="saveMotion" :label="reducedMotion ? '已减少动效' : '未减少动效'" /><span class="row-note">关闭数字办公室的工作动画，适合长时间观看。</span></label></AstraPanel>
+      <AstraPanel title="界面偏好"><FormField :label="reducedMotion ? '已减少动效' : '未减少动效'" help="关闭数字办公室的工作动画，适合长时间观看。" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="reducedMotion" @update:model-value="saveMotion" /></FormField></AstraPanel>
       <AstraPanel title="Agent 执行策略"><dl class="config-list"><div><dt>工作空间</dt><dd>属于员工并长期复用</dd></div><div><dt>会话</dt><dd>每项任务独立，挂起与恢复时保留</dd></div><div><dt>工作方式</dt><dd>由员工自己的 Agent 自主决定</dd></div><div><dt>用量数据</dt><dd>只记录 Agent 实际返回值</dd></div></dl></AstraPanel>
       <AstraPanel title="平台助手服务状态与运行端点" subtitle="仅关心服务是否可用，不混入配置项">
         <div class="service-status-list">
@@ -18,6 +18,7 @@
 </template>
 
 <script setup lang="ts">
+import FormField from '@/components/forms/FormField.vue'
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
@@ -114,9 +115,8 @@ defineExpose({ loadHealth: checkAssistant })
 .system-settings :deep(.config-list) { display: grid; }
 .system-settings :deep(.config-list > div) { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--astra-border); }
 .system-settings :deep(.config-list dt) { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.system-settings :deep(.config-list dd) { margin: 0; color: var(--astra-text-primary); font: 600 var(--astra-font-helper) var(--astra-font-display); text-align: right; }
+.system-settings :deep(.config-list dd) { margin: 0; color: var(--astra-text-primary); font: var(--astra-weight-bold) var(--astra-font-helper) var(--astra-font-display); text-align: right; }
 .config-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--astra-border); }
-.row-note { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .service-status-list { display: grid; gap: 10px; }
 @media (max-width: 900px) { .config-grid { grid-template-columns: 1fr; } }
 </style>

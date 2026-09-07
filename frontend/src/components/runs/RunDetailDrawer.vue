@@ -192,8 +192,8 @@ const timeline = computed<TimelinePoint[]>(() => {
 .run-drawer__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-height: 104px; padding: 18px 22px; border-bottom: 1px solid var(--astra-border); }
 .run-drawer__identity { min-width: 0; }
 .run-drawer__id { display: flex; align-items: center; gap: 9px; }
-.run-drawer__number { color: var(--astra-primary); font-size: var(--astra-font-helper); font-weight: 700; letter-spacing: 0.06em; }
-.run-drawer__identity h2 { margin: 5px 0 2px; font: 700 var(--astra-font-title) var(--astra-font-display); }
+.run-drawer__number { color: var(--astra-primary); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); letter-spacing: 0.06em; }
+.run-drawer__identity h2 { margin: 5px 0 2px; line-height: normal; }
 .run-drawer__identity p { margin: 0; color: var(--astra-text-secondary); }
 .run-drawer__actions { display: flex; align-items: center; gap: 9px; flex: none; }
 .run-drawer__close { display: grid; place-items: center; width: 34px; height: 34px; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 9px; background: var(--astra-bg-panel); cursor: pointer; }
@@ -202,26 +202,26 @@ const timeline = computed<TimelinePoint[]>(() => {
 .run-drawer__statusbar { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border: 1px solid var(--astra-primary-border); border-radius: 10px; background: var(--astra-primary-soft); }
 .run-drawer__statusbar[data-state='FAILED'] { border-color: rgba(255, 111, 125, 0.3); background: var(--astra-danger-soft); }
 .run-drawer__statusbar > span { display: inline-flex; align-items: center; gap: 6px; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
-.run-drawer__statusbar code { padding: 1px 6px; color: var(--astra-danger); border-radius: 5px; background: rgba(255, 111, 125, 0.13); font: 700 var(--astra-font-helper) ui-monospace, monospace; }
+.run-drawer__statusbar code { padding: 1px 6px; color: var(--astra-danger); border-radius: 5px; background: rgba(255, 111, 125, 0.13); font: var(--astra-weight-bold) var(--astra-font-helper) var(--astra-font-family); }
 .run-drawer__muted { color: var(--astra-text-muted) !important; }
 .drawer-section { margin-top: 22px; }
-.drawer-section h3 { margin: 0 0 10px; font: 700 var(--astra-font-label) var(--astra-font-display); color: var(--astra-text-primary); }
+.drawer-section h3 { margin: 0 0 10px; line-height: normal; color: var(--astra-text-primary); }
 .drawer-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 0; }
 .drawer-facts > div { min-width: 0; padding: 10px 12px; border-radius: 9px; background: #f4f8f6; }
 .drawer-facts dt { color: var(--astra-text-muted); font-size: var(--astra-font-body); }
 .drawer-facts dd { overflow: hidden; margin: 4px 0 0; color: var(--astra-text-primary); font-size: var(--astra-font-control); text-overflow: ellipsis; white-space: nowrap; }
 .drawer-facts dd.wrap { white-space: normal; word-break: break-word; }
-.fact-link { display: inline-flex; align-items: center; gap: 4px; color: var(--astra-primary-bright); font-family: ui-monospace, monospace; }
+.fact-link { display: inline-flex; align-items: center; gap: 4px; color: var(--astra-primary-bright); font-family: var(--astra-font-family); }
 .run-costs { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .run-costs article { display: grid; padding: 11px 12px; border: 1px solid var(--astra-border); border-radius: 9px; background: #fafcfb; }
 .run-costs article.span { grid-column: 1 / -1; }
 .run-costs small { color: var(--astra-text-muted); font-size: var(--astra-font-body); }
-.run-costs strong { margin: 3px 0 1px; font: 640 19px var(--astra-font-display); }
-.run-costs strong.session { font: var(--astra-font-control) ui-monospace, monospace; font-weight: 600; }
+.run-costs strong { margin: 3px 0 1px; font: var(--astra-weight-bold) var(--astra-font-size-19) var(--astra-font-display); }
+.run-costs strong.session { font: var(--astra-font-control) var(--astra-font-family); font-weight: var(--astra-weight-bold); }
 .run-costs span { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .tool-list { display: grid; gap: 5px; }
 .tool-row { display: grid; grid-template-columns: minmax(0, 1fr) 64px 52px 52px 72px; gap: 8px; align-items: center; padding: 7px 10px; border: 1px solid var(--astra-border); border-radius: 8px; background: #fafcfb; font-size: var(--astra-font-helper); }
-.tool-name { overflow: hidden; color: var(--astra-text-primary); font-family: ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.tool-name { overflow: hidden; color: var(--astra-text-primary); font-family: var(--astra-font-family); text-overflow: ellipsis; white-space: nowrap; }
 .tool-calls, .tool-ok, .tool-fail, .tool-duration { text-align: right; color: var(--astra-text-muted); white-space: nowrap; }
 .tool-ok { color: var(--astra-success); }
 .tool-fail { color: var(--astra-danger); }
@@ -235,8 +235,8 @@ const timeline = computed<TimelinePoint[]>(() => {
 .run-timeline li[data-tone='success'] .run-timeline__dot { --tone: var(--astra-success); }
 .run-timeline li > div { display: grid; gap: 1px; }
 .run-timeline time { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
-.run-timeline strong { color: var(--astra-text-primary); font-size: var(--astra-font-control); font-weight: 500; }
-.run-timeline small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-family: ui-monospace, monospace; }
+.run-timeline strong { color: var(--astra-text-primary); font-size: var(--astra-font-control); font-weight: var(--astra-weight-regular); }
+.run-timeline small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-family: var(--astra-font-family); }
 .timeline-empty { color: var(--astra-text-muted); font-size: var(--astra-font-helper); padding: 12px 0; }
 @keyframes run-drawer-in { from { transform: translateX(30px); opacity: 0.5; } }
 @media (max-width: 600px) {
