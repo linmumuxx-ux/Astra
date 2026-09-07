@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
 
+const latinPlatformFonts = new Set(['Times New Roman', 'Liberation Serif'])
+const cjkPlatformFonts = new Set(['Microsoft YaHei', 'WenQuanYi Zen Hei'])
+const acceptedPlatformFonts = new Set([...latinPlatformFonts, ...cjkPlatformFonts])
+
 test('主要页面、控件与弹层使用全局字体，实际中英文字形正确', async ({ page }) => {
   const routes = ['/', '/employees', '/employees/astra-01', '/tasks', '/tasks/T-20260827-003', '/runs', '/runs/RUN-DEMO-003', '/library', '/settings', '/interventions']
   const cdp = await page.context().newCDPSession(page)
@@ -24,7 +28,7 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
     const textNodes = await cdp.send('DOM.querySelectorAll', { nodeId: documentNode.root.nodeId, selector: '[data-font-audit]' })
     for (const nodeId of textNodes.nodeIds) {
       const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
-      expect(fonts.every((font: { familyName: string }) => ['Times New Roman', 'Microsoft YaHei'].includes(font.familyName)), `${route}: ${JSON.stringify(fonts)}`).toBeTruthy()
+      expect(fonts.every((font: { familyName: string }) => acceptedPlatformFonts.has(font.familyName)), `${route}: ${JSON.stringify(fonts)}`).toBeTruthy()
     }
 
     const titles = page.locator('.page-intro h2, .task-head h2, .task-title-row h2, .employee-hero h2, .task-hero h2, .library-intro h2')
@@ -34,9 +38,14 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
     }
     await page.screenshot({ path: `../artifacts/typography/${route.replaceAll('/', '_') || 'home'}.png`, fullPage: true })
   }
-  // Inspect actual platform glyphs, not only CSS fallback lists or fonts.check().
+  // Chromium exposes installed platform font names. Ubuntu CI substitutes metrically
+  // compatible fonts when the Windows fonts are unavailable, so verify the semantic
+  // Latin/CJK family rather than a single operating-system-specific family name.
   for (const weight of [400, 700]) {
-    for (const [text, expected] of [['中文正文，。测试', 'Microsoft YaHei'], ['English 0123456789,.;:!?()', 'Times New Roman']]) {
+    for (const [text, accepted] of [
+      ['中文正文，。测试', cjkPlatformFonts],
+      ['English 0123456789,.;:!?()', latinPlatformFonts],
+    ] as const) {
       await page.evaluate(({ text, weight }) => {
         document.getElementById('font-probe')?.remove()
         const probe = document.createElement('span')
@@ -49,7 +58,7 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
       const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#font-probe' })
       const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
       expect(fonts.length).toBeGreaterThan(0)
-      expect(fonts.every((font: { familyName: string }) => font.familyName === expected), JSON.stringify(fonts)).toBeTruthy()
+      expect(fonts.every((font: { familyName: string }) => accepted.has(font.familyName)), JSON.stringify(fonts)).toBeTruthy()
     }
   }
   await page.goto('/tasks')
