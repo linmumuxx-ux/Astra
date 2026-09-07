@@ -428,17 +428,8 @@ class TaskCoordinator:
                 )
                 return
 
-            retry_count = (
-                await session.scalar(
-                    select(func.count(Run.id)).where(
-                        Run.task_id == task.id,
-                        Run.failure_type == "AUTO_RETRY",
-                    )
-                )
-                or 0
-            )
-            if retry_count < employee.max_auto_retries:
-                retry_index = retry_count + 1
+            retry_index = (run.retry_index or 0) + 1
+            if (run.retry_index or 0) < employee.max_auto_retries:
                 task.current_progress = (
                     "Agent 执行异常，正在恢复同一任务会话"
                     f"（{retry_index}/{employee.max_auto_retries}）"
