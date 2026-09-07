@@ -32,7 +32,6 @@ class RunStatus(StrEnum):
     COMPLETED = "COMPLETED"
     PASSED = "PASSED"
     FAILED = "FAILED"
-    BLOCKED = "BLOCKED"
     SUSPENDED = "SUSPENDED"
     TIMEOUT = "TIMEOUT"
     LOST = "LOST"
