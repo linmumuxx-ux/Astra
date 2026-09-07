@@ -181,6 +181,8 @@ class Run(Base):
     employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
     previous_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     run_number: Mapped[int] = mapped_column(Integer)
+    trigger_reason: Mapped[str] = mapped_column(String(64), default="INITIAL", server_default="INITIAL")
+    retry_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")
     executor_type: Mapped[str] = mapped_column(String(64), default="opencode_server")
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
