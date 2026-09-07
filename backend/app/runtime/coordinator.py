@@ -23,10 +23,7 @@ from app.executors.opencode_server import OpenCodeServerExecutor
 from app.executors.process import terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import DigitalEmployee, Evidence, Run, SessionMessage, Task, ToolUsage
-from app.runtime.environment import (
-    ExecutionEnvironmentRuntime,
-    environment_from_snapshot,
-)
+from app.runtime.environment import ExecutionEnvironmentRuntime, environment_from_snapshot
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.result_parser import build_work_result, human_readable_result, parse_human_intervention
 from app.runtime.semantic_events import adapt_open_code_events, extract_agent_text
@@ -293,6 +290,7 @@ class TaskCoordinator:
             "session_id": result.session_id,
             "summary": summary,
             "stderr": result.stderr[-4000:],
+            "failure_code": result.failure_code,
             "usage_source": (
                 "opencode_server_events"
                 if run.executor_type.startswith("opencode_server")
@@ -394,7 +392,7 @@ class TaskCoordinator:
             return
 
         if result.exit_code != 0:
-            if resumed_session and self._session_unavailable(result.stderr, result.stdout):
+            if resumed_session and result.failure_code == "SESSION_NOT_FOUND":
                 task.opencode_session_id = None
                 task.current_progress = "原 Agent 会话不可用，携带现有上下文创建新会话"
                 await service.add_event(
@@ -402,7 +400,10 @@ class TaskCoordinator:
                     "SESSION_RECOVERY",
                     "work",
                     task.current_progress,
-                    {"unavailable_session_id": resumed_session},
+                    {
+                        "unavailable_session_id": resumed_session,
+                        "failure_code": result.failure_code,
+                    },
                     run.id,
                     commit=False,
                 )
@@ -411,7 +412,7 @@ class TaskCoordinator:
                     employee,
                     run,
                     previous_status=RunStatus.FAILED,
-                    failure_type="SESSION_UNAVAILABLE",
+                    failure_type="SESSION_NOT_FOUND",
                     message="原 Agent 会话不可用，已在当前 Worker 创建继续运行",
                     execution_token=execution_token,
                 )
@@ -478,6 +479,7 @@ class TaskCoordinator:
             task.execution_error = {
                 "reason": result.stderr.strip() or summary,
                 "exit_code": result.exit_code,
+                "failure_code": result.failure_code,
                 "session_id": task.opencode_session_id,
                 "current_progress": task.current_progress,
                 "last_activity_at": (
@@ -485,6 +487,9 @@ class TaskCoordinator:
                 ),
                 "occurred_at": datetime.now(UTC).isoformat(),
             }
+            failure_type = result.failure_code or (
+                "EXECUTOR_TIMEOUT" if result.exit_code == 124 else "NONZERO_EXIT"
+            )
             await RuntimeService(session).finalize_run(
                 task,
                 employee,
@@ -494,7 +499,7 @@ class TaskCoordinator:
                 current_progress="执行发生异常，等待恢复",
                 message=f"{employee.name} 的执行发生异常",
                 execution_token=execution_token,
-                failure_type=("EXECUTOR_TIMEOUT" if result.exit_code == 124 else "NONZERO_EXIT"),
+                failure_type=failure_type,
                 employee_status=EmployeeStatus.ERROR,
             )
             return
@@ -589,6 +594,7 @@ class TaskCoordinator:
                     "status": result.status,
                     "exit_code": result.exit_code,
                     "session_id": result.session_id,
+                    "failure_code": result.failure_code,
                     "events": result.output,
                     "stderr": result.stderr,
                     "usage": {
@@ -781,13 +787,6 @@ class TaskCoordinator:
                     semantic.payload,
                     run_id,
                 )
-
-    @staticmethod
-    def _session_unavailable(stderr: str, stdout: str) -> bool:
-        message = f"{stderr}\n{stdout}".lower()
-        return "session" in message and any(
-            phrase in message for phrase in ("not found", "unknown", "invalid", "does not exist")
-        )
 
     @staticmethod
     async def _terminate_executor_processes(executor, run: Run) -> None:
