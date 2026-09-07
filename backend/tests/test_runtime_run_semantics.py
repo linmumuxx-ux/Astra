@@ -1,6 +1,5 @@
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.domain import EmployeeStatus, RunStatus, RunTriggerReason, TaskStatus
 from app.models import Base, DigitalEmployee, Run, Task
