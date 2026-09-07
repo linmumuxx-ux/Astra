@@ -199,6 +199,7 @@ class RuntimeService:
         current_progress: str,
         message: str,
         detail: dict | None = None,
+        trigger_reason: str = "INITIAL",
         reset_runtime_session: bool = False,
         commit: bool = True,
     ) -> Run:
@@ -237,6 +238,8 @@ class RuntimeService:
             employee_id=employee.id,
             previous_run_id=previous_run.id if previous_run else None,
             run_number=run_number,
+            trigger_reason=trigger_reason[:64],
+            retry_index=0,
             status=RunStatus.QUEUED,
             executor_type=executor_type_for_snapshot(snapshot),
             opencode_session_id=task.opencode_session_id,
@@ -254,13 +257,14 @@ class RuntimeService:
         task.finished_at = None
         await self._prepare_outbox(run)
         service = TaskService(self.session)
+        event_detail = {**(detail or {}), "trigger_reason": run.trigger_reason, "retry_index": 0}
         if TaskStatus(task.status) in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
             await service.reopen(
                 task,
                 TaskStatus.QUEUED,
                 current_progress=current_progress,
                 message=message,
-                detail=detail,
+                detail=event_detail,
                 run_id=run.id,
                 commit=False,
             )
@@ -270,7 +274,7 @@ class RuntimeService:
                 TaskStatus.QUEUED,
                 current_progress=current_progress,
                 message=message,
-                detail=detail,
+                detail=event_detail,
                 run_id=run.id,
                 commit=False,
             )
@@ -721,6 +725,18 @@ class RuntimeService:
             )
             or 0
         ) + 1
+        trigger_reason = {
+            "AUTO_RETRY": "AUTO_RETRY",
+            "SESSION_UNAVAILABLE": "SESSION_RECOVERY",
+        }.get(failure_type, "USER_CONTINUE")
+        retry_index = 0
+        if trigger_reason == "AUTO_RETRY":
+            retry_index = (
+                await self.session.scalar(
+                    select(func.max(Run.retry_index)).where(Run.task_id == task.id)
+                )
+                or 0
+            ) + 1
         token = uuid4().hex
         run = Run(
             id=f"RUN-{uuid4().hex[:10].upper()}",
@@ -728,6 +744,8 @@ class RuntimeService:
             employee_id=employee.id,
             previous_run_id=previous_run.id,
             run_number=run_number,
+            trigger_reason=trigger_reason,
+            retry_index=retry_index,
             status=RunStatus.RUNNING,
             executor_type=previous_run.executor_type,
             opencode_session_id=task.opencode_session_id,
@@ -753,7 +771,12 @@ class RuntimeService:
             "RUN_CONTINUED",
             "runtime",
             message,
-            {"previous_run_id": previous_run.id, "failure_type": failure_type},
+            {
+                "previous_run_id": previous_run.id,
+                "failure_type": failure_type,
+                "trigger_reason": trigger_reason,
+                "retry_index": retry_index,
+            },
             run.id,
             commit=False,
         )
