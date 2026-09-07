@@ -68,6 +68,7 @@ test('员工配置说明悬停显示且控件对齐，错误与检测结果保�
   await page.screenshot({ path: '../artifacts/form-help/employee-policy.png', fullPage: true })
   await page.goto('/settings?employee=astra-02')
   await page.getByRole('button', { name: '工作环境', exact: true }).click()
+  await page.getByRole('button', { name: 'Linux 远程', exact: true }).click()
   await checkHelp(page, 'SSH 密码', '接口不回显')
   await checkHelp(page, 'OpenCode Server Port', '默认 4096')
   await expectGridAlignment(page)
