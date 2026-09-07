@@ -21,7 +21,6 @@ const META: Record<string, RunStatusMeta> = {
   STARTING: { level: 'EXECUTING', label: '执行中', tone: 'info', detail: '启动中' },
   RUNNING: { level: 'EXECUTING', label: '执行中', tone: 'info', detail: null },
   WAITING_INPUT: { level: 'WAITING_INPUT', label: '等待输入', tone: 'warning', detail: '等待人工输入' },
-  BLOCKED: { level: 'WAITING_INPUT', label: '等待输入', tone: 'warning', detail: '等待人工处理' },
   SUSPENDED: { level: 'PAUSED', label: '已暂停', tone: 'warning', detail: null },
   COMPLETED: { level: 'COMPLETED', label: '已完成', tone: 'success', detail: null },
   PASSED: { level: 'COMPLETED', label: '已完成', tone: 'success', detail: null },
