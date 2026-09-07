@@ -750,15 +750,13 @@ class RuntimeService:
         trigger_reason = {
             "AUTO_RETRY": RunTriggerReason.AUTO_RETRY.value,
             "SESSION_UNAVAILABLE": RunTriggerReason.SESSION_RECOVERY.value,
+            "SESSION_NOT_FOUND": RunTriggerReason.SESSION_RECOVERY.value,
         }.get(failure_type, RunTriggerReason.USER_CONTINUE.value)
-        retry_index = 0
-        if trigger_reason == RunTriggerReason.AUTO_RETRY.value:
-            retry_index = (
-                await self.session.scalar(
-                    select(func.max(Run.retry_index)).where(Run.task_id == task.id)
-                )
-                or 0
-            ) + 1
+        retry_index = (
+            (previous_run.retry_index or 0) + 1
+            if trigger_reason == RunTriggerReason.AUTO_RETRY.value
+            else 0
+        )
         token = uuid4().hex
         run = Run(
             id=f"RUN-{uuid4().hex[:10].upper()}",
