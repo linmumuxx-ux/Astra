@@ -29,6 +29,12 @@ class OpenCodeServerCapabilityError(RuntimeError):
     pass
 
 
+class OpenCodeSessionNotFound(RuntimeError):
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        super().__init__(f"OpenCode Session 不存在: {session_id}")
+
+
 def split_model(value: str | None) -> tuple[str, str] | None:
     if not value:
         return None
@@ -102,7 +108,7 @@ class OpenCodeServerClient:
                 json=body,
             )
         if response.status_code == 404 and path.startswith("/session/"):
-            raise RuntimeError(f"OpenCode session not found: {path.split('/')[2]}")
+            raise OpenCodeSessionNotFound(path.split("/")[2])
         response.raise_for_status()
         return response.json() if response.content else None
 
@@ -366,6 +372,14 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                     error_message = self._event_error(normalized)
                 if event_type == "session.idle" and event_session == session_id:
                     break
+        except OpenCodeSessionNotFound as exc:
+            return ExecutorResult(
+                status="FAILED",
+                exit_code=1,
+                session_id=exc.session_id,
+                stderr=str(exc),
+                failure_code="SESSION_NOT_FOUND",
+            )
         except TimeoutError:
             if session_id:
                 await self.client.abort(workspace, session_id)
@@ -377,7 +391,17 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
 
         if not session_id:
             return ExecutorResult(status="FAILED", exit_code=1, stderr="OpenCode Session 创建失败")
-        messages = await self.client.messages(workspace, session_id)
+        try:
+            messages = await self.client.messages(workspace, session_id)
+        except OpenCodeSessionNotFound as exc:
+            return ExecutorResult(
+                status="FAILED",
+                exit_code=1,
+                session_id=exc.session_id,
+                output=output,
+                stderr=str(exc),
+                failure_code="SESSION_NOT_FOUND",
+            )
         message_errors = [error for error in self._message_errors(messages) if error not in baseline_errors]
         if message_errors:
             error_message = error_message or "; ".join(message_errors)
@@ -436,7 +460,6 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         try:
             await self.event_callback(event)
         except Exception:
-            # Runtime observation must not interrupt the Agent session.
             return
 
     async def _reply_pending_intervention(self, task: Task, workspace: WorkspacePath) -> bool:
