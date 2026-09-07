@@ -1,59 +1,87 @@
+from types import SimpleNamespace
+
 import pytest
 
 import app.runtime.run_coordinator as run_coordinator_module
-from app.runtime.coordinator import TaskCoordinator
+from app.domain import ExecutionMode
 from app.runtime.run_coordinator import RunCoordinator
 
 
 class _FakeSession:
-    def __init__(self, value):
-        self.value = value
-
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def get(self, model, key):
-        return self.value
-
 
 class _FakeSessionFactory:
-    def __init__(self, value):
-        self.value = value
-
     def __call__(self):
-        return _FakeSession(self.value)
+        return _FakeSession()
 
 
 @pytest.mark.asyncio
-async def test_run_coordinator_rejects_non_run_identifier(monkeypatch):
-    monkeypatch.setattr(run_coordinator_module, "SessionLocal", _FakeSessionFactory(None))
-    called = False
+async def test_run_coordinator_rejects_identifier_without_run_lease(monkeypatch):
+    monkeypatch.setattr(run_coordinator_module, "SessionLocal", _FakeSessionFactory())
+    received = None
 
-    async def parent_process(self, run_id, *, worker_id=None):
-        nonlocal called
-        called = True
+    class FakeRuntime:
+        def __init__(self, session):
+            pass
 
-    monkeypatch.setattr(TaskCoordinator, "process", parent_process)
+        async def claim_run(self, run_id, *, worker_id):
+            nonlocal received
+            received = (run_id, worker_id)
+            return None
+
+    monkeypatch.setattr(run_coordinator_module, "RuntimeService", FakeRuntime)
 
     await RunCoordinator().process("TASK-001", worker_id="worker-1")
 
-    assert called is False
+    assert received == ("TASK-001", "worker-1")
 
 
 @pytest.mark.asyncio
-async def test_run_coordinator_delegates_persisted_run(monkeypatch):
-    monkeypatch.setattr(run_coordinator_module, "SessionLocal", _FakeSessionFactory(object()))
-    received = None
+async def test_run_coordinator_enters_execution_only_after_run_claim(monkeypatch):
+    monkeypatch.setattr(run_coordinator_module, "SessionLocal", _FakeSessionFactory())
+    calls: list[str] = []
+    task = SimpleNamespace(
+        id="TASK-001",
+        opencode_session_id=None,
+        execution_environment_snapshot={},
+    )
+    employee = SimpleNamespace(id="EMP-001")
+    run = SimpleNamespace(
+        id="RUN-001",
+        started_at=None,
+        opencode_session_id=None,
+    )
 
-    async def parent_process(self, run_id, *, worker_id=None):
-        nonlocal received
-        received = (run_id, worker_id)
+    class FakeRuntime:
+        def __init__(self, session):
+            pass
 
-    monkeypatch.setattr(TaskCoordinator, "process", parent_process)
+        async def claim_run(self, run_id, *, worker_id):
+            calls.append(f"claim:{run_id}:{worker_id}")
+            return task, employee, run, "token-1"
+
+        async def mark_running(self, claimed_task, claimed_run, execution_token):
+            calls.append(f"mark:{claimed_run.id}:{execution_token}")
+            return False
+
+    monkeypatch.setattr(run_coordinator_module, "RuntimeService", FakeRuntime)
+    monkeypatch.setattr(
+        RunCoordinator,
+        "_resolve_environment",
+        staticmethod(
+            lambda task, employee: SimpleNamespace(
+                workspace_root="/tmp/astra-runtime-test",
+                mode=ExecutionMode.LINUX_REMOTE,
+                name="test-env",
+            )
+        ),
+    )
 
     await RunCoordinator().process("RUN-001", worker_id="worker-1")
 
-    assert received == ("RUN-001", "worker-1")
+    assert calls == ["claim:RUN-001:worker-1", "mark:RUN-001:token-1"]
