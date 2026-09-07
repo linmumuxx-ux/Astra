@@ -3,6 +3,7 @@ export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
 export type TaskStatus = 'READY' | 'ASSIGNED' | 'QUEUED' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
 export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
 export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
+export type RunTriggerReason = 'INITIAL' | 'MANUAL_START' | 'HUMAN_RESUME' | 'RECOVERY' | 'USER_RERUN' | 'USER_CONTINUE' | 'AUTO_RETRY' | 'SESSION_RECOVERY'
 
 export interface TaskCategory {
   id: string
@@ -164,6 +165,8 @@ export interface Run {
   employee_id: string
   previous_run_id: string | null
   run_number: number
+  trigger_reason: RunTriggerReason
+  retry_index: number
   status: string
   executor_type: string
   opencode_session_id: string | null
