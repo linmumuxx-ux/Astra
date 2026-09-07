@@ -344,7 +344,7 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   await expect(settings.getByText('配置已保存，工作环境检测正常。')).toBeVisible()
 
   await settings.getByRole('button', { name: '基本信息' }).click()
-  await settings.getByLabel('说明').fill('配置中心保存已经通过自动化验证')
+  await settings.getByRole('textbox', { name: '说明', exact: true }).fill('配置中心保存已经通过自动化验证')
   await settings.getByRole('button', { name: '保存配置' }).click()
   await expect(settings.getByText('配置已保存，工作环境状态保持不变。')).toBeVisible()
 
