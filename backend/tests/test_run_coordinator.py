@@ -48,7 +48,7 @@ async def test_run_coordinator_enters_execution_only_after_run_claim(monkeypatch
     task = SimpleNamespace(
         id="TASK-001",
         opencode_session_id=None,
-        execution_environment_snapshot={},
+        execution_environment_snapshot={"workspace_root": "/tmp/astra-runtime-test"},
     )
     employee = SimpleNamespace(id="EMP-001")
     run = SimpleNamespace(
