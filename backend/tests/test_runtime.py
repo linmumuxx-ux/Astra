@@ -41,6 +41,7 @@ from app.runtime.environment import ExecutionEnvironmentRuntime, environment_sna
 from app.runtime.heartbeat import heartbeat_active_employees
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.recovery import reconcile_runtime_state, watchdog_stale_runs
+from app.runtime.run_coordinator import RunCoordinator
 from app.runtime.scout import TaskScout
 from app.runtime.ssh_client import SSHSession
 from app.schemas import TaskCreate
@@ -188,43 +189,34 @@ async def test_runtime_observer_persists_tool_and_subagent_semantics(session):
     assert events[-1].detail["child_session_id"] == "ses_child"
 
 
-async def test_stop_task_finishes_all_legacy_active_runs_and_inquiries(session):
+async def test_stop_task_finishes_waiting_run_and_inquiry(session):
     employee = DigitalEmployee(
-        id="astra-cancel-runs",
+        id="astra-cancel-run",
         name="取消测试员工",
         role="测试员工",
+        status=EmployeeStatus.WAIT_HUMAN,
+        current_task_count=1,
         task_types=["ISSUE"],
         category_ids=["testing-platform"],
     )
     session.add(employee)
     task = await TaskService(session).create(new_task(employee_id=employee.id))
-    runs = [
-        Run(
-                id="RUN-CANCEL-RUNNING",
-                task_id=task.id,
-                employee_id=employee.id,
-                run_number=1,
-                status=RunStatus.RUNNING,
-        ),
-        Run(
-                id="RUN-CANCEL-BLOCKED",
-                task_id=task.id,
-                employee_id=employee.id,
-                run_number=2,
-                status=RunStatus.BLOCKED,
-        ),
-    ]
-    session.add_all(runs)
+    run = Run(
+        id="RUN-CANCEL-WAITING",
+        task_id=task.id,
+        employee_id=employee.id,
+        run_number=1,
+        status=RunStatus.WAITING_INPUT,
+    )
+    session.add(run)
     await session.flush()
-    task.status = TaskStatus.RUNNING
-    task.active_run_id = runs[-1].id
-    employee.status = EmployeeStatus.WORKING
-    employee.current_task_count = 1
-    employee.active_run_id = runs[-1].id
+    task.status = TaskStatus.WAIT_HUMAN
+    task.active_run_id = run.id
+    employee.active_run_id = run.id
     inquiry = await WorkbenchService(session).create_inquiry(
         task,
         question="请补充信息",
-        run_id=runs[-1].id,
+        run_id=run.id,
         commit=False,
     )
     await session.commit()
@@ -236,16 +228,12 @@ async def test_stop_task_finishes_all_legacy_active_runs_and_inquiries(session):
         message="测试停止",
     )
 
-    stored_runs = (
-        (await session.execute(select(Run).where(Run.task_id == task.id).order_by(Run.run_number)))
-        .scalars()
-        .all()
-    )
     await session.refresh(task)
     await session.refresh(employee)
+    await session.refresh(run)
     await session.refresh(inquiry)
-    assert [run.status for run in stored_runs] == [RunStatus.CANCELLED, RunStatus.CANCELLED]
-    assert all(run.finished_at is not None for run in stored_runs)
+    assert run.status == RunStatus.CANCELLED
+    assert run.finished_at is not None
     assert task.active_run_id is None
     assert employee.active_run_id is None
     assert employee.current_task_count == 0
@@ -839,11 +827,11 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
             id=employee_id,
             name="Astra Runtime V0.4",
             role="测试平台员工",
-            status=EmployeeStatus.WORKING,
+            status=EmployeeStatus.IDLE,
             task_types=["ISSUE"],
             category_ids=["testing-platform"],
             max_auto_retries=1,
-            current_task_count=1,
+            current_task_count=0,
         )
         global_session.add(employee)
         global_session.add(
@@ -858,11 +846,17 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
         )
         await global_session.commit()
         task = await TaskService(global_session).create(new_task(employee_id=employee.id))
-        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        run = await RuntimeService(global_session).queue_new_run(
+            task,
+            employee,
+            current_progress="运行已排队",
+            message="测试运行已排队",
+        )
         task_id = task.id
+        run_id = run.id
 
     executor = FailThenPassExecutor()
-    await TaskCoordinator(executor=executor).process(task_id)
+    await RunCoordinator(executor=executor).process(run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
@@ -918,10 +912,10 @@ async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
             id=employee_id,
             name="HITL 同 Run 员工",
             role="测试员工",
-            status=EmployeeStatus.WORKING,
+            status=EmployeeStatus.IDLE,
             task_types=["REQUIREMENT"],
             category_ids=["testing-platform"],
-            current_task_count=1,
+            current_task_count=0,
         )
         global_session.add(employee)
         global_session.add(
@@ -944,16 +938,28 @@ async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
                 acceptance_criteria=[{"content": "打印使用者回答的具体答案"}],
             )
         )
-        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
+        run = await RuntimeService(global_session).queue_new_run(
+            task,
+            employee,
+            current_progress="运行已排队",
+            message="HITL 测试运行已排队",
+        )
         task_id = task.id
+        run_id = run.id
 
     executor = AskThenCompleteExecutor()
-    await TaskCoordinator(executor=executor).process(task_id)
+    await RunCoordinator(executor=executor).process(run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
-        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
-        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
+        task_session = await global_session.scalar(
+            select(TaskSession).where(TaskSession.task_id == task_id)
+        )
+        runs = (
+            (await global_session.execute(select(Run).where(Run.task_id == task_id)))
+            .scalars()
+            .all()
+        )
         inquiry = await global_session.scalar(
             select(RunInquiry).where(RunInquiry.session_id == task_session.id)
         )
@@ -981,18 +987,27 @@ async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
             **(task.human_intervention or {}),
             "response": "自动化验收答案",
         }
-        await TaskService(global_session).transition(task, TaskStatus.RUNNING)
         employee = await global_session.get(DigitalEmployee, employee_id)
-        employee.status = EmployeeStatus.WORKING
-        employee.current_task_count = 1
-        await global_session.commit()
+        resumed_run = await RuntimeService(global_session).queue_waiting_run(
+            task,
+            employee,
+            current_progress="已收到用户回答，正在继续执行",
+            message="用户回答已提交，继续当前 Agent Session",
+        )
+        run_id = resumed_run.id
 
-    await TaskCoordinator(executor=executor).process(task_id)
+    await RunCoordinator(executor=executor).process(run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
-        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
-        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
+        task_session = await global_session.scalar(
+            select(TaskSession).where(TaskSession.task_id == task_id)
+        )
+        runs = (
+            (await global_session.execute(select(Run).where(Run.task_id == task_id)))
+            .scalars()
+            .all()
+        )
         inquiry = await global_session.scalar(
             select(RunInquiry).where(RunInquiry.session_id == task_session.id)
         )
@@ -1057,8 +1072,8 @@ async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
         task_id = task.id
         run_id = run.id
 
-    await TaskCoordinator(executor=RaisingExecutor()).process(run_id)
-    await TaskCoordinator(executor=RaisingExecutor()).process(run_id)
+    await RunCoordinator(executor=RaisingExecutor()).process(run_id)
+    await RunCoordinator(executor=RaisingExecutor()).process(run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
