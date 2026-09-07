@@ -1,4 +1,4 @@
-"""Normalize persisted Run waiting state for the final runtime model."""
+"""Normalize Run waiting, trigger and retry semantics for the final runtime model."""
 
 from __future__ import annotations
 
@@ -22,9 +22,29 @@ def upgrade() -> None:
             "WHERE status = 'BLOCKED'"
         )
     )
+    with op.batch_alter_table("runs") as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "trigger_reason",
+                sa.String(64),
+                nullable=False,
+                server_default="INITIAL",
+            )
+        )
+        batch_op.add_column(
+            sa.Column(
+                "retry_index",
+                sa.Integer(),
+                nullable=False,
+                server_default="0",
+            )
+        )
 
 
 def downgrade() -> None:
-    # The previous representation is ambiguous: WAITING_INPUT rows cannot be
-    # distinguished from rows that used to be BLOCKED. Keep the normalized data.
-    pass
+    with op.batch_alter_table("runs") as batch_op:
+        batch_op.drop_column("retry_index")
+        batch_op.drop_column("trigger_reason")
+    # The previous BLOCKED representation is ambiguous: WAITING_INPUT rows
+    # cannot be distinguished from rows that used to be BLOCKED, so normalized
+    # waiting data is intentionally preserved during downgrade.
