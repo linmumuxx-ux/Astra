@@ -302,6 +302,8 @@ class RunRead(ORMModel):
     employee_id: str
     previous_run_id: str | None
     run_number: int
+    trigger_reason: str
+    retry_index: int
     status: str
     executor_type: str
     opencode_session_id: str | None
