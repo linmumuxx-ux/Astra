@@ -27,7 +27,6 @@ ACTIVE_RUN_STATUSES = {
     RunStatus.STARTING.value,
     RunStatus.RUNNING.value,
     RunStatus.WAITING_INPUT.value,
-    RunStatus.BLOCKED.value,
 }
 TERMINAL_RUN_STATUSES = {
     RunStatus.COMPLETED.value,
@@ -300,7 +299,7 @@ class RuntimeService:
         task = locked_task
         employee = locked_employee
         run = await self.active_run(task.id)
-        if not run or run.status not in {RunStatus.WAITING_INPUT, RunStatus.BLOCKED}:
+        if not run or run.status != RunStatus.WAITING_INPUT:
             raise RuntimeStateError("任务没有可继续的等待中运行")
         if employee.active_run_id not in {None, run.id}:
             raise RuntimeStateError(f"员工已有活动运行：{employee.active_run_id}")
