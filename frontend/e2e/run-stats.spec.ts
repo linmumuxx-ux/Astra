@@ -25,7 +25,7 @@ test('统计保持全量口径，筛选重置分页且展示指标不可点击',
   await page.getByRole('button', { name: '下一页' }).click()
   await expect(page.locator('.run-pagination')).toContainText('第 2 / 27 页')
   expect(await stats.innerText()).toBe(before)
-  await page.locator('.run-secondary').getByRole('button', { name: '失败 58' }).click()
+  await page.locator('.run-secondary').getByRole('button', { name: '异常结束 58' }).click()
   await expect(stats).toContainText('3')
   await expect(page.getByLabel('运行状态', { exact: true })).toHaveValue('FAILED')
   expect(requests.at(-1)?.get('page')).toBe('1')
