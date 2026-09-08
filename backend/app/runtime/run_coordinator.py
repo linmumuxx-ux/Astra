@@ -9,6 +9,8 @@ from pathlib import Path
 from app.database import SessionLocal
 from app.domain import EmployeeStatus, ExecutionMode, RunStatus, TaskStatus
 from app.executors.errors import OpenCodeServerUnavailable, classify_exception
+from app.executors.opencode_prompt import bind_task_prompt_context, resolve_task_prompt_context
+from app.models import TaskCategory
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService
@@ -22,6 +24,14 @@ class RunCoordinator(TaskCoordinator):
     A Worker may execute only a queued Run with a valid runtime lease. Task ids are
     never accepted as execution identifiers; Task and Employee remain projections.
     """
+
+    @staticmethod
+    async def _resolve_prompt_context(session, task):
+        category_id = getattr(task, "category_id", None)
+        if not category_id:
+            return None
+        category = await session.get(TaskCategory, category_id)
+        return resolve_task_prompt_context(task, category)
 
     async def process(self, run_id: str, *, worker_id: str | None = None) -> None:
         async with SessionLocal() as session:
@@ -39,6 +49,8 @@ class RunCoordinator(TaskCoordinator):
             )
             service = TaskService(session)
             try:
+                prompt_context = await self._resolve_prompt_context(session, task)
+                bind_task_prompt_context(task, prompt_context)
                 environment = self._resolve_environment(task, employee)
                 task.execution_environment_snapshot = (
                     task.execution_environment_snapshot or environment_snapshot(environment)
