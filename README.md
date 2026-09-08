@@ -2,74 +2,142 @@
 
 Astra 是面向长期数字员工的任务分配、工作观察、人工介入和结果管理平台。
 
-Astra 定义任务目标、分类、优先级、执行员工和验收标准；任务真正如何完成，由数字员工自己的 Agent 决定。平台不编排员工内部工作步骤，不管理 Skill 或 Tool，也不运行独立 Verifier。当前以 OpenCode Server / Session / Event 作为正式 Runtime；`opencode run` 仅作显式隔离的 CLI fallback。
+平台定义任务目标、分类、优先级、执行员工和验收标准；任务真正如何完成，由数字员工自己的 Agent 决定。当前以 OpenCode Server / Session / Event 作为正式 Runtime，CLI fallback 仅用于隔离测试。
 
-V0.4 保持 V0.3 的职责边界，新增长期连续工作与更直观的数字办公室。当前版本包含：
+当前版本包含：
 
-- 问题 / 需求两种任务类型，以及可配置的任务分类；
-- 自动分配或指定员工，匹配依据为员工状态、任务类型与任务分类；
-- 每名员工一个本地或 Linux 远程 Agent 工作环境、可选模型和长期工作空间；
-- 每项任务独立执行会话，挂起、恢复和重启后优先继续原会话；
-- 持续任务工作台，将用户消息、Runtime Event、Inquiry、Agent / Tool 活动和产物组织在同一长期会话中；
-- 指定员工任务优先、再按优先级和 FIFO 的连续自动领取；
-- 安全挂起、待人工确认、执行异常恢复和无活动提示；
-- 数字办公室、待处理中心与可选“减少动效”；
-- 可读工作进展、详细操作与原始 Run / 日志三层观察；
-- 员工提交的处理结果、逐项验收结果与证据；
-- Run、Task、Employee 和 Platform 四级 Token / Tool 汇总；
-- Vue 3 管理台、FastAPI 后端、MySQL、Redis 与 Celery Worker。
+- 问题 / 需求两种任务类型和可配置任务分类；
+- 自动分配或指定员工；
+- 本地或 Linux SSH 远程 Agent 工作环境；
+- 每项任务独立执行会话，支持挂起、恢复和异常处理；
+- 持续任务工作台、数字办公室和待处理中心；
+- 任务结果、逐项验收证据及 Run / Token / Tool 汇总；
+- Vue 3 管理台、FastAPI、MySQL、Redis、Celery 与 OpenCode Server。
 
-## 快速启动
+## 环境要求
 
-后端需要 Python 3.11+，前端需要 Node.js 20+。Windows 公司电脑推荐直接使用仓库中的 PowerShell 脚本：
+- Python 3.11+
+- Node.js 20+
+- Redis 6+
+- 正式环境：MySQL 8.0+
+- OpenCode Server 1.18.25 或已验证兼容版本
+
+Astra 不再维护多套 bat / sh / PowerShell 启停脚本。服务生命周期统一由 Python 管理。
+
+## 首次安装
+
+Windows 公司环境：
 
 ```powershell
 git clone git@github.com:linxuyiyi/Astra.git
 cd Astra
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
-# 编辑根目录 .env 中的 MySQL、Redis、Agent 和目录配置
-powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
 ```
 
-访问 `http://localhost:5173`；停止时运行 `scripts\stop-windows.ps1`。Python 3.8 不属于当前支持范围。
+首次安装会从 `deploy\astra.env.windows.example` 生成根目录 `.env`。完成 MySQL、Redis、OpenCode 和目录配置后，可执行：
 
-Linux 开发环境可手动启动：
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-alembic upgrade head
-uvicorn app.main:app --reload --port 8100
+```powershell
+.\.venv\Scripts\python.exe .\scripts\preflight.py
 ```
 
-另开一个终端启动 Redis、任务分配器和 Agent Worker：
+`setup-windows.ps1` 仅负责首次安装；平台启停统一使用 `scripts/astra_service.py`。
 
-```bash
-./scripts/runtime.sh
+## 开发环境
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\astra_service.py dev
 ```
 
-该进程必须保持运行，否则页面仍可访问，但新任务会一直停在“待领取”。脚本会分别启动 Beat、控制 Worker 与 Agent Worker，长时间 Agent 执行不会阻塞领取、恢复和心跳；同时会启动并检查数字员工和平台助手各自的 OpenCode Server，并复用 `ASTRA_REDIS_URL` 指定的 Redis。本地默认 Redis 未运行时，会尝试启动随进程关闭的临时实例。助手启动失败时会降级，不阻断核心任务运行。
+默认执行 `start`。常用命令：
 
-运行入队会在同一数据库事务中创建 Run、占用 Task/Employee 租约并写入 Outbox；Redis 短暂不可用时仍保持 `QUEUED`，由控制 Worker 重投。Agent Worker 以 execution token 及 Run heartbeat 报活；watchdog 发现心跳丢失时会先检查 OpenCode Session，仍在 busy 的 Session 不会重复执行，无法恢复时才标记 `LOST` 并等待明确重跑。
-
-再开一个终端启动管理台：
-
-```bash
-cd frontend
-npm ci
-npm run dev
+```powershell
+.\.venv\Scripts\python.exe .\scripts\astra_service.py dev status
+.\.venv\Scripts\python.exe .\scripts\astra_service.py dev restart
+.\.venv\Scripts\python.exe .\scripts\astra_service.py dev stop
 ```
 
-访问 `http://localhost:5173`，API 文档位于 `http://localhost:8100/docs`。
+开发模式：
 
-## 正式部署
+- Backend：Uvicorn `--reload`
+- Frontend：Vite Dev Server
+- 自动执行 Alembic migration 和 preflight
+- 启动 Beat、Control Worker、Agent Worker
+- 按配置启动员工 OpenCode Server、平台助手 OpenCode Server 和 Library MCP
 
-项目采用原生进程部署，不包含容器部署配置。公司 Windows 环境使用 PowerShell 安装、自检和启停脚本，正式配置以 MySQL 为主；Linux 环境可由 systemd 守护 FastAPI 和 Celery，并由 Nginx 托管前端产物。员工工作空间是主机上的长期工程目录，当前使用 OpenCode 适配器时，OpenCode 安装在实际执行 Worker 的 Windows 主机或远程 Linux 主机。Linux 远程通过 SSH Tunnel 访问只监听目标机 loopback 的 OpenCode Server，Session/Event/Question/Abort 与本地模式一致，无需开放 Server 端口。
+访问：
 
-完整安装、systemd、Nginx、升级、备份和停止步骤见[部署手册](docs/DEPLOYMENT.md)。
+- 管理台：`http://localhost:5173`
+- API：`http://localhost:8100/api/health`
+- API 文档：`http://localhost:8100/docs`
+
+## 正式环境
+
+根目录 `.env` 至少应满足：
+
+```dotenv
+ASTRA_ENVIRONMENT=production
+ASTRA_DATABASE_BACKEND=mysql
+ASTRA_SEED_DEMO=false
+ASTRA_EXECUTOR_TYPE=opencode_server
+```
+
+启动：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro
+```
+
+管理：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro status
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro restart
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro stop
+```
+
+正式模式会在启动前：
+
+1. 校验生产配置；
+2. 执行数据库迁移；
+3. 执行环境自检；
+4. 构建前端生产产物；
+5. 启动并检查完整服务链路。
+
+Astra 的 Control Worker、Agent Worker 和 Beat 必须独立运行。长时间 Agent 任务不能与控制任务合并到同一个 `solo` Worker。
+
+日志写入 `ASTRA_LOG_DIR`，服务 PID 和启动模式记录在 `ASTRA_RUNTIME_DIR/astra-service.json`。
+
+## 质量验证
+
+质量门禁同样统一为 Python：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\verify.py
+```
+
+包含：
+
+- Ruff
+- 后端全量测试
+- 前端类型检查
+- 前端生产构建
+- 隔离 Chromium E2E
+
+E2E 可单独执行：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\e2e.py
+```
+
+CI 使用相同入口，不再依赖 Shell 脚本。
+
+## Runtime 说明
+
+运行入队会在同一数据库事务中创建 Run、占用 Task / Employee 租约并写入 Outbox。Redis 短暂不可用时任务保持 `QUEUED`，由控制 Worker 重投。
+
+Agent Worker 使用 execution token 和 Run heartbeat 报活。watchdog 发现心跳丢失后先检查 OpenCode Session；仍在 busy 的 Session 不会重复执行，无法恢复时才标记 `LOST` 并等待明确重跑。
+
+平台助手使用独立 OpenCode Server；助手启动失败时降级，不阻断任务核心 Runtime。
 
 ## 创建任务示例
 
@@ -92,19 +160,14 @@ npm run dev
 }
 ```
 
-任务中不填写工程路径、Workspace、Skill、Tool、模型、执行命令或验证脚本；模型在员工的 Agent 工作环境中配置。
+任务中不填写工程路径、Workspace、Skill、Tool、模型、执行命令或验证脚本；这些属于员工 Agent 工作环境。
 
 ## 文档
 
-- [V0.4 操作使用指南](docs/USER_GUIDE.md)
-- [V0.4 部署手册](docs/DEPLOYMENT.md)
-- [V0.4 实现与需求映射](docs/implementation-brief.md)
-- [数字办公室设计说明与参考案例](docs/design/DIGITAL_OFFICE.md)
-- [持续任务工作台设计与实现](docs/design/TASK_WORKBENCH.md)
-- [平台助手方案设计](docs/design/PLATFORM_ASSISTANT.md)
-- [平台助手真实验收报告](docs/verification/PLATFORM-ASSISTANT-2026-09-04.md)
-- [持续任务工作台语义与 HITL 验收报告](docs/verification/TASK-WORKBENCH-2026-08-30.md)
-- [V0.4 功能、系统 E2E 与真实 Agent 验收报告](docs/verification/E2E-V0.4-2026-08-28.md)
+- [操作使用指南](docs/USER_GUIDE.md)
+- [部署手册](docs/DEPLOYMENT.md)
+- [实现与需求映射](docs/implementation-brief.md)
+- [数字办公室](docs/design/DIGITAL_OFFICE.md)
+- [持续任务工作台](docs/design/TASK_WORKBENCH.md)
+- [平台助手](docs/design/PLATFORM_ASSISTANT.md)
 - [原始需求资料](docs/requirements/README.md)
-
-V0.1–V0.4 原始需求及原型资料均保存在仓库中。当前质量门禁包含后端全量测试、前端类型检查与生产构建，以及 13 项默认执行的 Chromium E2E；另有 1 项真实平台助手 E2E 在显式启用后运行。可重复系统 E2E 显式使用隔离的 CLI fixture。另已使用 OpenCode 1.18.25 + `opencode/glm-5.1` 真实验收 Server Session、SSE、Tool、Subagent、Question/Resume、Abort、并发隔离和 Astra Coordinator 端到端执行。

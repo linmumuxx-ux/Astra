@@ -41,6 +41,7 @@ $Npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $Npm) {
     throw "未找到 npm.cmd。请安装 Node.js 20+ 并加入 PATH。"
 }
+
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
     & $Npm.Source ci
@@ -51,6 +52,7 @@ try {
 if ($NpmExitCode -ne 0) {
     throw "前端依赖安装失败（npm ci 退出码：$NpmExitCode）。"
 }
+
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
     & $Npm.Source run build
@@ -67,4 +69,8 @@ if (-not (Test-Path $EnvironmentFile)) {
     Copy-Item (Join-Path $ProjectRoot "deploy\astra.env.windows.example") $EnvironmentFile
     Write-Host "已生成 .env，请先填写 MySQL、Redis 和 OpenCode 配置：$EnvironmentFile"
 }
-Write-Host "安装完成。编辑 .env 后运行 scripts\check-windows.ps1。"
+
+Write-Host "安装完成。"
+Write-Host "环境检查：.\.venv\Scripts\python.exe .\scripts\preflight.py"
+Write-Host "开发启动：.\.venv\Scripts\python.exe .\scripts\astra_service.py dev"
+Write-Host "正式启动：.\.venv\Scripts\python.exe .\scripts\astra_service.py pro"
