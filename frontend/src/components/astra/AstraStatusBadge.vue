@@ -3,7 +3,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { statusLabel, statusTone } from '@/utils/format'
-const props = defineProps<{ status: string; pulse?: boolean }>()
-const label = computed(() => statusLabel(props.status))
+const props = defineProps<{ status: string; label?: string; pulse?: boolean }>()
+const label = computed(() => props.label ?? statusLabel(props.status))
 const tone = computed(() => statusTone(props.status))
 </script>

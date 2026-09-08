@@ -35,6 +35,7 @@ class ExecutorResult:
     stderr: str = ""
     model_name: str | None = None
     inquiry: dict[str, Any] | None = None
+    failure_code: str | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tool_usage: list[ToolUsageResult] = field(default_factory=list)
 
@@ -56,6 +57,6 @@ class AgentExecutor(ABC):
     async def collect_result(self, run: Run) -> dict[str, Any]: ...
 
 
-# Backward-compatible aliases for existing adapters and tests.
+# Executor interface names used by the concrete adapters.
 CLIExecutor = AgentExecutor
 OpenCodeExecutor = AgentExecutor

@@ -11,6 +11,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from app.executors.errors import OpenCodeServerUnavailable
 from app.executors.opencode_server import OpenCodeServerClient, OpenCodeServerExecutor
 from app.executors.process import local_command, process_group_options
 
@@ -157,7 +158,7 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                     await asyncio.sleep(0.2)
                 raise TimeoutError(f"Serve 启动超时：{last_error}；日志：{log_path}")
         except Exception as exc:
-            raise RuntimeError(
+            raise OpenCodeServerUnavailable(
                 f"员工 {self.environment.employee_id}；环境 {self.environment.name} (LOCAL)；"
                 f"Workspace={self.workspace}；Server Port={port}；"
                 f"启动方式=本机后台进程；{exc}"

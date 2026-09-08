@@ -40,9 +40,7 @@ RUN_STATUS_LABEL = {
     "RUNNING": "执行中",
     "WAITING_INPUT": "等待输入",
     "COMPLETED": "已完成",
-    "PASSED": "已通过",
     "FAILED": "已失败",
-    "BLOCKED": "受阻",
     "SUSPENDED": "已挂起",
     "TIMEOUT": "已超时",
     "LOST": "运行丢失",
@@ -134,8 +132,8 @@ def run_card(run: Run) -> dict[str, Any]:
     ]
     if run.exit_code is not None:
         fields.append({"label": "退出码", "value": str(run.exit_code)})
-    if run.failure_type:
-        fields.append({"label": "失败类型", "value": run.failure_type})
+    if run.failure_code:
+        fields.append({"label": "失败类型", "value": run.failure_code})
     if run.worker_id:
         fields.append({"label": "Worker", "value": run.worker_id})
     return {

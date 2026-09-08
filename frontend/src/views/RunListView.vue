@@ -56,7 +56,7 @@
                 <div class="task-cell__meta"><IdDisplay :value="run.task_id" :max-width="120" :copyable="false" @click.stop /><span>第 {{ run.run_number }} 次执行</span></div>
               </td>
               <td class="employee-cell">{{ employeeName(run.employee_id) }}</td>
-              <td class="status-cell"><RunStatusBadge :status="run.status" /></td>
+              <td class="status-cell"><RunStatusBadge :run="run" /></td>
               <td class="time-cell">{{ formatTime(run.started_at) }}</td>
               <td class="time-cell">{{ formatDuration(run.started_at, run.finished_at) }}</td>
               <td class="num-cell">{{ formatTokens(run.total_tokens) }}</td>
@@ -118,12 +118,15 @@ const filters = reactive({
 })
 
 const levelOptions: Array<{ id: RunLevelStatus; label: string }> = [
-  { id: 'WAITING', label: '等待执行' },
-  { id: 'EXECUTING', label: '执行中' },
+  { id: 'QUEUED', label: '等待执行' },
+  { id: 'STARTING', label: '启动中' },
+  { id: 'RUNNING', label: '执行中' },
   { id: 'WAITING_INPUT', label: '等待输入' },
-  { id: 'PAUSED', label: '已暂停' },
+  { id: 'SUSPENDED', label: '已暂停' },
   { id: 'COMPLETED', label: '已完成' },
   { id: 'FAILED', label: '执行失败' },
+  { id: 'TIMEOUT', label: '执行超时' },
+  { id: 'LOST', label: '运行丢失' },
   { id: 'CANCELLED', label: '已取消' },
 ]
 const stats = ref<RunStats | null>(null)

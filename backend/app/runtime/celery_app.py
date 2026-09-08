@@ -4,7 +4,6 @@ from celery import Celery
 
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
-from app.runtime.coordinator import TaskCoordinator
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
 from app.runtime.lifecycle import RuntimeService
@@ -12,9 +11,11 @@ from app.runtime.recovery import (
     audit_incomplete_tasks,
     reconcile_runtime_state,
     recover_available_tasks,
+    recover_session_cleanup,
     retry_stale_queued_runs,
     watchdog_stale_runs,
 )
+from app.runtime.run_coordinator import RunCoordinator
 from app.runtime.scout import TaskScout
 from app.sources.nr_test_system import NrTestSystemSource
 
@@ -101,7 +102,7 @@ def dispatch() -> str | None:
 @celery.task(bind=True, name="astra.process-task")
 def process_task(self, run_id: str) -> None:
     worker_id = str(getattr(self.request, "hostname", "") or "agent-worker")
-    run_async(TaskCoordinator().process(run_id, worker_id=worker_id))
+    run_async(RunCoordinator().process(run_id, worker_id=worker_id))
 
 
 @celery.task(name="astra.outbox-dispatch")
@@ -138,16 +139,19 @@ def recovery() -> dict[str, list[str]]:
         await init_database()
         async with SessionLocal() as session:
             inactive = await audit_incomplete_tasks(session, settings)
-            resumed = await recover_available_tasks(session)
             redispatched = await retry_stale_queued_runs(session, settings)
             watchdog = await watchdog_stale_runs(session, settings)
             reconciled = await reconcile_runtime_state(session)
+            cleaned = await recover_session_cleanup(session, settings)
+            resumed = await recover_available_tasks(session)
+            await RuntimeService(session).publish_pending_outbox()
             return {
                 "inactive": inactive,
                 "resumed": resumed,
                 "redispatched": redispatched,
                 "watchdog": watchdog,
                 "reconciled": reconciled,
+                "cleaned": cleaned,
             }
 
     return run_async(execute())

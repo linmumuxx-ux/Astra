@@ -51,7 +51,7 @@
                 <div class="task-cell__meta"><span>{{ task.id }}</span><em :title="taskTypeLabel(task.task_type)">{{ taskTypeLabel(task.task_type) }}</em><em v-if="isTerminal(task.status)">已完成</em></div>
               </td>
               <td class="type-cell"><span :title="typeCopy(task)">{{ typeCopy(task) }}</span></td>
-              <td class="status-cell"><AstraStatusBadge :status="task.status" :pulse="task.status === 'RUNNING'" /></td>
+              <td class="status-cell"><AstraStatusBadge :status="task.runtime_state" :label="task.runtime_status_label" :pulse="task.status === 'RUNNING'" /></td>
               <td class="employee-cell"><span :title="employeeName(task.employee_id)">{{ employeeName(task.employee_id) }}</span></td>
               <td class="progress-cell"><span :title="progressCopy(task)">{{ progressCopy(task) }}</span></td>
               <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>

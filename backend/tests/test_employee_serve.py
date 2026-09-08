@@ -196,7 +196,11 @@ async def test_abort_api_uses_snapshot_employee_port(monkeypatch):
             "opencode_server_port": 44101,
         },
     )
+    from unittest.mock import AsyncMock
+    confirmed = AsyncMock()
+    monkeypatch.setattr(routes.RuntimeService, "confirm_session_aborted", confirmed)
     assert await routes._abort_opencode_session(task, None)
+    confirmed.assert_awaited_once_with(task.id, task.opencode_session_id)
     assert observed == ["http://127.0.0.1:44101"]
 
 

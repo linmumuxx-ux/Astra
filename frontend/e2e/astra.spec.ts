@@ -165,7 +165,7 @@ test('创建任务仅填写业务事实且高优先级默认人工确认', async
   await expect(modal.getByText('验证脚本')).toHaveCount(0)
 
   const priority = modal.getByLabel('优先级 *')
-  const completionPolicy = modal.locator('label').filter({ hasText: '完成策略' }).locator('select')
+  const completionPolicy = modal.getByLabel('完成策略', { exact: true })
   await priority.selectOption('HIGH')
   await expect(completionPolicy).toHaveValue('MANUAL_CONFIRM')
 
@@ -296,8 +296,8 @@ test('员工配置只管理工作范围、工作环境和简单策略', async ({
   await expect(settings.getByText('能力标签')).toHaveCount(0)
   await expect(settings.getByText('技能标签')).toHaveCount(0)
   await settings.getByRole('button', { name: '工作环境' }).click()
-  await expect(settings.getByLabel('工作空间')).toHaveValue('./workspaces/astra-01')
-  await expect(settings.getByLabel('Agent 模型')).toHaveValue('deepseek/deepseek-v4-flash')
+  await expect(settings.getByLabel('工作空间', { exact: true })).toHaveValue('./workspaces/astra-01')
+  await expect(settings.getByLabel('Agent 模型', { exact: true })).toHaveValue('deepseek/deepseek-v4-flash')
 })
 
 test('配置保存保持环境可用且任务会话覆盖真实询问、恢复、追问与普通执行', async ({ page, request }) => {
@@ -323,7 +323,7 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
         port: 22,
         opencode_path: 'opencode',
         model_name: 'e2e/original-model',
-        workspace_root: `./workspaces/${employeeId}`,
+        workspace_root: process.env.E2E_EMPLOYEE_WORKSPACE ?? './workspaces',
         labels: [],
       },
     },
@@ -338,13 +338,13 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   const employeeButton = settings.locator('.settings-employee').filter({ hasText: employeeName })
   await expect(employeeButton).toContainText('空闲')
   await settings.getByRole('button', { name: '工作环境' }).click()
-  await expect(settings.getByLabel('Agent 模型')).toHaveValue('e2e/original-model')
-  await settings.getByLabel('Agent 模型').fill('deepseek/deepseek-v4-flash')
+  await expect(settings.getByLabel('Agent 模型', { exact: true })).toHaveValue('e2e/original-model')
+  await settings.getByLabel('Agent 模型', { exact: true }).fill('deepseek/deepseek-v4-flash')
   await settings.getByRole('button', { name: '保存配置' }).click()
   await expect(settings.getByText('配置已保存，工作环境检测正常。')).toBeVisible()
 
   await settings.getByRole('button', { name: '基本信息' }).click()
-  await settings.getByLabel('说明').fill('配置中心保存已经通过自动化验证')
+  await settings.getByRole('textbox', { name: '说明', exact: true }).fill('配置中心保存已经通过自动化验证')
   await settings.getByRole('button', { name: '保存配置' }).click()
   await expect(settings.getByText('配置已保存，工作环境状态保持不变。')).toBeVisible()
 
@@ -364,7 +364,7 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   await modal.getByLabel('任务分类 *').selectOption('testing-platform')
   await modal.getByLabel('任务描述 *').fill('先向使用者询问要打印的答案，收到回答后打印该答案。')
   await modal.getByPlaceholder('验收标准 1').fill('打印使用者回答的具体答案')
-  await modal.getByLabel('分配方式').selectOption(employeeId)
+  await modal.getByLabel('分配方式', { exact: true }).selectOption(employeeId)
   await modal.getByRole('button', { name: '创建任务', exact: true }).click()
   await page.waitForURL(/\/tasks\/T-[A-Z0-9-]+$/)
   const taskId = new URL(page.url()).pathname.split('/').at(-1)!
@@ -390,7 +390,7 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   const detail = page.getByTestId('task-detail-page')
   await expect(detail.getByLabel('任务对话').getByText('先向使用者询问要打印的答案，收到回答后打印该答案。')).toBeVisible()
   await expect(detail.getByText('请告诉我这次需要打印的具体答案是什么？', { exact: true })).toBeVisible()
-  await expect(detail.getByText('等待输入', { exact: true }).first()).toBeVisible()
+  await expect(detail.getByText('等待人工输入', { exact: true }).first()).toBeVisible()
   await expect(detail.getByText('运行元数据已更新')).toHaveCount(0)
   await expect(detail.getByText('模型用量')).toHaveCount(0)
   await detail.getByLabel('给数字员工的指令').fill('自动化验收答案')

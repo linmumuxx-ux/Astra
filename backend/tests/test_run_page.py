@@ -25,11 +25,11 @@ def test_run_page_aggregates_full_filter_before_pagination():
         ).json()
         statuses = [
             "COMPLETED",
-            "PASSED",
+            "COMPLETED",
             "FAILED",
             "TIMEOUT",
             "LOST",
-            "BLOCKED",
+            "FAILED",
             "QUEUED",
             "STARTING",
             "RUNNING",

@@ -278,7 +278,7 @@ def _run_summary(run: Run) -> dict[str, Any]:
         "exit_code": run.exit_code,
         "worker_id": run.worker_id,
         "executor_status": run.executor_status,
-        "failure_type": run.failure_type,
+        "failure_code": run.failure_code,
         "total_tokens": run.total_tokens,
         "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -314,7 +314,7 @@ async def run_failure_summary(session: AsyncSession, *, task_id: str | None = No
     """后端汇总失败现场，再交给模型解释。"""
     query = select(Run).where(
         Run.status.in_(
-            [RunStatus.FAILED, RunStatus.TIMEOUT, RunStatus.LOST, RunStatus.BLOCKED]
+            [RunStatus.FAILED, RunStatus.TIMEOUT, RunStatus.LOST]
         )
     )
     if task_id:

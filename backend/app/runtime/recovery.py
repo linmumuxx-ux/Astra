@@ -6,12 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import Settings
-from app.domain import EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
+from app.domain import EmployeeStatus, EnvironmentStatus, RunStatus, RunTriggerReason, TaskStatus
+from app.executors.errors import OpenCodeSessionNotFound
 from app.models import DigitalEmployee, Event, Run, Task
 from app.runtime.coordinator import TaskCoordinator
-from app.runtime.lifecycle import ACTIVE_RUN_STATUSES, TERMINAL_RUN_STATUSES, RuntimeService
+from app.runtime.failure import FailureCode
+from app.runtime.lifecycle import RuntimeService
 from app.runtime.result_parser import build_work_result
-from app.services import EmployeeService, TaskService
+from app.services import WorkbenchService
 
 RECOVERABLE_STATUSES = {
     TaskStatus.RUNNING,
@@ -106,7 +108,15 @@ async def recover_available_tasks(session: AsyncSession) -> list[str]:
             EmployeeStatus.PAUSED,
         }:
             continue
-        if not environment_checked_after_error(task, employee):
+        previous = await session.scalar(
+            select(Run).where(Run.task_id == task.id).order_by(Run.run_number.desc()).limit(1)
+        )
+        if not previous or not previous.retryable:
+            continue
+        if previous.recovery_action == "WAIT_ENVIRONMENT":
+            if not environment_checked_after_error(task, employee):
+                continue
+        elif (previous.retry_index or 0) >= employee.max_auto_retries:
             continue
         task.execution_error = {
             **(task.execution_error or {}),
@@ -115,10 +125,19 @@ async def recover_available_tasks(session: AsyncSession) -> list[str]:
         run = await runtime.queue_new_run(
             task,
             employee,
-            current_progress="执行环境已恢复，正在继续原任务",
-            message="执行环境恢复，自动继续原 Agent 会话",
-            detail={"recovery": "environment"},
+            current_progress="正在恢复原任务",
+            message="Runtime 自动创建恢复运行",
+            detail={"recovery": previous.failure_code},
+            trigger_reason=(
+                RunTriggerReason.WORKER_RECOVERY
+                if previous.failure_scope == "WORKER"
+                else RunTriggerReason.AUTO_RETRY
+            ),
+            reset_runtime_session=previous.recovery_action == "CREATE_SESSION",
+            commit=False,
         )
+        run.retry_index = (previous.retry_index or 0) + 1
+        await session.commit()
         resumed.append(run.id)
     return resumed
 
@@ -128,20 +147,17 @@ async def retry_stale_queued_runs(session: AsyncSession, settings: Settings) -> 
 
     retry_before = datetime.now(UTC) - timedelta(seconds=settings.recovery_interval)
     rows = (
-        (
-            await session.execute(
-                select(Run, Task)
-                .join(Task, Run.task_id == Task.id)
-                .where(
-                    Run.status == RunStatus.QUEUED,
-                    Task.status == TaskStatus.QUEUED,
-                    or_(Run.dispatched_at.is_(None), Run.dispatched_at < retry_before),
-                )
-                .order_by(Run.queued_at)
+        await session.execute(
+            select(Run, Task)
+            .join(Task, Run.task_id == Task.id)
+            .where(
+                Run.status == RunStatus.QUEUED,
+                Task.status == TaskStatus.QUEUED,
+                or_(Run.dispatched_at.is_(None), Run.dispatched_at < retry_before),
             )
+            .order_by(Run.queued_at)
         )
-        .all()
-    )
+    ).all()
     retried: list[str] = []
     runtime = RuntimeService(session)
     for run, task in rows:
@@ -157,12 +173,12 @@ async def _probe_executor_status(
     run: Run,
     settings: Settings,
 ) -> tuple[str, dict | None]:
-    if (
-        not run.executor_type.startswith("opencode_server")
-        or not run.opencode_session_id
-        or not (run.execution_environment_snapshot or {}).get("workspace_root")
-    ):
+    if not run.opencode_session_id:
         return "MISSING", None
+    if not run.executor_type.startswith("opencode_server") or not (
+        run.execution_environment_snapshot or {}
+    ).get("workspace_root"):
+        return "PROBE_ERROR", {"error": "执行现场缺少可探测的 Server 环境"}
     try:
         coordinator = TaskCoordinator()
         environment = coordinator._resolve_environment(task, employee)
@@ -173,9 +189,11 @@ async def _probe_executor_status(
         )
         normalized = str(status or "UNKNOWN").upper()
         result = None
-        if normalized in {"IDLE", "FINISHED", "COMPLETED", "DONE"}:
+        if normalized in {"IDLE", "FINISHED", "COMPLETED", "DONE", "WAITING_INPUT"}:
             result = await executor.collect_result(run)
         return normalized, result
+    except OpenCodeSessionNotFound:
+        return "MISSING", None
     except Exception as exc:
         return "PROBE_ERROR", {"error": str(exc)[:2000]}
 
@@ -199,7 +217,7 @@ async def watchdog_stale_runs(
                     or_(
                         (
                             (Run.status == RunStatus.STARTING)
-                            & (Run.started_at < startup_before)
+                            & or_(Run.started_at.is_(None), Run.started_at < startup_before)
                             & or_(Run.heartbeat_at.is_(None), Run.heartbeat_at < startup_before)
                         ),
                         (
@@ -218,47 +236,6 @@ async def watchdog_stale_runs(
     await session.commit()
     for candidate in rows:
         runtime = RuntimeService(session)
-        if candidate.status == RunStatus.STARTING:
-            task = await runtime.lock_task(candidate.task_id)
-            employee = await runtime.lock_employee(candidate.employee_id)
-            run = await session.scalar(
-                select(Run)
-                .where(Run.id == candidate.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if not task or not employee or not run:
-                await session.commit()
-                continue
-            heartbeat_at = run.heartbeat_at or run.started_at
-            if (
-                run.status != RunStatus.STARTING
-                or not run.started_at
-                or _utc(run.started_at) >= startup_before
-                or (heartbeat_at and _utc(heartbeat_at) >= startup_before)
-            ):
-                await session.commit()
-                continue
-            task.execution_error = {
-                "reason": "Agent Worker 在启动阶段丢失",
-                "run_id": run.id,
-                "worker_id": run.worker_id,
-                "occurred_at": now.isoformat(),
-            }
-            await runtime.finalize_run(
-                task,
-                employee,
-                run,
-                run_status=RunStatus.LOST,
-                task_status=TaskStatus.EXECUTION_ERROR,
-                current_progress="运行启动超时，工作现场已保留",
-                message="Agent Worker 启动租约已超时",
-                failure_type="STARTUP_LEASE_LOST",
-                employee_status=EmployeeStatus.ERROR,
-            )
-            reconciled.append(run.id)
-            continue
-
         task_snapshot = await session.get(Task, candidate.task_id)
         employee_snapshot = await session.scalar(
             select(DigitalEmployee)
@@ -284,7 +261,8 @@ async def watchdog_stale_runs(
             await session.commit()
             continue
         heartbeat_at = run.heartbeat_at or run.started_at or run.created_at
-        if run.status != RunStatus.RUNNING or _utc(heartbeat_at) >= heartbeat_before:
+        stale_before = startup_before if run.status == RunStatus.STARTING else heartbeat_before
+        if run.status not in {RunStatus.STARTING, RunStatus.RUNNING} or _utc(heartbeat_at) >= stale_before:
             await session.commit()
             continue
         if status in {"BUSY", "RUNNING", "WORKING"}:
@@ -302,6 +280,23 @@ async def watchdog_stale_runs(
                     )
                 )
             await session.commit()
+            continue
+        if status == "WAITING_INPUT" and (collected or {}).get("inquiry"):
+            inquiry = collected["inquiry"]
+            task.human_intervention = inquiry
+            task.human_required_reason = inquiry["blocking_reason"]
+            await WorkbenchService(session).create_inquiry(
+                task,
+                question=inquiry["requested_input"],
+                description=inquiry["blocking_reason"],
+                options=inquiry.get("options") or [],
+                run_id=run.id,
+                commit=False,
+            )
+            await runtime.mark_waiting(
+                task, employee, run, current_progress="等待人工输入", message="已恢复 Agent 人工请求"
+            )
+            reconciled.append(run.id)
             continue
         work_result = (collected or {}).get("work_result") if isinstance(collected, dict) else None
         raw_text = (collected or {}).get("raw_text") if isinstance(collected, dict) else None
@@ -322,16 +317,14 @@ async def watchdog_stale_runs(
                 ),
                 current_progress="已从 OpenCode Session 恢复执行结果",
                 message="Worker 丢失后已收集并恢复运行结果",
-                failure_type="WORKER_LOST_RESULT_RECOVERED",
             )
             reconciled.append(run.id)
             continue
-        if status == "PROBE_ERROR":
-            heartbeat_at = _utc(run.heartbeat_at or run.started_at or run.created_at)
-            if heartbeat_at > now - timedelta(seconds=settings.runtime_heartbeat_timeout * 2):
-                run.executor_status = "PROBE_ERROR"
-                await session.commit()
-                continue
+        if status not in {"MISSING", "LOST", "IDLE", "FINISHED", "COMPLETED", "DONE"}:
+            # Unreachable is not missing. Keep the lease and probe on the next tick.
+            run.executor_status = "PROBE_ERROR"
+            await session.commit()
+            continue
 
         reason = (
             "Worker 心跳丢失，OpenCode Session 已结束但没有可收集结果"
@@ -354,7 +347,11 @@ async def watchdog_stale_runs(
             task_status=TaskStatus.EXECUTION_ERROR,
             current_progress="Worker 运行租约丢失，等待人工恢复",
             message=reason,
-            failure_type="WORKER_LEASE_LOST",
+            failure_code=(
+                FailureCode.WORKER_STARTUP_LOST
+                if run.status == RunStatus.STARTING
+                else FailureCode.WORKER_LEASE_LOST
+            ),
             employee_status=EmployeeStatus.ERROR,
         )
         reconciled.append(run.id)
@@ -362,196 +359,30 @@ async def watchdog_stale_runs(
 
 
 async def reconcile_runtime_state(session: AsyncSession) -> list[str]:
-    """Repair safe pointer projections and surface irreconcilable fake-running tasks."""
+    return await RuntimeService(session).reconcile()
 
-    changed: list[str] = []
-    tasks_with_leases = (
-        (
-            await session.execute(select(Task).where(Task.active_run_id.is_not(None)))
-        )
-        .scalars()
-        .all()
-    )
-    for candidate in tasks_with_leases:
-        task = await RuntimeService(session).lock_task(candidate.id)
-        if not task or not task.active_run_id:
-            continue
-        run = await session.get(Run, task.active_run_id)
-        if (
-            run
-            and run.task_id == task.id
-            and run.status not in TERMINAL_RUN_STATUSES
-        ):
-            continue
-        stale_run_id = task.active_run_id
-        task.active_run_id = None
-        session.add(
-            Event(
-                task_id=task.id,
-                employee_id=task.employee_id,
-                run_id=stale_run_id if run else None,
-                event_type="STATE_RECONCILED",
-                phase="runtime",
-                message="已清理指向终态或缺失 Run 的任务租约",
-                detail={"stale_run_id": stale_run_id},
-            )
-        )
-        changed.append(f"task-lease:{task.id}")
 
-    employees = (
-        (
-            await session.execute(
-                select(DigitalEmployee).where(DigitalEmployee.active_run_id.is_not(None))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for candidate in employees:
-        employee = await RuntimeService(session).lock_employee(candidate.id)
-        if not employee or not employee.active_run_id:
-            continue
-        run = await session.get(Run, employee.active_run_id)
-        if (
-            run
-            and run.employee_id == employee.id
-            and run.status not in TERMINAL_RUN_STATUSES
-        ):
-            continue
-        stale_run_id = employee.active_run_id
-        employee.active_run_id = None
-        current_status = EmployeeStatus(employee.status)
-        release_status = (
-            current_status
-            if current_status
-            in {EmployeeStatus.OFFLINE, EmployeeStatus.PAUSED, EmployeeStatus.ERROR}
-            else EmployeeStatus.IDLE
-        )
-        EmployeeService.release(employee, status=release_status)
-        session.add(
-            Event(
-                employee_id=employee.id,
-                run_id=stale_run_id if run else None,
-                event_type="STATE_RECONCILED",
-                phase="runtime",
-                message="已释放指向终态或缺失 Run 的员工占用",
-                detail={"stale_run_id": stale_run_id},
-            )
-        )
-        changed.append(f"employee:{employee.id}")
-
-    # Release pointer-cleanup locks before the next pass starts acquiring
-    # Task -> Employee -> Run leases for active executions.
-    await session.commit()
-
-    active_runs = (
-        (
-            await session.execute(
-                select(Run)
-                .where(Run.status.in_(ACTIVE_RUN_STATUSES))
-                .order_by(Run.created_at.desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    runtime = RuntimeService(session)
-    for candidate in active_runs:
-        task = await runtime.lock_task(candidate.task_id)
-        employee = await runtime.lock_employee(candidate.employee_id)
-        run = await session.scalar(
-            select(Run)
-            .where(Run.id == candidate.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if not task or not employee or not run or run.status not in ACTIVE_RUN_STATUSES:
-            continue
-        if task.active_run_id in {None, run.id} and employee.active_run_id in {None, run.id}:
-            repaired = task.active_run_id != run.id or employee.active_run_id != run.id
-            task.active_run_id = run.id
-            employee.active_run_id = run.id
-            employee.current_task_count = 1
-            employee.status = (
-                EmployeeStatus.WAIT_HUMAN
-                if run.status in {RunStatus.WAITING_INPUT, RunStatus.BLOCKED}
-                else EmployeeStatus.WORKING
-            )
-            if repaired:
-                session.add(
-                    Event(
-                        task_id=task.id,
-                        employee_id=employee.id,
-                        run_id=run.id,
-                        event_type="STATE_RECONCILED",
-                        phase="runtime",
-                        message="已按活动 Run 恢复 Task/Employee 租约指针",
-                        detail={"run_status": run.status},
-                    )
-                )
-                changed.append(f"run:{run.id}")
-        elif run.executor_status != "LEASE_CONFLICT":
-            run.executor_status = "LEASE_CONFLICT"
-            session.add(
-                Event(
-                    task_id=task.id,
-                    employee_id=employee.id,
-                    run_id=run.id,
-                    event_type="STATE_CONFLICT",
-                    phase="runtime",
-                    message="活动 Run 与现有租约指针冲突，已保留现场等待处理",
-                    detail={
-                        "task_active_run_id": task.active_run_id,
-                        "employee_active_run_id": employee.active_run_id,
-                    },
-                )
-            )
-            changed.append(f"conflict:{run.id}")
-
-    await session.commit()
-
-    orphan_tasks = (
-        (
-            await session.execute(
-                select(Task).where(
-                    Task.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
-                    Task.active_run_id.is_(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for candidate in orphan_tasks:
-        task = await runtime.lock_task(candidate.id)
-        if not task or task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
-            continue
-        active = await session.scalar(
-            select(Run).where(
-                Run.task_id == task.id,
-                Run.status.in_(ACTIVE_RUN_STATUSES),
-            )
-        )
-        if active:
-            continue
-        task.execution_error = {
-            "reason": "任务处于执行态但没有活动 Run",
-            "occurred_at": datetime.now(UTC).isoformat(),
-        }
-        await TaskService(session).transition(
-            task,
-            TaskStatus.EXECUTION_ERROR,
-            current_progress="状态已校正：缺少活动运行",
-            message="检测到假运行状态，已转为执行异常",
-            detail={"reconciliation": "missing_active_run"},
-            commit=False,
-        )
-        if task.employee_id:
-            employee = await runtime.lock_employee(task.employee_id)
-            if employee and not employee.active_run_id:
-                EmployeeService.release(employee, status=EmployeeStatus.ERROR)
-        changed.append(f"task:{task.id}")
-
-    if changed:
+async def recover_session_cleanup(session: AsyncSession, settings: Settings) -> list[str]:
+    """Retry terminal session aborts durably, before allowing reuse of their session."""
+    runs = (await session.scalars(select(Run).where(Run.executor_status == "ABORT_PENDING"))).all()
+    cleaned = []
+    for run in runs:
+        task = await session.get(Task, run.task_id)
+        employee = await RuntimeService(session).lock_employee(run.employee_id)
         await session.commit()
-    return changed
+        if not task or not employee:
+            continue
+        try:
+            coordinator = TaskCoordinator()
+            environment = coordinator._resolve_environment(task, employee)
+            executor = coordinator._executor_for_environment(task, environment, None)
+            await asyncio.wait_for(
+                executor.abort(run), timeout=max(5, settings.ssh_connect_timeout_seconds + 5)
+            )
+        except OpenCodeSessionNotFound:
+            pass
+        except Exception:
+            continue
+        await RuntimeService(session).confirm_session_aborted(task.id, run.opencode_session_id)
+        cleaned.append(run.id)
+    return cleaned

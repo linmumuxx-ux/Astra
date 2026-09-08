@@ -18,7 +18,7 @@
 
       <div class="run-drawer__body">
         <section class="run-drawer__statusbar" :data-state="meta.level">
-          <RunStatusBadge :status="run.status" :show-detail="true" />
+          <RunStatusBadge :run="run" :show-detail="true" />
           <span v-if="isFailed">
             <CircleX :size="13" /> {{ meta.detail || '执行异常' }}
             <code v-if="failureCode">HTTP {{ failureCode }}</code>
@@ -33,7 +33,7 @@
             <div><dt>Task ID</dt><dd><RouterLink class="fact-link" :to="`/tasks/${run.task_id}`">{{ run.task_id }} <ArrowUpRight :size="11" /></RouterLink></dd></div>
             <div><dt>第几次执行</dt><dd>{{ run.run_number }} 次</dd></div>
             <div><dt>数字员工</dt><dd>{{ employeeName }}</dd></div>
-            <div><dt>当前状态</dt><dd><RunStatusBadge :status="run.status" :show-detail="false" /></dd></div>
+            <div><dt>当前状态</dt><dd><RunStatusBadge :run="run" :show-detail="false" /></dd></div>
             <div><dt>模型</dt><dd>{{ run.model_name || '—' }}</dd></div>
             <div><dt>工作空间</dt><dd class="wrap">{{ workspace }}</dd></div>
             <div><dt>执行会话</dt><dd><IdDisplay :value="run.opencode_session_id || '—'" :copyable="Boolean(run.opencode_session_id)" :max-width="130" /></dd></div>
@@ -117,8 +117,8 @@ const props = defineProps<{ run: Run; usage?: RunUsage | null; events?: AstraEve
 defineEmits<{ (e: 'close'): void }>()
 
 const store = useAstraStore()
-const meta = computed(() => runUnifiedStatus(props.run.status))
-const isFailed = computed(() => ['FAILED', 'BLOCKED', 'TIMEOUT', 'LOST'].includes(props.run.status))
+const meta = computed(() => runUnifiedStatus(props.run))
+const isFailed = computed(() => ['FAILED', 'TIMEOUT', 'LOST'].includes(props.run.status))
 const employeeName = computed(() => employeeDisplayName(store.employees.find((item) => item.id === props.run.employee_id)?.name ?? props.run.employee_id))
 const workspace = computed(() => props.run.execution_environment_snapshot.workspace_root ?? '—')
 const worker = computed(() => props.run.worker_id ?? '')
@@ -130,7 +130,7 @@ const failureContext = computed(() => {
   const last = failureEvents.at(-1)
   return {
     stage: props.run.executor_status ?? (last ? last.phase : null) ?? '执行阶段',
-    summary: isFailed.value ? (last?.message || props.run.failure_type || '执行失败') : null,
+    summary: isFailed.value ? (last?.message || props.run.failure_code || '执行失败') : null,
     raw: [last?.message && cleanMessage(last), detail?.message && String(detail.message)].filter(Boolean).join('\n') || null,
   }
 })
@@ -141,7 +141,7 @@ function cleanMessage(event: AstraEvent) {
 }
 const errorStage = computed(() => failureContext.value.stage)
 const errorSummary = computed(() => failureContext.value.summary ?? '执行失败')
-const errorDescription = computed(() => (props.run.failure_type ? `失败类型：${props.run.failure_type}` : null) || null)
+const errorDescription = computed(() => (props.run.failure_code ? `失败类型：${props.run.failure_code}` : null) || null)
 const failureCode = computed(() => props.run.exit_code)
 const rawError = computed(() => failureContext.value.raw)
 const toolRows = computed(() => props.usage?.tools ?? [])
@@ -150,8 +150,8 @@ function eventTone(event: AstraEvent): RunTone {
   const detail = event.detail as Record<string, unknown> | undefined
   const status = typeof detail?.status === 'string' ? detail.status : null
   if (event.event_type === 'RUN_STATUS' && status) {
-    if (['FAILED', 'BLOCKED', 'TIMEOUT', 'LOST'].includes(status)) return 'danger'
-    if (['COMPLETED', 'PASSED'].includes(status)) return 'success'
+    if (['FAILED', 'TIMEOUT', 'LOST'].includes(status)) return 'danger'
+    if (['COMPLETED'].includes(status)) return 'success'
     if (['WAITING_INPUT', 'SUSPENDED'].includes(status)) return 'warning'
     if (['RUNNING', 'STARTING'].includes(status)) return 'info'
     return 'neutral'

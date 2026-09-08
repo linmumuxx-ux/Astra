@@ -78,6 +78,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
                     "status",
                     "state",
                     "state_label",
+                    "runtime_state", "runtime_status_label", "runtime_detail", "active_run", "failure",
                     "current_task",
                 }
                 assert "execution_environment" not in employee
@@ -91,6 +92,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
         assert len(tasks.json()["trend"]) == 7
         assert len(tasks.json()["recent"]) <= 6
         expected_recent_task_fields = {
+            "runtime_state", "runtime_status_label", "runtime_detail", "active_run", "failure",
             "id",
             "title",
             "status",
@@ -401,8 +403,14 @@ def test_employee_can_submit_structured_completion():
         async def mark_running():
             async with SessionLocal() as session:
                 row = await session.get(Task, task["id"])
-                row.status = TaskStatus.RUNNING
-                await session.commit()
+                from app.models import DigitalEmployee
+                from app.runtime.lifecycle import RuntimeService
+                runtime = RuntimeService(session)
+                employee_row = await session.get(DigitalEmployee, row.employee_id)
+                employee_row.current_task_count = 0
+                run = await runtime.queue_new_run(row, employee_row, current_progress="测试", message="测试")
+                claimed = await runtime.claim_run(run.id, worker_id="api-test")
+                await runtime.mark_running(row, run, claimed[3])
 
         asyncio.run(mark_running())
         completed = client.post(

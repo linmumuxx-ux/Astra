@@ -68,7 +68,9 @@ cleanup() {
     tail -n 40 "$REDIS_LOG" 2>/dev/null || true
   fi
   case "$RUN_DIR" in
-    */astra-e2e.*) rm -rf -- "$RUN_DIR" ;;
+    */astra-e2e.*)
+      if [[ $exit_code -eq 0 ]]; then rm -rf -- "$RUN_DIR"; else echo "保留失败现场：$RUN_DIR"; fi
+      ;;
   esac
   exit "$exit_code"
 }
@@ -149,7 +151,7 @@ echo "Redis 已就绪：127.0.0.1:$REDIS_PORT"
 (
   cd "$ROOT_DIR/backend"
   runtime_environment
-  "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$BACKEND_PORT"
+  exec "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port "$BACKEND_PORT"
 ) >"$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 wait_for_url "后端" "http://127.0.0.1:$BACKEND_PORT/api/health"
@@ -157,19 +159,19 @@ wait_for_url "后端" "http://127.0.0.1:$BACKEND_PORT/api/health"
 (
   cd "$ROOT_DIR/backend"
   runtime_environment
-  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery beat --loglevel=INFO --schedule "$RUN_DIR/celerybeat-schedule"
+  exec "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery beat --loglevel=INFO --schedule "$RUN_DIR/celerybeat-schedule"
 ) >"$BEAT_LOG" 2>&1 &
 BEAT_PID=$!
 (
   cd "$ROOT_DIR/backend"
   runtime_environment
-  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=control --hostname="astra-e2e-control@%h"
+  exec "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=control --hostname="astra-e2e-control@%h"
 ) >"$CONTROL_LOG" 2>&1 &
 CONTROL_PID=$!
 (
   cd "$ROOT_DIR/backend"
   runtime_environment
-  "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=agent --hostname="astra-e2e-agent@%h"
+  exec "$PYTHON_BIN" -m celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=agent --hostname="astra-e2e-agent@%h"
 ) >"$RUNTIME_LOG" 2>&1 &
 RUNTIME_PID=$!
 wait_for_runtime
@@ -177,14 +179,16 @@ wait_for_runtime
 (
   cd "$ROOT_DIR/frontend"
   VITE_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" \
-  npm run dev -- --host 127.0.0.1 --port "$FRONTEND_PORT"
+  exec "$ROOT_DIR/frontend/node_modules/.bin/vite" --host 127.0.0.1 --port "$FRONTEND_PORT"
 ) >"$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 wait_for_url "前端" "http://127.0.0.1:$FRONTEND_PORT/"
 
+mkdir -p "$RUN_DIR/workspaces/e2e-employee"
 echo "运行 Chromium 端到端验收..."
 (
   cd "$ROOT_DIR/frontend"
+  E2E_EMPLOYEE_WORKSPACE="$RUN_DIR/workspaces/e2e-employee" \
   E2E_BASE_URL="http://127.0.0.1:$FRONTEND_PORT" npm run test:e2e
 )
 

@@ -455,6 +455,13 @@ async def load_task_workbench(
 
 
 async def _abort_opencode_session(task: Task, session: AsyncSession) -> bool:
+    aborted = await _abort_opencode_session_request(task, session)
+    if aborted:
+        await RuntimeService(session).confirm_session_aborted(task.id, task.opencode_session_id)
+    return aborted
+
+
+async def _abort_opencode_session_request(task: Task, session: AsyncSession) -> bool:
     settings = get_settings()
     snapshot = task.execution_environment_snapshot or {}
     if (
@@ -949,34 +956,16 @@ async def resume_task(
         not employee.execution_environment
         or employee.execution_environment.status != EnvironmentStatus.AVAILABLE
     ):
-        RuntimeService.release_employee(employee)
-        task.claimed_at = None
-        return await transition_task(
-            task,
-            TaskStatus.READY,
-            "任务已继续，等待可用的员工工作环境",
-            session,
-            payload,
-            "等待领取",
-        )
+        raise HTTPException(status_code=409, detail="员工工作环境不可用，已保留当前运行与人工回复")
     try:
         if task.status == TaskStatus.WAIT_HUMAN:
-            try:
-                run = await runtime.queue_waiting_run(
-                    task,
-                    employee,
-                    current_progress="已收到回复，运行正在排队继续",
-                    message="任务已收到人工回复并进入 Agent 队列",
-                    detail={"note": payload.note if payload else None},
-                )
-            except RuntimeStateError:
-                run = await runtime.queue_new_run(
-                    task,
-                    employee,
-                    current_progress="已收到回复，新运行正在排队",
-                    message="任务已收到人工回复并创建新运行",
-                    detail={"note": payload.note if payload else None},
-                )
+            run = await runtime.queue_waiting_run(
+                task,
+                employee,
+                current_progress="已收到回复，运行正在排队继续",
+                message="任务已收到人工回复并进入 Agent 队列",
+                detail={"note": payload.note if payload else None},
+            )
         else:
             run = await runtime.queue_new_run(
                 task,
@@ -1093,8 +1082,7 @@ async def start_task(task_id: str, session: AsyncSession = Depends(get_session))
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     if (
-        task.status != TaskStatus.ASSIGNED
-        and not (task.status == TaskStatus.READY and task.claimed_at)
+        task.status != TaskStatus.ASSIGNED and not (task.status == TaskStatus.READY and task.claimed_at)
     ) or not task.employee_id:
         raise HTTPException(status_code=409, detail="只有已分配且待启动的任务可以启动")
     employee = await require_employee(task.employee_id, session)
@@ -1150,7 +1138,6 @@ async def request_human_intervention(
         raise HTTPException(status_code=404, detail="任务不存在")
     task.human_required_reason = payload.blocking_reason
     task.human_intervention = payload.model_dump()
-    target = TaskStatus.SUSPENDED if payload.can_suspend else TaskStatus.WAIT_HUMAN
     if payload.can_suspend:
         task.suspension = {
             "reason": payload.blocking_reason,
@@ -1192,13 +1179,7 @@ async def request_human_intervention(
                 message="员工请求人工协助",
             )
             return task
-    return await transition_task(
-        task,
-        target,
-        "员工请求人工协助",
-        session,
-        current_progress=payload.current_state or "等待人工补充信息",
-    )
+    raise HTTPException(status_code=409, detail="任务没有活动 Run，不能进入人工等待")
 
 
 @router.post("/tasks/{task_id}/complete", response_model=TaskRead)
@@ -1233,9 +1214,7 @@ async def complete_task(
                 run,
                 run_status=RunStatus.COMPLETED,
                 task_status=target,
-                current_progress=(
-                    "结果已提交，等待确认" if requires_confirmation else "任务已完成"
-                ),
+                current_progress=("结果已提交，等待确认" if requires_confirmation else "任务已完成"),
                 message=(
                     f"{task.employee_id} 已提交结果，等待确认"
                     if requires_confirmation
@@ -1243,17 +1222,7 @@ async def complete_task(
                 ),
             )
             return task
-    return await transition_task(
-        task,
-        target,
-        (
-            f"{task.employee_id or '数字员工'} 已提交结果，等待确认"
-            if requires_confirmation
-            else f"{task.employee_id or '数字员工'} 完成任务"
-        ),
-        session,
-        current_progress="结果已提交，等待确认" if requires_confirmation else "任务已完成",
-    )
+    raise HTTPException(status_code=409, detail="任务没有活动 Run，不能提交执行结果")
 
 
 @router.post("/tasks/{task_id}/confirm", response_model=TaskRead)
@@ -1426,7 +1395,7 @@ async def fail_task(
                 task_status=TaskStatus.FAILED,
                 current_progress="任务未完成",
                 message="数字员工提交任务未完成",
-                failure_type="BUSINESS_FAILURE",
+                failure_code="BUSINESS_FAILURE",
             )
             return task
     return await transition_task(
@@ -1468,12 +1437,15 @@ async def paged_runs(
     session: AsyncSession = Depends(get_session),
 ):
     levels = {
-        "WAITING": ["QUEUED"],
-        "EXECUTING": ["STARTING", "RUNNING"],
+        "QUEUED": ["QUEUED"],
+        "STARTING": ["STARTING"],
+        "RUNNING": ["RUNNING"],
         "WAITING_INPUT": ["WAITING_INPUT"],
-        "PAUSED": ["SUSPENDED"],
-        "COMPLETED": ["COMPLETED", "PASSED"],
-        "FAILED": ["FAILED", "BLOCKED", "TIMEOUT", "LOST"],
+        "SUSPENDED": ["SUSPENDED"],
+        "COMPLETED": ["COMPLETED"],
+        "FAILED": ["FAILED", "TIMEOUT", "LOST"],
+        "TIMEOUT": ["TIMEOUT"],
+        "LOST": ["LOST"],
         "CANCELLED": ["CANCELLED"],
     }
     if level and level not in levels:
@@ -1878,43 +1850,48 @@ async def answer_inquiry(
     return await post_task_message(work_session.task_id, SessionMessageWrite(content=payload.answer), session)
 
 
+async def _stream_event_batch(task_id: str | None, last_id: int | None) -> tuple[int, list[Event]]:
+    from anyio import CancelScope
+
+    # Never retain a transaction or connection while waiting for the next poll.
+    with CancelScope(shield=True):
+        async with SessionLocal() as stream_session:
+            condition = Event.task_id == task_id if task_id else True
+            if last_id is None:
+                latest = await stream_session.scalar(select(func.max(Event.id)).where(condition)) or 0
+                return latest, []
+            rows = (
+                await stream_session.scalars(
+                    select(Event)
+                    .where(
+                        condition,
+                        Event.id > last_id,
+                    )
+                    .order_by(Event.id)
+                )
+            ).all()
+            return (rows[-1].id if rows else last_id), list(rows)
+
+
 def task_event_stream(
     task_id: str, work_session: TaskSession, after_sequence: int | None
 ) -> StreamingResponse:
     async def generate():
         yield f"event: connected\ndata: {json.dumps({'session_id': work_session.id})}\n\n"
         keepalive_ticks = 0
-        async with SessionLocal() as stream_session:
-            last_id = after_sequence
-            if last_id is None:
-                last_id = (
-                    await stream_session.scalar(select(func.max(Event.id)).where(Event.task_id == task_id))
-                    or 0
-                )
-            while True:
-                await asyncio.sleep(1)
-                rows = (
-                    (
-                        await stream_session.execute(
-                            select(Event)
-                            .where(Event.task_id == task_id, Event.id > last_id)
-                            .order_by(Event.id)
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if rows:
-                    keepalive_ticks = 0
-                    for event in rows:
-                        last_id = event.id
-                        payload = runtime_event(event, work_session).model_dump(mode="json")
-                        yield f"event: update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                else:
-                    keepalive_ticks += 1
-                if keepalive_ticks >= 15:
-                    keepalive_ticks = 0
-                    yield ": keepalive\n\n"
+        last_id = after_sequence
+        if last_id is None:
+            last_id, _ = await _stream_event_batch(task_id, None)
+        while True:
+            await asyncio.sleep(1)
+            last_id, rows = await _stream_event_batch(task_id, last_id)
+            for event in rows:
+                payload = runtime_event(event, work_session).model_dump(mode="json")
+                yield f"event: update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            keepalive_ticks = 0 if rows else keepalive_ticks + 1
+            if keepalive_ticks >= 15:
+                keepalive_ticks = 0
+                yield ": keepalive\n\n"
 
     return StreamingResponse(
         generate(),
@@ -1944,6 +1921,7 @@ async def session_event_stream(
     work_session = await session.get(TaskSession, session_id)
     if not work_session:
         raise HTTPException(status_code=404, detail="任务会话不存在")
+    await session.commit()
     return task_event_stream(work_session.task_id, work_session, after_sequence)
 
 
@@ -1951,35 +1929,26 @@ async def session_event_stream(
 async def event_stream() -> StreamingResponse:
     async def generate():
         yield "event: connected\ndata: {}\n\n"
+        last_id, _ = await _stream_event_batch(None, None)
         keepalive_ticks = 0
-        async with SessionLocal() as stream_session:
-            last_id = await stream_session.scalar(select(func.max(Event.id))) or 0
-            while True:
-                await asyncio.sleep(1)
-                rows = (
-                    (await stream_session.execute(select(Event).where(Event.id > last_id).order_by(Event.id)))
-                    .scalars()
-                    .all()
-                )
-                if rows:
-                    keepalive_ticks = 0
-                    for event in rows:
-                        last_id = event.id
-                        payload = {
-                            "id": event.id,
-                            "type": event.event_type,
-                            "task_id": event.task_id,
-                            "employee_id": event.employee_id,
-                            "phase": event.phase,
-                            "message": event.message,
-                            "created_at": event.created_at.isoformat(),
-                        }
-                        yield f"event: update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                else:
-                    keepalive_ticks += 1
-                if keepalive_ticks >= 15:
-                    keepalive_ticks = 0
-                    yield ": keepalive\n\n"
+        while True:
+            await asyncio.sleep(1)
+            last_id, rows = await _stream_event_batch(None, last_id)
+            for event in rows:
+                payload = {
+                    "id": event.id,
+                    "type": event.event_type,
+                    "task_id": event.task_id,
+                    "employee_id": event.employee_id,
+                    "phase": event.phase,
+                    "message": event.message,
+                    "created_at": event.created_at.isoformat(),
+                }
+                yield f"event: update\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            keepalive_ticks = 0 if rows else keepalive_ticks + 1
+            if keepalive_ticks >= 15:
+                keepalive_ticks = 0
+                yield ": keepalive\n\n"
 
     return StreamingResponse(
         generate(),

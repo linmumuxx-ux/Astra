@@ -145,13 +145,19 @@ async def dashboard_employees(session: AsyncSession) -> dict:
             {"id": team_id, "name": team_name, "order": order, "employee_count": 0, "employees": []},
         )
         task = current_tasks.get(employee.id)
-        state, state_label = _employee_state(employee.status)
+        state, _ = _employee_state(employee.status)
+        state_label = employee.runtime_status_label
         team["employees"].append(
             {
                 "id": employee.id,
                 "name": employee.name,
                 "role": employee.role,
                 "status": employee.status,
+                "runtime_state": employee.runtime_state,
+                "runtime_status_label": employee.runtime_status_label,
+                "runtime_detail": employee.runtime_detail,
+                "active_run": employee.active_run,
+                "failure": employee.failure,
                 "state": state,
                 "state_label": state_label,
                 "current_task": (
@@ -259,6 +265,11 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
                 "id": task.id,
                 "title": task.title,
                 "status": task.status,
+                "runtime_state": task.runtime_state,
+                "runtime_status_label": task.runtime_status_label,
+                "runtime_detail": task.runtime_detail,
+                "active_run": task.active_run,
+                "failure": task.failure,
                 "employee_id": task.employee_id,
                 "employee_name": employee_name or "未分配",
                 "updated_at": task.updated_at,

@@ -11,18 +11,21 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.executors.base import ExecutorResult, OpenCodeExecutor
+from app.executors.errors import (
+    OpenCodeExecutionError,
+    OpenCodeExecutionTimeout,
+    OpenCodeServerUnavailable,
+    OpenCodeSessionNotFound,
+)
 from app.executors.opencode_prompt import build_task_prompt
 from app.executors.usage import parse_opencode_usage
 from app.models import Run, Task
+from app.runtime.failure import FailureCode
 from app.runtime.opencode_server import OpenCodeServerManager
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 SessionCallback = Callable[[str], Awaitable[None]]
 WorkspacePath = Path | PurePosixPath
-
-
-class OpenCodeServerUnavailable(RuntimeError):
-    pass
 
 
 class OpenCodeServerCapabilityError(RuntimeError):
@@ -94,16 +97,24 @@ class OpenCodeServerClient:
         body: Any = None,
     ) -> Any:
         params = {"directory": str(directory)} if directory else None
-        async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
-            response = await client.request(
-                method,
-                f"{self.base_url}{path}",
-                params=params,
-                json=body,
-            )
-        if response.status_code == 404 and path.startswith("/session/"):
-            raise RuntimeError(f"OpenCode session not found: {path.split('/')[2]}")
-        response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
+                response = await client.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    params=params,
+                    json=body,
+                )
+        except httpx.TimeoutException as exc:
+            raise OpenCodeExecutionTimeout(str(exc)) from exc
+        except httpx.TransportError as exc:
+            raise OpenCodeServerUnavailable(str(exc)) from exc
+        if response.status_code == 404 and path.startswith("/session/") and path != "/session/status":
+            raise OpenCodeSessionNotFound(path.split("/")[2])
+        if response.status_code >= 500:
+            raise OpenCodeServerUnavailable(f"OpenCode HTTP {response.status_code}")
+        if response.is_error:
+            raise OpenCodeExecutionError(f"OpenCode HTTP {response.status_code}: {response.text[:1000]}")
         return response.json() if response.content else None
 
     async def health(self) -> dict[str, Any]:
@@ -233,6 +244,7 @@ class OpenCodeServerClient:
         return bool(await self.request("POST", f"/session/{session_id}/abort", directory=directory))
 
     async def status(self, directory: WorkspacePath, session_id: str) -> str:
+        await self.session(directory, session_id)
         statuses = await self.request("GET", "/session/status", directory=directory)
         return str((statuses.get(session_id) or {"type": "idle"}).get("type"))
 
@@ -294,7 +306,6 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                 )
                 session_id = str(created["id"])
             relevant_sessions.add(session_id)
-            task.opencode_session_id = session_id
             self._active[task.id] = (session_id, workspace)
             if self.session_callback:
                 await self.session_callback(session_id)
@@ -366,6 +377,14 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                     error_message = self._event_error(normalized)
                 if event_type == "session.idle" and event_session == session_id:
                     break
+        except OpenCodeSessionNotFound as exc:
+            return ExecutorResult(
+                status="FAILED",
+                exit_code=1,
+                session_id=exc.session_id,
+                stderr=str(exc),
+                failure_code=FailureCode.SESSION_NOT_FOUND,
+            )
         except TimeoutError:
             if session_id:
                 await self.client.abort(workspace, session_id)
@@ -377,12 +396,22 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
 
         if not session_id:
             return ExecutorResult(status="FAILED", exit_code=1, stderr="OpenCode Session 创建失败")
-        messages = await self.client.messages(workspace, session_id)
+        try:
+            messages = await self.client.messages(workspace, session_id)
+        except OpenCodeSessionNotFound as exc:
+            return ExecutorResult(
+                status="FAILED",
+                exit_code=1,
+                session_id=exc.session_id,
+                output=output,
+                stderr=str(exc),
+                failure_code=FailureCode.SESSION_NOT_FOUND,
+            )
         message_errors = [error for error in self._message_errors(messages) if error not in baseline_errors]
         if message_errors:
             error_message = error_message or "; ".join(message_errors)
         token_usage, tool_usage, detected_model = parse_opencode_usage(output)
-        status = "BLOCKED" if inquiry else "FAILED" if error_message else "SUCCEEDED"
+        status = "WAITING_INPUT" if inquiry else "FAILED" if error_message else "SUCCEEDED"
         exit_code = 0
         if error_message and not inquiry and error_message != "Agent execution timeout":
             status = "FAILED"
@@ -399,6 +428,13 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
             inquiry=inquiry,
             token_usage=token_usage,
             tool_usage=tool_usage,
+            failure_code=(
+                FailureCode.EXECUTOR_TIMEOUT
+                if exit_code == 124
+                else FailureCode.SESSION_ERROR
+                if exit_code
+                else None
+            ),
         )
 
     async def _listen(
@@ -436,7 +472,6 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         try:
             await self.event_callback(event)
         except Exception:
-            # Runtime observation must not interrupt the Agent session.
             return
 
     async def _reply_pending_intervention(self, task: Task, workspace: WorkspacePath) -> bool:
@@ -507,6 +542,10 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         )
         if not request:
             return None
+        return self.permission_inquiry(request)
+
+    @staticmethod
+    def permission_inquiry(request: dict) -> dict:
         permission = str(request.get("permission") or request.get("type") or "Agent 操作")
         patterns = request.get("patterns") or request.get("pattern") or []
         return {
@@ -566,6 +605,15 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                 errors.append(f"{name}: {detail}".rstrip(": "))
         return errors
 
+    async def pending_inquiry(self, client, workspace, session_id) -> dict | None:
+        for request in await client.questions(workspace):
+            if request.get("sessionID") == session_id:
+                return self._question_inquiry(request)
+        for request in await client.permissions(workspace):
+            if request.get("sessionID") == session_id:
+                return self.permission_inquiry(request)
+        return None
+
     async def get_status(self, run: Run) -> str:
         session_id = run.opencode_session_id
         snapshot = run.execution_environment_snapshot or {}
@@ -573,6 +621,9 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         if not session_id or not workspace_value:
             return run.status
         workspace = self.settings.employee_workspace_path(workspace_value)
+        inquiry = await self.pending_inquiry(self.client, workspace, session_id)
+        if inquiry:
+            return "WAITING_INPUT"
         return (await self.client.status(workspace, session_id)).upper()
 
     async def abort(self, run: Run) -> None:
@@ -595,8 +646,28 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         if not session_id or not workspace_value:
             return existing
         workspace = self.settings.employee_workspace_path(workspace_value)
+        inquiry = await self.pending_inquiry(self.client, workspace, session_id)
+        if inquiry:
+            return {"inquiry": inquiry}
         messages = await self.client.messages(workspace, session_id)
-        raw_text = self._last_assistant_message(messages)
+        return self.recovered_message_result(run, messages, existing)
+
+    @classmethod
+    def recovered_message_result(cls, run: Run, messages: list[dict], existing: dict) -> dict:
+        latest = next(
+            (item for item in reversed(messages) if (item.get("info") or {}).get("role") == "assistant"), None
+        )
+        if latest and cls._message_errors([latest]):
+            return {
+                "failure_code": FailureCode.SESSION_ERROR,
+                "raw_error": "; ".join(cls._message_errors([latest])),
+            }
+        # A previous turn's text cannot complete a newer prompt after Worker loss.
+        created = ((latest or {}).get("info") or {}).get("time", {}).get("created")
+        boundary = run.queued_at or run.started_at
+        if boundary and (not created or float(created) / 1000 < boundary.timestamp()):
+            return {}
+        raw_text = cls._last_assistant_message(messages[-1:] if latest is None else [latest])
         return {**existing, "raw_text": raw_text} if raw_text else existing
 
     @staticmethod
