@@ -19,17 +19,21 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
       el.getBoundingClientRect().width > 0 && Array.from(el.childNodes).some(n => n.nodeType === Node.TEXT_NODE && n.textContent?.trim())
     ).filter(el => !getComputedStyle(el).fontFamily.startsWith('"Times New Roman", "Microsoft YaHei"')).map(el => ({ tag: el.tagName, text: el.textContent?.slice(0, 30), font: getComputedStyle(el).fontFamily })))
     expect(mismatches, route).toEqual([])
-    await page.evaluate(() => {
-      document.querySelectorAll('body *').forEach(el => {
-        if (el.getBoundingClientRect().width > 0 && Array.from(el.childNodes).some(n => n.nodeType === Node.TEXT_NODE && /[A-Za-z0-9\u4e00-\u9fff]/.test(n.textContent || ''))) el.setAttribute('data-font-audit', '')
+    // Reactive data can replace nodes during the CDP audit. Retry a fresh full
+    // snapshot so detached node ids do not fail an otherwise valid font check.
+    await expect(async () => {
+      await page.evaluate(() => {
+        document.querySelectorAll('body *').forEach(el => {
+          if (el.getBoundingClientRect().width > 0 && Array.from(el.childNodes).some(n => n.nodeType === Node.TEXT_NODE && /[A-Za-z0-9\u4e00-\u9fff]/.test(n.textContent || ''))) el.setAttribute('data-font-audit', '')
+        })
       })
-    })
-    const documentNode = await cdp.send('DOM.getDocument')
-    const textNodes = await cdp.send('DOM.querySelectorAll', { nodeId: documentNode.root.nodeId, selector: '[data-font-audit]' })
-    for (const nodeId of textNodes.nodeIds) {
-      const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
-      expect(fonts.every((font: { familyName: string }) => acceptedPlatformFonts.has(font.familyName)), `${route}: ${JSON.stringify(fonts)}`).toBeTruthy()
-    }
+      const documentNode = await cdp.send('DOM.getDocument')
+      const textNodes = await cdp.send('DOM.querySelectorAll', { nodeId: documentNode.root.nodeId, selector: '[data-font-audit]' })
+      for (const nodeId of textNodes.nodeIds) {
+        const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId })
+        expect(fonts.every((font: { familyName: string }) => acceptedPlatformFonts.has(font.familyName)), `${route}: ${JSON.stringify(fonts)}`).toBeTruthy()
+      }
+    }).toPass({ timeout: 5000, intervals: [100, 250, 500] })
 
     const titles = page.locator('.page-intro h2, .task-head h2, .task-title-row h2, .employee-hero h2, .task-hero h2, .library-intro h2')
     for (const title of await titles.all()) {

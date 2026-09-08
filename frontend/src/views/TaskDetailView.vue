@@ -177,8 +177,8 @@ const failureReason = computed(() => String(task.value?.execution_error?.reason 
 const passedAcceptance = computed(() => task.value?.result?.acceptance_results.filter((item) => item.status === 'SATISFIED').length ?? 0)
 const canStop = computed(() => !!task.value && ['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'].includes(task.value.status))
 const composerDisabled = computed(() => task.value?.status === 'CANCELLED')
-const showWorkingIndicator = computed(() => task.value?.status === 'RUNNING' && !activeInquiry.value)
-const taskStatusLabel = computed(() => ({ READY: '等待领取', ASSIGNED: '等待启动', QUEUED: '等待执行', RUNNING: '执行中', WAIT_HUMAN: '等待输入', SUSPENDED: '已暂停', PENDING_CONFIRMATION: '待你确认', COMPLETED: '已完成', FAILED: '执行失败', EXECUTION_ERROR: '执行异常', CANCELLED: '已停止' }[task.value?.status ?? 'READY']))
+const showWorkingIndicator = computed(() => task.value?.runtime_state === 'RUNNING')
+const taskStatusLabel = computed(() => task.value?.runtime_status_label ?? '')
 const taskStatusTone = computed(() => statusTone(task.value?.status ?? 'READY'))
 const safeCurrentWork = computed(() => {
   if (activeInquiry.value) return `等待你的回答：${activeInquiry.value.question}`

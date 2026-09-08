@@ -116,7 +116,7 @@
           <div class="recent-task-list__head" role="row"><span>任务</span><span>状态</span><span>数字员工</span><span>时间</span></div>
           <RouterLink v-for="task in tasks.data?.recent ?? []" :key="task.id" :to="`/tasks/${task.id}`" role="row">
             <strong :title="task.title">{{ task.title }}</strong>
-            <span class="task-state" :data-tone="taskTone(task.status)">{{ statusLabel(task.status) }}</span>
+            <span class="task-state" :data-tone="taskTone(task.status)">{{ task.runtime_status_label }}</span>
             <span :title="employeeDisplayName(task.employee_name)">{{ employeeDisplayName(task.employee_name) }}</span>
             <time>{{ formatRelativeTime(task.updated_at) }}</time>
           </RouterLink>

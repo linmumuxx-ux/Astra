@@ -11,6 +11,7 @@ from app.runtime.recovery import (
     audit_incomplete_tasks,
     reconcile_runtime_state,
     recover_available_tasks,
+    recover_session_cleanup,
     retry_stale_queued_runs,
     watchdog_stale_runs,
 )
@@ -138,16 +139,19 @@ def recovery() -> dict[str, list[str]]:
         await init_database()
         async with SessionLocal() as session:
             inactive = await audit_incomplete_tasks(session, settings)
-            resumed = await recover_available_tasks(session)
             redispatched = await retry_stale_queued_runs(session, settings)
             watchdog = await watchdog_stale_runs(session, settings)
             reconciled = await reconcile_runtime_state(session)
+            cleaned = await recover_session_cleanup(session, settings)
+            resumed = await recover_available_tasks(session)
+            await RuntimeService(session).publish_pending_outbox()
             return {
                 "inactive": inactive,
                 "resumed": resumed,
                 "redispatched": redispatched,
                 "watchdog": watchdog,
                 "reconciled": reconciled,
+                "cleaned": cleaned,
             }
 
     return run_async(execute())

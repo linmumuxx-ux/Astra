@@ -118,7 +118,8 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
             )
         except TimeoutError:
             await self._terminate_process(process)
-            return ExecutorResult(status="BLOCKED", exit_code=124, stderr="Agent execution timeout")
+            return ExecutorResult(status="FAILED", exit_code=124, stderr="Agent execution timeout",
+                                  failure_code="EXECUTOR_TIMEOUT")
         except Exception:
             await self._terminate_process(process)
             raise
@@ -130,14 +131,14 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 
         combined = f"{stdout}\n{stderr}".upper()
         blocked_markers = (
-            "BLOCKED",
+            "WAITING_INPUT",
             "ASTRA_INTERVENTION_JSON:",
             "PERMISSION REQUESTED",
             "PERMISSION DENIED",
             "AUTO-REJECTING",
         )
         status = (
-            "BLOCKED"
+            "WAITING_INPUT"
             if pending_inquiry or any(marker in combined for marker in blocked_markers)
             else ("SUCCEEDED" if process.returncode == 0 else "FAILED")
         )

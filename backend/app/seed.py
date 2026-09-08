@@ -324,7 +324,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
         task_id="T-20260827-003",
         employee_id="astra-03",
         run_number=1,
-        status=RunStatus.PASSED,
+        status=RunStatus.COMPLETED,
         executor_type="opencode_server_ssh",
         opencode_session_id="session-task-003",
         started_at=now - timedelta(hours=2),
@@ -341,8 +341,19 @@ async def seed_demo_data(session: AsyncSession) -> None:
         llm_call_count=7,
         tool_call_count=32,
     )
-    session.add_all([active_run, run])
+    waiting_run = Run(
+        id="RUN-DEMO-002", task_id="T-20260827-002", employee_id="astra-02",
+        run_number=1, status=RunStatus.WAITING_INPUT, executor_type="opencode_server",
+        opencode_session_id="session-task-002", started_at=now - timedelta(minutes=47),
+        execution_environment_snapshot=snapshots["astra-02"],
+    )
+    session.add_all([active_run, waiting_run, run])
     await session.flush()
+    for execution in (active_run, waiting_run):
+        task_row = await session.get(Task, execution.task_id)
+        employee_row = await session.get(DigitalEmployee, execution.employee_id)
+        task_row.active_run_id = employee_row.active_run_id = execution.id
+        employee_row.current_task_count = 1
     session.add_all(
         [
             Event(
@@ -400,8 +411,8 @@ async def seed_demo_data(session: AsyncSession) -> None:
                     "T-20260827-003",
                     "astra-03",
                     "RUN-DEMO-003",
-                    "PASSED",
-                    "运行状态变更为 PASSED",
+                    "COMPLETED",
+                    "运行状态变更为 COMPLETED",
                     now - timedelta(hours=1, minutes=24),
                 ),
             )

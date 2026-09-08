@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.database import SessionLocal
 from app.domain import EmployeeStatus, ExecutionMode, RunStatus, TaskStatus
+from app.executors.errors import OpenCodeServerUnavailable, classify_exception
 from app.runtime.coordinator import TaskCoordinator
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService
@@ -46,14 +47,7 @@ class RunCoordinator(TaskCoordinator):
                 if environment.mode == ExecutionMode.LOCAL:
                     workspace = self.settings.employee_workspace_path(environment.workspace_root)
                     if not workspace.is_dir():
-                        raise RuntimeError(f"员工工作空间不存在: {workspace}")
-
-                if not await RuntimeService(session).mark_running(
-                    task,
-                    run,
-                    execution_token,
-                ):
-                    return
+                        raise OpenCodeServerUnavailable(f"员工工作空间不存在: {workspace}")
 
                 task.current_progress = "Agent 正在自主处理任务"
                 await service.add_event(
@@ -89,10 +83,12 @@ class RunCoordinator(TaskCoordinator):
                     phase="work",
                     error=str(exc),
                 )
+                task_id, employee_id, claimed_run_id = task.id, employee.id, run.id
+                failure = classify_exception(exc)
                 await session.rollback()
                 runtime = RuntimeService(session)
-                locked_task = await runtime.lock_task(task.id)
-                locked_employee = await runtime.lock_employee(employee.id)
+                locked_task = await runtime.lock_task(task_id)
+                locked_employee = await runtime.lock_employee(employee_id)
                 if not locked_task or not locked_employee:
                     await session.rollback()
                     return
@@ -114,7 +110,11 @@ class RunCoordinator(TaskCoordinator):
                     ),
                     "occurred_at": datetime.now(UTC).isoformat(),
                 }
-                if active_run and active_run.worker_id == runtime_worker_id:
+                if (
+                    active_run
+                    and active_run.id == claimed_run_id
+                    and active_run.execution_token == execution_token
+                ):
                     task.execution_error = execution_error
                     active_run.result = {
                         "status": "FAILED",
@@ -129,24 +129,10 @@ class RunCoordinator(TaskCoordinator):
                         task_status=TaskStatus.EXECUTION_ERROR,
                         current_progress="执行发生异常，等待恢复",
                         message="任务执行发生异常",
-                        execution_token=active_run.execution_token,
-                        failure_type="EXECUTOR_EXCEPTION",
+                        execution_token=execution_token,
+                        failure_code=failure.failure_code,
                         employee_status=EmployeeStatus.ERROR,
                     )
-                elif not active_run:
-                    task.execution_error = execution_error
-                    await TaskService(session).transition(
-                        task,
-                        TaskStatus.EXECUTION_ERROR,
-                        current_progress="执行发生异常，等待恢复",
-                        message="任务执行发生异常",
-                        detail={"error": str(exc)},
-                        commit=False,
-                    )
-                    RuntimeService.release_employee(employee, status=EmployeeStatus.ERROR)
-                    employee.active_run_id = None
-                    task.active_run_id = None
-                    await session.commit()
                 else:
                     # Another Worker owns the current Run lease; stale workers cannot
                     # mutate the newer execution projection.

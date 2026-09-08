@@ -17,6 +17,14 @@ class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RuntimeRead(ORMModel):
+    runtime_state: str
+    runtime_status_label: str
+    runtime_detail: str
+    active_run: dict[str, Any] | None
+    failure: dict[str, Any] | None
+
+
 class ExecutionEnvironmentWrite(BaseModel):
     mode: ExecutionMode = ExecutionMode.LOCAL
     name: str = "本地 Agent 工作环境"
@@ -155,7 +163,7 @@ class EmployeePatch(BaseModel):
     max_auto_retries: int | None = Field(default=None, ge=0, le=20)
 
 
-class EmployeeRead(ORMModel):
+class EmployeeRead(RuntimeRead):
     id: str
     name: str
     role: str
@@ -225,7 +233,7 @@ class TaskCreate(BaseModel):
         return self
 
 
-class TaskRead(ORMModel):
+class TaskRead(RuntimeRead):
     id: str
     source: str
     external_task_id: str | None
@@ -296,7 +304,7 @@ class TaskCompletionWrite(BaseModel):
     acceptance_results: list[AcceptanceResult] = Field(min_length=1)
 
 
-class RunRead(ORMModel):
+class RunRead(RuntimeRead):
     id: str
     task_id: str
     employee_id: str
@@ -316,7 +324,11 @@ class RunRead(ORMModel):
     heartbeat_at: datetime | None
     worker_id: str | None
     executor_status: str | None
-    failure_type: str | None
+    failure_code: str | None
+    failure_scope: str | None
+    retryable: bool | None
+    recovery_action: str | None
+    raw_error: str | None
     exit_code: int | None
     result: dict[str, Any] | None
     execution_environment_snapshot: dict[str, Any]

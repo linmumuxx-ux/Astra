@@ -18,7 +18,7 @@
         </div>
         <div class="settings-employee-list">
           <button v-for="employee in filteredEmployees" :key="employee.id" class="settings-employee" :class="{ active: !creating && selectedId === employee.id }" @click="selectEmployee(employee.id)">
-            <EmployeeAvatar :employee="employee" size="small" /><div><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></div><AstraStatusBadge :status="employee.status" />
+            <EmployeeAvatar :employee="employee" size="small" /><div><strong>{{ employeeDisplayName(employee.name) }}</strong><small>{{ employee.role }}</small></div><AstraStatusBadge :status="employee.runtime_state" :label="employee.runtime_status_label" />
           </button>
           <button class="settings-new" @click="beginCreate"><Plus :size="14" /> 新建员工</button>
           <AstraEmptyState v-if="!filteredEmployees.length" class="settings-empty" :icon="SearchX" title="无匹配员工" description="调整搜索或状态筛选后重试。" />

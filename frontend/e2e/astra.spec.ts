@@ -390,7 +390,7 @@ test('配置保存保持环境可用且任务会话覆盖真实询问、恢复�
   const detail = page.getByTestId('task-detail-page')
   await expect(detail.getByLabel('任务对话').getByText('先向使用者询问要打印的答案，收到回答后打印该答案。')).toBeVisible()
   await expect(detail.getByText('请告诉我这次需要打印的具体答案是什么？', { exact: true })).toBeVisible()
-  await expect(detail.getByText('等待输入', { exact: true }).first()).toBeVisible()
+  await expect(detail.getByText('等待人工输入', { exact: true }).first()).toBeVisible()
   await expect(detail.getByText('运行元数据已更新')).toHaveCount(0)
   await expect(detail.getByText('模型用量')).toHaveCount(0)
   await detail.getByLabel('给数字员工的指令').fill('自动化验收答案')

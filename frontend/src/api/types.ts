@@ -1,9 +1,17 @@
+export interface RuntimeProjection {
+  runtime_state: string
+  runtime_status_label: string
+  runtime_detail: string
+  active_run: { id: string; status: string; trigger_reason: string; retry_index: number; opencode_session_id: string | null } | null
+  failure: { failure_code: string; failure_scope: string; retryable: boolean; recovery_action: string; raw_error: string } | null
+}
+
 export type TaskType = 'ISSUE' | 'REQUIREMENT'
 export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
 export type TaskStatus = 'READY' | 'ASSIGNED' | 'QUEUED' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
 export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
 export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
-export type RunTriggerReason = 'INITIAL' | 'MANUAL_START' | 'HUMAN_RESUME' | 'RECOVERY' | 'USER_RERUN' | 'USER_CONTINUE' | 'AUTO_RETRY' | 'SESSION_RECOVERY'
+export type RunTriggerReason = 'INITIAL' | 'HUMAN_RESUME' | 'WORKER_RECOVERY' | 'USER_CONTINUE' | 'AUTO_RETRY' | 'SESSION_RECOVERY'
 
 export interface TaskCategory {
   id: string
@@ -70,7 +78,7 @@ export interface EmployeeUsage {
 export interface TaskUsage { summary: UsageSummary; tools: ToolUsage[]; runs: number }
 export interface RunUsage { summary: UsageSummary; tools: ToolUsage[] }
 
-export interface Employee {
+export interface Employee extends RuntimeProjection {
   id: string
   name: string
   role: string
@@ -122,7 +130,7 @@ export interface HumanIntervention {
   scene_context?: string
 }
 
-export interface Task {
+export interface Task extends RuntimeProjection {
   id: string
   source: string
   external_task_id: string | null
@@ -159,7 +167,7 @@ export interface Task {
   updated_at: string
 }
 
-export interface Run {
+export interface Run extends RuntimeProjection {
   id: string
   task_id: string
   employee_id: string
@@ -179,7 +187,7 @@ export interface Run {
   heartbeat_at: string | null
   worker_id: string | null
   executor_status: string | null
-  failure_type: string | null
+  failure_code: string | null
   exit_code: number | null
   result: Record<string, unknown> | null
   execution_environment_snapshot: Record<string, unknown>
@@ -461,7 +469,7 @@ export interface DashboardEmployee {
   role: string
   status: string
   state: 'working' | 'idle' | 'waiting' | 'error'
-  state_label: '执行中' | '空闲' | '等待' | '异常'
+  state_label: string
   current_task: { id: string; title: string; status: string } | null
 }
 
@@ -509,6 +517,8 @@ export interface DashboardTasks {
     status: string
     employee_id: string | null
     employee_name: string
+    runtime_state: string
+    runtime_status_label: string
     updated_at: string
   }>
 }

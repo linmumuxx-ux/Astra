@@ -55,7 +55,7 @@
                 <div class="task-cell__meta"><IdDisplay :value="run.task_id" :max-width="120" :copyable="false" @click.stop /><span>第 {{ run.run_number }} 次执行</span></div>
               </td>
               <td class="employee-cell">{{ employeeName(run.employee_id) }}</td>
-              <td class="status-cell"><RunStatusBadge :status="run.status" /></td>
+              <td class="status-cell"><RunStatusBadge :run="run" /></td>
               <td class="time-cell">{{ formatTime(run.started_at) }}</td>
               <td class="time-cell">{{ formatDuration(run.started_at, run.finished_at) }}</td>
               <td class="num-cell">{{ formatTokens(run.total_tokens) }}</td>
@@ -111,12 +111,15 @@ const filters = reactive({
 })
 
 const levelOptions: Array<{ id: RunLevelStatus; label: string }> = [
-  { id: 'WAITING', label: '等待执行' },
-  { id: 'EXECUTING', label: '执行中' },
+  { id: 'QUEUED', label: '等待执行' },
+  { id: 'STARTING', label: '启动中' },
+  { id: 'RUNNING', label: '执行中' },
   { id: 'WAITING_INPUT', label: '等待输入' },
-  { id: 'PAUSED', label: '已暂停' },
+  { id: 'SUSPENDED', label: '已暂停' },
   { id: 'COMPLETED', label: '已完成' },
   { id: 'FAILED', label: '执行失败' },
+  { id: 'TIMEOUT', label: '执行超时' },
+  { id: 'LOST', label: '运行丢失' },
   { id: 'CANCELLED', label: '已取消' },
 ]
 const levelFilter = computed({
@@ -132,8 +135,8 @@ const load = async () => {
 const taskOf = (run: Run) => store.tasks.find((task) => task.id === run.task_id)
 const taskTitle = (id: string) => store.tasks.find((task) => task.id === id)?.title ?? id
 const totalTasks = computed(() => new Set(runs.value.map((run) => run.task_id)).size)
-const completedCount = computed(() => runs.value.filter((run) => ['COMPLETED', 'PASSED'].includes(run.status)).length)
-const failedCount = computed(() => runs.value.filter((run) => ['FAILED', 'BLOCKED', 'TIMEOUT', 'LOST'].includes(run.status)).length)
+const completedCount = computed(() => runs.value.filter((run) => ['COMPLETED'].includes(run.status)).length)
+const failedCount = computed(() => runs.value.filter((run) => ['FAILED', 'TIMEOUT', 'LOST'].includes(run.status)).length)
 const waitingCount = computed(() => runs.value.filter((run) => run.status === 'WAITING_INPUT').length)
 const successRate = computed(() => (runs.value.length ? Math.round((completedCount.value / runs.value.length) * 100) : 0))
 const avgDuration = computed(() => {
@@ -156,7 +159,7 @@ const filtered = computed(() => runs.value.filter((run) => {
   return (!query || `${run.id}${run.task_id}${run.opencode_session_id ?? ''}`.toLowerCase().includes(query))
     && (!filters.category || task?.category_id === filters.category)
     && (!filters.employee || run.employee_id === filters.employee)
-    && (!filters.level || runUnifiedStatus(run.status).level === filters.level)
+    && (!filters.level || runUnifiedStatus(run).level === filters.level)
     && (!filters.retry || (filters.retry === 'true' ? Boolean(run.previous_run_id) : !run.previous_run_id))
     && (filterByDate(run))
 }))

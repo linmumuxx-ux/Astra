@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+from anyio import CancelScope
 from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -15,6 +16,20 @@ if database_url.startswith("mysql"):
     engine_options["pool_recycle"] = settings.database_pool_recycle
 
 engine = create_async_engine(database_url, **engine_options)
+
+
+if database_url.startswith("sqlite"):
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+        # SSE readers and independent control/agent workers share the local DB.
+        # WAL prevents long-lived readers from blocking runtime projection writes.
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
 
 
 if database_url.startswith("mysql"):
@@ -33,8 +48,14 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    async with SessionLocal() as session:
+    session = SessionLocal()
+    try:
         yield session
+    finally:
+        # ASGI disconnects use level cancellation; shield rollback/close so the
+        # pooled DB connection is not abandoned while a page or SSE closes.
+        with CancelScope(shield=True):
+            await session.close()
 
 
 async def init_database() -> None:

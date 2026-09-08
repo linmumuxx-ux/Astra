@@ -50,7 +50,7 @@ async def test_run_coordinator_enters_execution_only_after_run_claim(monkeypatch
         opencode_session_id=None,
         execution_environment_snapshot={"workspace_root": "/tmp/astra-runtime-test"},
     )
-    employee = SimpleNamespace(id="EMP-001")
+    employee = SimpleNamespace(id="EMP-001", name="test")
     run = SimpleNamespace(
         id="RUN-001",
         started_at=None,
@@ -82,6 +82,15 @@ async def test_run_coordinator_enters_execution_only_after_run_claim(monkeypatch
         ),
     )
 
+    async def fake_event(*args, **kwargs):
+        pass
+
+    async def execute(self, *args, **kwargs):
+        calls.append(f"execute:{kwargs['prepared_run'].id}:{kwargs['execution_token']}")
+
+    monkeypatch.setattr(run_coordinator_module.TaskService, "add_event", fake_event)
+    monkeypatch.setattr(RunCoordinator, "_execute_once", execute)
+    monkeypatch.setattr(RunCoordinator, "_executor_for_environment", lambda *args: object())
     await RunCoordinator().process("RUN-001", worker_id="worker-1")
 
-    assert calls == ["claim:RUN-001:worker-1", "mark:RUN-001:token-1"]
+    assert calls == ["claim:RUN-001:worker-1", "execute:RUN-001:token-1"]

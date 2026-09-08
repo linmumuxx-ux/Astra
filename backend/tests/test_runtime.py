@@ -85,9 +85,7 @@ async def queued_runtime(session, suffix: str) -> tuple[DigitalEmployee, Task, R
     )
     session.add(employee)
     await session.commit()
-    task = await TaskService(session).create(
-        new_task(employee_id=employee.id, title=f"运行时测试 {suffix}")
-    )
+    task = await TaskService(session).create(new_task(employee_id=employee.id, title=f"运行时测试 {suffix}"))
     run = await RuntimeService(session).queue_new_run(
         task,
         employee,
@@ -369,9 +367,7 @@ async def test_failed_queue_publish_keeps_run_durably_queued(session, tmp_path, 
     await session.refresh(task)
     await session.refresh(run)
     await session.refresh(employee)
-    outbox = await session.scalar(
-        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
-    )
+    outbox = await session.scalar(select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id))
 
     assert published is False
     assert task.status == TaskStatus.QUEUED
@@ -407,9 +403,7 @@ async def test_outbox_success_and_duplicate_worker_delivery_are_idempotent(sessi
     monkeypatch.setattr(process_task, "apply_async", publish)
     runtime = RuntimeService(session)
     assert await runtime.enqueue(task, run) is True
-    outbox = await session.scalar(
-        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
-    )
+    outbox = await session.scalar(select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id))
     await session.refresh(run)
     assert outbox and outbox.status == "SENT"
     assert outbox.attempts == 1
@@ -452,9 +446,7 @@ async def test_execution_lease_heartbeat_and_finalize_clear_all_pointers(session
     await session.refresh(task)
     await session.refresh(employee)
     await session.refresh(run)
-    outbox = await session.scalar(
-        select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
-    )
+    outbox = await session.scalar(select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id))
 
     assert task.status == TaskStatus.COMPLETED
     assert task.active_run_id is None
@@ -496,7 +488,7 @@ async def test_watchdog_marks_stale_starting_run_lost(session):
 
     assert changed == [run.id]
     assert run.status == RunStatus.LOST
-    assert run.failure_type == "STARTUP_LEASE_LOST"
+    assert run.failure_code == "WORKER_STARTUP_LOST"
     assert task.status == TaskStatus.EXECUTION_ERROR
     assert task.active_run_id is None
     assert employee.status == EmployeeStatus.ERROR
@@ -534,7 +526,7 @@ async def test_watchdog_never_replays_busy_session_then_marks_missing_session_lo
     await session.refresh(task)
     await session.refresh(employee)
     assert run.status == RunStatus.LOST
-    assert run.failure_type == "WORKER_LEASE_LOST"
+    assert run.failure_code == "WORKER_LEASE_LOST"
     assert task.status == TaskStatus.EXECUTION_ERROR
     assert employee.status == EmployeeStatus.ERROR
 
@@ -564,7 +556,7 @@ async def test_watchdog_collects_idle_session_result_without_reexecution(session
 
     assert changed == [run.id]
     assert run.status == RunStatus.COMPLETED
-    assert run.failure_type == "WORKER_LOST_RESULT_RECOVERED"
+    assert run.failure_code is None
     assert run.result["recovered"] is True
     assert task.status == TaskStatus.COMPLETED
     assert task.result["summary"] == "修复已完成"
@@ -624,26 +616,18 @@ async def test_reconciliation_repairs_leases_and_fake_running_projection(session
     assert orphan_employee.status == EmployeeStatus.ERROR
 
 
-async def test_heartbeat_restores_waiting_employee_from_active_task(session, tmp_path):
-    employee = DigitalEmployee(
-        id="astra-waiting-recovered",
-        name="Astra Waiting",
-        role="测试员工",
-        status=EmployeeStatus.OFFLINE,
-        task_types=["ISSUE"],
-        category_ids=["testing-platform"],
-        current_task_count=1,
-    )
-    session.add(employee)
+async def test_heartbeat_restores_waiting_employee_from_active_run(session):
+    employee, task, run = await queued_runtime(session, "waiting-heartbeat")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="waiting-worker")
+    await runtime.mark_running(task, run, claimed[3])
+    await runtime.mark_waiting(task, employee, run, current_progress="等待输入", message="等待输入")
+    employee.status = EmployeeStatus.OFFLINE
     await session.commit()
-    task = await TaskService(session).create(new_task(employee_id=employee.id))
-    await TaskService(session).transition(task, TaskStatus.RUNNING)
-    await TaskService(session).transition(task, TaskStatus.WAIT_HUMAN)
-
     await heartbeat_active_employees(session)
-
     await session.refresh(employee)
     assert employee.status == EmployeeStatus.WAIT_HUMAN
+    assert employee.active_run_id == run.id
 
 
 class FakeSource(TaskSource):
@@ -738,7 +722,7 @@ class AskThenCompleteExecutor(OpenCodeExecutor):
         self.started += 1
         question = "请告诉我需要打印的具体答案是什么？"
         return ExecutorResult(
-            status="BLOCKED",
+            status="WAITING_INPUT",
             exit_code=0,
             session_id="ses-hitl-same-run",
             output=[{"type": "text", "part": {"text": f"需要你的回答后才能继续：{question}"}}],
@@ -857,16 +841,21 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
 
     executor = FailThenPassExecutor()
     await RunCoordinator(executor=executor).process(run_id)
+    async with SessionLocal() as recovery_session:
+        next_run_id = await recovery_session.scalar(
+            select(Run.id).where(
+                Run.task_id == task_id,
+                Run.status == RunStatus.QUEUED,
+            )
+        )
+    assert next_run_id
+    await RunCoordinator(executor=executor).process(next_run_id)
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
         employee = await global_session.get(DigitalEmployee, employee_id)
         runs = (
-            (
-                await global_session.execute(
-                    select(Run).where(Run.task_id == task_id).order_by(Run.run_number)
-                )
-            )
+            (await global_session.execute(select(Run).where(Run.task_id == task_id).order_by(Run.run_number)))
             .scalars()
             .all()
         )
@@ -893,7 +882,7 @@ async def test_coordinator_reuses_employee_workspace_and_same_session(tmp_path):
     assert employee.active_run_id is None
     assert len(runs) == 2
     assert runs[0].status == RunStatus.FAILED
-    assert runs[0].failure_type == "AUTO_RETRY"
+    assert runs[0].failure_code == "NONZERO_EXIT"
     assert runs[1].status == RunStatus.COMPLETED
     assert runs[1].previous_run_id == runs[0].id
     assert runs[0].execution_token != runs[1].execution_token
@@ -952,14 +941,8 @@ async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
-        task_session = await global_session.scalar(
-            select(TaskSession).where(TaskSession.task_id == task_id)
-        )
-        runs = (
-            (await global_session.execute(select(Run).where(Run.task_id == task_id)))
-            .scalars()
-            .all()
-        )
+        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
+        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
         inquiry = await global_session.scalar(
             select(RunInquiry).where(RunInquiry.session_id == task_session.id)
         )
@@ -1000,14 +983,8 @@ async def test_inquiry_answer_resumes_the_same_run_and_session(tmp_path):
 
     async with SessionLocal() as global_session:
         task = await global_session.get(Task, task_id)
-        task_session = await global_session.scalar(
-            select(TaskSession).where(TaskSession.task_id == task_id)
-        )
-        runs = (
-            (await global_session.execute(select(Run).where(Run.task_id == task_id)))
-            .scalars()
-            .all()
-        )
+        task_session = await global_session.scalar(select(TaskSession).where(TaskSession.task_id == task_id))
+        runs = (await global_session.execute(select(Run).where(Run.task_id == task_id))).scalars().all()
         inquiry = await global_session.scalar(
             select(RunInquiry).where(RunInquiry.session_id == task_session.id)
         )
@@ -1049,6 +1026,7 @@ async def test_coordinator_finishes_run_when_executor_raises(tmp_path):
             task_types=["ISSUE"],
             category_ids=["testing-platform"],
             current_task_count=0,
+            max_auto_retries=0,
         )
         global_session.add(employee)
         global_session.add(
@@ -1303,7 +1281,7 @@ async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_
     result = await OpenCodeCLIExecutor(opencode_binary=str(binary)).start(task, tmp_path)
 
     assert result.exit_code == 0
-    assert result.status == "BLOCKED"
+    assert result.status == "WAITING_INPUT"
 
 
 def test_employee_model_is_passed_to_agent_command(tmp_path: Path):
@@ -1440,3 +1418,179 @@ def test_remote_environment_uses_server_runtime_unless_cli_fallback_is_explicit(
     fallback = coordinator._executor_for_environment(task, environment, None)
 
     assert isinstance(fallback, RemoteOpenCodeExecutor)
+
+
+async def test_probe_network_failure_never_replays_or_releases_session(session):
+    employee, task, run = await queued_runtime(session, "probe-network")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="gone")
+    await runtime.mark_running(task, run, claimed[3])
+    run.heartbeat_at = datetime.now(UTC) - timedelta(days=1)
+    await session.commit()
+
+    async def unavailable(*_args):
+        return "PROBE_ERROR", {"error": "connection refused"}
+
+    for _ in range(3):
+        assert await watchdog_stale_runs(session, Settings(), status_probe=unavailable) == []
+    assert run.status == RunStatus.RUNNING
+    assert task.active_run_id == employee.active_run_id == run.id
+    assert run.executor_status == "PROBE_ERROR"
+    assert await runtime.validate_invariants() == []
+
+
+async def test_reconcile_waiting_projection_and_orphan_employee(session):
+    employee, task, run = await queued_runtime(session, "waiting-reconcile")
+    run.status = RunStatus.WAITING_INPUT
+    employee.status = EmployeeStatus.IDLE
+    task.status = TaskStatus.READY
+    orphan = DigitalEmployee(id="orphan-waiter", name="orphan", role="test", status="WAIT_HUMAN")
+    session.add(orphan)
+    await session.commit()
+    runtime = RuntimeService(session)
+    assert await runtime.validate_invariants()
+    await runtime.reconcile()
+    assert task.status == TaskStatus.WAIT_HUMAN
+    assert employee.status == EmployeeStatus.WAIT_HUMAN
+    assert orphan.status == EmployeeStatus.IDLE
+    assert await runtime.validate_invariants() == []
+    assert task.runtime_state == employee.runtime_state == run.runtime_state == "WAITING_INPUT"
+    assert task.runtime_status_label == run.runtime_status_label
+    assert task.failure is None
+
+
+async def test_worker_loss_creates_durable_recovery_with_retry_budget(session):
+    from app.runtime.recovery import recover_available_tasks
+
+    employee, task, run = await queued_runtime(session, "recover-worker")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="gone")
+    await runtime.mark_running(task, run, claimed[3])
+    await runtime.finalize_run(
+        task,
+        employee,
+        run,
+        run_status=RunStatus.LOST,
+        task_status=TaskStatus.EXECUTION_ERROR,
+        current_progress="丢失",
+        message="丢失",
+        failure_code="WORKER_LEASE_LOST",
+        employee_status=EmployeeStatus.ERROR,
+    )
+    recovered = await recover_available_tasks(session)
+    assert len(recovered) == 1
+    next_run = await session.get(Run, recovered[0])
+    assert next_run.trigger_reason == "WORKER_RECOVERY"
+    assert next_run.retry_index == 1
+    assert next_run.opencode_session_id is None
+    assert await session.scalar(select(RunDispatchOutbox.id).where(RunDispatchOutbox.run_id == next_run.id))
+    assert await recover_available_tasks(session) == []
+    assert await runtime.validate_invariants() == []
+
+
+async def test_completed_run_repairs_stale_business_projection(session):
+    employee, task, run = await queued_runtime(session, "completed-projection")
+    run.status = RunStatus.COMPLETED
+    run.finished_at = datetime.now(UTC)
+    run.result = {"work_result": {"summary": "done"}}
+    task.status = TaskStatus.RUNNING
+    await session.commit()
+    await RuntimeService(session).reconcile()
+    assert task.status == TaskStatus.COMPLETED
+    assert task.result == {"summary": "done"}
+    assert employee.status == EmployeeStatus.IDLE
+    assert task.active_run_id is employee.active_run_id is None
+    assert await RuntimeService(session).validate_invariants() == []
+
+
+async def test_watchdog_recovers_native_question_after_worker_death(session):
+    employee, task, run = await queued_runtime(session, "orphan-question")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="gone")
+    await runtime.mark_running(task, run, claimed[3])
+    run.heartbeat_at = datetime.now(UTC) - timedelta(minutes=20)
+    await session.commit()
+
+    async def question_probe(*_args):
+        return "WAITING_INPUT", {
+            "inquiry": {
+                "blocking_reason": "需要回答",
+                "requested_input": "继续吗？",
+                "options": [],
+                "runtime_kind": "question",
+                "runtime_request_id": "q-1",
+            }
+        }
+
+    await watchdog_stale_runs(session, Settings(), status_probe=question_probe)
+    assert run.status == RunStatus.WAITING_INPUT
+    assert task.human_intervention["runtime_request_id"] == "q-1"
+    assert await runtime.validate_invariants() == []
+    inquiry = await session.scalar(select(RunInquiry).where(RunInquiry.run_id == run.id))
+    assert inquiry and inquiry.status == "OPEN"
+    assert run.failure_code is None
+
+
+async def test_reconciliation_converges_duplicate_active_run(session):
+    employee, task, run = await queued_runtime(session, "duplicate-lease")
+    duplicate = Run(
+        id="RUN-duplicate", task_id=task.id, employee_id=employee.id, run_number=2, status=RunStatus.QUEUED
+    )
+    session.add(duplicate)
+    await session.commit()
+    runtime = RuntimeService(session)
+    assert await runtime.validate_invariants()
+    await runtime.reconcile()
+    await runtime.reconcile()
+    assert duplicate.status == RunStatus.LOST
+    assert duplicate.failure_code == "INVARIANT_VIOLATION"
+    assert await runtime.validate_invariants() == []
+
+
+async def test_stream_poll_observes_external_commits_and_releases_connection():
+    from app.api.routes import _stream_event_batch
+    from app.database import engine
+
+    await init_database()
+    cursor, _ = await _stream_event_batch(None, None)
+    assert engine.pool.checkedout() == 0
+    async with SessionLocal() as writer:
+        event = Event(event_type="STREAM_TEST", phase="runtime", message="new commit")
+        writer.add(event)
+        await writer.commit()
+        event_id = event.id
+    next_cursor, events = await _stream_event_batch(None, cursor)
+    assert next_cursor >= event_id
+    assert any(event.id == event_id for event in events)
+    assert engine.pool.checkedout() == 0
+
+
+def test_session_recovery_discards_old_native_request_but_keeps_user_answer():
+    task = Task(
+        id="reset-session",
+        title="test",
+        task_type="ISSUE",
+        opencode_session_id="ses-old",
+        human_intervention={
+            "runtime_request_id": "q-old",
+            "runtime_kind": "question",
+            "response": "保留这个答案",
+        },
+    )
+    RuntimeService.reset_session(task)
+    assert task.opencode_session_id is None
+    assert task.human_intervention == {"response": "保留这个答案"}
+
+
+async def test_executor_disconnect_keeps_lease_until_session_probe(session):
+    from app.runtime.failure import failure_for
+    employee, task, run = await queued_runtime(session, "executor-disconnect")
+    runtime = RuntimeService(session)
+    claimed = await runtime.claim_run(run.id, worker_id="worker")
+    await runtime.mark_running(task, run, claimed[3])
+    assert await runtime.defer_session_probe(run, claimed[3], failure_for("EXECUTOR_EXCEPTION", "SSE lost"))
+    assert run.status == RunStatus.RUNNING
+    assert task.active_run_id == employee.active_run_id == run.id
+    assert run.failure_code == "EXECUTOR_EXCEPTION"
+    assert run.executor_status == "PROBE_ERROR"
+    assert await runtime.validate_invariants() == []

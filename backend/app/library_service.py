@@ -1289,7 +1289,7 @@ class KnowledgeService:
             content_md=payload.content_md,
             status="candidate",
             verification_status=(
-                "verified" if run and run.status in {"PASSED", "COMPLETED"} else "unverified"
+                "verified" if run and run.status in {"COMPLETED"} else "unverified"
             ),
             tags=payload.tags,
             source_type="agent_experience",

@@ -195,7 +195,7 @@ async def test_server_executor_blocks_on_native_question_and_replies_in_same_ses
         tmp_path,
     )
 
-    assert first.status == "BLOCKED"
+    assert first.status == "WAITING_INPUT"
     assert first.inquiry and first.inquiry["runtime_request_id"] == "que_1"
     current_task.human_intervention = {**first.inquiry, "response": "BLUE"}
     current_task.opencode_session_id = "ses_main"

@@ -36,30 +36,28 @@ def test_run_trigger_reason_is_classified_at_runtime_boundary():
     resolve = RuntimeService._resolve_trigger_reason
 
     assert resolve(task_with_status(TaskStatus.READY), None, None) == RunTriggerReason.INITIAL
-    assert resolve(
-        task_with_status(TaskStatus.READY), {"dispatch": "manual"}, None
-    ) == RunTriggerReason.MANUAL_START
-    assert resolve(
-        task_with_status(TaskStatus.WAIT_HUMAN), {}, None
-    ) == RunTriggerReason.HUMAN_RESUME
-    assert resolve(
-        task_with_status(TaskStatus.SUSPENDED), {}, None
-    ) == RunTriggerReason.HUMAN_RESUME
-    assert resolve(
-        task_with_status(TaskStatus.EXECUTION_ERROR), {}, None
-    ) == RunTriggerReason.RECOVERY
-    assert resolve(
-        task_with_status(TaskStatus.READY), {"recovery": "environment"}, None
-    ) == RunTriggerReason.RECOVERY
-    assert resolve(
-        task_with_status(TaskStatus.COMPLETED), {"rerun": True}, None
-    ) == RunTriggerReason.USER_RERUN
-    assert resolve(
-        task_with_status(TaskStatus.COMPLETED), {"continue": True}, None
-    ) == RunTriggerReason.USER_CONTINUE
-    assert resolve(
-        task_with_status(TaskStatus.READY), {"rerun": True}, RunTriggerReason.RECOVERY
-    ) == RunTriggerReason.RECOVERY
+    assert (
+        resolve(task_with_status(TaskStatus.READY), {"dispatch": "manual"}, None) == RunTriggerReason.INITIAL
+    )
+    assert resolve(task_with_status(TaskStatus.WAIT_HUMAN), {}, None) == RunTriggerReason.HUMAN_RESUME
+    assert resolve(task_with_status(TaskStatus.SUSPENDED), {}, None) == RunTriggerReason.USER_CONTINUE
+    assert resolve(task_with_status(TaskStatus.EXECUTION_ERROR), {}, None) == RunTriggerReason.WORKER_RECOVERY
+    assert (
+        resolve(task_with_status(TaskStatus.READY), {"recovery": "environment"}, None)
+        == RunTriggerReason.WORKER_RECOVERY
+    )
+    assert (
+        resolve(task_with_status(TaskStatus.COMPLETED), {"rerun": True}, None)
+        == RunTriggerReason.USER_CONTINUE
+    )
+    assert (
+        resolve(task_with_status(TaskStatus.COMPLETED), {"continue": True}, None)
+        == RunTriggerReason.USER_CONTINUE
+    )
+    assert (
+        resolve(task_with_status(TaskStatus.READY), {"rerun": True}, RunTriggerReason.WORKER_RECOVERY)
+        == RunTriggerReason.WORKER_RECOVERY
+    )
 
 
 async def test_retry_index_is_scoped_to_current_run_chain(session):
@@ -103,36 +101,44 @@ async def test_retry_index_is_scoped_to_current_run_chain(session):
     await session.commit()
 
     runtime = RuntimeService(session)
-    retry_one, retry_token = await runtime.continue_run(
+    retry_one = await runtime.continue_run(
         task,
         employee,
         initial,
         previous_status=RunStatus.FAILED,
-        failure_type="AUTO_RETRY",
+        failure_code="NONZERO_EXIT",
+        trigger_reason=RunTriggerReason.AUTO_RETRY,
         message="retry",
         execution_token="token-1",
     )
     assert retry_one.trigger_reason == RunTriggerReason.AUTO_RETRY
     assert retry_one.retry_index == 1
 
-    user_continue, continue_token = await runtime.continue_run(
+    claimed = await runtime.claim_run(retry_one.id, worker_id="retry-worker")
+    retry_token = claimed[3]
+    await runtime.mark_running(task, retry_one, retry_token)
+    user_continue = await runtime.continue_run(
         task,
         employee,
         retry_one,
         previous_status=RunStatus.COMPLETED,
-        failure_type=None,
+        failure_code=None,
         message="user continue",
         execution_token=retry_token,
     )
     assert user_continue.trigger_reason == RunTriggerReason.USER_CONTINUE
     assert user_continue.retry_index == 0
 
-    fresh_retry, _ = await runtime.continue_run(
+    claimed = await runtime.claim_run(user_continue.id, worker_id="continue-worker")
+    continue_token = claimed[3]
+    await runtime.mark_running(task, user_continue, continue_token)
+    fresh_retry = await runtime.continue_run(
         task,
         employee,
         user_continue,
         previous_status=RunStatus.FAILED,
-        failure_type="AUTO_RETRY",
+        failure_code="NONZERO_EXIT",
+        trigger_reason=RunTriggerReason.AUTO_RETRY,
         message="fresh retry budget",
         execution_token=continue_token,
     )
@@ -180,12 +186,13 @@ async def test_session_recovery_does_not_consume_auto_retry_budget(session):
     session.add_all([employee, task, initial])
     await session.commit()
 
-    recovered, _ = await RuntimeService(session).continue_run(
+    recovered = await RuntimeService(session).continue_run(
         task,
         employee,
         initial,
         previous_status=RunStatus.FAILED,
-        failure_type="SESSION_NOT_FOUND",
+        failure_code="SESSION_NOT_FOUND",
+        trigger_reason=RunTriggerReason.SESSION_RECOVERY,
         message="recover session",
         execution_token="session-token-1",
     )

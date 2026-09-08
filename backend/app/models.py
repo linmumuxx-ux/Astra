@@ -5,6 +5,8 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Stri
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
+from app.runtime.presentation import RuntimeProjection
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
@@ -47,7 +49,7 @@ class TaskCategory(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
-class DigitalEmployee(Base):
+class DigitalEmployee(RuntimeProjection, Base):
     __tablename__ = "digital_employees"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -72,6 +74,10 @@ class DigitalEmployee(Base):
     online_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    runtime_run: Mapped["Run | None"] = relationship(
+        foreign_keys=[active_run_id], lazy="selectin", viewonly=True,
+    )
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="employee")
     execution_environment: Mapped["OpenCodeExecutionEnvironment | None"] = relationship(
@@ -109,7 +115,7 @@ class OpenCodeExecutionEnvironment(Base):
         return bool(self.ssh_password)
 
 
-class Task(Base):
+class Task(RuntimeProjection, Base):
     __tablename__ = "tasks"
     __table_args__ = (
         UniqueConstraint("source", "external_task_id", name="uq_task_source_external"),
@@ -154,6 +160,10 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
+    runtime_run: Mapped["Run | None"] = relationship(
+        foreign_keys=[active_run_id], lazy="selectin", viewonly=True,
+    )
+
     employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
     runs: Mapped[list["Run"]] = relationship(
         back_populates="task",
@@ -167,7 +177,7 @@ class Task(Base):
     )
 
 
-class Run(Base):
+class Run(RuntimeProjection, Base):
     __tablename__ = "runs"
     __table_args__ = (
         UniqueConstraint("task_id", "run_number", name="uq_task_run_number"),
@@ -183,7 +193,7 @@ class Run(Base):
     run_number: Mapped[int] = mapped_column(Integer)
     trigger_reason: Mapped[str] = mapped_column(String(64), default="INITIAL", server_default="INITIAL")
     retry_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    status: Mapped[str] = mapped_column(String(32), default="RUNNING")
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED")
     executor_type: Mapped[str] = mapped_column(String(64), default="opencode_server")
     opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
@@ -196,7 +206,11 @@ class Run(Base):
     worker_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
     execution_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     executor_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    failure_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    failure_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    recovery_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    raw_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     execution_environment_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

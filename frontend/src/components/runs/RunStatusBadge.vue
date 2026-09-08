@@ -1,6 +1,6 @@
 <template>
   <span class="run-status-badge" :data-tone="meta.tone" :data-level="meta.level">
-    <i v-if="meta.level === 'EXECUTING' || meta.level === 'WAITING'" />
+    <i v-if="['RUNNING', 'STARTING', 'QUEUED'].includes(meta.level)" />
     {{ meta.label }}
     <em v-if="meta.detail && showDetail">{{ meta.detail }}</em>
   </span>
@@ -10,8 +10,8 @@
 import { computed } from 'vue'
 import { runUnifiedStatus } from '@/features/runs/unifiedStatus'
 
-const props = withDefaults(defineProps<{ status: string; showDetail?: boolean }>(), { showDetail: true })
-const meta = computed(() => runUnifiedStatus(props.status))
+const props = withDefaults(defineProps<{ run: { runtime_state: string; runtime_status_label: string; runtime_detail: string }; showDetail?: boolean }>(), { showDetail: true })
+const meta = computed(() => runUnifiedStatus(props.run))
 </script>
 
 <style scoped>

@@ -178,6 +178,8 @@ class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
         if not run.opencode_session_id:
             return run.status
         async with self.connection() as client:
+            if await self.pending_inquiry(client, self.remote_workspace, run.opencode_session_id):
+                return "WAITING_INPUT"
             status = await client.status(self.remote_workspace, run.opencode_session_id)
         return status.upper()
 
@@ -186,9 +188,11 @@ class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
         if existing.get("work_result") or not run.opencode_session_id:
             return existing
         async with self.connection() as client:
+            inquiry = await self.pending_inquiry(client, self.remote_workspace, run.opencode_session_id)
+            if inquiry:
+                return {"inquiry": inquiry}
             messages = await client.messages(self.remote_workspace, run.opencode_session_id)
-        raw_text = self._last_assistant_message(messages)
-        return {**existing, "raw_text": raw_text} if raw_text else existing
+        return self.recovered_message_result(run, messages, existing)
 
 
 async def test_remote_server(

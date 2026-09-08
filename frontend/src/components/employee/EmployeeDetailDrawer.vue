@@ -12,7 +12,7 @@
 
         <div class="employee-drawer__body">
           <section class="employee-drawer__status" :data-help="model.needHelp">
-            <div><span>当前状态</span><AstraStatusBadge :status="employee.status" :pulse="employee.status === 'WORKING'" /></div>
+            <div><span>当前状态</span><AstraStatusBadge :status="employee.runtime_state" :label="employee.runtime_status_label" :pulse="employee.status === 'WORKING'" /></div>
             <strong>{{ model.statusTextLong }}</strong>
             <p v-if="model.needHelp">{{ model.currentTask?.human_required_reason || model.currentTask?.human_intervention?.requested_input || '该员工正在等待人工补充信息。' }}</p>
           </section>
@@ -41,7 +41,7 @@
             <header><h3>最近任务</h3></header>
             <div class="drawer-task-list">
               <RouterLink v-for="task in recentTasks" :key="task.id" :to="`/tasks/${task.id}`">
-                <span><strong>{{ task.title }}</strong><small>{{ task.id }} · {{ formatTime(task.updated_at) }}</small></span><AstraStatusBadge :status="task.status" />
+                <span><strong>{{ task.title }}</strong><small>{{ task.id }} · {{ formatTime(task.updated_at) }}</small></span><AstraStatusBadge :status="task.runtime_state" :label="task.runtime_status_label" />
               </RouterLink>
               <AstraEmptyState v-if="!recentTasks.length" :icon="ClipboardList" title="暂无任务记录" description="员工处理任务后会显示在这里。" />
             </div>

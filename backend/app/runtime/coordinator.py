@@ -14,8 +14,11 @@ from app.domain import (
     EmployeeStatus,
     ExecutionMode,
     RunStatus,
+    RunTriggerReason,
     TaskStatus,
 )
+from app.executors.base import ExecutorResult
+from app.executors.errors import classify_exception
 from app.executors.opencode_cli import OpenCodeCLIExecutor
 from app.executors.opencode_remote import RemoteOpenCodeExecutor
 from app.executors.opencode_remote_server import RemoteOpenCodeServerExecutor
@@ -24,6 +27,7 @@ from app.executors.process import terminate_process
 from app.executors.usage import parse_opencode_usage
 from app.models import DigitalEmployee, Evidence, Run, SessionMessage, Task, ToolUsage
 from app.runtime.environment import ExecutionEnvironmentRuntime, environment_from_snapshot
+from app.runtime.failure import FailureCode, failure_for
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.result_parser import build_work_result, human_readable_result, parse_human_intervention
 from app.runtime.semantic_events import adapt_open_code_events, extract_agent_text
@@ -125,7 +129,6 @@ class TaskCoordinator:
         work_session = await ensure_task_session(session, task)
         run = prepared_run
         resumed_waiting_run = resume_existing_run
-        run.status = RunStatus.RUNNING
         run.finished_at = None
         run_number = run.run_number
         work_session.current_run_id = run.id
@@ -191,13 +194,20 @@ class TaskCoordinator:
 
         if hasattr(executor, "event_callback"):
             executor.event_callback = lambda event: self._observe_event(task, run, event, service)
+
+        async def session_started(session_id):
+            if not await RuntimeService(session).bind_session(task, run, session_id, execution_token):
+                raise RuntimeError("运行租约已失效，不能绑定 Session")
+            if run.status == RunStatus.STARTING:
+                if not await RuntimeService(session).mark_running(task, run, execution_token):
+                    raise RuntimeError("运行租约已失效")
+
         if hasattr(executor, "session_callback"):
-            executor.session_callback = lambda session_id: self._bind_runtime_session(
-                task,
-                run,
-                session_id,
-                service,
-            )
+            executor.session_callback = session_started
+        elif run.status == RunStatus.STARTING:
+            # CLI executors have no Server session handshake.
+            if not await RuntimeService(session).mark_running(task, run, execution_token):
+                return
 
         resumed_session = task.opencode_session_id
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(run.id, execution_token))
@@ -208,36 +218,30 @@ class TaskCoordinator:
                 else await executor.start(task, workspace)
             )
         except Exception as exc:
-            await self._terminate_executor_processes(executor, run)
-            await session.refresh(task)
-            await session.refresh(run)
-            stopped = task.status in {TaskStatus.CANCELLED, TaskStatus.SUSPENDED}
-            run.result = {
-                "status": "CANCELLED" if stopped else "FAILED",
-                "session_id": task.opencode_session_id,
-                "summary": "任务停止后 Agent 执行已结束" if stopped else "Agent 执行过程中抛出异常",
-                "stderr": str(exc),
-                "usage_source": "exception",
-            }
-            if stopped:
-                run.status = (
-                    RunStatus.SUSPENDED
-                    if task.status == TaskStatus.SUSPENDED
-                    else RunStatus.CANCELLED
-                )
-                run.finished_at = datetime.now(UTC)
-            await session.commit()
-            raise
+            failure = classify_exception(exc)
+            if run.opencode_session_id and run.executor_type.startswith("opencode_server"):
+                # Transport/executor exceptions do not prove that the Agent stopped.
+                # Recovery must probe the existing Session before any replay.
+                await RuntimeService(session).defer_session_probe(run, execution_token, failure)
+                return
+            result = ExecutorResult(
+                status="FAILED",
+                exit_code=124 if failure.failure_code == FailureCode.EXECUTOR_TIMEOUT else 1,
+                session_id=task.opencode_session_id,
+                stderr=failure.raw_error,
+                failure_code=failure.failure_code,
+            )
         finally:
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
 
-        await RuntimeService(session).heartbeat(
+        if not await RuntimeService(session).heartbeat(
             run.id,
             execution_token,
             executor_status="FINALIZING",
-        )
+        ):
+            return
         await session.refresh(task)
         task.opencode_session_id = result.session_id or task.opencode_session_id
         run.opencode_session_id = task.opencode_session_id
@@ -319,7 +323,10 @@ class TaskCoordinator:
             {"evidence_id": evidence.id, "name": evidence.name, "path": evidence.path},
             run.id,
         )
-        if task.status != TaskStatus.RUNNING:
+        startup_failure = (
+            task.status == TaskStatus.QUEUED and run.status == RunStatus.STARTING and result.exit_code
+        )
+        if task.status != TaskStatus.RUNNING and not startup_failure:
             stopped_status = {
                 TaskStatus.SUSPENDED: "任务已挂起",
                 TaskStatus.CANCELLED: "任务已取消",
@@ -338,18 +345,14 @@ class TaskCoordinator:
                     employee,
                     run,
                     run_status=(
-                        RunStatus.SUSPENDED
-                        if task.status == TaskStatus.SUSPENDED
-                        else RunStatus.CANCELLED
+                        RunStatus.SUSPENDED if task.status == TaskStatus.SUSPENDED else RunStatus.CANCELLED
                     ),
                     task_status=None,
                     current_progress=task.current_progress,
                     message=stopped_status,
                     execution_token=execution_token,
-                    failure_type=(
-                        "USER_SUSPENDED"
-                        if task.status == TaskStatus.SUSPENDED
-                        else "USER_CANCELLED"
+                    failure_code=(
+                        "USER_SUSPENDED" if task.status == TaskStatus.SUSPENDED else "USER_CANCELLED"
                     ),
                 )
             else:
@@ -358,7 +361,7 @@ class TaskCoordinator:
         if not getattr(executor, "event_callback", None):
             await self._record_progress_messages(task, run, result.output, service)
 
-        if result.status == "BLOCKED":
+        if result.status == "WAITING_INPUT":
             intervention = (
                 result.inquiry
                 or parse_human_intervention(raw_summary)
@@ -393,7 +396,7 @@ class TaskCoordinator:
 
         if result.exit_code != 0:
             if resumed_session and result.failure_code == "SESSION_NOT_FOUND":
-                task.opencode_session_id = None
+                RuntimeService.reset_session(task)
                 task.current_progress = "原 Agent 会话不可用，携带现有上下文创建新会话"
                 await service.add_event(
                     task,
@@ -407,32 +410,32 @@ class TaskCoordinator:
                     run.id,
                     commit=False,
                 )
-                next_run, next_token = await RuntimeService(session).continue_run(
+                next_run = await RuntimeService(session).continue_run(
                     task,
                     employee,
                     run,
                     previous_status=RunStatus.FAILED,
-                    failure_type="SESSION_NOT_FOUND",
-                    message="原 Agent 会话不可用，已在当前 Worker 创建继续运行",
+                    failure_code=FailureCode.SESSION_NOT_FOUND,
+                    trigger_reason=RunTriggerReason.SESSION_RECOVERY,
+                    message="原 Agent 会话不可用，已创建排队的继续运行",
                     execution_token=execution_token,
                 )
-                await self._execute_once(
-                    task,
-                    employee,
-                    environment,
-                    workspace,
-                    executor,
-                    session,
-                    prepared_run=next_run,
-                    execution_token=next_token,
-                )
+                await RuntimeService(session).enqueue(task, next_run)
                 return
 
             retry_index = (run.retry_index or 0) + 1
-            if (run.retry_index or 0) < employee.max_auto_retries:
+            failure = failure_for(
+                result.failure_code
+                or (FailureCode.EXECUTOR_TIMEOUT if result.exit_code == 124 else FailureCode.NONZERO_EXIT),
+                result.stderr,
+            )
+            if (
+                failure.retryable
+                and failure.recovery_action != "WAIT_ENVIRONMENT"
+                and (run.retry_index or 0) < employee.max_auto_retries
+            ):
                 task.current_progress = (
-                    "Agent 执行异常，正在恢复同一任务会话"
-                    f"（{retry_index}/{employee.max_auto_retries}）"
+                    f"Agent 执行异常，正在恢复同一任务会话（{retry_index}/{employee.max_auto_retries}）"
                 )
                 await service.add_event(
                     task,
@@ -447,25 +450,17 @@ class TaskCoordinator:
                     run.id,
                     commit=False,
                 )
-                next_run, next_token = await RuntimeService(session).continue_run(
+                next_run = await RuntimeService(session).continue_run(
                     task,
                     employee,
                     run,
                     previous_status=RunStatus.FAILED,
-                    failure_type="AUTO_RETRY",
-                    message="Agent 执行异常，已在当前 Worker 创建恢复运行",
+                    failure_code=failure.failure_code,
+                    trigger_reason=RunTriggerReason.AUTO_RETRY,
+                    message="Agent 执行异常，已创建排队的恢复运行",
                     execution_token=execution_token,
                 )
-                await self._execute_once(
-                    task,
-                    employee,
-                    environment,
-                    workspace,
-                    executor,
-                    session,
-                    prepared_run=next_run,
-                    execution_token=next_token,
-                )
+                await RuntimeService(session).enqueue(task, next_run)
                 return
             task.execution_error = {
                 "reason": result.stderr.strip() or summary,
@@ -473,12 +468,10 @@ class TaskCoordinator:
                 "failure_code": result.failure_code,
                 "session_id": task.opencode_session_id,
                 "current_progress": task.current_progress,
-                "last_activity_at": (
-                    task.last_activity_at.isoformat() if task.last_activity_at else None
-                ),
+                "last_activity_at": (task.last_activity_at.isoformat() if task.last_activity_at else None),
                 "occurred_at": datetime.now(UTC).isoformat(),
             }
-            failure_type = result.failure_code or (
+            failure_code = result.failure_code or (
                 "EXECUTOR_TIMEOUT" if result.exit_code == 124 else "NONZERO_EXIT"
             )
             await RuntimeService(session).finalize_run(
@@ -490,7 +483,7 @@ class TaskCoordinator:
                 current_progress="执行发生异常，等待恢复",
                 message=f"{employee.name} 的执行发生异常",
                 execution_token=execution_token,
-                failure_type=failure_type,
+                failure_code=failure_code,
                 employee_status=EmployeeStatus.ERROR,
             )
             return
@@ -526,25 +519,16 @@ class TaskCoordinator:
                 run.id,
                 commit=False,
             )
-            next_run, next_token = await RuntimeService(session).continue_run(
+            next_run = await RuntimeService(session).continue_run(
                 task,
                 employee,
                 run,
                 previous_status=RunStatus.COMPLETED,
-                failure_type=None,
-                message="已在当前 Worker 创建用户指令继续运行",
+                failure_code=None,
+                message="已创建排队的用户指令继续运行",
                 execution_token=execution_token,
             )
-            await self._execute_once(
-                task,
-                employee,
-                environment,
-                workspace,
-                executor,
-                session,
-                prepared_run=next_run,
-                execution_token=next_token,
-            )
+            await RuntimeService(session).enqueue(task, next_run)
             return
 
         task.result = build_work_result(
@@ -561,9 +545,7 @@ class TaskCoordinator:
             employee,
             run,
             run_status=RunStatus.COMPLETED,
-            task_status=(
-                TaskStatus.PENDING_CONFIRMATION if requires_confirmation else TaskStatus.COMPLETED
-            ),
+            task_status=(TaskStatus.PENDING_CONFIRMATION if requires_confirmation else TaskStatus.COMPLETED),
             current_progress="结果已提交，等待确认" if requires_confirmation else "任务已完成",
             message=(
                 f"{employee.name} 提交任务结果，等待确认"
@@ -614,26 +596,6 @@ class TaskCoordinator:
             if text:
                 texts.append(str(text).strip())
         return texts[-1] if texts else ""
-
-    @staticmethod
-    async def _bind_runtime_session(
-        task: Task,
-        run: Run,
-        session_id: str,
-        service: TaskService,
-    ) -> None:
-        if task.opencode_session_id == session_id and run.opencode_session_id == session_id:
-            return
-        task.opencode_session_id = session_id
-        run.opencode_session_id = session_id
-        await service.add_event(
-            task,
-            "OPENCODE_SESSION_BOUND",
-            "metadata",
-            "OpenCode Session 已绑定",
-            {"session_id": session_id, "runtime": run.executor_type},
-            run.id,
-        )
 
     @staticmethod
     async def _record_progress_messages(
@@ -723,9 +685,7 @@ class TaskCoordinator:
             if semantic.event_type.startswith("artifact."):
                 await service.add_event(
                     task,
-                    "ARTIFACT_CREATED"
-                    if semantic.event_type.endswith("created")
-                    else "ARTIFACT_UPDATED",
+                    "ARTIFACT_CREATED" if semantic.event_type.endswith("created") else "ARTIFACT_UPDATED",
                     "artifact",
                     semantic.summary,
                     semantic.payload,
@@ -746,9 +706,7 @@ class TaskCoordinator:
                         value = getattr(usage, field)
                         if value is not None:
                             setattr(run, field, (getattr(run, field) or 0) + value)
-                    run.tool_call_count = (run.tool_call_count or 0) + sum(
-                        item.call_count for item in tools
-                    )
+                    run.tool_call_count = (run.tool_call_count or 0) + sum(item.call_count for item in tools)
                     run.model_name = run.model_name or model_name
                 await service.add_event(
                     task,
