@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 KnowledgeType = Literal["document", "rule", "guide", "experience", "faq", "tool", "example"]
 KnowledgeStatus = Literal["draft", "candidate", "published", "archived", "rejected"]
@@ -246,7 +246,7 @@ class RelatedTaskRead(BaseModel):
 
 
 class UsageTopKnowledge(BaseModel):
-    knowledge_id: str
+    resource_id: str
     title: str
     reference_count: int
 
@@ -259,61 +259,46 @@ class UsageTrendPoint(BaseModel):
 class LibraryUsageSummary(BaseModel):
     days: int
     total_references: int
-    active_employees: int
+    used_resources: int
+    feedback_count: int
     top_knowledge: list[UsageTopKnowledge]
-    popular_space: str | None
     trend: list[UsageTrendPoint]
 
 
 class LibraryUsageRecent(BaseModel):
     id: int
-    employee_id: str | None
-    employee_name: str | None
-    task_id: str | None
-    knowledge_id: str | None
-    knowledge_title: str | None
+    resource_id: str | None
     action: str
+    query: str | None
     created_at: datetime
 
 
 class LibrarySearchInput(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
-    space_id: str | None = None
-    types: list[KnowledgeType] = Field(default_factory=list)
     limit: int = Field(default=10, ge=1, le=50)
-    employee_id: str | None = None
-    task_id: str | None = None
-    run_id: str | None = None
 
 
 class LibrarySearchResult(BaseModel):
-    knowledge_id: str
+    resource_id: str
     title: str
-    type: KnowledgeType
-    summary: str
+    path: str
+    excerpt: str
     score: float
-    tags: list[str]
-    updated_at: datetime
 
 
-class LibraryGetInput(BaseModel):
-    knowledge_id: str
-    employee_id: str | None = None
-    task_id: str | None = None
-    run_id: str | None = None
-
-
-class LibraryRelatedInput(LibraryGetInput):
-    limit: int = Field(default=10, ge=1, le=50)
+class LibraryResource(BaseModel):
+    resource_id: str
+    path: str
+    content_md: str
 
 
 class LibrarySubmitExperienceInput(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     summary: str = Field(default="", max_length=4000)
     content_md: str = Field(min_length=1)
-    source_employee_id: str
-    source_task_id: str
-    source_run_id: str
+    source_employee_id: str | None = None
+    source_task_id: str | None = None
+    source_run_id: str | None = None
     evidence: list[ExperienceEvidenceWrite] = Field(default_factory=list, max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=50)
     experience_data: dict[str, Any] = Field(default_factory=dict)
@@ -325,15 +310,21 @@ class LibrarySubmitExperienceInput(BaseModel):
 
 
 class LibraryFeedbackInput(BaseModel):
-    knowledge_id: str
+    resource_id: str = Field(min_length=1, max_length=512)
     feedback_type: FeedbackType
     comment: str | None = Field(default=None, max_length=4000)
-    employee_id: str | None = None
-    task_id: str | None = None
-    run_id: str | None = None
 
-    @model_validator(mode="after")
-    def require_actor(self):
-        if not self.employee_id:
-            raise ValueError("数字员工反馈必须提供 employee_id")
-        return self
+
+class LibraryResourceFeedbackResult(BaseModel):
+    id: int
+    resource_id: str
+    feedback_type: FeedbackType
+
+
+class LibraryServiceStatus(BaseModel):
+    enabled: bool
+    healthy: bool
+    message: str
+    last_synced_at: datetime | None
+    pending_count: int
+    failed_count: int

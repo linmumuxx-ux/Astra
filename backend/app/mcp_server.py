@@ -6,6 +6,8 @@ from typing import Any
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 
 from app.config.settings import get_settings
 from app.database import SessionLocal
@@ -15,6 +17,7 @@ from app.library_schemas import (
     LibrarySubmitExperienceInput,
 )
 from app.library_service import KnowledgeService, LibraryError
+from app.llm_wiki import LlmWikiError
 
 
 class StaticTokenVerifier:
@@ -59,133 +62,93 @@ def build_mcp_server() -> MCPServer:
     )
 
     @server.tool(name="library_search", structured_output=True)
-    async def library_search(
-        query: str,
-        space_id: str | None = None,
-        types: list[str] | None = None,
-        limit: int = 10,
-        employee_id: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """搜索所有可访问的已发布知识；精确错误码、参数名和中文关键词均参与排序。"""
-
-        payload = LibrarySearchInput(
-            query=query,
-            space_id=space_id,
-            types=types or [],
-            limit=limit,
-            employee_id=employee_id,
-            task_id=task_id,
-            run_id=run_id,
-        )
+    async def library_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """通过知识服务 Hybrid Search 搜索 Wiki，返回可用于 library_get 的 resource_id。"""
+        try:
+            payload = LibrarySearchInput(query=query, limit=limit)
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from None
         async with SessionLocal() as session:
             try:
                 results = await KnowledgeService(session).mcp_search(payload)
-            except LibraryError as exc:
-                raise ValueError(str(exc)) from exc
+            except (LibraryError, LlmWikiError) as exc:
+                raise ToolError(str(exc)) from None
         return [result.model_dump(mode="json") for result in results]
 
     @server.tool(name="library_get", structured_output=True)
-    async def library_get(
-        knowledge_id: str,
-        employee_id: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
-    ) -> dict[str, Any]:
-        """读取一条已发布知识的完整元数据和 Markdown，并记为实际引用。"""
-
+    async def library_get(resource_id: str) -> dict[str, Any]:
+        """读取 Wiki 完整 Markdown，并记录一次实际读取。"""
         async with SessionLocal() as session:
             try:
-                result = await KnowledgeService(session).mcp_get(
-                    knowledge_id,
-                    employee_id=employee_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                )
-            except LibraryError as exc:
-                raise ValueError(str(exc)) from exc
+                result = await KnowledgeService(session).mcp_get(resource_id)
+            except (LibraryError, LlmWikiError) as exc:
+                raise ToolError(str(exc)) from None
         return result.model_dump(mode="json")
 
     @server.tool(name="library_related", structured_output=True)
-    async def library_related(
-        knowledge_id: str,
-        limit: int = 10,
-        employee_id: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """根据显式关系、标签和知识类型返回相关的已发布知识。"""
-
+    async def library_related(resource_id: str) -> dict[str, Any]:
+        """查询相关知识能力状态；当前不支持可靠的按页 Graph 邻居查询。"""
         async with SessionLocal() as session:
             try:
-                results = await KnowledgeService(session).mcp_related(
-                    knowledge_id,
-                    limit=limit,
-                    employee_id=employee_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                )
-            except LibraryError as exc:
-                raise ValueError(str(exc)) from exc
-        return [result.model_dump(mode="json") for result in results]
+                return await KnowledgeService(session).mcp_related(resource_id)
+            except (LibraryError, LlmWikiError) as exc:
+                raise ToolError(str(exc)) from None
 
     @server.tool(name="library_submit_experience", structured_output=True)
     async def library_submit_experience(
         title: str,
         summary: str,
         content_md: str,
-        source_employee_id: str,
-        source_task_id: str,
-        source_run_id: str,
+        source_employee_id: str | None = None,
+        source_task_id: str | None = None,
+        source_run_id: str | None = None,
         evidence: list[dict[str, Any]] | None = None,
         tags: list[str] | None = None,
         experience_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """提交可复用经验；服务端始终创建 type=experience、status=candidate。"""
 
-        payload = LibrarySubmitExperienceInput(
-            title=title,
-            summary=summary,
-            content_md=content_md,
-            source_employee_id=source_employee_id,
-            source_task_id=source_task_id,
-            source_run_id=source_run_id,
-            evidence=evidence or [],
-            tags=tags or [],
-            experience_data=experience_data or {},
-        )
+        try:
+            payload = LibrarySubmitExperienceInput(
+                title=title,
+                summary=summary,
+                content_md=content_md,
+                source_employee_id=source_employee_id,
+                source_task_id=source_task_id,
+                source_run_id=source_run_id,
+                evidence=evidence or [],
+                tags=tags or [],
+                experience_data=experience_data or {},
+            )
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from None
         async with SessionLocal() as session:
             try:
                 result = await KnowledgeService(session).mcp_submit_experience(payload)
             except LibraryError as exc:
-                raise ValueError(str(exc)) from exc
+                raise ToolError(str(exc)) from None
         return result.model_dump(mode="json")
 
     @server.tool(name="library_feedback", structured_output=True)
     async def library_feedback(
-        knowledge_id: str,
+        resource_id: str,
         feedback_type: str,
-        employee_id: str,
         comment: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
     ) -> dict[str, Any]:
-        """提交有帮助、内容错误、已过期、缺少内容或与执行不符反馈。"""
-
-        payload = LibraryFeedbackInput(
-            knowledge_id=knowledge_id,
-            feedback_type=feedback_type,
-            employee_id=employee_id,
-            comment=comment,
-            task_id=task_id,
-            run_id=run_id,
-        )
+        """在 Astra 记录 helpful、incorrect、outdated、missing 或 mismatch 反馈。"""
+        try:
+            payload = LibraryFeedbackInput(
+                resource_id=resource_id,
+                feedback_type=feedback_type,
+                comment=comment,
+            )
+        except ValidationError as exc:
+            raise ToolError(str(exc)) from None
         async with SessionLocal() as session:
             try:
                 result = await KnowledgeService(session).mcp_feedback(payload)
-            except LibraryError as exc:
-                raise ValueError(str(exc)) from exc
+            except (LibraryError, LlmWikiError) as exc:
+                raise ToolError(str(exc)) from None
         return result.model_dump(mode="json")
 
     return server

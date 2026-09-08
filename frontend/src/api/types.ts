@@ -419,7 +419,7 @@ export interface KnowledgePage {
 }
 
 export interface UsageTopKnowledge {
-  knowledge_id: string
+  resource_id: string
   title: string
   reference_count: number
 }
@@ -427,9 +427,9 @@ export interface UsageTopKnowledge {
 export interface LibraryUsageSummary {
   days: number
   total_references: number
-  active_employees: number
+  used_resources: number
+  feedback_count: number
   top_knowledge: UsageTopKnowledge[]
-  popular_space: string | null
   trend: Array<{ date: string; reference_count: number }>
 }
 
@@ -566,4 +566,13 @@ export interface RunPage {
   page_size: number
   total: number
   stats: RunStats
+}
+
+export interface LibraryServiceStatus {
+  enabled: boolean
+  healthy: boolean
+  message: string
+  last_synced_at: string | null
+  pending_count: number
+  failed_count: number
 }

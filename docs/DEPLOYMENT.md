@@ -364,3 +364,63 @@ CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 - 前端构建失败
 
 这些问题应修正配置或数据后再启动，不通过兼容分支绕过。
+
+## 数字图书馆接入 llm_wiki
+
+Astra 管理原始知识，原版 llm_wiki 管理派生 Wiki 和索引；Agent 统一使用 Astra Library MCP。
+同机 Linux ARM64 部署时，按 llm_wiki 官方方式安装并运行完整桌面应用，保持指定项目打开；
+仅启动 HTTP 监听并不能代替桌面应用中的知识加工流程。本次不修改 llm_wiki 源码。
+
+在 Astra `.env` 配置（Token 仅从环境读取，不入库）：
+
+```dotenv
+ASTRA_LLM_WIKI_ENABLED=true
+ASTRA_LLM_WIKI_API_BASE_URL=http://127.0.0.1:19828/api/v1
+ASTRA_LLM_WIKI_API_TOKEN=<本地 API Token>
+ASTRA_LLM_WIKI_PROJECT_ID=<固定项目 UUID>
+ASTRA_LLM_WIKI_PROJECT_PATH=/srv/llm-wiki/astra-wiki
+ASTRA_LLM_WIKI_TIMEOUT=10
+```
+
+使用专属项目，启用 Source Watch 和自动 Ingest，确保 Markdown 在允许的扩展名中，
+并配置可用的 LLM。需要向量/Hybrid 检索时，还须在 llm_wiki 中配置并启用 Embedding；
+未启用时，原版同一个搜索 API 可以返回 `mode=keyword`，这不是 Astra 的回退搜索。
+Astra 会验证项目 UUID、API 返回路径及当前打开项目的一致性，拒绝向不匹配的目录写入。
+
+部署代码后执行 `python -m alembic upgrade head`（在 `backend/` 的虚拟环境中），
+重启 Astra API、Library MCP、Celery control worker 和 beat。
+迁移会将现有 published 知识加入待同步；已有使用记录一次性迁移为资源级历史记录，
+`astra:<knowledge_id>` 表示历史原始知识，不假装成可读取的 Wiki 路径。
+保留原有可选来源字段供管理端审计使用，MCP 查询和反馈不再依赖 employee/task/run。
+
+Celery 每 5 秒取最多 100 条待同步任务，将当前可供 Library viewer 访问的 published 知识
+原子写入 `<PROJECT_PATH>/raw/sources/astra/<knowledge_id>.md`，随后调用一次 rescan。
+目录、标签、正文和发布状态变化都会入队；删除记录保留清理任务。
+同机 OS 文件锁防止重复 worker 并发写入，任务被中断后仍可重试；新版本请求不会被旧任务完成覆盖。
+数据库提交与外部 HTTP 不构成分布式事务。失败显示在数字图书馆的“知识服务状态”，
+点击“重新同步”会重新排队当前正式知识和保留的清理记录，由 worker 执行。
+运行 worker 的账户需要项目源文件目录和 Astra runtime 目录的读写权限。
+
+### 已知限制（本阶段接受）
+
+- `synced` / 最近同步时间表示源文件操作完成且 rescan 接受，**不表示 Wiki、Vector 或 Graph 加工完成**。
+- 原版删除来源时，共享 Wiki 页面可能只移除来源标记、保留正文；无可解析来源的页面可能跳过。
+  因此归档、删除或收紧访问范围后，旧内容仍可能被检索。上游依据：
+  [source-lifecycle.ts](https://github.com/nashsu/llm_wiki/blob/main/src/lib/source-lifecycle.ts)、
+  [project-file-sync.ts](https://github.com/nashsu/llm_wiki/blob/main/src/lib/project-file-sync.ts)。
+- `library_related` 明确返回 `unsupported`，不在 Astra 自建相关度算法。
+- Wiki 与原始知识可能多对多；读取次数按 Wiki `resource_id` 统计，不将一次 Wiki 读取猜测分摊到原始知识。
+- HTTP 服务在线不代表 LLM/Embedding 可用。加工失败需在原版 llm_wiki 检查；Astra 不复制其加工管理 UI。
+
+### 本地端到端验收
+
+```bash
+backend/.venv/bin/python scripts/e2e_library.py
+```
+
+此命令使用临时 Astra 数据库，通过真实 HTTP 管理端接口、MCP stdio 子进程和 Celery 任务入口，
+在当前配置的真实 llm_wiki 项目中创建一条带唯一标记的测试来源，验证发布、检索、读取、反馈、
+更新和归档。结束时删除该测试源文件；共享派生页面清理遵循上面的已知限制。
+默认等待每次加工最多 300 秒，可用 `ASTRA_LIBRARY_E2E_WAIT` 调整。
+成功结果写入 `.astra/library-e2e-result.json`，记录真实搜索模式及归档后剩余命中数。
+普通 backend 测试使用 MockTransport，不依赖或改动本地知识服务。

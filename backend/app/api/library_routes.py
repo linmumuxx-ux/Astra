@@ -23,6 +23,7 @@ from app.library_schemas import (
     KnowledgeSpacePatch,
     KnowledgeSpaceRead,
     KnowledgeUsageRead,
+    LibraryServiceStatus,
     LibraryStats,
     LibraryUsageRecent,
     LibraryUsageSummary,
@@ -338,3 +339,16 @@ async def usage_recent(
     session: AsyncSession = Depends(get_session),
 ):
     return await KnowledgeService(session).recent_usage(limit)
+
+
+@router.get("/service/status", response_model=LibraryServiceStatus)
+async def service_status(session: AsyncSession = Depends(get_session)):
+    return await KnowledgeService(session).service_status()
+
+
+@router.post("/service/resync", status_code=202)
+async def service_resync(
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).resync(principal)

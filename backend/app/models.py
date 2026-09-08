@@ -451,11 +451,25 @@ class KnowledgeRelation(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
+class KnowledgeSync(Base):
+    """Durable per-source work; deliberately survives deletion of the original."""
+
+    __tablename__ = "knowledge_sync"
+
+    knowledge_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    synced_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class KnowledgeUsage(Base):
     __tablename__ = "knowledge_usage"
     __table_args__ = (Index("ix_knowledge_usage_summary", "action", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    resource_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     knowledge_id: Mapped[str | None] = mapped_column(
         ForeignKey("knowledge_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -479,8 +493,9 @@ class KnowledgeFeedback(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    knowledge_id: Mapped[str] = mapped_column(
-        ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
+    resource_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    knowledge_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
     actor_key: Mapped[str] = mapped_column(String(200))
     user_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)

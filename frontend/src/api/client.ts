@@ -18,6 +18,7 @@ import type {
   Metrics,
   LibraryStats,
   LibraryUsageSummary,
+  LibraryServiceStatus,
   RelatedTask,
   Run,
   RunUsage,
@@ -100,6 +101,8 @@ export const api = {
   createTask: (body: Record<string, unknown>) =>
     request<Task>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
   libraryPermissions: () => request<LibraryPermissions>('/api/library/permissions'),
+  libraryServiceStatus: () => request<LibraryServiceStatus>('/api/library/service/status'),
+  libraryResync: () => request<{ pending_count: number }>('/api/library/service/resync', { method: 'POST' }),
   libraryStats: () => request<LibraryStats>('/api/library/stats'),
   librarySpaces: () => request<KnowledgeSpace[]>('/api/library/spaces'),
   createLibrarySpace: (body: Record<string, unknown>) =>

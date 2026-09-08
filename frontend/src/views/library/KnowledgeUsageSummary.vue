@@ -1,18 +1,18 @@
 <template>
   <section class="usage-summary">
     <header role="button" tabindex="0" @click="collapsed = !collapsed" @keydown.enter="collapsed = !collapsed">
-      <div><h3>数字员工知识使用情况</h3><p>最近 {{ summary?.days ?? 7 }} 天，引用指完整知识进入员工任务上下文</p></div>
+      <div><h3>知识使用情况</h3><p>最近 {{ summary?.days ?? 7 }} 天，引用指 Agent 读取完整知识正文</p></div>
       <span class="collapse-toggle"><ChevronDown :size="16" :class="{ open: !collapsed }" /></span>
     </header>
     <div v-if="!collapsed" class="usage-summary__body">
       <div class="usage-kpis">
         <article><span><Quote :size="16" /></span><small>总引用次数</small><strong>{{ summary?.total_references ?? 0 }}</strong></article>
-        <article><span><Bot :size="16" /></span><small>活跃数字员工</small><strong>{{ summary?.active_employees ?? 0 }}</strong></article>
-        <article><span><LibraryBig :size="16" /></span><small>热门知识空间</small><strong class="text-value">{{ summary?.popular_space ?? '暂无' }}</strong></article>
+        <article><span><BookOpen :size="16" /></span><small>使用知识数</small><strong>{{ summary?.used_resources ?? 0 }}</strong></article>
+        <article><span><LibraryBig :size="16" /></span><small>反馈次数</small><strong class="text-value">{{ summary?.feedback_count ?? 0 }}</strong></article>
       </div>
       <div class="top-knowledge">
         <h4>最常引用知识 TOP3</h4>
-        <ol v-if="summary?.top_knowledge.length"><li v-for="item in summary.top_knowledge" :key="item.knowledge_id"><span>{{ item.title }}</span><strong>{{ item.reference_count }} 次</strong></li></ol>
+        <ol v-if="summary?.top_knowledge.length"><li v-for="item in summary.top_knowledge" :key="item.resource_id"><span>{{ item.title }}</span><strong>{{ item.reference_count }} 次</strong></li></ol>
         <p v-else>暂无知识引用记录</p>
       </div>
       <div class="usage-trend" aria-label="近七日知识引用趋势">
@@ -24,7 +24,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bot, ChevronDown, LibraryBig, Quote } from 'lucide-vue-next'
+import { BookOpen, ChevronDown, LibraryBig, Quote } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { LibraryUsageSummary } from '@/api/types'
 

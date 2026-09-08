@@ -10,6 +10,14 @@
       </div>
     </section>
 
+    <section class="knowledge-service" aria-label="知识服务状态">
+      <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
+      <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
+      <span>待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
+      <button v-if="permissions?.can_manage" type="button" class="button" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
+      <small role="status">{{ serviceError || serviceStatus?.message }}</small>
+    </section>
+
     <LibraryStats :stats="stats" :active="statsActive" :can-review="Boolean(permissions?.can_review)" @select="applyStat" />
 
     <div v-if="pageError" class="library-error"><TriangleAlert :size="16" />{{ pageError }}<button type="button" @click="loadAll">重试</button></div>
@@ -76,7 +84,7 @@ import { CircleCheck, LoaderCircle, Plus, Search, TriangleAlert, Upload, X } fro
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
-import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, RelatedTask } from '@/api/types'
+import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
 import KnowledgeDetailDialog from '@/views/library/KnowledgeDetailDialog.vue'
 import KnowledgeEditorDialog from '@/views/library/KnowledgeEditorDialog.vue'
 import KnowledgeList from '@/views/library/KnowledgeList.vue'
@@ -91,6 +99,32 @@ const stats = ref<LibraryStatsData | null>(null)
 const permissions = ref<LibraryPermissions | null>(null)
 const spaces = ref<KnowledgeSpace[]>([])
 const usage = ref<LibraryUsageSummary | null>(null)
+const serviceStatus = ref<LibraryServiceStatus | null>(null)
+const serviceError = ref('')
+const resyncing = ref(false)
+let serviceTimer = 0
+let serviceLoading = false
+let disposed = false
+async function loadServiceStatus() {
+  if (serviceLoading) return
+  serviceLoading = true
+  try { serviceStatus.value = await api.libraryServiceStatus(); serviceError.value = '' }
+  catch (error) { serviceError.value = message(error, '知识服务状态加载失败'); serviceStatus.value = null }
+  finally {
+    serviceLoading = false
+    if (!disposed) serviceTimer = window.setTimeout(loadServiceStatus, 10000)
+  }
+}
+async function resyncKnowledge() {
+  resyncing.value = true
+  try {
+    const result = await api.libraryResync()
+    notify(`已提交 ${result.pending_count} 条同步任务`)
+    window.clearTimeout(serviceTimer)
+    await loadServiceStatus()
+  } catch (error) { serviceError.value = message(error, '重新同步失败') }
+  finally { resyncing.value = false }
+}
 const page = ref<KnowledgePage>(emptyPage())
 const filters = reactive({ spaceId: null as string | null, type: '', status: '', source: '', tag: '', sort: 'updated_desc', page: 1, keyword: '' })
 const queryInput = ref('')
@@ -146,6 +180,7 @@ const activeFilterLabel = computed(() => {
 })
 
 onMounted(async () => {
+  void loadServiceStatus()
   if (route.query.status === 'candidate') {
     filters.type = 'experience'
     filters.status = 'candidate'
@@ -155,7 +190,7 @@ onMounted(async () => {
   const knowledgeId = typeof route.query.knowledge === 'string' ? route.query.knowledge : ''
   if (knowledgeId) await openDetail(knowledgeId, false)
 })
-onBeforeUnmount(() => { window.clearTimeout(searchTimer); window.clearTimeout(toastTimer) })
+onBeforeUnmount(() => { disposed = true; window.clearTimeout(serviceTimer); window.clearTimeout(searchTimer); window.clearTimeout(toastTimer) })
 watch(queryInput, (value) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => { filters.keyword = value.trim(); filters.page = 1; statsActive.value = filters.keyword ? 'search' : 'all'; loadList() }, 320)
@@ -271,6 +306,8 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
+.knowledge-service{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;padding:12px 16px;border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-card,#fff);font-size:var(--astra-font-body);color:var(--astra-text-secondary)}.knowledge-service strong{color:var(--astra-text-primary)}.knowledge-service small{flex-basis:100%;color:var(--astra-text-muted)}
+
 .digital-library-page{position:relative}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:17px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary);}.library-intro p{margin-top:5px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.library-search{display:flex;align-items:center;gap:8px;width:min(440px,38vw);height:42px;padding:0 10px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(35,76,59,.04)}.library-search input{min-width:0;flex:1;color:var(--astra-text-primary);border:0;outline:0;background:transparent}.library-search>button{display:grid;place-items:center;padding:0;color:var(--astra-text-muted);border:0;background:transparent;cursor:pointer}.hidden-input{display:none}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}.library-error{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.library-toast{position:fixed;z-index:1400;right:28px;bottom:28px;display:flex;align-items:center;gap:7px;padding:11px 14px;color:#fff;border-radius:9px;background:#178f5d;box-shadow:0 12px 36px rgba(16,37,34,.24);font-size:var(--astra-font-body)}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 @media(max-width:1100px){.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-search{width:auto;min-width:280px;flex:1}}@media(max-width:780px){.library-workspace{grid-template-columns:1fr}.library-head-actions .button{flex:1}.library-search{flex-basis:100%}}
 </style>

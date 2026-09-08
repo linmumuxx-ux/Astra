@@ -1,20 +1,17 @@
 import asyncio
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.library_schemas import (
-    LibraryFeedbackInput,
-    LibrarySearchInput,
     LibrarySubmitExperienceInput,
 )
-from app.library_service import KnowledgeService, LibraryValidationError
+from app.library_service import KnowledgeService
 from app.main import app
 from app.mcp_server import mcp
-from app.models import KnowledgeAudit, KnowledgeItem, KnowledgeUsage, Run
+from app.models import KnowledgeAudit, KnowledgeItem, Run
 
 
 def unique(prefix: str) -> str:
@@ -119,7 +116,7 @@ def test_library_web_api_browses_drafts_publishes_and_enforces_review_permission
         assert admin_stats["knowledge_pages"] == viewer_stats["knowledge_pages"] + 1
 
 
-def test_candidate_experience_mcp_flow_is_audited_and_immediately_searchable_after_review():
+def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
     employee_id = unique("employee-library")
     run_id = unique("RUN-LIBRARY")
     with TestClient(app) as client:
@@ -220,101 +217,14 @@ def test_candidate_experience_mcp_flow_is_audited_and_immediately_searchable_aft
         )
         assert published.status_code == 200
 
-        async def query_flow():
+        async def audit_state():
             async with SessionLocal() as session:
-                service = KnowledgeService(session)
-                results = await service.mcp_search(
-                    LibrarySearchInput(
-                        query="SCHED_TIMEOUT 并发调度",
-                        employee_id=employee_id,
-                        task_id=task_id,
-                        run_id=run_id,
-                    )
-                )
-                detail = await service.mcp_get(
-                    candidate.id,
-                    employee_id=employee_id,
-                    task_id=task_id,
-                    run_id=run_id,
-                )
-                first_feedback = await service.mcp_feedback(
-                    LibraryFeedbackInput(
-                        knowledge_id=candidate.id,
-                        feedback_type="helpful",
-                        employee_id=employee_id,
-                        task_id=task_id,
-                        run_id=run_id,
-                    )
-                )
-                second_feedback = await service.mcp_feedback(
-                    LibraryFeedbackInput(
-                        knowledge_id=candidate.id,
-                        feedback_type="helpful",
-                        employee_id=employee_id,
-                        task_id=task_id,
-                        run_id=run_id,
-                    )
-                )
-                return results, detail, first_feedback, second_feedback
+                audits = await session.scalar(select(func.count(KnowledgeAudit.id)).where(
+                    KnowledgeAudit.knowledge_id == candidate.id))
+                item = await session.get(KnowledgeItem, candidate.id)
+                return audits, item
 
-        results, detail, first_feedback, second_feedback = asyncio.run(query_flow())
-        assert results[0].knowledge_id == candidate.id
-        assert detail.content_md.startswith("## 问题现象")
-        assert detail.reference_count == 1
-        assert first_feedback.created is True
-        assert second_feedback.created is False
-
-        other_employee_id = unique("employee-library-other")
-        assert (
-            client.post(
-                "/api/employees",
-                json={
-                    "id": other_employee_id,
-                    "name": "其他知识员工",
-                    "role": "关联校验员工",
-                    "category_ids": ["testing-platform"],
-                    "auto_claim": False,
-                    "auto_execute": False,
-                },
-            ).status_code
-            == 201
-        )
-
-        async def mismatched_context():
-            async with SessionLocal() as session:
-                await KnowledgeService(session).mcp_search(
-                    LibrarySearchInput(
-                        query="SCHED_TIMEOUT",
-                        employee_id=other_employee_id,
-                        task_id=task_id,
-                    )
-                )
-
-        with pytest.raises(LibraryValidationError, match="Task 与 Employee 不匹配"):
-            asyncio.run(mismatched_context())
-
-        async def audit_counts():
-            async with SessionLocal() as session:
-                usage = await session.scalar(
-                    select(func.count(KnowledgeUsage.id)).where(KnowledgeUsage.knowledge_id == candidate.id)
-                )
-                searches = await session.scalar(
-                    select(func.count(KnowledgeUsage.id)).where(
-                        KnowledgeUsage.tool_name == "library_search",
-                        KnowledgeUsage.employee_id == employee_id,
-                        KnowledgeUsage.task_id == task_id,
-                        KnowledgeUsage.run_id == run_id,
-                    )
-                )
-                audits = await session.scalar(
-                    select(func.count(KnowledgeAudit.id)).where(KnowledgeAudit.knowledge_id == candidate.id)
-                )
-                stored = await session.get(KnowledgeItem, candidate.id)
-                return usage, searches, audits, stored
-
-        usage_count, search_count, audit_count, stored = asyncio.run(audit_counts())
-        assert usage_count >= 4
-        assert search_count >= 1
+        audit_count, stored = asyncio.run(audit_state())
         assert audit_count >= 2
         assert stored.status == "published"
 

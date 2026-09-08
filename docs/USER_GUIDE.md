@@ -300,3 +300,20 @@ scripts/astra_service.py
 ### 验收项显示“无法确认”
 
 表示员工最终回复没有返回可识别的逐项结论，不等同于任务失败。人工应结合任务结果和证据判断。
+
+### 知识服务与 Agent 查询
+
+数字图书馆页面仍只编辑 Astra 原始知识。发布后由后台同步到 llm_wiki，候选经验不会自动发布。
+页面的“知识服务状态”显示最近源文件同步时间、待同步和失败数量；维护者可点击“重新同步”。
+同步完成表示源文件已被扫描接受，加工完成时间由 llm_wiki 决定。
+
+Agent 使用以下 Astra Library MCP 工具，不需要提供 employee/task/run：
+
+- `library_search(query, limit=10)`：返回 `resource_id/title/path/excerpt/score`。
+- `library_get(resource_id)`：读取完整 Wiki Markdown，并记一次 `read`。
+- `library_feedback(resource_id, feedback_type, comment=None)`：支持 helpful、incorrect、outdated、missing、mismatch。
+- `library_submit_experience(title, summary, content_md, ...)`：始终创建候选经验；来源身份可选。
+- `library_related(resource_id)`：当前明确返回相关知识能力暂不可用。
+
+搜索返回只记为 `search_hit`，不计入主要读取指标。“知识使用情况”按资源展示读取次数、使用知识数和反馈数。
+归档后上游共享 Wiki 页面可能保留旧正文，本阶段接受此限制，详见部署文档。

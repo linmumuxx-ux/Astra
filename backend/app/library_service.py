@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -12,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config.settings import get_settings
 from app.library_schemas import (
     KnowledgeCreate,
     KnowledgeDetail,
@@ -28,8 +27,11 @@ from app.library_schemas import (
     KnowledgeSpaceRead,
     KnowledgeUsageRead,
     LibraryFeedbackInput,
+    LibraryResource,
+    LibraryResourceFeedbackResult,
     LibrarySearchInput,
     LibrarySearchResult,
+    LibraryServiceStatus,
     LibraryStats,
     LibrarySubmitExperienceInput,
     LibraryUsageRecent,
@@ -38,6 +40,8 @@ from app.library_schemas import (
     UsageTopKnowledge,
     UsageTrendPoint,
 )
+from app.library_sync import mark_for_sync
+from app.llm_wiki import LlmWikiClient, LlmWikiError, wiki_resource_path
 from app.models import (
     DigitalEmployee,
     ExperienceEvidence,
@@ -45,8 +49,8 @@ from app.models import (
     KnowledgeFavorite,
     KnowledgeFeedback,
     KnowledgeItem,
-    KnowledgeRelation,
     KnowledgeSpace,
+    KnowledgeSync,
     KnowledgeUsage,
     Run,
     Task,
@@ -250,6 +254,8 @@ class KnowledgeService:
         principal: LibraryPrincipal,
         detail: dict | None = None,
     ) -> None:
+        if action in {"published", "updated", "moved", "archived"}:
+            await self._queue_sync(item)
         self.session.add(
             KnowledgeAudit(
                 knowledge_id=item.id,
@@ -259,6 +265,10 @@ class KnowledgeService:
                 detail=detail or {},
             )
         )
+
+    async def _queue_sync(self, item: KnowledgeItem) -> None:
+        if item.status == "published" or await self.session.get(KnowledgeSync, item.id):
+            await mark_for_sync(self.session, item.id)
 
     async def _space(self, space_id: str | None, principal: LibraryPrincipal) -> KnowledgeSpace | None:
         if not space_id:
@@ -336,15 +346,11 @@ class KnowledgeService:
             space_count = len(await self._visible_space_ids(principal))
         since = datetime.now(UTC) - timedelta(days=7)
         reference_conditions = [
-            KnowledgeUsage.action == "reference",
+            KnowledgeUsage.action == "read",
             KnowledgeUsage.created_at >= since,
         ]
-        if scope_condition is not None:
-            reference_conditions.append(scope_condition)
         references = await self.session.scalar(
-            select(func.count(KnowledgeUsage.id))
-            .join(KnowledgeItem, KnowledgeUsage.knowledge_id == KnowledgeItem.id)
-            .where(*reference_conditions)
+            select(func.count(KnowledgeUsage.id)).where(*reference_conditions)
         )
         experience_conditions = [
             KnowledgeItem.type == "experience",
@@ -473,6 +479,12 @@ class KnowledgeService:
             await self._validate_space_move(space, values["parent_id"], principal)
         for key, value in values.items():
             setattr(space, key, value)
+        if {"access_scope", "status", "parent_id"}.intersection(values):
+            descendant_ids = {space.id, *(await _space_descendant_ids(self.session, space.id))}
+            items = (await self.session.scalars(select(KnowledgeItem).where(
+                KnowledgeItem.space_id.in_(descendant_ids)))).all()
+            for item in items:
+                await self._queue_sync(item)
         await self.session.commit()
         await self.session.refresh(space)
         return KnowledgeSpaceRead.model_validate(space)
@@ -759,7 +771,12 @@ class KnowledgeService:
     async def delete_knowledge(self, knowledge_id: str, principal: LibraryPrincipal) -> dict[str, str]:
         _require_manage(principal)
         item = await self._item(knowledge_id, principal)
-        for model in (KnowledgeUsage, KnowledgeFeedback, KnowledgeFavorite, KnowledgeAudit):
+        await self._queue_sync(item)
+        await self.session.execute(update(KnowledgeUsage).where(
+            KnowledgeUsage.knowledge_id == knowledge_id).values(knowledge_id=None))
+        await self.session.execute(update(KnowledgeFeedback).where(
+            KnowledgeFeedback.knowledge_id == knowledge_id).values(knowledge_id=None))
+        for model in (KnowledgeFavorite, KnowledgeAudit):
             rows = await self.session.scalars(select(model).where(model.knowledge_id == knowledge_id))
             for row in rows.all():
                 await self.session.delete(row)
@@ -778,7 +795,7 @@ class KnowledgeService:
                 .outerjoin(Task, KnowledgeUsage.task_id == Task.id)
                 .where(
                     KnowledgeUsage.knowledge_id == knowledge_id,
-                    KnowledgeUsage.action == "reference",
+                    KnowledgeUsage.action == "read",
                 )
                 .order_by(desc(KnowledgeUsage.created_at))
                 .limit(limit)
@@ -919,6 +936,7 @@ class KnowledgeService:
         if created:
             self.session.add(
                 KnowledgeFeedback(
+                    resource_id=f"astra:{item.id}",
                     knowledge_id=item.id,
                     actor_key=actor_key,
                     user_id=user_id,
@@ -932,6 +950,7 @@ class KnowledgeService:
                 item.helpful_count += 1
         self.session.add(
             KnowledgeUsage(
+                resource_id=f"astra:{item.id}",
                 knowledge_id=item.id,
                 employee_id=employee_id,
                 task_id=task_id,
@@ -993,36 +1012,26 @@ class KnowledgeService:
 
     async def usage_summary(self, days: int = 7) -> LibraryUsageSummary:
         since = datetime.now(UTC) - timedelta(days=days - 1)
-        conditions = [KnowledgeUsage.action == "reference", KnowledgeUsage.created_at >= since]
+        conditions = [KnowledgeUsage.action == "read", KnowledgeUsage.created_at >= since]
         total = await self.session.scalar(select(func.count(KnowledgeUsage.id)).where(*conditions))
-        active = await self.session.scalar(
-            select(func.count(func.distinct(KnowledgeUsage.employee_id))).where(
-                *conditions, KnowledgeUsage.employee_id.is_not(None)
-            )
+        used_resources = await self.session.scalar(
+            select(func.count(func.distinct(KnowledgeUsage.resource_id))).where(*conditions)
+        )
+        feedback_count = await self.session.scalar(
+            select(func.count(KnowledgeFeedback.id)).where(KnowledgeFeedback.created_at >= since)
         )
         top_rows = (
             await self.session.execute(
                 select(
-                    KnowledgeItem.id,
-                    KnowledgeItem.title,
+                    KnowledgeUsage.resource_id,
                     func.count(KnowledgeUsage.id).label("reference_count"),
                 )
-                .join(KnowledgeUsage, KnowledgeUsage.knowledge_id == KnowledgeItem.id)
-                .where(*conditions)
-                .group_by(KnowledgeItem.id, KnowledgeItem.title)
+                .where(*conditions, KnowledgeUsage.resource_id.is_not(None))
+                .group_by(KnowledgeUsage.resource_id)
                 .order_by(desc("reference_count"))
                 .limit(3)
             )
         ).all()
-        popular_space = await self.session.scalar(
-            select(KnowledgeSpace.name)
-            .join(KnowledgeItem, KnowledgeItem.space_id == KnowledgeSpace.id)
-            .join(KnowledgeUsage, KnowledgeUsage.knowledge_id == KnowledgeItem.id)
-            .where(*conditions)
-            .group_by(KnowledgeSpace.id, KnowledgeSpace.name)
-            .order_by(desc(func.count(KnowledgeUsage.id)))
-            .limit(1)
-        )
         trend_rows = (
             await self.session.execute(
                 select(func.date(KnowledgeUsage.created_at), func.count(KnowledgeUsage.id))
@@ -1039,44 +1048,48 @@ class KnowledgeService:
             )
             for offset in range(days)
         ]
+        top_knowledge = []
+        for resource_id, reference_count in top_rows:
+            latest_hit = await self.session.scalar(
+                select(KnowledgeUsage.result)
+                .where(
+                    KnowledgeUsage.resource_id == resource_id,
+                    KnowledgeUsage.action == "search_hit",
+                )
+                .order_by(KnowledgeUsage.id.desc())
+                .limit(1)
+            )
+            top_knowledge.append(
+                UsageTopKnowledge(
+                    resource_id=resource_id,
+                    title=(latest_hit or {}).get("title") or resource_id,
+                    reference_count=reference_count,
+                )
+            )
         return LibraryUsageSummary(
             days=days,
             total_references=total or 0,
-            active_employees=active or 0,
-            top_knowledge=[
-                UsageTopKnowledge(knowledge_id=row[0], title=row[1], reference_count=row[2])
-                for row in top_rows
-            ],
-            popular_space=popular_space,
+            used_resources=used_resources or 0,
+            feedback_count=feedback_count or 0,
+            top_knowledge=top_knowledge,
             trend=trend,
         )
 
     async def recent_usage(self, limit: int = 20) -> list[LibraryUsageRecent]:
         rows = (
-            await self.session.execute(
-                select(
-                    KnowledgeUsage,
-                    DigitalEmployee.name,
-                    KnowledgeItem.title,
-                )
-                .outerjoin(DigitalEmployee, KnowledgeUsage.employee_id == DigitalEmployee.id)
-                .outerjoin(KnowledgeItem, KnowledgeUsage.knowledge_id == KnowledgeItem.id)
-                .order_by(desc(KnowledgeUsage.created_at))
-                .limit(limit)
+            await self.session.scalars(
+                select(KnowledgeUsage).order_by(desc(KnowledgeUsage.created_at)).limit(limit)
             )
         ).all()
         return [
             LibraryUsageRecent(
                 id=usage.id,
-                employee_id=usage.employee_id,
-                employee_name=employee_name,
-                task_id=usage.task_id,
-                knowledge_id=usage.knowledge_id,
-                knowledge_title=knowledge_title,
+                resource_id=usage.resource_id,
+                query=usage.query,
                 action=usage.action,
                 created_at=usage.created_at,
             )
-            for usage, employee_name, knowledge_title in rows
+            for usage in rows
         ]
 
     async def _validate_mcp_context(
@@ -1084,11 +1097,7 @@ class KnowledgeService:
         employee_id: str | None,
         task_id: str | None,
         run_id: str | None,
-        *,
-        employee_required: bool = False,
     ) -> tuple[DigitalEmployee | None, Task | None, Run | None]:
-        if employee_required and not employee_id:
-            raise LibraryValidationError("MCP 请求必须提供 employee_id")
         employee = await self.session.get(DigitalEmployee, employee_id) if employee_id else None
         task = await self.session.get(Task, task_id) if task_id else None
         run = await self.session.get(Run, run_id) if run_id else None
@@ -1107,172 +1116,46 @@ class KnowledgeService:
         return employee, task, run
 
     async def mcp_search(self, payload: LibrarySearchInput) -> list[LibrarySearchResult]:
-        started = time.perf_counter()
-        await self._validate_mcp_context(
-            payload.employee_id, payload.task_id, payload.run_id, employee_required=True
-        )
-        conditions = [KnowledgeItem.status == "published"]
-        principal = LibraryPrincipal(user_id=f"employee:{payload.employee_id}", role="viewer")
-        if payload.space_id:
-            await self._space(
-                payload.space_id,
-                principal,
+        results = await LlmWikiClient().search(payload.query, payload.limit)
+        for result in results:
+            self.session.add(
+                KnowledgeUsage(
+                    resource_id=result.resource_id,
+                    tool_name="library_search",
+                    action="search_hit",
+                    query=payload.query,
+                    result={"title": result.title, "score": result.score},
+                )
             )
-            conditions.append(KnowledgeItem.space_id == payload.space_id)
-        else:
-            conditions.append(KnowledgeItem.space_id.in_(await self._visible_space_ids(principal)))
-        if payload.types:
-            conditions.append(KnowledgeItem.type.in_(payload.types))
-        rows = (
-            await self.session.scalars(
-                select(KnowledgeItem).where(*conditions).order_by(desc(KnowledgeItem.updated_at))
-            )
-        ).all()
-        terms = _search_terms(payload.query)
-        scored: list[tuple[float, KnowledgeItem]] = []
-        for item in rows:
-            score = _knowledge_score(item, payload.query, terms)
-            if score > 0:
-                scored.append((score, item))
-        scored.sort(key=lambda value: (value[0], value[1].updated_at), reverse=True)
-        results = [
-            LibrarySearchResult(
-                knowledge_id=item.id,
-                title=item.title,
-                type=item.type,
-                summary=item.summary,
-                score=round(score, 3),
-                tags=item.tags or [],
-                updated_at=item.updated_at,
-            )
-            for score, item in scored[: payload.limit]
-        ]
-        self.session.add(
-            KnowledgeUsage(
-                employee_id=payload.employee_id,
-                task_id=payload.task_id,
-                run_id=payload.run_id,
-                tool_name="library_search",
-                action="search",
-                query=payload.query,
-                result={"knowledge_ids": [result.knowledge_id for result in results]},
-                latency_ms=int((time.perf_counter() - started) * 1000),
-            )
-        )
         await self.session.commit()
         return results
 
-    async def mcp_get(
-        self,
-        knowledge_id: str,
-        *,
-        employee_id: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
-    ) -> KnowledgeDetail:
-        started = time.perf_counter()
-        await self._validate_mcp_context(employee_id, task_id, run_id, employee_required=True)
-        principal = LibraryPrincipal(user_id=f"employee:{employee_id or 'anonymous'}", role="viewer")
-        item = await self._item(knowledge_id, principal, load_detail=True)
-        await self.session.execute(
-            update(KnowledgeItem)
-            .where(KnowledgeItem.id == item.id)
-            .values(reference_count=KnowledgeItem.reference_count + 1)
-        )
+    async def mcp_get(self, resource_id: str) -> LibraryResource:
+        resource = await LlmWikiClient().read(resource_id)
         self.session.add(
             KnowledgeUsage(
-                knowledge_id=item.id,
-                employee_id=employee_id,
-                task_id=task_id,
-                run_id=run_id,
+                resource_id=resource.resource_id,
                 tool_name="library_get",
-                action="reference",
-                result={"entered_context": True},
-                latency_ms=int((time.perf_counter() - started) * 1000),
+                action="read",
             )
         )
         await self.session.commit()
-        return await self.get_detail(item.id, principal)
+        return resource
 
-    async def mcp_related(
-        self,
-        knowledge_id: str,
-        *,
-        limit: int = 10,
-        employee_id: str | None = None,
-        task_id: str | None = None,
-        run_id: str | None = None,
-    ) -> list[LibrarySearchResult]:
-        started = time.perf_counter()
-        await self._validate_mcp_context(employee_id, task_id, run_id, employee_required=True)
-        principal = LibraryPrincipal(user_id=f"employee:{employee_id or 'anonymous'}", role="viewer")
-        item = await self._item(knowledge_id, principal)
-        visible_space_ids = await self._visible_space_ids(principal)
-        relation_rows = (
-            await self.session.execute(
-                select(KnowledgeRelation.source_knowledge_id, KnowledgeRelation.target_knowledge_id).where(
-                    or_(
-                        KnowledgeRelation.source_knowledge_id == item.id,
-                        KnowledgeRelation.target_knowledge_id == item.id,
-                    )
-                )
-            )
-        ).all()
-        explicit_ids = {target if source == item.id else source for source, target in relation_rows}
-        candidates = (
-            await self.session.scalars(
-                select(KnowledgeItem)
-                .join(KnowledgeSpace, KnowledgeItem.space_id == KnowledgeSpace.id)
-                .where(
-                    KnowledgeItem.status == "published",
-                    KnowledgeItem.id != item.id,
-                    KnowledgeItem.space_id.in_(visible_space_ids),
-                )
-            )
-        ).all()
-        tags = set(item.tags or [])
-        scored = []
-        for candidate in candidates:
-            score = 20.0 if candidate.id in explicit_ids else 0.0
-            score += len(tags.intersection(candidate.tags or [])) * 4.0
-            if item.type == candidate.type:
-                score += 1.0
-            if score > 0:
-                scored.append((score, candidate))
-        scored.sort(key=lambda value: (value[0], value[1].updated_at), reverse=True)
-        results = [
-            LibrarySearchResult(
-                knowledge_id=candidate.id,
-                title=candidate.title,
-                type=candidate.type,
-                summary=candidate.summary,
-                score=score,
-                tags=candidate.tags or [],
-                updated_at=candidate.updated_at,
-            )
-            for score, candidate in scored[:limit]
-        ]
-        self.session.add(
-            KnowledgeUsage(
-                knowledge_id=item.id,
-                employee_id=employee_id,
-                task_id=task_id,
-                run_id=run_id,
-                tool_name="library_related",
-                action="search",
-                result={"knowledge_ids": [result.knowledge_id for result in results]},
-                latency_ms=int((time.perf_counter() - started) * 1000),
-            )
-        )
-        await self.session.commit()
-        return results
+    async def mcp_related(self, resource_id: str) -> dict:
+        wiki_resource_path(resource_id)
+        return {
+            "status": "unsupported",
+            "resource_id": resource_id,
+            "results": [],
+            "message": "当前 Graph API 不提供可靠的按页面查询邻居能力，相关知识暂不可用",
+        }
 
     async def mcp_submit_experience(self, payload: LibrarySubmitExperienceInput) -> KnowledgeDetail:
         employee, task, run = await self._validate_mcp_context(
             payload.source_employee_id,
             payload.source_task_id,
             payload.source_run_id,
-            employee_required=True,
         )
         experience_data = dict(payload.experience_data)
         experience_data.setdefault(
@@ -1288,9 +1171,7 @@ class KnowledgeService:
             summary=payload.summary,
             content_md=payload.content_md,
             status="candidate",
-            verification_status=(
-                "verified" if run and run.status in {"COMPLETED"} else "unverified"
-            ),
+            verification_status=("verified" if run and run.status in {"COMPLETED"} else "unverified"),
             tags=payload.tags,
             source_type="agent_experience",
             source_ref=payload.source_task_id,
@@ -1298,8 +1179,8 @@ class KnowledgeService:
             source_task_id=payload.source_task_id,
             source_run_id=payload.source_run_id,
             experience_data=experience_data,
-            created_by=f"employee:{payload.source_employee_id}",
-            updated_by=f"employee:{payload.source_employee_id}",
+            created_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",
+            updated_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",
         )
         self.session.add(item)
         await self.session.flush()
@@ -1315,7 +1196,7 @@ class KnowledgeService:
                     result=evidence.result,
                 )
             )
-        principal = LibraryPrincipal(user_id=f"employee:{payload.source_employee_id}", role="viewer")
+        principal = LibraryPrincipal(user_id=item.created_by, role="viewer")
         await self._audit(
             item,
             "candidate_submitted",
@@ -1329,62 +1210,90 @@ class KnowledgeService:
         )
         self.session.add(
             KnowledgeUsage(
+                resource_id=f"astra:{item.id}",
                 knowledge_id=item.id,
                 employee_id=payload.source_employee_id,
                 task_id=payload.source_task_id,
                 run_id=payload.source_run_id,
                 tool_name="library_submit_experience",
-                action="feedback",
+                action="experience_submitted",
                 result={"status": "candidate"},
             )
         )
         await self.session.commit()
         return await self.get_detail(item.id, LibraryPrincipal(user_id="mcp-review", role="reviewer"))
 
-    async def mcp_feedback(self, payload: LibraryFeedbackInput) -> KnowledgeFeedbackResult:
-        await self._validate_mcp_context(payload.employee_id, payload.task_id, payload.run_id)
-        principal = LibraryPrincipal(user_id=f"employee:{payload.employee_id}", role="viewer")
-        item = await self._item(payload.knowledge_id, principal)
-        return await self._feedback(
-            item,
+    async def mcp_feedback(self, payload: LibraryFeedbackInput) -> LibraryResourceFeedbackResult:
+        resource_id = wiki_resource_path(payload.resource_id)
+        feedback = KnowledgeFeedback(
+            resource_id=resource_id,
+            actor_key="mcp",
             feedback_type=payload.feedback_type,
-            actor_key=f"employee:{payload.employee_id}",
-            user_id=None,
-            employee_id=payload.employee_id,
             comment=payload.comment,
-            task_id=payload.task_id,
-            run_id=payload.run_id,
+        )
+        self.session.add(feedback)
+        self.session.add(
+            KnowledgeUsage(
+                resource_id=resource_id,
+                tool_name="library_feedback",
+                action="feedback",
+                result={"feedback_type": payload.feedback_type},
+            )
+        )
+        await self.session.commit()
+        return LibraryResourceFeedbackResult(
+            id=feedback.id,
+            resource_id=resource_id,
+            feedback_type=payload.feedback_type,
         )
 
+    async def service_status(self) -> LibraryServiceStatus:
+        settings = get_settings()
+        counts = dict(
+            (
+                await self.session.execute(
+                    select(KnowledgeSync.status, func.count()).group_by(KnowledgeSync.status)
+                )
+            ).all()
+        )
+        last_synced = await self.session.scalar(select(func.max(KnowledgeSync.synced_at)))
+        healthy = False
+        try:
+            await LlmWikiClient(settings).verify_project()
+            healthy = True
+            message = "源文件扫描已接受不代表知识加工完成"
+        except LlmWikiError as exc:
+            message = str(exc)
+        if counts.get("failed", 0):
+            healthy = False
+            error = await self.session.scalar(
+                select(KnowledgeSync.error)
+                .where(KnowledgeSync.status == "failed")
+                .order_by(KnowledgeSync.requested_at.desc())
+                .limit(1)
+            )
+            message = error or message
+        return LibraryServiceStatus(
+            enabled=settings.llm_wiki_enabled,
+            healthy=healthy,
+            message=message,
+            last_synced_at=last_synced,
+            pending_count=counts.get("pending", 0),
+            failed_count=counts.get("failed", 0),
+        )
 
-def _search_terms(query: str) -> list[str]:
-    normalized = query.casefold().strip()
-    tokens = re.findall(r"[a-z0-9_./:-]+|[\u3400-\u9fff]+", normalized)
-    terms = [normalized, *tokens]
-    return list(dict.fromkeys(term for term in terms if term))
-
-
-def _knowledge_score(item: KnowledgeItem, query: str, terms: list[str]) -> float:
-    title = item.title.casefold()
-    summary = item.summary.casefold()
-    content = item.content_md.casefold()
-    tags = " ".join(item.tags or []).casefold()
-    source = " ".join(filter(None, (item.source_ref, item.source_task_id))).casefold()
-    normalized = query.casefold().strip()
-    score = 0.0
-    if normalized in title:
-        score += 18.0
-    if normalized in tags:
-        score += 12.0
-    for term in terms:
-        if term in title:
-            score += 7.0
-        if term in tags:
-            score += 5.0
-        if term in summary:
-            score += 3.0
-        if term in content:
-            score += 1.0
-        if term in source:
-            score += 4.0
-    return score
+    async def resync(self, principal: LibraryPrincipal) -> dict[str, int]:
+        _require_manage(principal)
+        # Re-export the current published set and retry all retained deletion records.
+        ids = set(
+            (
+                await self.session.scalars(
+                    select(KnowledgeItem.id).where(KnowledgeItem.status == "published")
+                )
+            ).all()
+        )
+        ids.update((await self.session.scalars(select(KnowledgeSync.knowledge_id))).all())
+        for knowledge_id in ids:
+            await mark_for_sync(self.session, knowledge_id)
+        await self.session.commit()
+        return {"pending_count": len(ids)}
