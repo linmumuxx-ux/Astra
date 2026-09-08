@@ -151,7 +151,7 @@ const filters = reactive({
   type: '',
   category: '',
   priority: '',
-  status: (typeof route.query.status === 'string' ? route.query.status : '') as RuntimeStatusFilter,
+  status: (route.query.status === 'WAIT_HUMAN' ? 'WAITING_INPUT' : typeof route.query.status === 'string' ? route.query.status : '') as RuntimeStatusFilter,
   employee: typeof route.query.employee === 'string' ? route.query.employee : '',
   timeType: 'updated' as 'updated' | 'created',
   dateFrom: '',

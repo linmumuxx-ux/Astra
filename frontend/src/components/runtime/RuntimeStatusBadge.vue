@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   pulse?: boolean
   showDetail?: boolean
 }>(), {
+  pulse: undefined,
   showDetail: true,
 })
 
