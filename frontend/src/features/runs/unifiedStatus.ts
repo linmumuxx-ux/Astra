@@ -5,7 +5,6 @@ import {
   isTerminalRuntimeState,
   runtimeStatusMeta,
   type RuntimeState,
-  type RuntimeStatusMeta,
   type RuntimeTone,
 } from '@/features/runtime/status'
 
@@ -26,19 +25,25 @@ export type RunLevelStatus = Extract<RuntimeState,
 /** @deprecated Use RuntimeTone. */
 export type RunTone = RuntimeTone
 
-/** @deprecated Use RuntimeStatusMeta. */
-export type RunStatusMeta = RuntimeStatusMeta
+/** @deprecated Use RuntimeStatusMeta from @/features/runtime/status. */
+export interface RunStatusMeta {
+  level: RunLevelStatus
+  label: string
+  tone: RunTone
+  detail: string | null
+}
 
 /** @deprecated Use isTerminalRuntimeState. */
-export const isTerminalRun = isTerminalRuntimeState
+export function isTerminalRun(value: string): boolean { return isTerminalRuntimeState(value) }
 
 /** @deprecated Use isFailureRuntimeState. */
-export const isFailedRun = isFailureRuntimeState
+export function isFailedRun(value: string): boolean { return isFailureRuntimeState(value) }
 
 /** @deprecated Use runtimeStatusMeta. */
-export function runUnifiedStatus(run: RuntimeStatusProjection): RuntimeStatusMeta {
-  return runtimeStatusMeta(run)
+export function runUnifiedStatus(run: RuntimeStatusProjection): RunStatusMeta {
+  const meta = runtimeStatusMeta(run)
+  return { level: meta.state as RunLevelStatus, label: meta.label, tone: meta.tone, detail: meta.detail }
 }
 
 /** @deprecated Use RUNTIME_STATUS_RANK. */
-export const RUN_LEVEL_RANK: Partial<Record<RunLevelStatus, number>> = RUNTIME_STATUS_RANK
+export const RUN_LEVEL_RANK = RUNTIME_STATUS_RANK as Partial<Record<RunLevelStatus, number>>
