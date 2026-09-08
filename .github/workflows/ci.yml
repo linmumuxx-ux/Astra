@@ -48,4 +48,4 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
       - name: 全量验证
-        run: ./scripts/verify.sh
+        run: python scripts/verify.py
