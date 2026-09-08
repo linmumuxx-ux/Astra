@@ -13,7 +13,7 @@
       </article>
       <article class="run-stat" data-tone="success">
         <small>成功率</small><strong>{{ stats?.success_rate == null ? '—' : `${stats.success_rate}%` }}</strong>
-        <span><button type="button" class="stat-action" @click="setLevel('COMPLETED')">{{ stats?.completed_count ?? '—' }} 成功</button> / <button type="button" class="stat-action danger" @click="setLevel('FAILED')">{{ stats?.failed_count ?? '—' }} 失败</button></span>
+        <span><button type="button" class="stat-action" @click="setLevel('COMPLETED')">{{ stats?.completed_count ?? '—' }} 成功</button> / <button type="button" class="stat-action danger" @click="setLevel('FAILED')">{{ stats?.failed_count ?? '—' }} 异常结束</button></span>
       </article>
       <article class="run-stat">
         <small>平均执行时长</small><strong>{{ avgDuration }}</strong><span>按已结束执行统计</span>
@@ -23,9 +23,9 @@
       </article>
     </section>
     <section class="run-secondary" aria-label="辅助统计">
-      <button type="button" class="stat-action" @click="setLevel('FAILED')">失败 <b class="danger">{{ stats?.failed_count ?? '—' }}</b></button><span>·</span>
+      <button type="button" class="stat-action" @click="setLevel('FAILED')">异常结束 <b class="danger">{{ stats?.failed_count ?? '—' }}</b></button><span>·</span>
       <button type="button" class="stat-action" @click="filters.retry = 'true'">重试 <b>{{ stats?.retry_count ?? '—' }}</b></button><span>·</span>
-      <button type="button" class="stat-action" @click="setLevel('WAITING_INPUT')">等待输入 <b>{{ stats?.waiting_input_count ?? '—' }}</b></button><span>·</span>
+      <button type="button" class="stat-action" @click="setLevel('WAITING_INPUT')">{{ runtimeStatusLabel('WAITING_INPUT') }} <b>{{ stats?.waiting_input_count ?? '—' }}</b></button><span>·</span>
       <span>关联任务 <b>{{ stats?.task_count ?? '—' }}</b></span>
     </section>
 
@@ -33,7 +33,7 @@
       <div class="search-box"><Search :size="14" /><input v-model="filters.query" placeholder="Run / 任务 / Session ID" aria-label="搜索运行记录" /></div>
       <select v-model="filters.category" aria-label="任务分类"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
       <select v-model="filters.employee" aria-label="数字员工"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
-      <select v-model="filters.level" aria-label="运行状态"><option value="">全部状态</option><option v-for="item in levelOptions" :key="item.id" :value="item.id">{{ item.label }}</option></select>
+      <select v-model="filters.level" aria-label="运行状态"><option value="">全部状态</option><option v-for="item in levelOptions" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
       <select v-model="filters.retry" aria-label="是否重试"><option value="">全部 / 含重试</option><option value="true">仅重试执行</option><option value="false">仅首次执行</option></select>
       <input v-model="filters.dateFrom" class="date-filter" type="date" aria-label="开始日期" />
       <span class="range-sep">–</span>
@@ -56,7 +56,7 @@
                 <div class="task-cell__meta"><IdDisplay :value="run.task_id" :max-width="120" :copyable="false" @click.stop /><span>第 {{ run.run_number }} 次执行</span></div>
               </td>
               <td class="employee-cell">{{ employeeName(run.employee_id) }}</td>
-              <td class="status-cell"><RunStatusBadge :run="run" /></td>
+              <td class="status-cell"><RuntimeStatusBadge :projection="run" /></td>
               <td class="time-cell">{{ formatTime(run.started_at) }}</td>
               <td class="time-cell">{{ formatDuration(run.started_at, run.finished_at) }}</td>
               <td class="num-cell">{{ formatTokens(run.total_tokens) }}</td>
@@ -98,8 +98,8 @@ import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import RunDetailDrawer from '@/components/runs/RunDetailDrawer.vue'
-import RunStatusBadge from '@/components/runs/RunStatusBadge.vue'
-import { type RunLevelStatus } from '@/features/runs/unifiedStatus'
+import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
+import { RUN_RUNTIME_FILTER_STATES, runtimeStatusLabel, type RuntimeState } from '@/features/runtime/status'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, formatDuration, formatTime, formatTokens } from '@/utils/format'
 
@@ -107,28 +107,19 @@ const store = useAstraStore()
 const runs = ref<RunPage['items']>([])
 const detail = ref<{ run: Run; usage: RunUsage | null; events: AstraEvent[] } | null>(null)
 
+type RunFilterState = Extract<RuntimeState, 'QUEUED' | 'STARTING' | 'RUNNING' | 'WAITING_INPUT' | 'SUSPENDED' | 'COMPLETED' | 'FAILED' | 'TIMEOUT' | 'LOST' | 'CANCELLED'>
+
 const filters = reactive({
   query: '',
   category: '',
   employee: '',
-  level: '' as RunLevelStatus | '',
+  level: '' as RunFilterState | '',
   retry: '',
   dateFrom: '',
   dateTo: '',
 })
 
-const levelOptions: Array<{ id: RunLevelStatus; label: string }> = [
-  { id: 'QUEUED', label: '等待执行' },
-  { id: 'STARTING', label: '启动中' },
-  { id: 'RUNNING', label: '执行中' },
-  { id: 'WAITING_INPUT', label: '等待输入' },
-  { id: 'SUSPENDED', label: '已暂停' },
-  { id: 'COMPLETED', label: '已完成' },
-  { id: 'FAILED', label: '执行失败' },
-  { id: 'TIMEOUT', label: '执行超时' },
-  { id: 'LOST', label: '运行丢失' },
-  { id: 'CANCELLED', label: '已取消' },
-]
+const levelOptions = RUN_RUNTIME_FILTER_STATES as RunFilterState[]
 const stats = ref<RunStats | null>(null)
 const total = ref(0)
 const page = ref(1)
@@ -177,7 +168,7 @@ watch(page, load)
 
 const hasFilter = computed(() => Boolean(filters.query || filters.category || filters.employee || filters.level || filters.retry || filters.dateFrom || filters.dateTo))
 
-function setLevel(value: RunLevelStatus | '') { filters.level = value }
+function setLevel(value: RunFilterState | '') { filters.level = value }
 function resetFilters() { Object.assign(filters, { query: '', category: '', employee: '', level: '', retry: '', dateFrom: '', dateTo: '' }) }
 const employeeName = (id: string) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? id)
 async function openDetail(run: Run) {

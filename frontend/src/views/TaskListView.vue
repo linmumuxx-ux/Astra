@@ -7,21 +7,22 @@
 
     <nav class="task-tabs" aria-label="任务状态筛选">
       <button type="button" :class="{ active: filters.status === '' }" @click="setStatus('')">全部 <b>{{ counts.all }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'READY' }" @click="setStatus('READY')">待领取 <b>{{ counts.ready }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'ASSIGNED' }" @click="setStatus('ASSIGNED')">待启动 <b>{{ counts.assigned }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'QUEUED' }" @click="setStatus('QUEUED')">排队中 <b>{{ counts.queued }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'RUNNING' }" @click="setStatus('RUNNING')">执行中 <b>{{ counts.running }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'WAIT_HUMAN' }" @click="setStatus('WAIT_HUMAN')">等待人工 <b>{{ counts.waitHuman }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'PENDING_CONFIRMATION' }" @click="setStatus('PENDING_CONFIRMATION')">待确认 <b>{{ counts.pending }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'READY' }" @click="setStatus('READY')">{{ runtimeStatusLabel('READY') }} <b>{{ counts.ready }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'ASSIGNED' }" @click="setStatus('ASSIGNED')">{{ runtimeStatusLabel('ASSIGNED') }} <b>{{ counts.assigned }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'QUEUED' }" @click="setStatus('QUEUED')">{{ runtimeStatusLabel('QUEUED') }} <b>{{ counts.queued }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'STARTING' }" @click="setStatus('STARTING')">{{ runtimeStatusLabel('STARTING') }} <b>{{ counts.starting }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'RUNNING' }" @click="setStatus('RUNNING')">{{ runtimeStatusLabel('RUNNING') }} <b>{{ counts.running }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'WAITING_INPUT' }" @click="setStatus('WAITING_INPUT')">{{ runtimeStatusLabel('WAITING_INPUT') }} <b>{{ counts.waitingInput }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'PENDING_CONFIRMATION' }" @click="setStatus('PENDING_CONFIRMATION')">{{ runtimeStatusLabel('PENDING_CONFIRMATION') }} <b>{{ counts.pending }}</b></button>
       <button type="button" :class="{ active: filters.status === 'ABNORMAL' }" @click="setStatus('ABNORMAL')">异常 <b>{{ counts.abnormal }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'COMPLETED' }" @click="setStatus('COMPLETED')">已完成 <b>{{ counts.completed }}</b></button>
+      <button type="button" :class="{ active: filters.status === 'COMPLETED' }" @click="setStatus('COMPLETED')">{{ runtimeStatusLabel('COMPLETED') }} <b>{{ counts.completed }}</b></button>
     </nav>
 
     <div class="filter-bar task-filters">
       <div class="search-box"><Search :size="15" /><input v-model="filters.query" placeholder="搜索任务 ID 或标题" aria-label="搜索任务" /></div>
       <select v-model="filters.type" aria-label="类型"><option value="">全部类型</option><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select>
       <select v-model="filters.category" aria-label="分类"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
-      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">异常（失败/异常）</option><option v-for="item in statuses" :key="item" :value="item">{{ statusLabel(item) }}</option></select>
+      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">异常（失败/异常/超时/丢失/待校正）</option><option v-for="item in statuses" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
       <select v-model="filters.employee" aria-label="执行员工"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
       <button class="button button--ghost" type="button" @click="showMore = !showMore"><SlidersHorizontal :size="14" /> 更多筛选 <ChevronDown :size="14" :class="{ rot: showMore }" /></button>
       <button class="button button--ghost" type="button" @click="resetFilters"><RotateCcw :size="14" /> 重置</button>
@@ -46,27 +47,27 @@
             </template>
             <template v-else>
               <tr v-for="task in paged" :key="task.id" class="task-row" @click="openTask(task.id)">
-              <td class="task-cell">
-                <div class="task-cell__title"><span v-if="isHigh(task.priority)" class="task-priority" :data-p="task.priority">{{ priorityLabel(task.priority) }}</span><strong :title="task.title">{{ task.title }}</strong></div>
-                <div class="task-cell__meta"><span>{{ task.id }}</span><em :title="taskTypeLabel(task.task_type)">{{ taskTypeLabel(task.task_type) }}</em><em v-if="isTerminal(task.status)">已完成</em></div>
-              </td>
-              <td class="type-cell"><span :title="typeCopy(task)">{{ typeCopy(task) }}</span></td>
-              <td class="status-cell"><AstraStatusBadge :status="task.runtime_state" :label="task.runtime_status_label" :pulse="task.status === 'RUNNING'" /></td>
-              <td class="employee-cell"><span :title="employeeName(task.employee_id)">{{ employeeName(task.employee_id) }}</span></td>
-              <td class="progress-cell"><span :title="progressCopy(task)">{{ progressCopy(task) }}</span></td>
-              <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>
-              <td class="actions-cell" @click.stop>
-                <div class="actions-wrap">
-                  <button class="task-primary-btn" :data-kind="primaryAction(task).kind" type="button" @click="onPrimary(task)">{{ primaryAction(task).label }}</button>
-                  <div class="menu-wrap">
-                    <button class="task-menu-btn" type="button" aria-label="更多操作" @click="toggleMenu(task.id)"><MoreHorizontal :size="17" /></button>
-                    <div v-if="openMenu === task.id" class="task-menu">
-                      <button v-for="item in menuItems(task)" :key="item.label" type="button" :class="{ danger: item.danger }" @click="onMenu(item, task)">{{ item.label }}</button>
+                <td class="task-cell">
+                  <div class="task-cell__title"><span v-if="isHigh(task.priority)" class="task-priority" :data-p="task.priority">{{ priorityLabel(task.priority) }}</span><strong :title="task.title">{{ task.title }}</strong></div>
+                  <div class="task-cell__meta"><span>{{ task.id }}</span><em :title="taskTypeLabel(task.task_type)">{{ taskTypeLabel(task.task_type) }}</em></div>
+                </td>
+                <td class="type-cell"><span :title="typeCopy(task)">{{ typeCopy(task) }}</span></td>
+                <td class="status-cell"><RuntimeStatusBadge :projection="task" :show-detail="false" /></td>
+                <td class="employee-cell"><span :title="employeeName(task.employee_id)">{{ employeeName(task.employee_id) }}</span></td>
+                <td class="progress-cell"><span :title="progressCopy(task)">{{ progressCopy(task) }}</span></td>
+                <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>
+                <td class="actions-cell" @click.stop>
+                  <div class="actions-wrap">
+                    <button class="task-primary-btn" :data-kind="primaryAction(task).kind" type="button" @click="onPrimary(task)">{{ primaryAction(task).label }}</button>
+                    <div class="menu-wrap">
+                      <button class="task-menu-btn" type="button" aria-label="更多操作" @click="toggleMenu(task.id)"><MoreHorizontal :size="17" /></button>
+                      <div v-if="openMenu === task.id" class="task-menu">
+                        <button v-for="item in menuItems(task)" :key="item.label" type="button" :class="{ danger: item.danger }" @click="onMenu(item, task)">{{ item.label }}</button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </td>
-            </tr>
+                </td>
+              </tr>
               <tr v-if="!paged.length"><td colspan="7"><AstraEmptyState :icon="SearchX" title="暂无符合条件的任务" description="当前筛选条件下没有找到任务。"><button class="button button--ghost" type="button" @click="resetFilters">清除筛选</button></AstraEmptyState></td></tr>
             </template>
           </tbody>
@@ -117,9 +118,16 @@ import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
+import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
+import {
+  TASK_RUNTIME_FILTER_STATES,
+  isAbnormalRuntimeState,
+  runtimeStatusLabel,
+  runtimeStatusMatchesFilter,
+  type RuntimeStatusFilter,
+} from '@/features/runtime/status'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, platformCopy, priorityLabel, safeUUID, statusLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, formatTime, platformCopy, priorityLabel, safeUUID, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore()
 const route = useRoute()
@@ -134,17 +142,16 @@ const openMenu = ref<string | null>(null)
 const pending = ref<{ task: Task; name: string; label: string } | null>(null)
 const acting = ref(false)
 
-const statuses: TaskStatus[] = ['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'COMPLETED', 'FAILED', 'EXECUTION_ERROR', 'CANCELLED']
+const statuses = TASK_RUNTIME_FILTER_STATES
 const priorities: TaskPriority[] = ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW']
 const terminalStatuses: TaskStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED']
-const abnormalStatuses: TaskStatus[] = ['FAILED', 'EXECUTION_ERROR']
 
 const filters = reactive({
   query: typeof route.query.q === 'string' ? route.query.q : '',
   type: '',
   category: '',
   priority: '',
-  status: typeof route.query.status === 'string' ? route.query.status : '',
+  status: (typeof route.query.status === 'string' ? route.query.status : '') as RuntimeStatusFilter,
   employee: typeof route.query.employee === 'string' ? route.query.employee : '',
   timeType: 'updated' as 'updated' | 'created',
   dateFrom: '',
@@ -167,17 +174,19 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
 
 function closeMenu() { openMenu.value = null }
 function toggleMenu(id: string) { openMenu.value = openMenu.value === id ? null : id }
+const runtimeCount = (state: string) => store.tasks.filter((task) => task.runtime_state === state).length
 
 const counts = computed(() => ({
   all: store.tasks.length,
-  ready: store.tasks.filter((task) => task.status === 'READY').length,
-  assigned: store.tasks.filter((task) => task.status === 'ASSIGNED').length,
-  queued: store.tasks.filter((task) => task.status === 'QUEUED').length,
-  running: store.tasks.filter((task) => task.status === 'RUNNING').length,
-  waitHuman: store.tasks.filter((task) => task.status === 'WAIT_HUMAN').length,
-  pending: store.tasks.filter((task) => task.status === 'PENDING_CONFIRMATION').length,
-  abnormal: store.tasks.filter((task) => abnormalStatuses.includes(task.status)).length,
-  completed: store.tasks.filter((task) => task.status === 'COMPLETED').length,
+  ready: runtimeCount('READY'),
+  assigned: runtimeCount('ASSIGNED'),
+  queued: runtimeCount('QUEUED'),
+  starting: runtimeCount('STARTING'),
+  running: runtimeCount('RUNNING'),
+  waitingInput: runtimeCount('WAITING_INPUT'),
+  pending: runtimeCount('PENDING_CONFIRMATION'),
+  abnormal: store.tasks.filter((task) => isAbnormalRuntimeState(task.runtime_state)).length,
+  completed: runtimeCount('COMPLETED'),
 }))
 
 const filtered = computed(() => store.tasks.filter((task) => {
@@ -187,7 +196,7 @@ const filtered = computed(() => store.tasks.filter((task) => {
     && (!filters.type || task.task_type === filters.type)
     && (!filters.category || task.category_id === filters.category)
     && (!filters.priority || task.priority === filters.priority)
-    && (!filters.status || (filters.status === 'ABNORMAL' ? abnormalStatuses.includes(task.status) : task.status === filters.status))
+    && runtimeStatusMatchesFilter(task.runtime_state, filters.status)
     && (!filters.employee || task.employee_id === filters.employee)
     && (!filters.dateFrom || timeField.slice(0, 10) >= filters.dateFrom)
     && (!filters.dateTo || timeField.slice(0, 10) <= filters.dateTo)
@@ -212,7 +221,7 @@ const pageWindow = computed<string[]>(() => {
   }, [])
 })
 
-function setStatus(value: string) { filters.status = value; currentPage.value = 1 }
+function setStatus(value: RuntimeStatusFilter) { filters.status = value; currentPage.value = 1 }
 function goPage(page: number) { if (!Number.isNaN(page)) currentPage.value = page }
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
@@ -220,7 +229,7 @@ const employeeName = (id: string | null) => employeeDisplayName(store.employees.
 const typeCopy = (task: Task) => [categoryName(task.category_id), taskTypeLabel(task.task_type)].filter((item) => item !== '—').join(' · ') || '—'
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
-const progressCopy = (task: Task) => isTerminal(task.status) ? '—' : (platformCopy(task.current_progress) || '—')
+const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
 const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
 const shortTitle = (value: string) => value.length > 24 ? `${value.slice(0, 24)}…` : value
 
