@@ -44,15 +44,13 @@ def test_assistant_workspace_has_only_method_skills():
         assert f"name: {skill}\n" in text
         assert "description:" in text
         assert "## 自迭代" in text
+        assert "nexus_experience_submit" in text
 
 
-def test_assistant_workspace_configures_platform_and_library_mcp():
+def test_assistant_workspace_uses_single_platform_mcp():
     config = json.loads((ASSISTANT_WORKSPACE / "opencode.json").read_text(encoding="utf-8"))
 
+    assert set(config["mcp"]) == {"nexus-assistant"}
     assert config["mcp"]["nexus-assistant"]["command"] == ["astra-assistant-mcp"]
-    assert config["mcp"]["nexus-library"]["command"] == ["astra-library-mcp"]
-    library_environment = config["mcp"]["nexus-library"]["environment"]
-    assert library_environment["ASTRA_MCP_TRANSPORT"] == "stdio"
-    assert library_environment["ASTRA_MCP_API_KEY"] == ""
     assert config["permission"]["skill"]["*"] == "deny"
     assert config["permission"]["skill"]["nexus-*"] == "allow"
