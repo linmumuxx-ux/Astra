@@ -20,7 +20,8 @@
       "type": "local",
       "command": ["astra-library-mcp"],
       "environment": {
-        "ASTRA_MCP_TRANSPORT": "stdio"
+        "ASTRA_MCP_TRANSPORT": "stdio",
+        "ASTRA_MCP_API_KEY": ""
       },
       "enabled": true
     }
