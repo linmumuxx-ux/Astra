@@ -49,6 +49,7 @@ Task、Run、Employee、执行环境是不同状态域。Run `TIMEOUT` 不代表
 - `title`：故障模式或诊断经验标题，Tool 会统一加 Skill 前缀
 - `summary`：概括现象、关键证据和正确处理路径
 - `content_md`：`现象 / 关键证据 / 判断方法 / 推荐处理 / 误判风险 / 适用边界`
+- `evidence`：至少一条结构化证据；优先关联实际 Run 结果、错误现场或用户明确纠正
 - `tags`：可补充 failure code 和业务主题，Tool 会自动加入 Skill 标签
 - `source_task_id`、`source_run_id`：有真实 ID 时填写
 - `experience_data`：记录故障模式、修正点和验证结果
