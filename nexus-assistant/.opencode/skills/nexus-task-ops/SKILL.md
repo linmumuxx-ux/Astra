@@ -36,7 +36,7 @@ metadata:
 
 ## 自迭代
 
-只有出现**明确学习信号**时，才调用数字图书馆 MCP 的 `library_submit_experience` 提交经验候选：
+只有出现**明确学习信号**时，才调用 `nexus_experience_submit` 提交经验候选：
 
 - 用户纠正了任务类型、字段理解、员工选择或操作路径；
 - prepare 被后端拒绝，随后找到有证据的正确处理方式；
@@ -44,14 +44,15 @@ metadata:
 
 普通成功、一次性业务数据、模型猜测、临时环境故障不要沉淀。
 
-候选经验使用：
+提交时：
 
-- `title`：`[nexus-task-ops] <简短经验标题>`
+- `skill_name`：`nexus-task-ops`
+- `title`：简短经验标题，Tool 会统一加 Skill 前缀
 - `summary`：说明“什么场景下原路径为什么不合适，以及应如何处理”
 - `content_md`：至少包含 `适用场景 / 触发信号 / 推荐处理 / 不要这样做 / 证据`
-- `tags`：至少包含 `assistant-skill`、`nexus-task-ops`
+- `tags`：只补充业务主题标签，Tool 会自动加入 `assistant-skill` 和 Skill 名
 - `source_task_id` / `source_run_id`：有真实 ID 时填写
-- `experience_data`：记录 `skill=nexus-task-ops`、场景和修正点
+- `experience_data`：记录场景和修正点；Tool 会自动写入来源 Skill
 
 提交后只说明已形成“经验候选”；候选不能当场视为正式规则，需经数字图书馆审核发布后才能作为后续稳定经验复用。经验提交失败不得影响当前任务处理。
 
