@@ -126,6 +126,13 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
 
+    missing_entrypoints = [path for path in manager.required_mcp_entrypoints if not path.is_file()]
+    if missing_entrypoints:
+        for path in missing_entrypoints:
+            print(f"助手 MCP 入口不存在：{path}", file=sys.stderr)
+        print("请使用当前 Python 执行 python -m pip install -e backend", file=sys.stderr)
+        return 1
+
     command = manager.command()
     environment = manager.process_environment()
     os.chdir(manager.workspace)
