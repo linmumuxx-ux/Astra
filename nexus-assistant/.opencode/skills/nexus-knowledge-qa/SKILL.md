@@ -47,6 +47,7 @@ metadata:
 - `title`：补充或修正主题，Tool 会统一加 Skill 前缀
 - `summary`：说明原知识缺口和新增/修正内容
 - `content_md`：`问题 / 现有知识缺口 / 修正内容 / 适用范围 / 证据`
+- `evidence`：至少一条结构化证据；可记录被纠正知识、用户明确纠正或任务/运行验证结果
 - `tags`：补充主题标签，Tool 会自动加入 Skill 标签
 - 有真实任务或运行作为证据时填写 `source_task_id` / `source_run_id`
 - `experience_data`：记录被修正主题和依据
