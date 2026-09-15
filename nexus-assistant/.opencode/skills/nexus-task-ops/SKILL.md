@@ -1,6 +1,6 @@
 ---
 name: nexus-task-ops
-description: 处理 NEXUS 任务查询、创建、取消、重试、恢复、重新分配，以及任务执行员工选择。用于需要把自然语言任务意图整理成平台字段、解析真实对象并进入 prepare → 用户确认流程的场景；简单平台统计不要加载此 Skill。
+description: 处理 NEXUS 任务创建、取消、重试、恢复、重新分配，以及需要把自然语言任务意图整理成平台字段、解析真实对象或为任务选择执行员工的场景；已知任务 ID 查看详情、简单搜索或平台统计直接调用 Tool，不加载此 Skill。
 compatibility: opencode
 metadata:
   domain: task
@@ -50,6 +50,7 @@ metadata:
 - `title`：简短经验标题，Tool 会统一加 Skill 前缀
 - `summary`：说明“什么场景下原路径为什么不合适，以及应如何处理”
 - `content_md`：至少包含 `适用场景 / 触发信号 / 推荐处理 / 不要这样做 / 证据`
+- `evidence`：至少提供一条结构化证据；用户纠正可记录为 `user_correction`，运行验证可记录为 `run_result`
 - `tags`：只补充业务主题标签，Tool 会自动加入 `assistant-skill` 和 Skill 名
 - `source_task_id` / `source_run_id`：有真实 ID 时填写
 - `experience_data`：记录场景和修正点；Tool 会自动写入来源 Skill
