@@ -1,0 +1,73 @@
+name: CTB Benchmark
+
+on:
+  push:
+    branches: [ctb-test-benchmark]
+    paths:
+      - 'ctb/**'
+      - '.github/workflows/ctb-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  traffic-light:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ctb/benchmark/traffic_light
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate testcase on correct implementation
+        run: python run_correct.py
+
+      - name: Evaluate hidden mutants
+        run: |
+          python hidden/evaluate.py > benchmark_result.json
+          cat benchmark_result.json
+
+      - name: Build score summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path('benchmark_result.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          killed = [int(k) for k, v in data.items() if v.get('killed')]
+          total = len(data)
+          score = len(killed) / total * 100 if total else 0
+          testcase_hits = {}
+          for bug_id, item in data.items():
+              for tc in item.get('testcases', []):
+                  testcase_hits.setdefault(tc, []).append(int(bug_id))
+          summary = {
+              'total_bugs': total,
+              'killed_bugs': len(killed),
+              'kill_rate': round(score, 2),
+              'hit_bug_ids': sorted(killed),
+              'missed_bug_ids': sorted(set(map(int, data)) - set(killed)),
+              'testcase_hits': {k: sorted(v) for k, v in sorted(testcase_hits.items())},
+          }
+          Path('benchmark_summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          with open(Path.home() / 'summary.md', 'w', encoding='utf-8') as f:
+              f.write('# CTB Traffic Light Benchmark\n\n')
+              f.write(f"- Hidden bugs: {total}\n")
+              f.write(f"- Killed: {len(killed)}\n")
+              f.write(f"- Kill rate: {score:.2f}%\n")
+              f.write(f"- Hit: {sorted(killed)}\n")
+              f.write(f"- Missed: {summary['missed_bug_ids']}\n")
+          PY
+
+      - name: Publish job summary
+        run: cat "$HOME/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ctb-traffic-light-result
+          path: |
+            ctb/benchmark/traffic_light/benchmark_result.json
+            ctb/benchmark/traffic_light/benchmark_summary.json
