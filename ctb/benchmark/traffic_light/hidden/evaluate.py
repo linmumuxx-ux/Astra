@@ -1,11 +1,17 @@
-import io, json, os, sys, unittest
+import importlib.util, io, json, os, sys, unittest
 from mutants import MUTANTS
 
 ROOT=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0,ROOT)
 
 import test_aw
-import test_submission
+
+
+def load_submission(path):
+    spec=importlib.util.spec_from_file_location('ctb_submission',path)
+    module=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def make_controller(source, bug_id):
@@ -15,13 +21,16 @@ def make_controller(source, bug_id):
 
 
 def main():
+    submission_path=os.path.abspath(sys.argv[1]) if len(sys.argv)>1 else os.path.join(ROOT,'test_submission.py')
+    submission=load_submission(submission_path)
+    case_cls=getattr(submission,'TestTrafficController')
     src=open(os.path.join(ROOT,'implementation','controller.py'),encoding='utf-8').read(); result={}
     for bug_id,(old,new) in MUTANTS.items():
         if old not in src:
             result[str(bug_id)]={'killed':False,'testcases':[],'error':'mutation anchor missing'}; continue
         try:
             test_aw.TrafficController=make_controller(src.replace(old,new,1),bug_id)
-            suite=unittest.defaultTestLoader.loadTestsFromTestCase(test_submission.TestTrafficController)
+            suite=unittest.defaultTestLoader.loadTestsFromTestCase(case_cls)
             run=unittest.TextTestRunner(stream=io.StringIO(),verbosity=0).run(suite)
             failed=sorted({case.id().rsplit('.',1)[-1] for case,_ in run.failures+run.errors})
             result[str(bug_id)]={'killed':bool(failed),'testcases':failed}
@@ -33,6 +42,7 @@ def main():
     killed=[int(k) for k,v in result.items() if v.get('killed')]
     errors={k:v['error'] for k,v in result.items() if v.get('error')}
     output={
+        'submission':os.path.relpath(submission_path,ROOT),
         'bugs':result,
         'testcase_hits':{k:sorted(v) for k,v in sorted(inverse.items())},
         'killed_count':len(killed),
