@@ -58,3 +58,6 @@ def test_assistant_workspace_uses_single_platform_mcp():
     agent = (ASSISTANT_WORKSPACE / ".opencode/agents/platform-assistant.md").read_text(encoding="utf-8")
     assert "nexus_experience_submit" in agent
     assert "library_submit_experience" not in agent
+
+    mcp_server = (PROJECT_ROOT / "backend/app/assistant/mcp_server.py").read_text(encoding="utf-8")
+    assert '@server.tool(name="nexus_experience_submit"' in mcp_server
