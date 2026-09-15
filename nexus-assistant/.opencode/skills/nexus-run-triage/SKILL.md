@@ -36,21 +36,22 @@ Task、Run、Employee、执行环境是不同状态域。Run `TIMEOUT` 不代表
 
 ## 自迭代
 
-只有出现以下学习信号时，调用 `library_submit_experience` 形成候选经验：
+只有出现以下学习信号时，调用 `nexus_experience_submit` 形成候选经验：
 
 - 用户明确纠正了原因判断或处理顺序；
 - 某类失败经过补充证据后确认了稳定的诊断路径；
 - 原建议不可行，而新的恢复路径经平台状态或后续运行结果验证有效；
 - 出现可复用的“现象 → 证据 → 判断 → 处理”模式，且不是单次环境偶发问题。
 
-候选经验建议包含：
+提交时：
 
-- `title`：`[nexus-run-triage] <故障模式或诊断经验>`
+- `skill_name`：`nexus-run-triage`
+- `title`：故障模式或诊断经验标题，Tool 会统一加 Skill 前缀
 - `summary`：概括现象、关键证据和正确处理路径
 - `content_md`：`现象 / 关键证据 / 判断方法 / 推荐处理 / 误判风险 / 适用边界`
-- `tags`：`assistant-skill`、`nexus-run-triage`，可补充 failure code
+- `tags`：可补充 failure code 和业务主题，Tool 会自动加入 Skill 标签
 - `source_task_id`、`source_run_id`：有真实 ID 时填写
-- `experience_data`：记录 `skill=nexus-run-triage`、故障模式、修正点和验证结果
+- `experience_data`：记录故障模式、修正点和验证结果
 
 不要因为一次普通失败、缺失日志、网络波动或未经验证的模型推断提交经验。候选必须经图书馆审核发布后，才可作为后续稳定经验复用；提交失败不影响当前诊断。
 
