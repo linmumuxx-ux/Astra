@@ -4,7 +4,11 @@
     "edit": "deny",
     "write": "deny",
     "bash": "deny",
-    "webfetch": "deny"
+    "webfetch": "deny",
+    "skill": {
+      "*": "deny",
+      "nexus-*": "allow"
+    }
   },
   "mcp": {
     "nexus-assistant": {
