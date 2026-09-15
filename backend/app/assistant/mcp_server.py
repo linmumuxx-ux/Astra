@@ -8,6 +8,7 @@ MCP 不直接访问数据库表，统一调用 Tool Gateway / Domain Service，
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -15,10 +16,62 @@ from pydantic import ValidationError
 
 from app.assistant import tool_gateway
 from app.assistant.operations import OperationError
-from app.config.settings import get_settings
+from app.config.settings import PROJECT_ROOT, get_settings
 from app.database import SessionLocal
 from app.library_schemas import LibrarySubmitExperienceInput
 from app.library_service import KnowledgeService, LibraryError
+
+ASSISTANT_SKILLS_ROOT = PROJECT_ROOT / "nexus-assistant" / ".opencode" / "skills"
+SKILL_NAME_PATTERN = re.compile(r"^nexus-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def build_skill_experience_payload(
+    *,
+    skill_name: str,
+    title: str,
+    summary: str,
+    content_md: str,
+    source_employee_id: str | None = None,
+    source_task_id: str | None = None,
+    source_run_id: str | None = None,
+    evidence: list[dict[str, Any]] | None = None,
+    tags: list[str] | None = None,
+    experience_data: dict[str, Any] | None = None,
+) -> LibrarySubmitExperienceInput:
+    """Build one reviewed-candidate payload without trusting model-owned metadata."""
+
+    normalized_skill = skill_name.strip().lower()
+    if not SKILL_NAME_PATTERN.fullmatch(normalized_skill):
+        raise ValueError("skill_name 必须是合法的 nexus-* Skill 名称")
+    if not (ASSISTANT_SKILLS_ROOT / normalized_skill / "SKILL.md").is_file():
+        raise ValueError(f"未知 Skill：{normalized_skill}")
+
+    normalized_title = title.strip()
+    if not normalized_title:
+        raise ValueError("经验标题不能为空")
+    normalized_evidence = evidence or []
+    if not normalized_evidence:
+        raise ValueError("经验候选至少需要一条结构化证据")
+
+    prefix = f"[{normalized_skill}]"
+    if not normalized_title.startswith(prefix):
+        normalized_title = f"{prefix} {normalized_title}"
+    normalized_tags = list(dict.fromkeys(["assistant-skill", normalized_skill, *(tags or [])]))
+    learning_data = {**(experience_data or {}), "skill": normalized_skill}
+    try:
+        return LibrarySubmitExperienceInput(
+            title=normalized_title,
+            summary=summary,
+            content_md=content_md,
+            source_employee_id=source_employee_id,
+            source_task_id=source_task_id,
+            source_run_id=source_run_id,
+            evidence=normalized_evidence,
+            tags=normalized_tags,
+            experience_data=learning_data,
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def build_assistant_mcp_server() -> MCPServer:
@@ -233,33 +286,19 @@ def build_assistant_mcp_server() -> MCPServer:
         tags: list[str] | None = None,
         experience_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """提交 Skill 可复用经验候选；服务端统一标记来源 Skill，且永远不会直接发布。"""
-        normalized_skill = skill_name.strip().lower()
-        if not normalized_skill.startswith("nexus-"):
-            raise ValueError("skill_name 必须是 nexus-* Skill")
-
-        normalized_title = title.strip()
-        prefix = f"[{normalized_skill}]"
-        if not normalized_title.startswith(prefix):
-            normalized_title = f"{prefix} {normalized_title}"
-        normalized_tags = list(
-            dict.fromkeys(["assistant-skill", normalized_skill, *(tags or [])])
+        """提交 Skill 可复用经验候选；至少一条证据，且永远不会直接发布。"""
+        payload = build_skill_experience_payload(
+            skill_name=skill_name,
+            title=title,
+            summary=summary,
+            content_md=content_md,
+            source_employee_id=source_employee_id,
+            source_task_id=source_task_id,
+            source_run_id=source_run_id,
+            evidence=evidence,
+            tags=tags,
+            experience_data=experience_data,
         )
-        learning_data = {"skill": normalized_skill, **(experience_data or {})}
-        try:
-            payload = LibrarySubmitExperienceInput(
-                title=normalized_title,
-                summary=summary,
-                content_md=content_md,
-                source_employee_id=source_employee_id,
-                source_task_id=source_task_id,
-                source_run_id=source_run_id,
-                evidence=evidence or [],
-                tags=normalized_tags,
-                experience_data=learning_data,
-            )
-        except ValidationError as exc:
-            raise ValueError(str(exc)) from exc
 
         async def _submit(session):
             result = await KnowledgeService(session).mcp_submit_experience(payload)
