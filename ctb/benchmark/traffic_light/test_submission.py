@@ -63,4 +63,13 @@ class TestTrafficController(unittest.TestCase):
     def test_all_red_normal_target_not_changed_by_queue(self):
         c=create_controller(); set_queue(c,'EW',3); tick(c,10); set_queue(c,'NS',20); tick(c,2); self.assertEqual('EW_GREEN',snapshot(c)['state'])
 
+    def test_repeated_same_emergency_does_not_restart_all_red(self):
+        c=create_controller(); set_emergency(c,'EW'); tick(c,1); set_emergency(c,'EW',True); tick(c,1); self.assertEqual('EW_GREEN',snapshot(c)['state'])
+
+    def test_latest_emergency_reverse_direction(self):
+        c=create_controller(); set_emergency(c,'EW'); tick(c,2); set_emergency(c,'NS'); tick(c,1); set_emergency(c,'EW'); tick(c,2); self.assertEqual('EW_GREEN',snapshot(c)['state'])
+
+    def test_non_target_queue_preserved_after_transition(self):
+        c=create_controller(); set_queue(c,'NS',5); set_queue(c,'EW',8); tick(c,10); tick(c,2); s=snapshot(c); self.assertEqual('EW_GREEN',s['state']); self.assertEqual(5,s['ns_queue']); self.assertEqual(0,s['ew_queue'])
+
 if __name__=='__main__': unittest.main()
