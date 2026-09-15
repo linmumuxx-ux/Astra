@@ -23,6 +23,9 @@ jobs:
       - name: Validate testcase on correct implementation
         run: python run_correct.py
 
+      - name: Validate hidden mutants
+        run: python hidden/validate_mutants.py
+
       - name: Evaluate hidden mutants
         run: |
           python hidden/evaluate.py > benchmark_result.json
@@ -34,31 +37,24 @@ jobs:
           import json
           from pathlib import Path
 
-          p = Path('benchmark_result.json')
-          data = json.loads(p.read_text(encoding='utf-8'))
-          killed = [int(k) for k, v in data.items() if v.get('killed')]
-          total = len(data)
-          score = len(killed) / total * 100 if total else 0
-          testcase_hits = {}
-          for bug_id, item in data.items():
-              for tc in item.get('testcases', []):
-                  testcase_hits.setdefault(tc, []).append(int(bug_id))
+          data = json.loads(Path('benchmark_result.json').read_text(encoding='utf-8'))
           summary = {
-              'total_bugs': total,
-              'killed_bugs': len(killed),
-              'kill_rate': round(score, 2),
-              'hit_bug_ids': sorted(killed),
-              'missed_bug_ids': sorted(set(map(int, data)) - set(killed)),
-              'testcase_hits': {k: sorted(v) for k, v in sorted(testcase_hits.items())},
+              'total_bugs': data['total'],
+              'killed_bugs': data['killed_count'],
+              'kill_rate': round(data['killed_count'] / data['total'] * 100, 2) if data['total'] else 0,
+              'hit_bug_ids': data['hit_bug_ids'],
+              'missed_bug_ids': data['missed_bug_ids'],
+              'testcase_hits': data['testcase_hits'],
+              'errors': data.get('errors', {}),
           }
           Path('benchmark_summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
           print(json.dumps(summary, ensure_ascii=False, indent=2))
           with open(Path.home() / 'summary.md', 'w', encoding='utf-8') as f:
               f.write('# CTB Traffic Light Benchmark\n\n')
-              f.write(f"- Hidden bugs: {total}\n")
-              f.write(f"- Killed: {len(killed)}\n")
-              f.write(f"- Kill rate: {score:.2f}%\n")
-              f.write(f"- Hit: {sorted(killed)}\n")
+              f.write(f"- Hidden bugs: {summary['total_bugs']}\n")
+              f.write(f"- Killed: {summary['killed_bugs']}\n")
+              f.write(f"- Kill rate: {summary['kill_rate']:.2f}%\n")
+              f.write(f"- Hit: {summary['hit_bug_ids']}\n")
               f.write(f"- Missed: {summary['missed_bug_ids']}\n")
           PY
 
