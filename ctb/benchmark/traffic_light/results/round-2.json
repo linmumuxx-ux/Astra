@@ -1,0 +1,21 @@
+{
+  "round": 2,
+  "base_round": 1,
+  "added_testcases": [
+    "test_repeated_same_emergency_does_not_restart_all_red",
+    "test_latest_emergency_reverse_direction",
+    "test_non_target_queue_preserved_after_transition"
+  ],
+  "new_bug_ids": [8,17,18],
+  "new_testcase_hits": {
+    "test_repeated_same_emergency_does_not_restart_all_red": [4,6,8],
+    "test_latest_emergency_reverse_direction": [4,6,7,17],
+    "test_non_target_queue_preserved_after_transition": [0,1,4,5,14,18]
+  },
+  "testcase_count": 20,
+  "total_bugs": 20,
+  "killed_bugs": 20,
+  "kill_rate": 100.0,
+  "missed_bug_ids": [],
+  "local_correct_environment": "20/20 PASS"
+}
