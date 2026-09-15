@@ -1,11 +1,6 @@
 name: CTB Benchmark
 
 on:
-  push:
-    branches: [ctb-test-benchmark]
-    paths:
-      - 'ctb/**'
-      - '.github/workflows/ctb-benchmark.yml'
   workflow_dispatch:
 
 jobs:
