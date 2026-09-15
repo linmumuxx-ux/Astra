@@ -4,8 +4,7 @@
 
 - 平台助手不运行在 Astra 源代码目录，避免获得不必要的代码修改能力。
 - `edit` / `write` / `bash` / `webfetch` 默认拒绝。
-- `nexus-assistant` MCP 提供任务、员工、运行和运营类平台能力。
-- `nexus-library` MCP 提供数字图书馆与经验候选能力；在本 Workspace 内强制使用 `stdio`。
+- `nexus-assistant` MCP 提供任务、员工、运行、知识、运营和经验候选提交能力。
 - 会话由 Astra Backend 创建和管理，本目录不保存业务数据。
 - 平台事实、状态判定、权限与确认由 Backend 负责；Skill 只沉淀方法、判断链和常见错误。
 
@@ -15,8 +14,8 @@
 
 1. 简单查询直接调用 MCP Tool；
 2. 复杂业务按需加载最少 Skill；
-3. 变更类操作只 prepare，由平台向用户展示确认卡；
-4. 出现明确学习信号时，将可复用经验提交为数字图书馆 candidate，不直接修改 Skill。
+3. 任务变更只 prepare，由平台向用户展示确认卡；
+4. 出现明确学习信号时，通过 `nexus_experience_submit` 把可复用经验提交为数字图书馆 candidate，不直接修改 Skill。
 
 ## Skills
 
@@ -34,13 +33,14 @@ Skill 位于 `.opencode/skills/<name>/SKILL.md`，由 Agent 根据用户意图�
 
 经验闭环为：
 
-`Skill 使用 → 用户纠正/有效修正/稳定新路径 → library_submit_experience(candidate) → 图书馆审核发布 → 后续 Skill 检索复用`
+`Skill 使用 → 用户纠正/有效修正/稳定新路径 → nexus_experience_submit(candidate) → 图书馆审核发布 → 后续 Skill 检索复用`
 
 原则：
 
 - 普通成功不沉淀；
 - 模型猜测不沉淀；
 - 一次性业务数据和临时环境异常不沉淀；
+- Tool 自动加入来源 Skill 标签，服务端只创建 candidate；
 - 经验提交失败不阻塞当前任务；
 - candidate 未审核发布前不能当作正式规则。
 
@@ -51,4 +51,4 @@ cd nexus-assistant
 opencode
 ```
 
-OpenCode 会从当前 Workspace 读取 `opencode.json`、`AGENTS.md`、Agent 和 Skill，并启动工程内配置的本地 MCP。
+OpenCode 会从当前 Workspace 读取 `opencode.json`、`AGENTS.md`、Agent 和 Skill，并启动工程内配置的 `astra-assistant-mcp`。
