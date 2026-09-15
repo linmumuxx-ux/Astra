@@ -1,54 +1,65 @@
 ---
 name: nexus-task-ops
-description: 查询、创建、取消、重试、恢复或重新分配 NEXUS 数字员工平台任务时使用。负责把自然语言任务意图整理为平台任务字段，并严格执行查询校验与 prepare → 用户确认流程。
+description: 处理 NEXUS 任务查询、创建、取消、重试、恢复、重新分配，以及任务执行员工选择。用于需要把自然语言任务意图整理成平台字段、解析真实对象并进入 prepare → 用户确认流程的场景；简单平台统计不要加载此 Skill。
 compatibility: opencode
 metadata:
   domain: task
-  tools: nexus_task_*
+  version: "2"
+  learning: candidate-review
 ---
 
-# NEXUS 任务操作
+# NEXUS 任务处理
 
-处理任务查询和任务生命周期操作。业务状态与权限以平台 Tool 返回为准，不在模型侧自行实现状态机。
+把用户意图转成最少、可验证的平台操作。状态机、默认值、资格、风险等级和最终执行始终以后端为准，本 Skill 不复制这些规则。
 
-## 查询任务
+## 工作流
 
-- 已知 `task_id`：优先 `nexus_task_get`。
-- 按关键词、员工、任务类型或状态找任务：使用 `nexus_task_search`。
-- 搜索命中多个对象且用户要操作“这个/它”时，先消歧，禁止自行选择。
-- 回答时优先给出任务编号、标题、当前状态、执行员工和当前进展。
+1. **确认意图**：区分查询、创建、取消、重试、恢复、重分配。用户只是询问或比较时保持只读。
+2. **解析对象**：已知任务 ID 用 `nexus_task_get`；按名称/关键词找任务用 `nexus_task_search`。名称不能代替 ID，多候选时先消歧。
+3. **创建任务时整理字段**：
+   - `task_type`：问题处理通常为 `ISSUE`，新增/改造需求通常为 `REQUIREMENT`；确实无法判断再询问。
+   - `title`：只概括明确目标。
+   - `description`：保留目标、范围、约束和用户给出的上下文，不补造背景或方案。
+   - `acceptance_criteria`：只写明确且可验证的结果；信息不足时省略。
+   - `priority`：用户未指定时省略。
+   - `category_id`：没有真实 ID 时不要猜。
+   - `employee_id`：默认可省略；只有用户明确指定、要求推荐或需要重分配时才解析员工。
+4. **选择员工时按需调用**：姓名/岗位查询用 `nexus_employee_search`，详情用 `nexus_employee_get`，要求“谁适合”时用 `nexus_employee_recommend`。使用平台返回顺序和推荐原因，不自行发明评分。
+5. **变更前刷新事实**：已有任务操作先 `nexus_task_get` 获取最新状态，然后直接调用对应 `nexus_task_prepare_*`；不要在 Skill 中维护一份允许状态表。
+6. **一次 prepare 后停止**：拿到 `operation_id` 后转述预览、风险和待确认事项，不重复 prepare，不调用 confirm。
 
-## 创建任务
+## 经验复用
 
-先从用户请求整理字段：
+对复杂、曾被纠正或容易走错路径的任务，在执行关键步骤前可先用 `nexus_knowledge_search(keyword="nexus-task-ops")` 查找已发布经验；只读取与当前场景直接相关的少量条目。经验用于补充调用方法，不能覆盖实时 Tool 事实和 Backend 判定。
 
-- `task_type`：仅 `ISSUE` 或 `REQUIREMENT`。故障、问题修复通常为 `ISSUE`；新增、改造、优化需求通常为 `REQUIREMENT`。无法可靠判断时询问用户。
-- `title`：根据明确目标生成简短标题，不添加用户未提出的范围。
-- `description`：保留目标、范围和约束；不编造背景、数据或技术方案。
-- `acceptance_criteria`：只提取用户明确给出或可直接验证的结果；没有可靠信息时可省略，由后端补默认值。
-- `priority`：用户未指定时省略，由后端使用默认值。
-- `employee_id`：可选。用户允许自动分配时不要强行指定员工；用户要求推荐执行人时调用 `nexus_employee_recommend`。
-- `category_id`：未知时不要猜测，交由后端按平台规则补充；用户明确指定分类时才传入真实 ID。
+简单、标准路径不要为了“学习”额外查询知识。
 
-字段足够后只调用一次 `nexus_task_prepare_create`。返回 `operation_id` 后，用简洁中文转述 `preview`、风险等级和待确认事项，然后停止操作，等待平台确认卡。
+## 自迭代
 
-## 修改任务生命周期
+只有出现**明确学习信号**时，才调用数字图书馆 MCP 的 `library_submit_experience` 提交经验候选：
 
-任何已有任务操作都先 `nexus_task_get` 获取最新状态，再决定是否 prepare：
+- 用户纠正了任务类型、字段理解、员工选择或操作路径；
+- prepare 被后端拒绝，随后找到有证据的正确处理方式；
+- 发现当前 Skill 未覆盖、且明显可复用于同类任务的稳定方法。
 
-| 操作 | 允许状态 | Tool |
-| --- | --- | --- |
-| 取消 | 非 `COMPLETED` / `FAILED` / `CANCELLED` | `nexus_task_prepare_cancel` |
-| 重试 | `FAILED` / `EXECUTION_ERROR` | `nexus_task_prepare_retry` |
-| 恢复 | `SUSPENDED` / `WAIT_HUMAN` | `nexus_task_prepare_resume` |
-| 重分配 | `READY` / `SUSPENDED` | `nexus_task_prepare_reassign` |
+普通成功、一次性业务数据、模型猜测、临时环境故障不要沉淀。
 
-重分配前通过 `nexus_employee_recommend` 或 `nexus_employee_search` 获得真实 `employee_id`，不要按姓名猜 ID。
+候选经验使用：
 
-## Prepare 规则
+- `title`：`[nexus-task-ops] <简短经验标题>`
+- `summary`：说明“什么场景下原路径为什么不合适，以及应如何处理”
+- `content_md`：至少包含 `适用场景 / 触发信号 / 推荐处理 / 不要这样做 / 证据`
+- `tags`：至少包含 `assistant-skill`、`nexus-task-ops`
+- `source_task_id` / `source_run_id`：有真实 ID 时填写
+- `experience_data`：记录 `skill=nexus-task-ops`、场景和修正点
 
-1. prepare 只是生成待确认操作，不代表已经执行成功。
-2. 同一用户意图只调用一次 prepare，不因等待确认而重复调用。
-3. 不调用 confirm、不模拟用户确认；真正执行由平台确认接口完成。
-4. prepare 被后端拒绝时，原样说明核心原因，并基于最新任务状态给出可行下一步。
-5. 用户只是询问、分析或比较时，不触发 prepare。
+提交后只说明已形成“经验候选”；候选不能当场视为正式规则，需经数字图书馆审核发布后才能作为后续稳定经验复用。经验提交失败不得影响当前任务处理。
+
+## 常见错误
+
+- 为了填满字段而猜分类、优先级或员工。
+- 把员工姓名直接拼成 ID。
+- 在 Skill 里复制 Backend 状态机，导致规则漂移。
+- 用户只问问题却触发 prepare。
+- 等待确认时重复调用 prepare。
+- 因一次异常就提交“经验”。
