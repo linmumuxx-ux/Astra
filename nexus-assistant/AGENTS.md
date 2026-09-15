@@ -40,7 +40,7 @@ Skill 位于 `.opencode/skills/<name>/SKILL.md`，由 Agent 根据用户意图�
 - 普通成功不沉淀；
 - 模型猜测不沉淀；
 - 一次性业务数据和临时环境异常不沉淀；
-- Tool 自动加入来源 Skill 标签，服务端只创建 candidate；
+- `nexus_experience_submit` 自动加入来源 Skill 标签，底层复用数字图书馆 `library_submit_experience`，服务端只创建 candidate；
 - 经验提交失败不阻塞当前任务；
 - candidate 未审核发布前不能当作正式规则。
 
