@@ -13,13 +13,11 @@ def main():
             for name in ('test_aw.py','test_submission.py'):
                 open(os.path.join(td,name),'w',encoding='utf-8').write(open(os.path.join(ROOT,name),encoding='utf-8').read())
             proc=subprocess.run([sys.executable,'-m','unittest','-v','test_submission.py'],cwd=td,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
-            failed=[]
-            failed.extend(re.findall(r'^(test_\w+).*\.\.\. (?:FAIL|ERROR)$',proc.stdout,re.M))
-            failed.extend(re.findall(r'^(?:FAIL|ERROR): (test_\w+)',proc.stdout,re.M))
+            failed=re.findall(r'^(test_\w+).*\.\.\. (?:FAIL|ERROR)$',proc.stdout,re.M)
+            failed+=re.findall(r'^(?:FAIL|ERROR): (test_\w+)',proc.stdout,re.M)
             result[str(bug_id)]={'killed':proc.returncode!=0,'testcases':sorted(set(failed))}
     inverse={}
     for bug_id,data in result.items():
         for tc in data.get('testcases',[]): inverse.setdefault(tc,[]).append(int(bug_id))
-    payload={'bugs':result,'testcase_hits':inverse,'killed_count':sum(1 for x in result.values() if x.get('killed')),'total':len(MUTANTS)}
-    print(json.dumps(payload,ensure_ascii=False,indent=2))
+    print(json.dumps({'bugs':result,'testcase_hits':inverse,'killed_count':sum(1 for x in result.values() if x.get('killed')),'total':len(MUTANTS)},ensure_ascii=False,indent=2))
 if __name__=='__main__': main()
