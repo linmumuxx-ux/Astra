@@ -102,14 +102,14 @@ class Settings(BaseSettings):
 
     # Platform assistant (NEXUS 平台助手). The assistant talks to its own
     # OpenCode Server so conversational sessions never share runtime state
-    # with digital-employee task execution.
+    # with digital-employee task execution. Its workspace is repository-owned
+    # at PROJECT_ROOT/nexus-assistant and is intentionally not configurable.
     assistant_enabled: bool = True
     assistant_opencode_url: str | None = None
     assistant_opencode_hostname: str = "127.0.0.1"
     assistant_opencode_port: int = Field(default=4097, ge=1, le=65535)
     assistant_opencode_username: str = "opencode"
     assistant_opencode_password: str | None = None
-    assistant_workspace_dir: Path = PROJECT_ROOT / "nexus-assistant"
     assistant_agent: str = "platform-assistant"
     assistant_model: str | None = None
     assistant_user_id: str = "console-admin"
@@ -222,10 +222,6 @@ class Settings(BaseSettings):
             else self.opencode_server_hostname
         )
         return f"http://{host}:{self.opencode_server_port}"
-
-    @property
-    def resolved_assistant_workspace(self) -> Path:
-        return self.absolute_path(self.assistant_workspace_dir)
 
     @property
     def resolved_assistant_opencode_url(self) -> str:

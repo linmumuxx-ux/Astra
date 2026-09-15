@@ -2,20 +2,82 @@
 
 OpenCode → MCP 调用时使用服务认证；用户身份由 Backend 注入
 （``settings.assistant_user_id``），不信任模型自己提供的 user_id。
-MCP 不直接访问数据库表，统一调用 Tool Gateway / Domain Service，
-避免形成“助手 SQL”和“正常后端服务”两套业务规则。
+稳定业务能力统一调用 Tool Gateway / Domain Service；``nexus_inspect``
+仅作为尚未 MCP 化场景的受控只读数据库兜底，不支持任意 SQL 或写操作。
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import ValidationError
 
 from app.assistant import tool_gateway
+from app.assistant.inspection import (
+    count_resource,
+    describe_resource,
+    list_resources,
+    query_resource,
+)
 from app.assistant.operations import OperationError
-from app.config.settings import get_settings
+from app.config.settings import PROJECT_ROOT, get_settings
 from app.database import SessionLocal
+from app.library_schemas import LibrarySubmitExperienceInput
+from app.library_service import KnowledgeService, LibraryError
+
+ASSISTANT_SKILLS_ROOT = PROJECT_ROOT / "nexus-assistant" / ".opencode" / "skills"
+SKILL_NAME_PATTERN = re.compile(r"^nexus-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def build_skill_experience_payload(
+    *,
+    skill_name: str,
+    title: str,
+    summary: str,
+    content_md: str,
+    source_employee_id: str | None = None,
+    source_task_id: str | None = None,
+    source_run_id: str | None = None,
+    evidence: list[dict[str, Any]] | None = None,
+    tags: list[str] | None = None,
+    experience_data: dict[str, Any] | None = None,
+) -> LibrarySubmitExperienceInput:
+    """Build one reviewed-candidate payload without trusting model-owned metadata."""
+
+    normalized_skill = skill_name.strip().lower()
+    if not SKILL_NAME_PATTERN.fullmatch(normalized_skill):
+        raise ValueError("skill_name 必须是合法的 nexus-* Skill 名称")
+    if not (ASSISTANT_SKILLS_ROOT / normalized_skill / "SKILL.md").is_file():
+        raise ValueError(f"未知 Skill：{normalized_skill}")
+
+    normalized_title = title.strip()
+    if not normalized_title:
+        raise ValueError("经验标题不能为空")
+    normalized_evidence = evidence or []
+    if not normalized_evidence:
+        raise ValueError("经验候选至少需要一条结构化证据")
+
+    prefix = f"[{normalized_skill}]"
+    if not normalized_title.startswith(prefix):
+        normalized_title = f"{prefix} {normalized_title}"
+    normalized_tags = list(dict.fromkeys(["assistant-skill", normalized_skill, *(tags or [])]))
+    learning_data = {**(experience_data or {}), "skill": normalized_skill}
+    try:
+        return LibrarySubmitExperienceInput(
+            title=normalized_title,
+            summary=summary,
+            content_md=content_md,
+            source_employee_id=source_employee_id,
+            source_task_id=source_task_id,
+            source_run_id=source_run_id,
+            evidence=normalized_evidence,
+            tags=normalized_tags,
+            experience_data=learning_data,
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def build_assistant_mcp_server() -> MCPServer:
@@ -24,11 +86,13 @@ def build_assistant_mcp_server() -> MCPServer:
     server = MCPServer(
         name="NEXUS Assistant Tools",
         title="NEXUS 平台助手工具",
-        version="1.0.0",
-        description="查询和操作 NEXUS 数字员工平台的任务、员工、运行和知识。",
+        version="1.2.0",
+        description="查询和操作 NEXUS 数字员工平台，提供受控只读兜底检查，并提交 Skill 经验候选。",
         instructions=(
-            "查询类工具直接调用；任何变更必须先调用 prepare 工具，"
-            "等待平台向用户展示确认卡，禁止重复调用 prepare，也不要自己执行确认。"
+            "优先使用稳定业务 Tool；只有现有 Tool 缺少所需读取能力时才使用 nexus_inspect。"
+            "业务变更必须先调用 prepare 工具，等待平台向用户展示确认卡，禁止重复 prepare，"
+            "也不要自己执行确认。只有 Skill 明确定义的学习信号出现时，才允许提交经验候选；"
+            "候选不会直接发布。"
         ),
     )
 
@@ -36,7 +100,7 @@ def build_assistant_mcp_server() -> MCPServer:
         async with SessionLocal() as session:
             try:
                 return await coro_factory(session)
-            except OperationError as exc:
+            except (OperationError, LibraryError) as exc:
                 raise ValueError(str(exc)) from exc
 
     # ── Task Tools ────────────────────────────────────────────
@@ -213,6 +277,78 @@ def build_assistant_mcp_server() -> MCPServer:
     async def nexus_knowledge_get(knowledge_id: str) -> dict[str, Any]:
         """读取一条知识的完整内容；只根据真实返回内容回答。"""
         return await _run(lambda session: tool_gateway.knowledge_get(session, knowledge_id))
+
+    # ── Read-only Fallback Inspector ──────────────────────────
+
+    @server.tool(name="nexus_inspect", structured_output=True)
+    async def nexus_inspect(
+        action: Literal["resources", "describe", "query", "count"],
+        resource: str | None = None,
+        fields: list[str] | None = None,
+        where: list[str] | None = None,
+        contains: list[str] | None = None,
+        order_by: str | None = None,
+        descending: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """稳定 Tool 不足时的只读兜底检查；字段受控、隐藏敏感列、禁止任意 SQL 和写操作。"""
+        if action == "resources":
+            return list_resources()
+        if not resource:
+            raise ValueError(f"{action} 需要 resource")
+        if action == "describe":
+            return describe_resource(resource)
+        if action == "count":
+            return await _run(
+                lambda session: count_resource(session, resource=resource, where=where)
+            )
+        return await _run(
+            lambda session: query_resource(
+                session,
+                resource=resource,
+                fields=fields,
+                where=where,
+                contains=contains,
+                order_by=order_by,
+                descending=descending,
+                limit=limit,
+            )
+        )
+
+    # ── Skill Learning Tool ───────────────────────────────────
+
+    @server.tool(name="nexus_experience_submit", structured_output=True)
+    async def nexus_experience_submit(
+        skill_name: str,
+        title: str,
+        summary: str,
+        content_md: str,
+        source_employee_id: str | None = None,
+        source_task_id: str | None = None,
+        source_run_id: str | None = None,
+        evidence: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+        experience_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """提交 Skill 可复用经验候选；至少一条证据，且永远不会直接发布。"""
+        payload = build_skill_experience_payload(
+            skill_name=skill_name,
+            title=title,
+            summary=summary,
+            content_md=content_md,
+            source_employee_id=source_employee_id,
+            source_task_id=source_task_id,
+            source_run_id=source_run_id,
+            evidence=evidence,
+            tags=tags,
+            experience_data=experience_data,
+        )
+
+        async def _submit(session):
+            result = await KnowledgeService(session).mcp_submit_experience(payload)
+            return result.model_dump(mode="json")
+
+        return await _run(_submit)
 
     # ── Operations Tools ──────────────────────────────────────
 
