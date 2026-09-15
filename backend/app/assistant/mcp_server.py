@@ -11,11 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import ValidationError
 
 from app.assistant import tool_gateway
 from app.assistant.operations import OperationError
 from app.config.settings import get_settings
 from app.database import SessionLocal
+from app.library_schemas import LibrarySubmitExperienceInput
+from app.library_service import KnowledgeService, LibraryError
 
 
 def build_assistant_mcp_server() -> MCPServer:
@@ -24,11 +27,12 @@ def build_assistant_mcp_server() -> MCPServer:
     server = MCPServer(
         name="NEXUS Assistant Tools",
         title="NEXUS 平台助手工具",
-        version="1.0.0",
-        description="查询和操作 NEXUS 数字员工平台的任务、员工、运行和知识。",
+        version="1.1.0",
+        description="查询和操作 NEXUS 数字员工平台，并提交经证据约束的 Skill 经验候选。",
         instructions=(
-            "查询类工具直接调用；任何变更必须先调用 prepare 工具，"
+            "查询类工具直接调用；业务变更必须先调用 prepare 工具，"
             "等待平台向用户展示确认卡，禁止重复调用 prepare，也不要自己执行确认。"
+            "只有 Skill 明确定义的学习信号出现时，才允许提交经验候选；候选不会直接发布。"
         ),
     )
 
@@ -36,7 +40,7 @@ def build_assistant_mcp_server() -> MCPServer:
         async with SessionLocal() as session:
             try:
                 return await coro_factory(session)
-            except OperationError as exc:
+            except (OperationError, LibraryError) as exc:
                 raise ValueError(str(exc)) from exc
 
     # ── Task Tools ────────────────────────────────────────────
@@ -213,6 +217,55 @@ def build_assistant_mcp_server() -> MCPServer:
     async def nexus_knowledge_get(knowledge_id: str) -> dict[str, Any]:
         """读取一条知识的完整内容；只根据真实返回内容回答。"""
         return await _run(lambda session: tool_gateway.knowledge_get(session, knowledge_id))
+
+    # ── Skill Learning Tool ───────────────────────────────────
+
+    @server.tool(name="nexus_experience_submit", structured_output=True)
+    async def nexus_experience_submit(
+        skill_name: str,
+        title: str,
+        summary: str,
+        content_md: str,
+        source_employee_id: str | None = None,
+        source_task_id: str | None = None,
+        source_run_id: str | None = None,
+        evidence: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+        experience_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """提交 Skill 可复用经验候选；服务端统一标记来源 Skill，且永远不会直接发布。"""
+        normalized_skill = skill_name.strip().lower()
+        if not normalized_skill.startswith("nexus-"):
+            raise ValueError("skill_name 必须是 nexus-* Skill")
+
+        normalized_title = title.strip()
+        prefix = f"[{normalized_skill}]"
+        if not normalized_title.startswith(prefix):
+            normalized_title = f"{prefix} {normalized_title}"
+        normalized_tags = list(
+            dict.fromkeys(["assistant-skill", normalized_skill, *(tags or [])])
+        )
+        learning_data = {"skill": normalized_skill, **(experience_data or {})}
+        try:
+            payload = LibrarySubmitExperienceInput(
+                title=normalized_title,
+                summary=summary,
+                content_md=content_md,
+                source_employee_id=source_employee_id,
+                source_task_id=source_task_id,
+                source_run_id=source_run_id,
+                evidence=evidence or [],
+                tags=normalized_tags,
+                experience_data=learning_data,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
+
+        async def _submit(session):
+            result = await KnowledgeService(session).mcp_submit_experience(payload)
+            return result.model_dump(mode="json")
+
+        return await _run(_submit)
 
     # ── Operations Tools ──────────────────────────────────────
 
