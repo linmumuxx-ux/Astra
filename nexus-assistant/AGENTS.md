@@ -3,7 +3,7 @@
 本目录是 NEXUS 平台助手的专用 OpenCode Workspace，固定随 Astra 仓库发布。
 
 - 平台助手不运行在 Astra 源代码目录，避免获得不必要的代码修改能力。
-- `edit` / `write` / `bash` / `webfetch` 默认拒绝。
+- `edit` / `write` / `bash` / `task` / `webfetch` / `websearch` / `external_directory` 默认拒绝。
 - `nexus-assistant` MCP 提供任务、员工、运行、知识、运营和经验候选提交能力。
 - 会话由 Astra Backend 创建和管理，本目录不保存业务数据。
 - 平台事实、状态判定、权限与确认由 Backend 负责；Skill 只沉淀方法、判断链和常见错误。
@@ -40,7 +40,8 @@ Skill 位于 `.opencode/skills/<name>/SKILL.md`，由 Agent 根据用户意图�
 - 普通成功不沉淀；
 - 模型猜测不沉淀；
 - 一次性业务数据和临时环境异常不沉淀；
-- `nexus_experience_submit` 自动加入来源 Skill 标签，底层复用数字图书馆 `library_submit_experience`，服务端只创建 candidate；
+- 每条候选至少包含一条结构化证据，Tool 校验来源 Skill 并强制写入真实 Skill 标识；
+- 底层复用数字图书馆 `library_submit_experience`，服务端只创建 candidate；
 - 经验提交失败不阻塞当前任务；
 - candidate 未审核发布前不能当作正式规则。
 
