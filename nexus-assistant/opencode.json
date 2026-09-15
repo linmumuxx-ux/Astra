@@ -15,6 +15,14 @@
       "type": "local",
       "command": ["astra-assistant-mcp"],
       "enabled": true
+    },
+    "nexus-library": {
+      "type": "local",
+      "command": ["astra-library-mcp"],
+      "environment": {
+        "ASTRA_MCP_TRANSPORT": "stdio"
+      },
+      "enabled": true
     }
   }
 }
