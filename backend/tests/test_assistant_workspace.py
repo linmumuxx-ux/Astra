@@ -47,13 +47,15 @@ def test_assistant_workspace_has_only_method_skills():
         assert "nexus_experience_submit" in text
 
 
-def test_assistant_workspace_uses_single_platform_mcp():
+def test_assistant_workspace_uses_single_platform_mcp_and_minimum_permissions():
     config = json.loads((ASSISTANT_WORKSPACE / "opencode.json").read_text(encoding="utf-8"))
 
     assert set(config["mcp"]) == {"nexus-assistant"}
     assert config["mcp"]["nexus-assistant"]["command"] == ["astra-assistant-mcp"]
     assert config["permission"]["skill"]["*"] == "deny"
     assert config["permission"]["skill"]["nexus-*"] == "allow"
+    for permission in ("edit", "write", "bash", "task", "webfetch", "websearch", "external_directory"):
+        assert config["permission"][permission] == "deny"
 
     agent = (ASSISTANT_WORKSPACE / ".opencode/agents/platform-assistant.md").read_text(encoding="utf-8")
     assert "nexus_experience_submit" in agent
