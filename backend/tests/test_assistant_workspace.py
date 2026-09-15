@@ -61,3 +61,15 @@ def test_assistant_workspace_uses_single_platform_mcp():
 
     mcp_server = (PROJECT_ROOT / "backend/app/assistant/mcp_server.py").read_text(encoding="utf-8")
     assert '@server.tool(name="nexus_experience_submit"' in mcp_server
+
+
+def test_assistant_skill_routing_evals_cover_direct_skill_and_learning_paths():
+    evals = json.loads(
+        (ASSISTANT_WORKSPACE / "evals/skill-routing.json").read_text(encoding="utf-8")
+    )
+
+    assert len(evals) >= 8
+    assert {item["expected_skill"] for item in evals if item["expected_skill"]} == EXPECTED_SKILLS
+    assert any(item["expected_skill"] is None for item in evals)
+    assert any(item["learning_signal"] for item in evals)
+    assert any("nexus_experience_submit" in item["expected_tools"] for item in evals)
