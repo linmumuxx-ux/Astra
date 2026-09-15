@@ -1,0 +1,18 @@
+{
+  "round": 2,
+  "evaluation_type": "synthetic_transfer_smoke",
+  "base_round": 1,
+  "added_testcases": [
+    "test_back_unlock_timer_advances_with_tick",
+    "test_close_before_timeout_does_not_lock_or_refresh",
+    "test_admin_reset_back_clears_lockout_without_other_side_effects"
+  ],
+  "new_bug_ids": [14, 18, 19],
+  "testcase_count": 23,
+  "local_correct_environment": "23/23 PASS",
+  "total_bugs": 20,
+  "killed_bugs": 20,
+  "kill_rate": 100.0,
+  "missed_bug_ids": [],
+  "lesson": "已有经验方向能够迁移，但只做单点抽样仍会漏掉同类错误；对称、幂等、副作用需要按关键操作和状态系统展开。"
+}

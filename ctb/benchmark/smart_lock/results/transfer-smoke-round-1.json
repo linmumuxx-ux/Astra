@@ -1,0 +1,12 @@
+{
+  "round": 1,
+  "evaluation_type": "synthetic_transfer_smoke",
+  "candidate": "candidate/with_experience.py",
+  "testcase_count": 20,
+  "local_correct_environment": "20/20 PASS",
+  "total_bugs": 20,
+  "killed_bugs": 17,
+  "kill_rate": 85.0,
+  "missed_bug_ids": [14, 18, 19],
+  "note": "用于验证 Benchmark 与经验迁移方向，不作为独立模型盲测成绩。候选用例按公开规格和 Traffic Light 已沉淀经验设计。"
+}
