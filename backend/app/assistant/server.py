@@ -54,21 +54,10 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
 
         return Path(sys.executable).parent
 
-    def _mcp_entrypoint(self, stem: str) -> Path:
-        name = f"{stem}.exe" if os.name == "nt" else stem
-        return self.executable_directory / name
-
     @property
     def mcp_entrypoint(self) -> Path:
-        return self._mcp_entrypoint("astra-assistant-mcp")
-
-    @property
-    def library_mcp_entrypoint(self) -> Path:
-        return self._mcp_entrypoint("astra-library-mcp")
-
-    @property
-    def required_mcp_entrypoints(self) -> tuple[Path, ...]:
-        return (self.mcp_entrypoint, self.library_mcp_entrypoint)
+        name = "astra-assistant-mcp.exe" if os.name == "nt" else "astra-assistant-mcp"
+        return self.executable_directory / name
 
     def command(self) -> list[str]:
         return local_command(
@@ -86,7 +75,7 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
         environment = os.environ.copy()
         # ``sys.executable`` is commonly a symlink inside Unix virtualenvs.
         # Resolving it points at the base Python installation, where the MCP
-        # console scripts do not exist. Keep the virtualenv's own bin/Scripts
+        # console script does not exist. Keep the virtualenv's own bin/Scripts
         # directory at the front of PATH on every platform.
         executable_dir = str(self.executable_directory)
         current_path = environment.get("PATH", "")
@@ -126,10 +115,8 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
 
-    missing_entrypoints = [path for path in manager.required_mcp_entrypoints if not path.is_file()]
-    if missing_entrypoints:
-        for path in missing_entrypoints:
-            print(f"助手 MCP 入口不存在：{path}", file=sys.stderr)
+    if not manager.mcp_entrypoint.is_file():
+        print(f"助手 MCP 入口不存在：{manager.mcp_entrypoint}", file=sys.stderr)
         print("请使用当前 Python 执行 python -m pip install -e backend", file=sys.stderr)
         return 1
 
