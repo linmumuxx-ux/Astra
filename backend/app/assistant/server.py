@@ -1,8 +1,7 @@
 """平台助手专用 OpenCode Server 生命周期。
 
-该进程始终在 ``nexus-assistant`` 工作区内启动，并把当前 Python
-虚拟环境的可执行目录注入 PATH，使 OpenCode 在 macOS、Linux 和
-Windows 上都能找到 ``astra-assistant-mcp`` 入口。
+平台助手始终使用仓库内 ``nexus-assistant`` 作为工作区。Agent、Skill、MCP
+配置随 Astra 代码版本管理，不允许通过生产环境变量切换到其他目录。
 """
 
 from __future__ import annotations
@@ -14,9 +13,16 @@ from pathlib import Path
 
 import httpx
 
-from app.config.settings import Settings, get_settings
+from app.config.settings import PROJECT_ROOT, Settings, get_settings
 from app.executors.process import local_command
 from app.runtime.opencode_server import OpenCodeServerManager
+
+ASSISTANT_WORKSPACE = PROJECT_ROOT / "nexus-assistant"
+ASSISTANT_WORKSPACE_REQUIRED_FILES = (
+    Path("opencode.json"),
+    Path("AGENTS.md"),
+    Path(".opencode/agents/platform-assistant.md"),
+)
 
 
 class AssistantOpenCodeServerManager(OpenCodeServerManager):
@@ -31,7 +37,16 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
 
     @property
     def workspace(self) -> Path:
-        return self.settings.resolved_assistant_workspace
+        return ASSISTANT_WORKSPACE
+
+    def workspace_errors(self) -> list[str]:
+        if not self.workspace.is_dir():
+            return [f"助手工作区不存在：{self.workspace}"]
+        return [
+            f"助手工作区缺少：{relative.as_posix()}"
+            for relative in ASSISTANT_WORKSPACE_REQUIRED_FILES
+            if not (self.workspace / relative).is_file()
+        ]
 
     @property
     def executable_directory(self) -> Path:
@@ -93,8 +108,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 0
-    if not manager.workspace.is_dir():
-        print(f"助手工作区不存在：{manager.workspace}", file=sys.stderr)
+
+    workspace_errors = manager.workspace_errors()
+    if workspace_errors:
+        for error in workspace_errors:
+            print(error, file=sys.stderr)
         return 1
 
     command = manager.command()
