@@ -4,7 +4,10 @@
     "edit": "deny",
     "write": "deny",
     "bash": "deny",
+    "task": "deny",
     "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "deny",
     "skill": {
       "*": "deny",
       "nexus-*": "allow"
