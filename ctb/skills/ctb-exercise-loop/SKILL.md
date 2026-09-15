@@ -13,6 +13,18 @@ description: CTB 练习赛迭代训练器；准备题目、调用测试设计、
 
 `题目 URL -> 下载/准备本地题目 -> test-design -> 本地正确环境验证 -> 提交 -> testcase/bug 反馈 -> GAP 分析 -> 下一轮`
 
+## 设计隔离
+
+调用 `ctb-test-design` 前必须先生成**参赛者视图工作区**，只包含题目文档、公开接口/AW、testcase 模板及比赛允许资源；不要把 benchmark 的 `implementation/`、`hidden/`、历史答案或评测结果放进该工作区。
+
+本仓库模拟题可使用：
+
+```bash
+python ctb/tools/prepare_public_workspace.py <question_dir> <workspace_dir>
+```
+
+Design Skill 只接收 `<workspace_dir>`。正确环境验证和隐藏评测由 Loop 在隔离区之外执行。
+
 ## 状态
 
 每道题维护 `.ctb/session.json`，只保存必要状态：
@@ -31,9 +43,9 @@ description: CTB 练习赛迭代训练器；准备题目、调用测试设计、
 
 ## 每轮处理
 
-1. 准备参赛者可见题目文件。
-2. 将本地题目路径、上一轮压缩状态和通用经验交给 `ctb-test-design`。
-3. 确认生成 testcase 在正确环境全部 PASS。
+1. 准备参赛者可见题目文件，并生成隔离工作区。
+2. 将工作区路径、上一轮压缩状态和通用经验交给 `ctb-test-design`。
+3. 将生成 testcase 回写到执行区，并确认在正确环境全部 PASS。
 4. 按比赛方式提交完整 testcase 文件。
 5. 解析 testcase -> bug_id 映射。
 6. 标记：
