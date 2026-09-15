@@ -4,7 +4,10 @@
 
 - `skills/ctb-test-design`：核心测试设计与 testcase 生成。
 - `skills/ctb-test-design/references/design-playbook.md`：按题目结构加载的测试设计方法，不在主 Skill 中平铺全部细节。
+- `skills/ctb-test-design/references/runtime-policy.md`：FAST/BALANCED/THOROUGH 自适应执行策略。
 - `skills/ctb-exercise-loop`：基于 testcase→bug_id 反馈的训练闭环。
+- `tools/skill_benchmark.py`：重复运行、token/时延/稳定性采集与 baseline/candidate 晋级门禁。
+- `EFFICIENCY_OPTIMIZATION.md`：持续优化方法和命令。
 - `benchmark/traffic_light`：第一道状态/优先级模拟题。
 - `benchmark/smart_lock`：第二道安全锁定/双实例/计时模拟题。
 - `experience/bug-patterns.md`：跨题可迁移经验。
@@ -32,41 +35,44 @@ Design Skill 只能读取公开区；`implementation/`、`hidden/`、`candidate/
 
 Smart Lock 的 `candidate/` 和 `results/` 属于 Benchmark 构建/训练数据，不是新版 Skill 的独立盲测成绩。
 
-## 设计状态
-
-`ctb-test-design` 在公开 workspace 中维护：
-
-- `.ctb/design.json`：规格点、缺陷假设、测试点、优先级和 GAP；
-- `ctb_design_summary.md`：给人看的简短摘要。
-
-`ctb-exercise-loop` 维护：
-
-- `.ctb/session.json`：轮次、testcase→bug_id、新增 Bug 和下一轮关注点。
-
-设计状态与评测状态分离，避免 hidden 反馈进入公开规格模型。
-
 ## Benchmark 评价指标
 
-不要只看最终 kill rate。每个 Skill/模型版本至少记录：
+### 第一层：正确性硬门禁
 
 1. 正确环境 PASS 率；
-2. 首轮 kill rate；
-3. testcase 数量；
-4. `kill / testcase` 区分效率；
-5. 第二轮新增 testcase 数与新增 bug 数；
-6. `新增 bug / 新增 testcase` 边际收益；
-7. 连续无新增时仍存在的规格 GAP。
+2. 首轮 hidden kill rate 的 `min / p50`；
+3. 不允许 candidate 用更低 token/时延抵消准确率下降。
 
-比赛能力更看重**首轮高命中 + testcase 精简 + 反馈后快速补齐**，而不是无限堆 testcase 后达到 100%。
+### 第二层：稳定性门禁
+
+4. generation success rate；
+5. kill rate stdev；
+6. wall time 的 p95 / CV；
+7. 超时、工具失败和异常退出。
+
+### 第三层：准确率一致后的效率
+
+8. wall time p50 / p95；
+9. total token p50 / p95，并保留 input/output/cache 拆分；
+10. LLM call / tool call；
+11. testcase 数、`kill / testcase`；
+12. 第二轮 `新增 bug / 新增 testcase` 边际收益。
+
+正式 baseline/candidate 比较使用 `benchmark_efficiency_policy.json`。默认至少重复 5 次，p95 权重大于 p50，避免只优化平均值。
+
+静态 Skill 体积只用于防止主 Skill/Reference 无限制膨胀，不等同于真实模型 token；真实 token 由 OpenCode JSON 事件采集。
+
+比赛能力更看重**首轮高命中 + 稳定 + 低成本 + 反馈后快速补齐**，而不是无限堆 testcase 后达到 100%。
+
+## Skill 自适应执行
+
+每次执行先 Scout，再选择 `FAST / BALANCED / THOROUGH`：简单题 FAST，一般状态/边界/关系题 BALANCED，复杂冲突或高风险 GAP 未解决时 THOROUGH。调用方 profile 只是成本目标，发现高风险证据必须自动升级。
 
 ## 训练集与 Holdout
 
-一旦某题的 hidden/mutant 被人工或 Agent 查看，并用于修改 Skill，该题即视为训练集。
+一旦某题的 hidden/mutant 被人工或 Agent 查看，并用于修改 Skill，该题即视为训练集。train 用于提炼，regression 用于防退化，holdout 只用于 candidate 冻结后的独立评测。
 
-- 训练集：可用于定位方法缺口、提炼经验、回归旧能力；
-- holdout：hidden 从未参与 Skill 设计，只用于新版首次冻结后的独立评测。
-
-新版 Skill 不允许继续用训练集成绩声明“盲测提升”。至少需要一道结构不同的新 holdout 题验证迁移能力。
+用于 Skill A/B 的题目应提供 `starter_test_submission.py`。Harness 每轮先生成公开 workspace，再用该冻结模板覆盖可能已经演进过的 `test_submission.py`，确保 baseline/candidate 从完全相同的起点开始；仓库内已解 testcase 可继续用于 regression，但不会泄漏到本轮 Agent 起点。
 
 ## 公开 workspace
 
@@ -75,23 +81,21 @@ python ctb/tools/prepare_public_workspace.py ctb/benchmark/traffic_light <worksp
 python ctb/tools/prepare_public_workspace.py ctb/benchmark/smart_lock <workspace_dir>
 ```
 
-只把生成的 `<workspace_dir>` 交给 `ctb-test-design`。
-
-## 本地评测
-
-Traffic Light：
+## Skill 成本与稳定性评测
 
 ```bash
-cd ctb/benchmark/traffic_light/hidden
-python run_benchmark.py
-python replay_rounds.py
+python ctb/tools/skill_benchmark.py run \
+  --question ctb/benchmark/<holdout> \
+  --skill ctb/skills/ctb-test-design \
+  --model <provider/model> \
+  --runs 5 \
+  --output .ctb-eval/candidate
+
+python ctb/tools/skill_benchmark.py compare \
+  --baseline .ctb-eval/baseline/summary.json \
+  --candidate .ctb-eval/candidate/summary.json \
+  --policy ctb/benchmark_efficiency_policy.json \
+  --gate
 ```
 
-Smart Lock：
-
-```bash
-python ctb/benchmark/smart_lock/hidden/validate_mutants.py
-python ctb/benchmark/smart_lock/hidden/evaluate.py <frozen_testcase.py>
-```
-
-正式评测必须先冻结 testcase，再执行 hidden evaluator。
+详细规则见 `EFFICIENCY_OPTIMIZATION.md`。

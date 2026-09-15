@@ -15,6 +15,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Validate benchmark harness
+        run: python -m unittest discover -s ../../tests -p 'test_*.py' -v
+
+      - name: Measure skill static footprint
+        run: |
+          python ../../tools/skill_benchmark.py footprint \
+            --skill ../../skills/ctb-test-design \
+            --output skill_footprint.json
+
       - name: Validate public workspace isolation
         run: |
           python ../../tools/prepare_public_workspace.py . "$RUNNER_TEMP/ctb-traffic-public"
@@ -49,13 +58,11 @@ jobs:
           from pathlib import Path
 
           data = json.loads(Path('benchmark_result.json').read_text(encoding='utf-8'))
-
           spec = importlib.util.spec_from_file_location('ctb_submission', 'test_submission.py')
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
           case_cls = getattr(module, 'TestTrafficController')
           testcase_count = unittest.defaultTestLoader.loadTestsFromTestCase(case_cls).countTestCases()
-
           killed = data['killed_count']
           summary = {
               'total_bugs': data['total'],
@@ -90,3 +97,4 @@ jobs:
           path: |
             ctb/benchmark/traffic_light/benchmark_result.json
             ctb/benchmark/traffic_light/benchmark_summary.json
+            ctb/benchmark/traffic_light/skill_footprint.json

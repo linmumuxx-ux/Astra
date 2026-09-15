@@ -13,6 +13,8 @@ description: CTB 练习赛迭代训练器；隔离公开题目、调用 ctb-test
 
 `公开题目 -> 隔离 workspace -> test-design -> 正确环境验证 -> 提交 -> testcase/bug 反馈 -> GAP 更新 -> 下一轮`
 
+优化目标固定为：**先守住准确率，再降低波动，再优化时长和 token**。训练闭环不得用“成本更低”抵消 hidden kill rate 下降。
+
 ## 硬隔离
 
 调用 `ctb-test-design` 前必须生成参赛者视图，只包含题目文档、公开接口/AW、testcase 模板和比赛允许资源。
@@ -43,7 +45,7 @@ python ctb/tools/prepare_public_workspace.py <question_dir> <workspace_dir>
 }
 ```
 
-测试设计本身由公开 workspace 中的 `.ctb/design.json` 维护。Loop 不再复制一份长测试分析，避免状态漂移。
+测试设计本身由公开 workspace 中的 `.ctb/design.json` 维护。Loop 不再复制一份长测试分析，避免状态漂移和重复 token。
 
 ## 每轮处理
 
@@ -91,6 +93,21 @@ python ctb/tools/prepare_public_workspace.py <question_dir> <workspace_dir>
 
 不要为了追求单轮 testcase 数量增加低区分度用例。
 
+## Skill 版本评测与晋级
+
+单轮命中不能直接决定 Skill 好坏。每个候选版本必须进入 `ctb/tools/skill_benchmark.py` 的重复评测：
+
+1. baseline 与 candidate 使用相同题目、模型、运行条件；
+2. holdout 默认各重复至少 5 次；
+3. 先比较正确环境 PASS、hidden kill rate 的最低值和 p50；
+4. 再比较 generation success rate 与 accuracy stdev；
+5. 前两层无退化后，才比较 wall time p50/p95、total token p50/p95；
+6. `PROMOTE` 才升级 baseline，`HOLD` 保留实验，`REJECT` 回滚。
+
+默认阈值见 `ctb/benchmark_efficiency_policy.json`。官方比赛评分变化时只调 policy，不把分数逻辑散落进 Skill。
+
+同一 Skill 可用 `FAST / BALANCED / THOROUGH` 做压测，但正式评测优先 `auto`，验证自动升级是否能在简单题节省成本、复杂题守住准确率。
+
 ## 经验提炼
 
 经验分两层：
@@ -115,7 +132,7 @@ python ctb/tools/prepare_public_workspace.py <question_dir> <workspace_dir>
 1. 在至少两道结构不同的题目中都产生过独立 NEW 命中；
 2. 属于成熟通用测试原理，并在独立盲测中证明能提高首轮效果。
 
-这样避免把 Benchmark 答案训练进 Skill。
+即使满足准确率条件，也优先把低频规则放在按需 Reference；只有高频、高收益规则才进入主 `SKILL.md`。这同时控制首轮上下文 token 和规则噪声。
 
 ## Benchmark 污染规则
 

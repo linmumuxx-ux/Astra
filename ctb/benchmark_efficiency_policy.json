@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "recommended_trials": 5,
+  "accuracy": {
+    "min_correct_env_pass_rate": 1.0,
+    "max_kill_rate_regression_pp": 0.0
+  },
+  "stability": {
+    "max_success_rate_regression": 0.0,
+    "max_accuracy_stdev_increase_pp": 0.5
+  },
+  "efficiency": {
+    "promotion_min_improvement_pct": 5.0,
+    "max_single_metric_regression_pct": 10.0,
+    "weights": {
+      "duration_seconds.p50": 0.2,
+      "duration_seconds.p95": 0.3,
+      "total_tokens.p50": 0.2,
+      "total_tokens.p95": 0.3
+    }
+  }
+}

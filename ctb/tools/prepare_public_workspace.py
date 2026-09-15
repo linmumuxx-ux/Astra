@@ -68,6 +68,13 @@ def main():
         shutil.copy2(str(src), str(dst))
         copied.append(rel)
 
+    # Benchmark repositories may keep an evolved/solved submission for
+    # regression. Skill runs must start from the same frozen public starter.
+    starter = question_dir / 'starter_test_submission.py'
+    if starter.is_file():
+        shutil.copy2(str(starter), str(workspace_dir / 'test_submission.py'))
+        print('starter applied:', starter.name)
+
     print('public workspace:', workspace_dir)
     for rel in copied:
         print('-', rel)
