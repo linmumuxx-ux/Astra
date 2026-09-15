@@ -1,0 +1,65 @@
+[
+  {
+    "id": "task-detail-direct",
+    "prompt": "帮我看下任务 TASK-123 现在什么状态",
+    "expected_skill": null,
+    "expected_tools": ["nexus_task_get"],
+    "learning_signal": false
+  },
+  {
+    "id": "employee-direct",
+    "prompt": "现在谁比较适合处理 ISSUE 任务？",
+    "expected_skill": null,
+    "expected_tools": ["nexus_employee_recommend"],
+    "learning_signal": false
+  },
+  {
+    "id": "operations-direct",
+    "prompt": "平台现在有多少待人工和执行异常任务？",
+    "expected_skill": null,
+    "expected_tools": ["nexus_operation_pending_actions"],
+    "learning_signal": false
+  },
+  {
+    "id": "task-create",
+    "prompt": "创建一个问题任务，分析参数升级失败原因，不指定员工",
+    "expected_skill": "nexus-task-ops",
+    "expected_tools": ["nexus_task_prepare_create"],
+    "learning_signal": false
+  },
+  {
+    "id": "task-retry",
+    "prompt": "把刚才那个失败任务重试一下",
+    "expected_skill": "nexus-task-ops",
+    "expected_tools": ["nexus_task_get", "nexus_task_prepare_retry"],
+    "learning_signal": false
+  },
+  {
+    "id": "run-triage",
+    "prompt": "TASK-123 为什么失败？是环境问题还是执行问题？",
+    "expected_skill": "nexus-run-triage",
+    "expected_tools": ["nexus_run_failure_summary", "nexus_task_get"],
+    "learning_signal": false
+  },
+  {
+    "id": "knowledge-qa",
+    "prompt": "数字图书馆里对任务经验沉淀有什么要求？",
+    "expected_skill": "nexus-knowledge-qa",
+    "expected_tools": ["nexus_knowledge_search", "nexus_knowledge_get"],
+    "learning_signal": false
+  },
+  {
+    "id": "task-user-correction-learning",
+    "prompt": "刚才这个其实是 ISSUE，不是 REQUIREMENT，以后这种线上故障修复都按问题任务处理",
+    "expected_skill": "nexus-task-ops",
+    "expected_tools": ["nexus_experience_submit"],
+    "learning_signal": true
+  },
+  {
+    "id": "triage-correction-learning",
+    "prompt": "刚才判断错了，这类 failure code 需要先看执行器状态，再判断是不是脚本问题；这次日志已经验证了",
+    "expected_skill": "nexus-run-triage",
+    "expected_tools": ["nexus_experience_submit"],
+    "learning_signal": true
+  }
+]
