@@ -20,6 +20,16 @@ Design Skill 只能读取题目公开区；`implementation/` 仅提供本地正�
 - `benchmark/traffic_light/results/round-1.json`
 - `benchmark/traffic_light/results/round-2.json`
 
+## 设计隔离
+
+模拟题用 `public_files.json` 声明参赛者可见文件。训练时先执行：
+
+```bash
+python ctb/tools/prepare_public_workspace.py ctb/benchmark/traffic_light <workspace_dir>
+```
+
+只把 `<workspace_dir>` 交给 `ctb-test-design`，避免 Design 接触正确实现、hidden mutant 和历史评测结果。
+
 ## 运行
 
 正确环境：
@@ -36,6 +46,15 @@ cd ctb/benchmark/traffic_light/hidden
 python run_benchmark.py
 ```
 
+复现两轮成绩：
+
+```bash
+cd ctb/benchmark/traffic_light/hidden
+python replay_rounds.py
+# round-1: 17/20 killed, missed=[8, 17, 18]
+# round-2: 20/20 killed, missed=[]
+```
+
 `run_benchmark.py` 会依次完成正确环境验证、20 个变异点校验、隐藏评估，并在题目目录生成 `benchmark_result.json` 与 `benchmark_summary.json`。
 
-GitHub Actions 也提供 `.github/workflows/ctb-benchmark.yml`，用于环境允许时自动执行同一评测链。
+`.github/workflows/ctb-benchmark.yml` 保留为手动触发；当前以本地评测器作为主执行链，避免 GitHub Hosted Runner 不可用时持续产生失败记录。
