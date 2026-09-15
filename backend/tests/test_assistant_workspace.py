@@ -54,3 +54,7 @@ def test_assistant_workspace_uses_single_platform_mcp():
     assert config["mcp"]["nexus-assistant"]["command"] == ["astra-assistant-mcp"]
     assert config["permission"]["skill"]["*"] == "deny"
     assert config["permission"]["skill"]["nexus-*"] == "allow"
+
+    agent = (ASSISTANT_WORKSPACE / ".opencode/agents/platform-assistant.md").read_text(encoding="utf-8")
+    assert "nexus_experience_submit" in agent
+    assert "library_submit_experience" not in agent
