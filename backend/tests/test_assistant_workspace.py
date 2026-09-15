@@ -35,10 +35,7 @@ def test_assistant_workspace_contains_runtime_contract():
 
 def test_assistant_workspace_has_only_method_skills():
     skills_root = ASSISTANT_WORKSPACE / ".opencode/skills"
-    skills = {
-        path.parent.name
-        for path in skills_root.glob("*/SKILL.md")
-    }
+    skills = {path.parent.name for path in skills_root.glob("*/SKILL.md")}
 
     assert skills == EXPECTED_SKILLS
     for skill in EXPECTED_SKILLS:
@@ -54,6 +51,8 @@ def test_assistant_workspace_configures_platform_and_library_mcp():
 
     assert config["mcp"]["nexus-assistant"]["command"] == ["astra-assistant-mcp"]
     assert config["mcp"]["nexus-library"]["command"] == ["astra-library-mcp"]
-    assert config["mcp"]["nexus-library"]["environment"]["ASTRA_MCP_TRANSPORT"] == "stdio"
+    library_environment = config["mcp"]["nexus-library"]["environment"]
+    assert library_environment["ASTRA_MCP_TRANSPORT"] == "stdio"
+    assert library_environment["ASTRA_MCP_API_KEY"] == ""
     assert config["permission"]["skill"]["*"] == "deny"
     assert config["permission"]["skill"]["nexus-*"] == "allow"
