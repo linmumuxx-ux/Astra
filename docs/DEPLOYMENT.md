@@ -101,7 +101,7 @@ ASTRA_OPENCODE_SERVER_USERNAME=opencode
 ASTRA_ASSISTANT_ENABLED=true
 ASTRA_ASSISTANT_OPENCODE_HOSTNAME=127.0.0.1
 ASTRA_ASSISTANT_OPENCODE_PORT=4097
-ASTRA_ASSISTANT_WORKSPACE_DIR=nexus-assistant
+# 平台助手 Workspace 固定为仓库内 nexus-assistant/，无需配置路径。
 ```
 
 机器相关路径和秘密配置只放 `.env`，不要散落修改源码，也不要提交真实密码、令牌或 SSH 密码。

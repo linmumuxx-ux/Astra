@@ -319,13 +319,14 @@ async def check_assistant_runtime(settings) -> CheckResult:
     from app.assistant.server import AssistantOpenCodeServerManager
 
     manager = AssistantOpenCodeServerManager(settings)
-    if not manager.workspace.is_dir() or not (manager.workspace / "opencode.json").is_file():
+    workspace_errors = manager.workspace_errors()
+    if workspace_errors:
         return result(
             "平台助手 Runtime",
             False,
             manager.workspace,
-            "助手工作区或 opencode.json 不存在",
-            "确认 ASTRA_ASSISTANT_WORKSPACE_DIR 指向完整的 nexus-assistant 目录",
+            "；".join(workspace_errors),
+            "恢复仓库内完整的 nexus-assistant 工作区并重新部署",
         )
     entrypoint = manager.mcp_entrypoint
     if not entrypoint.is_file():
