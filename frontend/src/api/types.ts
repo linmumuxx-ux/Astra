@@ -103,23 +103,6 @@ export interface Employee extends RuntimeProjection {
 }
 
 export interface AcceptanceCriterion { id: string; content: string }
-export interface AcceptanceResult {
-  criterion_id: string
-  status: AcceptanceStatus
-  description: string
-  evidence: string[]
-}
-
-export interface WorkResult {
-  summary: string
-  changes: string[]
-  files: string[]
-  commits: string[]
-  logs: string[]
-  attachments: string[]
-  other: Record<string, unknown>
-  acceptance_results: AcceptanceResult[]
-}
 
 export interface HumanIntervention {
   blocking_reason: string
@@ -150,7 +133,6 @@ export interface Task extends RuntimeProjection {
   pending_message_id: string | null
   runtime_error: string | null
   current_progress: string
-  result: WorkResult | null
   failure_reason: string | null
   human_required_reason: string | null
   human_intervention: HumanIntervention | null

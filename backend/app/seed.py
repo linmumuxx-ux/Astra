@@ -196,29 +196,6 @@ async def seed_demo_data(session: AsyncSession) -> None:
             status=TaskStatus.SUCCEEDED,
             employee_id="astra-03",
             current_progress="任务已完成",
-            result={
-                "summary": "已补充变更接口、仓库与提交信息，并确认现有防线运行正常。",
-                "changes": ["扩展防线告警上下文"],
-                "files": ["src/alerts/change_context.py"],
-                "commits": ["8f21c1a"],
-                "logs": [],
-                "attachments": [],
-                "other": {},
-                "acceptance_results": [
-                    {
-                        "criterion_id": "AC-01",
-                        "status": "SATISFIED",
-                        "description": "告警已展示接口与来源信息",
-                        "evidence": ["commit 8f21c1a"],
-                    },
-                    {
-                        "criterion_id": "AC-02",
-                        "status": "SATISFIED",
-                        "description": "相关检查均通过",
-                        "evidence": ["132 项检查通过"],
-                    },
-                ],
-            },
             execution_environment_snapshot=snapshots["astra-03"],
             created_at=now - timedelta(hours=2, minutes=10),
             updated_at=now - timedelta(hours=1, minutes=24),
@@ -261,23 +238,6 @@ async def seed_demo_data(session: AsyncSession) -> None:
             status=TaskStatus.WAITING,
             employee_id="astra-03",
             current_progress="结果已提交，等待确认",
-            result={
-                "summary": "已补充异常来源、影响范围与处置建议。",
-                "changes": ["扩展异常通知模板"],
-                "files": [],
-                "commits": [],
-                "logs": [],
-                "attachments": [],
-                "other": {},
-                "acceptance_results": [
-                    {
-                        "criterion_id": "AC-01",
-                        "status": "SATISFIED",
-                        "description": "通知已包含定位与处置信息",
-                        "evidence": [],
-                    }
-                ],
-            },
             created_at=now - timedelta(minutes=20),
             updated_at=now - timedelta(minutes=12),
             submitted_at=now - timedelta(minutes=12),

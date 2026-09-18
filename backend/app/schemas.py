@@ -251,7 +251,6 @@ class TaskRead(RuntimeRead):
     last_activity_at: datetime | None
     submitted_at: datetime | None
     confirmed_at: datetime | None
-    result: dict[str, Any] | None
     failure_reason: str | None
     human_required_reason: str | None
     human_intervention: dict[str, Any] | None
