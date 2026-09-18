@@ -19,6 +19,7 @@ from app.models import (
     RuntimeSession,
     SessionMessage,
     Task,
+    TaskSummary,
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
@@ -467,6 +468,7 @@ async def test_timeout_aborts_native_busy_but_waiting_does_not_timeout(runtime):
 
 async def _complete_current_turn(r):
     r.native.state = "idle"
+    r.native.sessions["ses_current"][-1]["parts"] = [{"type": "text", "text": "DONE"}]
     r.native.sessions["ses_current"][-1]["info"].update({"time": {"completed": 1}, "finish": "stop"})
     await r.service.refresh("T1")
 
@@ -512,6 +514,57 @@ async def test_restart_preserves_succeeded_old_status(runtime):
     assert old.superseded_by == new_id
     new = await r.session.get(RuntimeSession, new_id)
     assert new.status == "RUNNING" and new.runtime_context_hash is not None
+
+
+async def test_task_summary_is_one_row_with_generation_and_stale(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+
+    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
+    assert summary is not None
+    assert summary.generation == 1 and summary.stale is False
+    assert summary.primary_session_id == "ses_current"
+    assert summary.summary == "DONE"
+    assert summary.source_status == "SUCCEEDED"
+    assert [item["status"] for item in summary.acceptance_results] == []
+
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "again"}]})
+    await r.session.refresh(summary)
+    assert summary.stale is True
+
+    await _complete_current_turn(r)
+    await r.session.refresh(summary)
+    assert summary.generation == 2 and summary.stale is False
+
+    count = await r.session.scalar(select(func.count()).select_from(TaskSummary))
+    assert count == 1
+
+
+async def test_task_summary_survives_restart_with_new_primary_session(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    await r.service.start("T1", restart=True)
+    new_id = r.task.current_session_id
+    r.native.sessions[new_id] = [
+        {"info": {"id": "u2", "role": "user"}, "parts": []},
+        {
+            "info": {"id": "a2", "role": "assistant", "time": {"completed": 2}, "finish": "stop"},
+            "parts": [{"type": "text", "text": "RESTART_DONE"}],
+        },
+    ]
+    r.task.last_message_id = "u2"
+    await r.session.commit()
+    r.native.state = "idle"
+    await r.service.refresh("T1")
+
+    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
+    await r.session.refresh(summary)
+    assert summary.primary_session_id == new_id
+    assert summary.summary == "RESTART_DONE"
+    assert set(summary.referenced_session_ids) == {"ses_current", new_id}
+    assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 1
 
 
 async def test_restart_refuses_when_old_session_does_not_stop(runtime, monkeypatch):

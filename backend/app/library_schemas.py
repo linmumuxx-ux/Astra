@@ -64,12 +64,21 @@ class ExperienceEvidenceWrite(BaseModel):
     result: str | None = Field(default=None, max_length=64)
     task_id: str | None = None
     run_id: str | None = None
+    message_id: str | None = Field(default=None, max_length=160)
+    part_id: str | None = Field(default=None, max_length=160)
+    file_path: str | None = None
+    diff_hash: str | None = Field(default=None, max_length=64)
 
 
 class ExperienceEvidenceRead(LibraryORMModel):
     id: int
     task_id: str | None
     run_id: str | None
+    source_session_id: str | None
+    message_id: str | None
+    part_id: str | None
+    file_path: str | None
+    diff_hash: str | None
     evidence_type: str
     content: str | None
     uri: str | None
@@ -194,6 +203,10 @@ class KnowledgeDetail(KnowledgeListItem):
     source_employee_name: str | None = None
     source_task_title: str | None = None
     source_run_id: str | None
+    source_session_id: str | None = None
+    experience_type: str | None = None
+    verified_at: datetime | None = None
+    verification_session_status: str | None = None
     experience_data: dict[str, Any]
     review_note: str | None
     created_by: str
@@ -296,6 +309,8 @@ class LibrarySubmitExperienceInput(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     summary: str = Field(default="", max_length=4000)
     content_md: str = Field(min_length=1)
+    experience_type: str | None = Field(default=None, max_length=64)
+    scope: dict[str, Any] = Field(default_factory=dict)
     source_employee_id: str | None = None
     source_task_id: str | None = None
     source_run_id: str | None = None

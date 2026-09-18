@@ -38,6 +38,21 @@ class SessionTerminalReason(StrEnum):
     TRANSPORT_UNKNOWN = "transport_unknown"
 
 
+class ExperienceOrigin(StrEnum):
+    RUNTIME = "runtime"
+    MANUAL = "manual"
+    AUTO = "auto"
+
+
+class ExperienceType(StrEnum):
+    ROOT_CAUSE = "root_cause"
+    FIX = "fix"
+    ENVIRONMENT = "environment"
+    TEST_RULE = "test_rule"
+    TOOL_USAGE = "tool_usage"
+    OTHER = "other"
+
+
 class RunStatus(StrEnum):
     QUEUED = "QUEUED"
     STARTING = "STARTING"

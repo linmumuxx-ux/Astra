@@ -34,6 +34,7 @@ from app.models import (
     RuntimeSession,
     Task,
     TaskCategory,
+    TaskSummary,
 )
 from app.runtime.environment import (
     CheckItem,
@@ -515,12 +516,12 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
     await session.execute(
         update(KnowledgeItem)
         .where(KnowledgeItem.source_task_id == task_id)
-        .values(source_task_id=None, source_run_id=None)
+        .values(source_task_id=None, source_run_id=None, source_session_id=None)
     )
     await session.execute(
         update(KnowledgeUsage)
         .where(KnowledgeUsage.task_id == task_id)
-        .values(task_id=None, run_id=None)
+        .values(task_id=None, run_id=None, session_id=None)
     )
     await session.execute(
         update(KnowledgeFeedback).where(KnowledgeFeedback.task_id == task_id).values(task_id=None)
@@ -528,9 +529,10 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
     await session.execute(
         update(ExperienceEvidence)
         .where(ExperienceEvidence.task_id == task_id)
-        .values(task_id=None, run_id=None)
+        .values(task_id=None, run_id=None, source_session_id=None)
     )
     await session.execute(update(Run).where(Run.task_id == task_id).values(previous_run_id=None))
+    await session.execute(delete(TaskSummary).where(TaskSummary.task_id == task_id))
     await session.execute(delete(RuntimeSession).where(RuntimeSession.task_id == task_id))
     await session.delete(task)
     await session.commit()

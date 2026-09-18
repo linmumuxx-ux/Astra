@@ -170,6 +170,9 @@ class Task(RuntimeProjection, Base):
     work_session: Mapped["TaskSession | None"] = relationship(
         back_populates="task", uselist=False, cascade="all, delete-orphan"
     )
+    summary: Mapped["TaskSummary | None"] = relationship(
+        back_populates="task", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Run(RuntimeProjection, Base):
@@ -301,6 +304,34 @@ class Evidence(Base):
     task: Mapped[Task] = relationship(back_populates="evidence")
 
 
+class TaskSummary(Base):
+    """One durable summary per Task; Session facts are referenced, never mirrored."""
+
+    __tablename__ = "task_summaries"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    primary_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    referenced_session_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    acceptance_results: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    key_changes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    generation: Mapped[int] = mapped_column(Integer, default=0)
+    stale: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    generated_by: Mapped[str] = mapped_column(String(120), default="deterministic")
+    source_ref_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    task: Mapped[Task] = relationship(back_populates="summary")
+
+
 class TaskSession(Base):
     """The durable collaboration space that belongs to one task."""
 
@@ -378,6 +409,7 @@ class KnowledgeItem(Base):
     __table_args__ = (
         Index("ix_knowledge_items_browse", "status", "space_id", "updated_at"),
         Index("ix_knowledge_items_experience", "type", "status", "published_at"),
+        UniqueConstraint("dedupe_key", "fingerprint", name="uq_knowledge_dedupe"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -399,6 +431,19 @@ class KnowledgeItem(Base):
     source_session_id: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    origin: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    experience_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    session_status_at_submission: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verification_session_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verification_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    session_last_message_id_at_verification: Mapped[str | None] = mapped_column(
+        String(160), nullable=True
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    source_ref_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     experience_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(120))
@@ -485,6 +530,9 @@ class KnowledgeUsage(Base):
     )
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     tool_name: Mapped[str] = mapped_column(String(80), index=True)
     action: Mapped[str] = mapped_column(String(32), index=True)
     query: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -538,10 +586,18 @@ class ExperienceEvidence(Base):
     )
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    source_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    part_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diff_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     evidence_type: Mapped[str] = mapped_column(String(64))
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    captured_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     knowledge: Mapped[KnowledgeItem] = relationship(back_populates="evidence")

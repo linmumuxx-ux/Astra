@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import math
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -53,6 +55,7 @@ from app.models import (
     KnowledgeSync,
     KnowledgeUsage,
     Run,
+    RuntimeSession,
     Task,
     utcnow,
 )
@@ -61,6 +64,24 @@ from app.runtime.runtime_context import resolve_runtime_context as _resolve_runt
 from app.usage import day_bounds
 
 KNOWLEDGE_TYPES = {"document", "rule", "guide", "experience", "faq", "tool", "example"}
+EXPERIENCE_TYPES = {"root_cause", "fix", "environment", "test_rule", "tool_usage", "other"}
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _normalized(value: str | None) -> str:
+    return _WHITESPACE.sub(" ", value or "").strip().casefold()
+
+
+def experience_fingerprint(*, experience_type: str | None, title: str, content_md: str) -> str:
+    """Stable identity for one reusable experience, independent of volatile ids."""
+    material = "|".join(
+        [
+            _normalized(experience_type or "other"),
+            _normalized(title),
+            _normalized(content_md),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 KNOWLEDGE_STATUSES = {"draft", "candidate", "published", "archived", "rejected"}
 FEEDBACK_TYPES = {"helpful", "incorrect", "outdated", "missing", "mismatch"}
 ROLE_ALIASES = {
@@ -642,6 +663,10 @@ class KnowledgeService:
             source_employee_name=employee_name,
             source_task_title=task_title,
             source_run_id=item.source_run_id,
+            source_session_id=item.source_session_id,
+            experience_type=item.experience_type,
+            verified_at=item.verified_at,
+            verification_session_status=item.verification_session_status,
             experience_data=item.experience_data or {},
             review_note=item.review_note,
             created_by=item.created_by,
@@ -1164,6 +1189,8 @@ class KnowledgeService:
         runtime_context: str | None = None,
     ) -> KnowledgeDetail:
         source_session_id: str | None = None
+        runtime_session: RuntimeSession | None = None
+        origin = "manual"
         if runtime_context:
             context = await _resolve_runtime_context(self.session, runtime_context)
             # Runtime identity is never taken from Agent-supplied arguments.
@@ -1175,17 +1202,59 @@ class KnowledgeService:
                 }
             )
             source_session_id = context.session_id
+            runtime_session = await self.session.get(RuntimeSession, source_session_id)
+            origin = "runtime"
         employee, task, run = await self._validate_mcp_context(
             payload.source_employee_id,
             payload.source_task_id,
             payload.source_run_id,
         )
+        experience_type = (
+            payload.experience_type if payload.experience_type in EXPERIENCE_TYPES else "other"
+        )
+        fingerprint = experience_fingerprint(
+            experience_type=experience_type,
+            title=payload.title,
+            content_md=payload.content_md,
+        )
+        created_by = f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp"
+        dedupe_key = f"session:{source_session_id}" if source_session_id else f"manual:{created_by}"
         experience_data = dict(payload.experience_data)
         experience_data.setdefault(
             "task_executed_at",
             run.started_at.isoformat() if run and run.started_at else None,
         )
         experience_data.setdefault("run_status", run.status if run else None)
+        snapshot = {
+            "task_id": task.id if task else None,
+            "task_title": task.title if task else None,
+            "employee_id": payload.source_employee_id,
+            "session_id": source_session_id,
+            "submitted_at": utcnow().isoformat(),
+        }
+
+        existing = await self.session.scalar(
+            select(KnowledgeItem).where(
+                KnowledgeItem.dedupe_key == dedupe_key,
+                KnowledgeItem.fingerprint == fingerprint,
+            )
+        )
+        if existing:
+            existing.summary = payload.summary
+            existing.content_md = payload.content_md
+            existing.tags = payload.tags
+            existing.experience_type = experience_type
+            existing.scope = payload.scope or {}
+            existing.experience_data = {**existing.experience_data, **experience_data}
+            existing.updated_by = created_by
+            existing.updated_at = utcnow()
+            if runtime_session:
+                self._apply_runtime_verification(existing, runtime_session)
+            await self.session.commit()
+            return await self.get_detail(
+                existing.id, LibraryPrincipal(user_id="mcp-review", role="reviewer")
+            )
+
         item = KnowledgeItem(
             id=_new_id("KNOW"),
             space_id=None,
@@ -1194,7 +1263,7 @@ class KnowledgeService:
             summary=payload.summary,
             content_md=payload.content_md,
             status="candidate",
-            verification_status=("verified" if run and run.status in {"COMPLETED"} else "unverified"),
+            verification_status="unverified",
             tags=payload.tags,
             source_type="agent_experience",
             source_ref=payload.source_task_id,
@@ -1202,10 +1271,18 @@ class KnowledgeService:
             source_task_id=payload.source_task_id,
             source_run_id=payload.source_run_id,
             source_session_id=source_session_id,
+            origin=origin,
+            dedupe_key=dedupe_key,
+            fingerprint=fingerprint,
+            experience_type=experience_type,
+            scope=payload.scope or {},
+            source_ref_snapshot=snapshot,
             experience_data=experience_data,
-            created_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",
-            updated_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",
+            created_by=created_by,
+            updated_by=created_by,
         )
+        if runtime_session:
+            self._apply_runtime_verification(item, runtime_session)
         self.session.add(item)
         await self.session.flush()
         for evidence in payload.evidence:
@@ -1214,10 +1291,16 @@ class KnowledgeService:
                     knowledge_id=item.id,
                     task_id=evidence.task_id or payload.source_task_id,
                     run_id=evidence.run_id or payload.source_run_id,
+                    source_session_id=source_session_id,
+                    message_id=evidence.message_id,
+                    part_id=evidence.part_id,
+                    file_path=evidence.file_path,
+                    diff_hash=evidence.diff_hash,
                     evidence_type=evidence.evidence_type,
                     content=evidence.content,
                     uri=evidence.uri,
                     result=evidence.result,
+                    captured_at=utcnow(),
                 )
             )
         principal = LibraryPrincipal(user_id=item.created_by, role="viewer")
@@ -1229,6 +1312,7 @@ class KnowledgeService:
                 "employee_id": employee.id if employee else None,
                 "task_id": task.id if task else None,
                 "run_id": run.id if run else None,
+                "session_id": source_session_id,
                 "evidence_count": len(payload.evidence),
             },
         )
@@ -1239,6 +1323,7 @@ class KnowledgeService:
                 employee_id=payload.source_employee_id,
                 task_id=payload.source_task_id,
                 run_id=payload.source_run_id,
+                session_id=source_session_id,
                 tool_name="library_submit_experience",
                 action="experience_submitted",
                 result={"status": "candidate"},
@@ -1246,6 +1331,43 @@ class KnowledgeService:
         )
         await self.session.commit()
         return await self.get_detail(item.id, LibraryPrincipal(user_id="mcp-review", role="reviewer"))
+
+    @staticmethod
+    def _apply_runtime_verification(item: KnowledgeItem, runtime_session: RuntimeSession) -> None:
+        item.session_status_at_submission = runtime_session.status
+        if runtime_session.status == "SUCCEEDED":
+            item.verification_status = "verified"
+            item.verification_session_status = "SUCCEEDED"
+            item.verification_message_id = runtime_session.last_message_id
+            item.session_last_message_id_at_verification = runtime_session.last_message_id
+            item.verified_at = utcnow()
+
+    async def reconcile_session_verification(self, session_id: str | None) -> int:
+        """Verify candidates once their source Session reaches SUCCEEDED."""
+        if not session_id:
+            return 0
+        runtime_session = await self.session.get(RuntimeSession, session_id)
+        if not runtime_session or runtime_session.status != "SUCCEEDED":
+            return 0
+        items = (
+            await self.session.scalars(
+                select(KnowledgeItem).where(
+                    KnowledgeItem.source_session_id == session_id,
+                    KnowledgeItem.type == "experience",
+                    KnowledgeItem.verification_session_status.is_(None),
+                )
+            )
+        ).all()
+        now = utcnow()
+        for item in items:
+            item.verification_status = "verified"
+            item.verification_session_status = "SUCCEEDED"
+            item.verification_message_id = runtime_session.last_message_id
+            item.session_last_message_id_at_verification = runtime_session.last_message_id
+            item.verified_at = now
+        if items:
+            await self.session.commit()
+        return len(items)
 
     async def mcp_feedback(self, payload: LibraryFeedbackInput) -> LibraryResourceFeedbackResult:
         resource_id = wiki_resource_path(payload.resource_id)

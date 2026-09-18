@@ -35,6 +35,7 @@ from app.runtime.runtime_context import (
 )
 from app.runtime.session_connection import connect, prepare_workspace, resolve_environment
 from app.runtime.session_state import SessionState, derive_session_state
+from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
 from app.services import TaskService
 
 _TERMINAL_SESSION_STATUSES = {
@@ -98,6 +99,9 @@ class RuntimeService:
                     )
                 elif employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
                     employee.status = EmployeeStatus.IDLE
+        if status == TaskStatus.RUNNING:
+            # A reopened task invalidates its previous final summary.
+            await TaskSummaryService(self.session).mark_stale(task, commit=False)
         await self.session.commit()
         await event_bus.publish({"type": "TASK_STATUS", "task_id": task.id, "status": task.status})
 
@@ -128,10 +132,32 @@ class RuntimeService:
             runtime_session.finished_at = None
         return runtime_session
 
-    async def apply_session_state(self, task: Task, state: SessionState) -> None:
-        """Persist one derived Session outcome and project it onto the Task."""
+    async def apply_session_state(
+        self, task: Task, state: SessionState, *, final_text: str | None = None
+    ) -> None:
+        """Persist one derived Session outcome, project it, and summarize terminals."""
         await self._sync_session_state(task, state)
         await self._project_session_state(task, state)
+        if state.status in {
+            RuntimeSessionStatus.SUCCEEDED.value,
+            RuntimeSessionStatus.FAILED.value,
+        } or state.terminal_reason == SessionTerminalReason.TIMEOUT.value:
+            await TaskSummaryService(self.session).upsert(
+                task,
+                source_status=task.status,
+                primary_session_id=task.current_session_id,
+                summary_text=final_text or "",
+            )
+            if state.status == RuntimeSessionStatus.SUCCEEDED.value:
+                await self._reconcile_experience(task)
+
+    async def _reconcile_experience(self, task: Task) -> None:
+        """Only a successful source Session verifies its submitted candidates."""
+        from app.library_service import KnowledgeService
+
+        await KnowledgeService(self.session).reconcile_session_verification(
+            task.current_session_id
+        )
 
     async def _project_session_state(self, task: Task, state: SessionState) -> None:
         """The single Session -> Task mapping. Never changes status on UNKNOWN."""
@@ -434,6 +460,12 @@ class RuntimeService:
         task.pending_prompt = None
         task.runtime_error = None
         await self.project(task, TaskStatus.CANCELED)
+        await TaskSummaryService(self.session).upsert(
+            task,
+            source_status=TaskStatus.CANCELED.value,
+            primary_session_id=task.current_session_id,
+            summary_text=task.current_progress or "",
+        )
         return task
 
     async def refresh(self, task_id, *, client=None):
@@ -504,7 +536,8 @@ class RuntimeService:
             timed_out=timed_out,
             grace_seconds=get_settings().opencode_no_reply_grace_seconds,
         )
-        await self.apply_session_state(task, state)
+        final_text, _ = extract_final_assistant_text(messages)
+        await self.apply_session_state(task, state, final_text=final_text)
         return task
 
     async def disconnected(self, task_id, error):
