@@ -176,6 +176,8 @@ class Task(RuntimeProjection, Base):
 
 
 class Run(RuntimeProjection, Base):
+    """Deprecated execution lease. Read-only legacy; the Session runtime never writes it."""
+
     __tablename__ = "runs"
     __table_args__ = (
         UniqueConstraint("task_id", "run_number", name="uq_task_run_number"),
@@ -262,6 +264,8 @@ class RuntimeSession(Base):
 
 
 class ToolUsage(Base):
+    """Deprecated per-Run tool aggregate. Session tool stats live on RuntimeSession."""
+
     __tablename__ = "tool_usages"
     __table_args__ = (UniqueConstraint("run_id", "tool_name", name="uq_run_tool_name"),)
 
@@ -294,6 +298,8 @@ class Event(Base):
 
 
 class Evidence(Base):
+    """Deprecated work-record mirror. Experience evidence lives in ExperienceEvidence."""
+
     __tablename__ = "evidence"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -339,7 +345,7 @@ class TaskSummary(Base):
 
 
 class TaskSession(Base):
-    """The durable collaboration space that belongs to one task."""
+    """Deprecated durable collaboration space; RuntimeSession replaced it."""
 
     __tablename__ = "task_sessions"
 
@@ -360,6 +366,8 @@ class TaskSession(Base):
 
 
 class SessionMessage(Base):
+    """Deprecated message mirror. OpenCode Sessions own all messages."""
+
     __tablename__ = "session_messages"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -374,6 +382,8 @@ class SessionMessage(Base):
 
 
 class RunInquiry(Base):
+    """Deprecated inquiry mirror. OpenCode native questions own this interaction."""
+
     __tablename__ = "run_inquiries"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

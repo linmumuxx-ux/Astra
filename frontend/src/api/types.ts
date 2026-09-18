@@ -223,18 +223,7 @@ export interface AstraEvent {
 
 
 
-export interface Evidence {
-  id: number
-  task_id: string
-  run_id: string | null
-  name: string
-  kind: string
-  path: string
-  size: number
-  content_type: string
-  metadata_: Record<string, unknown>
-  created_at: string
-}
+
 
 
 export type KnowledgeType = 'document' | 'rule' | 'guide' | 'experience' | 'faq' | 'tool' | 'example'

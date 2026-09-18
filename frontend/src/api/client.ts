@@ -8,7 +8,6 @@ import type {
   DashboardTasks,
   Employee,
   EmployeeUsage,
-  Evidence,
   ExecutionEnvironment,
   KnowledgeDetail,
   KnowledgePage,
@@ -89,7 +88,6 @@ export const api = {
   taskUsage: (id: string) => request<TaskUsage>(`/api/tasks/${id}/usage`),
   events: (limit = 50) => request<AstraEvent[]>(`/api/events?limit=${limit}`),
   taskEvents: (id: string) => request<AstraEvent[]>(`/api/tasks/${id}/events`),
-  evidence: (id: string) => request<Evidence[]>(`/api/tasks/${id}/evidence`),
   taskAction: (id: string, action: string, body: Record<string, unknown> = {}) =>
     request<Task>(`/api/tasks/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) }),
   deleteTask: (id: string) =>

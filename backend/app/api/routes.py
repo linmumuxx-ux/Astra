@@ -3,7 +3,7 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -24,7 +24,6 @@ from app.library_service import KnowledgeService, LibraryPrincipal
 from app.models import (
     DigitalEmployee,
     Event,
-    Evidence,
     ExperienceEvidence,
     KnowledgeFeedback,
     KnowledgeItem,
@@ -47,7 +46,6 @@ from app.schemas import (
     EmployeeRead,
     EnvironmentCheckResult,
     EventRead,
-    EvidenceRead,
     ExecutionEnvironmentRead,
     ExecutionEnvironmentWrite,
     TaskCategoryCreate,
@@ -562,20 +560,6 @@ async def list_events(limit: int = Query(50, ge=1, le=500), session: AsyncSessio
     )
 
 
-@router.get("/tasks/{task_id}/evidence", response_model=list[EvidenceRead])
-async def task_evidence(task_id: str, session: AsyncSession = Depends(get_session)):
-    await require_task(task_id, session)
-    return (
-        (
-            await session.execute(
-                select(Evidence).where(Evidence.task_id == task_id).order_by(Evidence.created_at)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-
 async def _stream_event_batch(task_id: str | None, last_id: int | None) -> tuple[int, list[Event]]:
     from anyio import CancelScope
 
@@ -628,16 +612,4 @@ async def event_stream() -> StreamingResponse:
         generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.get("/evidence/{evidence_id}/content")
-async def evidence_content(evidence_id: int, session: AsyncSession = Depends(get_session)):
-    evidence = await session.get(Evidence, evidence_id)
-    if not evidence:
-        raise HTTPException(status_code=404, detail="证据不存在")
-    # Deliberately do not expose arbitrary employee workspace files through a generic file server.
-    return Response(
-        content=json.dumps({"name": evidence.name, "path": evidence.path, "size": evidence.size}),
-        media_type="application/json",
     )

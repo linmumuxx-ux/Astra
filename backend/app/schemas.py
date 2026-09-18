@@ -305,14 +305,4 @@ class EventRead(ORMModel):
 
 
 
-class EvidenceRead(ORMModel):
-    id: int
-    task_id: str
-    run_id: str | None
-    name: str
-    kind: str
-    path: str
-    size: int
-    content_type: str
-    metadata_: dict[str, Any]
-    created_at: datetime
+
