@@ -56,6 +56,8 @@ from app.models import (
     Task,
     utcnow,
 )
+from app.runtime.runtime_context import RuntimeContext
+from app.runtime.runtime_context import resolve_runtime_context as _resolve_runtime_context
 from app.usage import day_bounds
 
 KNOWLEDGE_TYPES = {"document", "rule", "guide", "experience", "faq", "tool", "example"}
@@ -1151,7 +1153,28 @@ class KnowledgeService:
             "message": "当前 Graph API 不提供可靠的按页面查询邻居能力，相关知识暂不可用",
         }
 
-    async def mcp_submit_experience(self, payload: LibrarySubmitExperienceInput) -> KnowledgeDetail:
+    async def resolve_runtime_context(self, token: str | None) -> RuntimeContext:
+        """Shared runtime MCP capability used by every runtime tool."""
+        return await _resolve_runtime_context(self.session, token)
+
+    async def mcp_submit_experience(
+        self,
+        payload: LibrarySubmitExperienceInput,
+        *,
+        runtime_context: str | None = None,
+    ) -> KnowledgeDetail:
+        source_session_id: str | None = None
+        if runtime_context:
+            context = await _resolve_runtime_context(self.session, runtime_context)
+            # Runtime identity is never taken from Agent-supplied arguments.
+            payload = payload.model_copy(
+                update={
+                    "source_employee_id": context.employee_id,
+                    "source_task_id": context.task_id,
+                    "source_run_id": None,
+                }
+            )
+            source_session_id = context.session_id
         employee, task, run = await self._validate_mcp_context(
             payload.source_employee_id,
             payload.source_task_id,
@@ -1178,6 +1201,7 @@ class KnowledgeService:
             source_employee_id=payload.source_employee_id,
             source_task_id=payload.source_task_id,
             source_run_id=payload.source_run_id,
+            source_session_id=source_session_id,
             experience_data=experience_data,
             created_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",
             updated_by=f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp",

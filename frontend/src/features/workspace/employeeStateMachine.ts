@@ -25,11 +25,11 @@ export const EMPLOYEE_STATE_PRESENTATION: Record<EmployeeState, EmployeeStatePre
 
 export function resolveEmployeeState(employee: Employee, task?: Task, recentlyCompleted = false): EmployeeState {
   if (!employee.enabled || employee.status === 'OFFLINE') return 'OFFLINE'
-  if (employee.status === 'ERROR' || task?.status === 'EXECUTION_ERROR' || task?.status === 'FAILED') return 'ERROR'
-  if (employee.status === 'WAIT_HUMAN' || task?.status === 'WAIT_HUMAN' || task?.status === 'PENDING_CONFIRMATION') return 'NEED_HUMAN'
-  if (task?.status === 'SUSPENDED' || employee.status === 'PAUSED') return 'WAITING'
-  if (task?.status === 'RUNNING' || task?.status === 'QUEUED' || employee.status === 'WORKING') return 'WORKING'
-  if (task?.status === 'ASSIGNED' || task?.status === 'READY') return 'WAITING'
+  if (employee.status === 'ERROR' || task?.status === 'FAILED') return 'ERROR'
+  if (employee.status === 'WAIT_HUMAN' || task?.status === 'WAITING') return 'NEED_HUMAN'
+  if (employee.status === 'PAUSED') return 'WAITING'
+  if (task?.status === 'RUNNING' || employee.status === 'WORKING') return 'WORKING'
+  if (task?.status === 'PENDING') return 'WAITING'
   if (recentlyCompleted) return 'COMPLETED'
   return 'IDLE'
 }

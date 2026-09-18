@@ -326,7 +326,7 @@ def test_task_card_uses_platform_routes_and_operation_actions():
     card = task_card(task)
     assert card["card_type"] == "task"
     assert {"type": "navigate", "label": "查看任务", "target": "/tasks/T-20260904-ABC123"} in card["actions"]
-    assert {"type": "assistant_operation", "label": "取消任务", "operation": "task_cancel"} in card["actions"]
+    assert {"type": "assistant_operation", "label": "停止任务", "operation": "task_cancel"} in card["actions"]
     for action in card["actions"]:
         assert action["type"] == "assistant_operation" or action["target"].startswith("/tasks/")
 
@@ -353,7 +353,7 @@ async def test_prepare_and_confirm_creates_task_once():
 
     async with SessionLocal() as session:
         result = await OperationService(session).confirm(operation_id, "console-admin")
-        assert result["status"] == "READY"
+        assert result["status"] == "PENDING"
         assert result["employee_id"] == "emp-tuya"
         task_id = result["task_id"]
         task = await session.get(Task, task_id)
@@ -392,10 +392,10 @@ async def test_cancel_running_task_is_high_risk_and_confirm_cancels():
 
     async with SessionLocal() as session:
         result = await OperationService(session).confirm(operation_id, "console-admin")
-        assert result["status"] == "CANCELLED"
+        assert result["status"] == "CANCELED"
 
 
-async def test_retry_failed_task_reopens_to_ready():
+async def test_retry_without_session_requires_explicit_start():
     await init_database()
     await seed_employee_and_category()
     task = await create_task_directly(title="失败任务待重试")
@@ -410,8 +410,8 @@ async def test_retry_failed_task_reopens_to_ready():
         )
         operation_id = operation.operation_id
     async with SessionLocal() as session:
-        result = await OperationService(session).confirm(operation_id, "console-admin")
-        assert result["status"] == "READY"
+        with pytest.raises(OperationError, match="Session 不存在"):
+            await OperationService(session).confirm(operation_id, "console-admin")
 
 
 async def test_reassign_ready_task_requires_confirmation_and_revalidates_status():
@@ -450,7 +450,7 @@ async def test_reassign_ready_task_requires_confirmation_and_revalidates_status(
         assert result["employee_id"] == "emp-reassign"
         reassigned = await session.get(Task, task.id)
         assert reassigned.employee_id == "emp-reassign"
-        assert reassigned.opencode_session_id is None
+        assert reassigned.current_session_id is None
 
         await TaskService(session).transition(reassigned, TaskStatus.RUNNING)
         with pytest.raises(OperationError, match="待领取或已挂起"):
@@ -500,7 +500,7 @@ async def test_operation_enforces_owner_and_records_stale_failure():
     # prepare 之后任务可能被其他入口改变；确认失败也必须从 EXECUTING 收敛。
     async with SessionLocal() as session:
         live = await session.get(Task, task.id)
-        live.status = TaskStatus.COMPLETED
+        live.status = TaskStatus.SUCCEEDED
         await session.commit()
 
     async with SessionLocal() as session:
@@ -552,7 +552,8 @@ async def test_tool_gateway_search_recommend_and_overview():
         assert overview["total_tasks"] >= 1
 
         pending = await tool_gateway.operation_pending_actions(session)
-        assert "wait_human_tasks" in pending
+        assert "waiting_tasks" in pending
+        assert "failed_tasks" in pending
 
 
 # ── REST API + Fake OpenCode Client ────────────────────────────
@@ -813,7 +814,7 @@ async def test_orchestrator_links_confirmation_and_cards(fake_orchestrator):
         confirmed = client.post(f"/api/assistant/operations/{operation_id}/confirm")
         assert confirmed.status_code == 200
         assert confirmed.json()["status"] == "SUCCESS"
-        assert confirmed.json()["result"]["status"] == "CANCELLED"
+        assert confirmed.json()["result"]["status"] == "CANCELED"
 
         # 刷新后确认卡按操作真实状态渲染，不误导用户重复确认
         refreshed = client.get(f"/api/assistant/conversations/{conversation_id}/messages")

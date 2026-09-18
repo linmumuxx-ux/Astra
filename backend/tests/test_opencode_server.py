@@ -311,16 +311,30 @@ class FakeTunnel:
         self.closed = True
 
 
+class FakeReverseTunnel:
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
 class FakeSSHSession:
     def __init__(self):
         self.tunnel = FakeTunnel()
         self.tunnel_target: tuple[str, int] | None = None
+        self.reverse = None
+        self.reverse_tunnel = FakeReverseTunnel()
         self.commands: list[str] = []
         self.closed = False
 
     async def open_tunnel(self, *, remote_host: str, remote_port: int):
         self.tunnel_target = (remote_host, remote_port)
         return self.tunnel
+
+    async def open_reverse_tunnel(self, *, remote_port: int, local_host: str = "127.0.0.1", local_port: int):
+        self.reverse = (remote_port, local_host, local_port)
+        return self.reverse_tunnel
 
     async def run_command(self, command: str):
         self.commands.append(command)
@@ -379,9 +393,13 @@ async def test_remote_server_connection_starts_private_loopback_server():
         assert opened is client
 
     assert ssh.tunnel_target == ("127.0.0.1", 4196)
-    assert len(ssh.commands) == 1
-    assert "serve --hostname 127.0.0.1 --port 4196" in ssh.commands[0]
-    assert "cd '/srv/projects/NEXUS 工作区'" in ssh.commands[0]
+    assert len(ssh.commands) == 2
+    assert "opencode.json" in ssh.commands[0]
+    assert "serve --hostname 127.0.0.1 --port 4196" in ssh.commands[1]
+    assert "OPENCODE_CONFIG=" in ssh.commands[1]
+    assert "cd '/srv/projects/NEXUS 工作区'" in ssh.commands[1]
+    assert ssh.reverse is not None
+    assert ssh.reverse_tunnel.closed is True
     assert ssh.tunnel.closed is True
     assert ssh.closed is True
 

@@ -2,13 +2,12 @@ export interface RuntimeProjection {
   runtime_state: string
   runtime_status_label: string
   runtime_detail: string
-  active_run: { id: string; status: string; trigger_reason: string; retry_index: number; opencode_session_id: string | null } | null
   failure: { failure_code: string; failure_scope: string; retryable: boolean; recovery_action: string; raw_error: string } | null
 }
 
 export type TaskType = 'ISSUE' | 'REQUIREMENT'
 export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
-export type TaskStatus = 'READY' | 'ASSIGNED' | 'QUEUED' | 'RUNNING' | 'WAIT_HUMAN' | 'SUSPENDED' | 'PENDING_CONFIRMATION' | 'COMPLETED' | 'FAILED' | 'EXECUTION_ERROR' | 'CANCELLED'
+export type TaskStatus = import('@/features/runtime/status').TaskState
 export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
 export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
 export type RunTriggerReason = 'INITIAL' | 'HUMAN_RESUME' | 'WORKER_RECOVERY' | 'USER_CONTINUE' | 'AUTO_RETRY' | 'SESSION_RECOVERY'
@@ -96,7 +95,6 @@ export interface Employee extends RuntimeProjection {
   auto_execute: boolean
   max_auto_retries: number
   current_task_count: number
-  active_run_id: string | null
   last_heartbeat: string | null
   online_since: string | null
   created_at: string
@@ -148,8 +146,11 @@ export interface Task extends RuntimeProjection {
   completion_policy: CompletionPolicy
   status: TaskStatus
   employee_id: string | null
-  active_run_id: string | null
-  opencode_session_id: string | null
+  current_session_id: string | null
+  workspace: string | null
+  runtime_connection: string
+  pending_message_id: string | null
+  runtime_error: string | null
   current_progress: string
   result: WorkResult | null
   failure_reason: string | null
@@ -218,69 +219,10 @@ export interface AstraEvent {
   created_at: string
 }
 
-export interface TaskSession {
-  id: string
-  task_id: string
-  status: 'ACTIVE' | 'WAITING_INPUT' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
-  current_run_id: string | null
-  created_at: string
-  updated_at: string
-}
 
-export interface SessionMessage {
-  id: string
-  session_id: string
-  run_id: string | null
-  role: 'user' | 'agent' | 'system'
-  content: string
-  status: 'PENDING' | 'QUEUED' | 'APPLIED' | 'ANSWERED'
-  created_at: string
-}
 
-export interface RunInquiry {
-  id: string
-  session_id: string
-  run_id: string | null
-  agent_name: string | null
-  question: string
-  description: string
-  options: Array<{ label?: string; value?: string; description?: string }>
-  answer: string | null
-  status: 'OPEN' | 'PENDING' | 'ANSWERED' | 'CANCELLED'
-  created_at: string
-  answered_at: string | null
-}
 
-export interface RuntimeEvent {
-  id: string
-  session_id: string
-  run_id: string | null
-  sequence: number
-  event_type: string
-  agent_name: string | null
-  timestamp: string
-  phase: string
-  summary: string
-  payload: Record<string, unknown>
-}
 
-export interface SessionBlock {
-  id: string
-  session_id: string
-  run_id: string | null
-  sequence: number | null
-  block_type: 'message' | 'inquiry' | 'event' | 'operation_group'
-  semantic_type: string
-  visibility: 'primary' | 'diagnostic'
-  actor_name: string | null
-  status: string | null
-  timestamp: string
-  summary: string
-  payload: Record<string, unknown>
-  message: SessionMessage | null
-  inquiry: RunInquiry | null
-  events: RuntimeEvent[]
-}
 
 export interface Evidence {
   id: number
@@ -295,17 +237,6 @@ export interface Evidence {
   created_at: string
 }
 
-export interface TaskWorkbench {
-  task: Task
-  session: TaskSession
-  messages: SessionMessage[]
-  events: RuntimeEvent[]
-  blocks: SessionBlock[]
-  inquiries: RunInquiry[]
-  artifacts: Evidence[]
-  runs: Run[]
-  has_more_events: boolean
-}
 
 export type KnowledgeType = 'document' | 'rule' | 'guide' | 'experience' | 'faq' | 'tool' | 'example'
 export type KnowledgeStatus = 'draft' | 'candidate' | 'published' | 'archived' | 'rejected'
@@ -446,10 +377,9 @@ export interface Metrics {
   running_tasks: number
   idle_employees: number
   error_employees: number
-  ready_tasks: number
-  wait_human_tasks: number
-  pending_confirmation_tasks: number
-  execution_error_tasks: number
+  pending_tasks: number
+  waiting_tasks: number
+  failed_tasks: number
   completed_today: number
   failed_today: number
   today_tokens: number | null
@@ -560,13 +490,6 @@ export interface RunStats {
   avg_duration_seconds: number | null
   total_tokens: number | null
 }
-export interface RunPage {
-  items: (Run & { task_title: string })[]
-  page: number
-  page_size: number
-  total: number
-  stats: RunStats
-}
 
 export interface LibraryServiceStatus {
   enabled: boolean
@@ -575,4 +498,12 @@ export interface LibraryServiceStatus {
   last_synced_at: string | null
   pending_count: number
   failed_count: number
+}
+
+export interface TaskWorkspaceBinding {
+  task_id: string
+  task_status: TaskStatus
+  runtime: { server: string; session_id: string | null; workspace: string | null; connection: string; error: string | null }
+  sessions: Array<{ id: string; workspace: string; created_at: string; current: boolean }>
+  history: Array<{ id: string; status: string; result: unknown; started_at: string | null; finished_at: string | null }>
 }

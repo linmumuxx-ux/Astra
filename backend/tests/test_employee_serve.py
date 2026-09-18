@@ -9,7 +9,6 @@ from app.config.settings import Settings
 from app.executors import opencode_local_server as local
 from app.executors.opencode_server import OpenCodeServerUnavailable
 from app.models import OpenCodeExecutionEnvironment, Task
-from app.runtime.coordinator import TaskCoordinator
 from app.runtime.environment import ExecutionEnvironmentRuntime, checks_status
 
 
@@ -133,14 +132,6 @@ async def test_start_failure_does_not_execute_session(serve):
     executor.client.create_session.assert_not_awaited()
 
 
-def test_coordinator_selects_employee_client(serve):
-    sample = serve("coordinator")
-    coordinator = TaskCoordinator()
-    executor = coordinator._executor_for_environment(Task(id="task"), sample.environment, None)
-    assert isinstance(executor, local.LocalOpenCodeServerExecutor)
-    assert executor.client.base_url == sample.client.base_url
-    assert executor.workspace == sample.workspace
-    assert executor.model_name == "test/model"
 
 
 async def test_unhealthy_owned_process_is_restarted(serve):
@@ -173,35 +164,6 @@ async def test_unready_server_times_out_without_session(serve):
     executor.client.create_session.assert_not_awaited()
 
 
-async def test_abort_api_uses_snapshot_employee_port(monkeypatch):
-    from app.api import routes
-
-    observed = []
-
-    class Client:
-        def __init__(self, settings, *, base_url):
-            observed.append(base_url)
-
-        async def abort(self, workspace, session_id):
-            assert session_id == "ses_employee"
-            return True
-
-    monkeypatch.setattr(routes, "OpenCodeServerClient", Client)
-    task = Task(
-        id="abort",
-        opencode_session_id="ses_employee",
-        execution_environment_snapshot={
-            "mode": "LOCAL",
-            "workspace_root": "/tmp/employee",
-            "opencode_server_port": 44101,
-        },
-    )
-    from unittest.mock import AsyncMock
-    confirmed = AsyncMock()
-    monkeypatch.setattr(routes.RuntimeService, "confirm_session_aborted", confirmed)
-    assert await routes._abort_opencode_session(task, None)
-    confirmed.assert_awaited_once_with(task.id, task.opencode_session_id)
-    assert observed == ["http://127.0.0.1:44101"]
 
 
 async def test_missing_workspace_fails_environment_check(serve):

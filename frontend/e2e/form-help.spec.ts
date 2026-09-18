@@ -40,7 +40,7 @@ async function expectGridAlignment(page: Page) {
 }
 
 test('员工配置说明悬停显示且控件对齐，错误与检测结果保持可见', async ({ page }) => {
-  await page.goto('/settings?employee=astra-01')
+  await page.goto('/employees?edit=astra-01')
   await checkHelp(page, '默认办公区域', '无特定任务场景')
   await expectGridAlignment(page)
   const enabled = page.getByRole('switch', { name: '启用员工', exact: true })
@@ -66,21 +66,21 @@ test('员工配置说明悬停显示且控件对齐，错误与检测结果保�
   await page.getByRole('button', { name: '工作策略', exact: true }).click()
   await checkHelp(page, '最大自动重试次数', '恢复上限')
   await page.screenshot({ path: '../artifacts/form-help/employee-policy.png', fullPage: true })
-  await page.goto('/settings?employee=astra-02')
+  await page.goto('/employees?edit=astra-01')
   await page.getByRole('button', { name: '工作环境', exact: true }).click()
   await page.getByRole('button', { name: 'Linux 远程', exact: true }).click()
   await checkHelp(page, 'SSH 密码', '接口不回显')
   await checkHelp(page, 'OpenCode Server Port', '人工配置固定端口')
   await expectGridAlignment(page)
   await page.screenshot({ path: '../artifacts/form-help/remote-environment.png', fullPage: true })
-  await page.goto('/settings?employee=astra-01')
+  await page.goto('/employees?edit=astra-01')
   await page.getByLabel('员工名称', { exact: true }).fill('表单验收员工')
   await page.getByRole('button', { name: '工作范围', exact: true }).click()
   for (const toggle of await page.locator('.scope-config').getByRole('switch').all()) {
     if (await toggle.getAttribute('aria-checked') === 'true') await toggle.click()
   }
   await page.route('**/api/employees/astra-01', route => route.fulfill({ status: 503, json: { detail: '测试保存失败：请稍后重试' } }))
-  await page.getByRole('button', { name: '保存配置', exact: true }).click()
+  await page.getByTestId('employee-config-modal').getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.locator('.form-message[data-error=true]')).toContainText('工作范围至少需要一种任务类型和一个任务分类')
   await expect(page.locator('.form-message[data-error=true]')).toBeVisible()
 })
@@ -92,7 +92,8 @@ test('任务创建和系统偏好使用统一提示，附件反馈保持可见',
   await expectGridAlignment(page)
   await checkHelp(page, '分配方式', '员工启用状态')
   await page.locator('.task-create-card input[type=file]').setInputFiles({ name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('测试附件') })
-  await expect(page.locator('.task-create-card')).toContainText('已选择 说明.txt')
+  await expect(page.locator('.task-create-card .attachment-chips li')).toHaveCount(1)
+  await expect(page.locator('.task-create-card .attachment-chips li')).toContainText('说明.txt')
   await page.getByRole('button', { name: '完成策略说明', exact: true }).hover()
   await page.screenshot({ path: '../artifacts/form-help/task-create-tooltip.png', fullPage: true })
   await page.goto('/settings?tab=system')
@@ -105,7 +106,7 @@ test('任务创建和系统偏好使用统一提示，附件反馈保持可见',
 })
 
 
-test('知识编辑、分类、来源与人工补充表单保留字段和校验', async ({ page }) => {
+test('知识编辑、分类、来源表单保留字段，待处理进入 Workspace', async ({ page }) => {
   await page.goto('/library')
   await page.getByRole('button', { name: '新建知识', exact: true }).click()
   const editor = page.locator('.knowledge-editor')
@@ -120,9 +121,11 @@ test('知识编辑、分类、来源与人工补充表单保留字段和校验',
     await page.screenshot({ path: `../artifacts/form-help/settings-${tab}.png`, fullPage: true })
   }
   await page.goto('/interventions')
-  await expect(page.getByRole('heading', { name: '待处理', exact: true }).first()).toBeVisible()
-  await page.locator('.intervention-queue').getByRole('button', { name: /新增回调场景自动化覆盖/ }).click()
-  await expect(page.getByLabel('补充信息', { exact: true })).toBeVisible()
-  await expect(page.getByLabel('补充信息', { exact: true })).toHaveAttribute('required', '')
+  const pending = page.getByTestId('intervention-page')
+  await expect(pending.getByRole('heading', { name: '待处理', exact: true }).first()).toBeVisible()
+  // 人工介入已收敛到任务 Workspace：待处理列表只提供进入 Workspace 的入口。
+  const item = pending.locator('.intervention-task').filter({ hasText: '新增回调场景自动化覆盖' })
+  await expect(item).toBeVisible()
+  await expect(item.getByRole('link', { name: '进入任务详情' })).toHaveAttribute('href', '/tasks/T-20260827-002')
   await page.screenshot({ path: '../artifacts/form-help/intervention-form.png', fullPage: true })
 })

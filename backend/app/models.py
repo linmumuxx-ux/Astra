@@ -69,17 +69,10 @@ class DigitalEmployee(RuntimeProjection, Base):
     auto_execute: Mapped[bool] = mapped_column(Boolean, default=True)
     max_auto_retries: Mapped[int] = mapped_column(Integer, default=3)
     current_task_count: Mapped[int] = mapped_column(Integer, default=0)
-    active_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
-    )
     last_heartbeat: Mapped[datetime | None] = mapped_column(UTCDateTime())
     online_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
-
-    runtime_run: Mapped["Run | None"] = relationship(
-        foreign_keys=[active_run_id], lazy="selectin", viewonly=True,
-    )
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="employee")
     execution_environment: Mapped["OpenCodeExecutionEnvironment | None"] = relationship(
@@ -136,11 +129,15 @@ class Task(RuntimeProjection, Base):
     priority: Mapped[str] = mapped_column(String(16), default="MEDIUM")
     priority_weight: Mapped[int] = mapped_column(Integer, default=2)
     completion_policy: Mapped[str] = mapped_column(String(32), default="AUTO")
-    status: Mapped[str] = mapped_column(String(32), default="READY", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
-    active_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("runs.id", ondelete="SET NULL"), nullable=True, unique=True, index=True
-    )
+    workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    turn_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    pending_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    pending_prompt: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    runtime_connection: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
+    runtime_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_progress: Mapped[str] = mapped_column(Text, default="等待领取")
     human_intervention: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     suspension: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -151,7 +148,7 @@ class Task(RuntimeProjection, Base):
     last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
     submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    current_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -161,10 +158,6 @@ class Task(RuntimeProjection, Base):
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
-
-    runtime_run: Mapped["Run | None"] = relationship(
-        foreign_keys=[active_run_id], lazy="selectin", viewonly=True,
-    )
 
     employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
     runs: Mapped[list["Run"]] = relationship(
@@ -231,21 +224,32 @@ class Run(RuntimeProjection, Base):
     tool_usages: Mapped[list["ToolUsage"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
-class RunDispatchOutbox(Base):
-    __tablename__ = "run_dispatch_outbox"
+class RuntimeSession(Base):
+    """Binding and result index; OpenCode owns all messages and execution details."""
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("runs.id", ondelete="CASCADE"), unique=True, index=True
+    __tablename__ = "runtime_sessions"
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
+    workspace: Mapped[str] = mapped_column(Text)
+    environment: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", server_default="UNKNOWN", index=True)
+    terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    finish_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    superseded_by: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_sessions.id"), nullable=True, index=True
     )
-    event_type: Mapped[str] = mapped_column(String(64), default="EXECUTE_RUN")
-    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
-    attempts: Mapped[int] = mapped_column(Integer, default=0)
-    next_retry_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
-    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    runtime_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    runtime_context_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class ToolUsage(Base):
@@ -392,6 +396,9 @@ class KnowledgeItem(Base):
     )
     source_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
     source_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
+    source_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     experience_data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(120))

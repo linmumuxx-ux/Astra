@@ -11,17 +11,31 @@ class EmployeeStatus(StrEnum):
 
 
 class TaskStatus(StrEnum):
-    READY = "READY"
-    ASSIGNED = "ASSIGNED"
-    QUEUED = "QUEUED"
+    PENDING = "PENDING"
     RUNNING = "RUNNING"
-    WAIT_HUMAN = "WAIT_HUMAN"
-    SUSPENDED = "SUSPENDED"
-    PENDING_CONFIRMATION = "PENDING_CONFIRMATION"
-    COMPLETED = "COMPLETED"
+    WAITING = "WAITING"
+    SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
-    EXECUTION_ERROR = "EXECUTION_ERROR"
-    CANCELLED = "CANCELLED"
+    CANCELED = "CANCELED"
+
+
+class RuntimeSessionStatus(StrEnum):
+    RUNNING = "RUNNING"
+    WAITING = "WAITING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    INTERRUPTED = "INTERRUPTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class SessionTerminalReason(StrEnum):
+    COMPLETED = "completed"
+    ASSISTANT_ERROR = "assistant_error"
+    NO_REPLY = "no_reply"
+    ABORTED = "aborted"
+    TIMEOUT = "timeout"
+    SESSION_MISSING = "session_missing"
+    TRANSPORT_UNKNOWN = "transport_unknown"
 
 
 class RunStatus(StrEnum):

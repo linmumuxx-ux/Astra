@@ -6,72 +6,41 @@ class InvalidTransition(ValueError):
 
 
 class TaskStateMachine:
-    transitions: dict[TaskStatus, set[TaskStatus]] = {
-        TaskStatus.READY: {
-            TaskStatus.ASSIGNED,
-            TaskStatus.QUEUED,
+    """Business transitions. Runtime transport availability never changes task status."""
+
+    transitions = {
+        TaskStatus.PENDING: {
             TaskStatus.RUNNING,
-            TaskStatus.SUSPENDED,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.ASSIGNED: {
-            TaskStatus.READY,
-            TaskStatus.QUEUED,
-            TaskStatus.SUSPENDED,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.QUEUED: {
-            TaskStatus.RUNNING,
-            TaskStatus.WAIT_HUMAN,
-            TaskStatus.SUSPENDED,
-            TaskStatus.EXECUTION_ERROR,
-            TaskStatus.CANCELLED,
+            TaskStatus.WAITING,
+            TaskStatus.SUCCEEDED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELED,
         },
         TaskStatus.RUNNING: {
-            TaskStatus.COMPLETED,
-            TaskStatus.PENDING_CONFIRMATION,
-            TaskStatus.WAIT_HUMAN,
-            TaskStatus.SUSPENDED,
+            TaskStatus.WAITING,
+            TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
-            TaskStatus.EXECUTION_ERROR,
-            TaskStatus.CANCELLED,
+            TaskStatus.CANCELED,
         },
-        TaskStatus.WAIT_HUMAN: {
-            TaskStatus.READY,
-            TaskStatus.QUEUED,
+        TaskStatus.WAITING: {
             TaskStatus.RUNNING,
-            TaskStatus.SUSPENDED,
+            TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
-            TaskStatus.CANCELLED,
+            TaskStatus.CANCELED,
         },
-        TaskStatus.SUSPENDED: {
-            TaskStatus.READY,
-            TaskStatus.QUEUED,
+        TaskStatus.SUCCEEDED: {TaskStatus.RUNNING, TaskStatus.WAITING, TaskStatus.FAILED, TaskStatus.PENDING},
+        TaskStatus.FAILED: {
             TaskStatus.RUNNING,
-            TaskStatus.CANCELLED,
+            TaskStatus.WAITING,
+            TaskStatus.SUCCEEDED,
+            TaskStatus.PENDING,
+            TaskStatus.CANCELED,
         },
-        TaskStatus.PENDING_CONFIRMATION: {
-            TaskStatus.COMPLETED,
-            TaskStatus.READY,
-            TaskStatus.QUEUED,
-            TaskStatus.RUNNING,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.EXECUTION_ERROR: {
-            TaskStatus.QUEUED,
-            TaskStatus.RUNNING,
-            TaskStatus.SUSPENDED,
-            TaskStatus.FAILED,
-            TaskStatus.CANCELLED,
-        },
-        TaskStatus.COMPLETED: set(),
-        TaskStatus.FAILED: set(),
-        TaskStatus.CANCELLED: set(),
+        TaskStatus.CANCELED: {TaskStatus.RUNNING, TaskStatus.PENDING},
     }
 
     @classmethod
-    def validate(cls, current: str | TaskStatus, target: str | TaskStatus) -> None:
-        current_status = TaskStatus(current)
-        target_status = TaskStatus(target)
-        if target_status not in cls.transitions[current_status]:
-            raise InvalidTransition(f"不允许从 {current_status} 流转到 {target_status}")
+    def validate(cls, current, target):
+        current, target = TaskStatus(current), TaskStatus(target)
+        if current != target and target not in cls.transitions[current]:
+            raise InvalidTransition(f"不允许从 {current} 流转到 {target}")

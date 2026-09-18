@@ -209,11 +209,11 @@ async def employee_get(session: AsyncSession, employee_id: str) -> dict[str, Any
                     Task.employee_id == employee.id,
                     Task.status.in_(
                         [
-                            TaskStatus.ASSIGNED,
-                            TaskStatus.QUEUED,
+                            TaskStatus.PENDING,
+                            TaskStatus.PENDING,
                             TaskStatus.RUNNING,
-                            TaskStatus.WAIT_HUMAN,
-                            TaskStatus.EXECUTION_ERROR,
+                            TaskStatus.WAITING,
+                            TaskStatus.FAILED,
                         ]
                     ),
                 )
@@ -396,7 +396,7 @@ async def operation_overview(session: AsyncSession, *, since: datetime | None = 
     if since:
         query = query.where(Task.created_at >= since)
     distribution = dict((await session.execute(query)).all())
-    completed = distribution.get(TaskStatus.COMPLETED.value, 0)
+    completed = distribution.get(TaskStatus.SUCCEEDED.value, 0)
     failed = distribution.get(TaskStatus.FAILED.value, 0)
     total = sum(distribution.values())
     return {
@@ -410,23 +410,13 @@ async def operation_overview(session: AsyncSession, *, since: datetime | None = 
 
 async def operation_pending_actions(session: AsyncSession) -> dict[str, Any]:
     wait_human = (
-        await session.scalar(select(func.count(Task.id)).where(Task.status == TaskStatus.WAIT_HUMAN)) or 0
+        await session.scalar(select(func.count(Task.id)).where(Task.status == TaskStatus.WAITING)) or 0
     )
     execution_error = (
-        await session.scalar(select(func.count(Task.id)).where(Task.status == TaskStatus.EXECUTION_ERROR))
+        await session.scalar(select(func.count(Task.id)).where(Task.status == TaskStatus.FAILED))
         or 0
     )
-    pending_confirmation = (
-        await session.scalar(
-            select(func.count(Task.id)).where(Task.status == TaskStatus.PENDING_CONFIRMATION)
-        )
-        or 0
-    )
-    return {
-        "wait_human_tasks": int(wait_human),
-        "execution_error_tasks": int(execution_error),
-        "pending_confirmation_tasks": int(pending_confirmation),
-    }
+    return {"waiting_tasks": int(wait_human), "failed_tasks": int(execution_error)}
 
 
 async def operation_employee_load(session: AsyncSession) -> dict[str, Any]:

@@ -171,7 +171,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
         return await self._execute(task, workspace)
 
     async def resume(self, task: Task, run: Run, workspace: Path) -> ExecutorResult:
-        session_id = task.opencode_session_id or run.opencode_session_id
+        session_id = task.current_session_id or run.opencode_session_id
         return await self._execute(task, workspace, session_id=session_id)
 
     async def get_status(self, run: Run) -> str:

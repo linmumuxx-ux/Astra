@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vue-tsc -b && vite build",
-    "type-check": "vue-tsc -b",
+    "build": "npm run build:workspace && vue-tsc -b && vite build",
+    "type-check": "vue-tsc -b && bun run --cwd ../workspace-ui type-check",
     "preview": "vite preview --host 0.0.0.0",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "build:workspace": "bun run --cwd ../workspace-ui build"
   },
   "dependencies": {
     "@vueuse/core": "^13.9.0",

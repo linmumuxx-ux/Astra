@@ -14,6 +14,7 @@ from pathlib import Path
 from app.executors.errors import OpenCodeServerUnavailable
 from app.executors.opencode_server import OpenCodeServerClient, OpenCodeServerExecutor
 from app.executors.process import local_command, process_group_options
+from app.runtime.opencode_config import write_local_runtime_config
 
 # Only terminate processes started by this worker, never an unknown port owner.
 _processes: dict[int, subprocess.Popen] = {}
@@ -127,6 +128,10 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                 environment = os.environ.copy()
                 environment.pop("OPENCODE_SERVER_PASSWORD", None)
                 environment.pop("OPENCODE_SERVER_USERNAME", None)
+                # Runtime-owned config; the task git worktree stays user code only.
+                environment["OPENCODE_CONFIG"] = str(
+                    write_local_runtime_config(self.settings, self.environment.employee_id)
+                )
                 log_path = self.workspace / ".astra-opencode-server.log"
                 with log_path.open("ab") as log:
                     process = subprocess.Popen(

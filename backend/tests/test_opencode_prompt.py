@@ -1,7 +1,5 @@
 from pathlib import PurePath
 
-import pytest
-
 from app.domain import TaskType
 from app.executors.opencode_prompt import (
     bind_task_prompt_context,
@@ -9,7 +7,6 @@ from app.executors.opencode_prompt import (
     resolve_task_prompt_context,
 )
 from app.models import Task, TaskCategory
-from app.runtime.run_coordinator import RunCoordinator
 
 
 def make_task(task_type: TaskType) -> Task:
@@ -80,23 +77,3 @@ def test_blank_category_prompt_degrades_to_generic_runtime_prompt():
     assert "任务分类：\n自动化工程" in prompt
     assert "分类执行要求：" not in prompt
     assert "ASTRA_RESULT_JSON:" in prompt
-
-
-@pytest.mark.asyncio
-async def test_run_coordinator_resolves_category_prompt_from_category_id():
-    task = make_task(TaskType.ISSUE)
-    category = make_category()
-    requested = []
-
-    class FakeSession:
-        async def get(self, model, key):
-            requested.append((model, key))
-            return category
-
-    context = await RunCoordinator._resolve_prompt_context(FakeSession(), task)
-
-    assert requested == [(TaskCategory, "CAT-001")]
-    assert context is not None
-    assert context.category_id == "CAT-001"
-    assert context.category_name == "自动化工程"
-    assert context.prompt == "ISSUE_CATEGORY_PROMPT_MARKER"

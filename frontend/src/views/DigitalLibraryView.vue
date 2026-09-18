@@ -63,7 +63,7 @@
     <div v-if="moveDialog" class="modal-backdrop" data-testid="knowledge-move-dialog" @click.self="moveDialog = null">
       <form class="modal-card move-knowledge-card" @submit.prevent="submitMove">
         <header><div><h3>移动到目录</h3><p>为 {{ moveDialog.ids.length }} 条知识选择目标目录。</p></div><button type="button" aria-label="关闭" @click="moveDialog = null"><X :size="17" /></button></header>
-        <label>目标目录<select v-model="moveSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+        <div class="modal-body"><label>目标目录<select v-model="moveSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div>
         <footer><button type="button" class="button" @click="moveDialog = null">取消</button><button class="button button--primary" :disabled="!moveSpaceId || moving" type="submit"><LoaderCircle v-if="moving" :size="14" class="spin" />移动</button></footer>
       </form>
     </div>
@@ -71,8 +71,10 @@
     <div v-if="publishDialog" class="modal-backdrop" data-testid="knowledge-publish-dialog" @click.self="publishDialog = null">
       <form class="modal-card move-knowledge-card" @submit.prevent="submitBatchPublish">
         <header><div><h3>发布知识</h3><p>为 {{ publishDialog.ids.length }} 条知识选择目录并发布。</p></div><button type="button" aria-label="关闭" @click="publishDialog = null"><X :size="17" /></button></header>
-        <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-        <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
+        <div class="modal-body">
+          <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+          <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
+        </div>
         <footer><button type="button" class="button" @click="publishDialog = null">取消</button><button class="button button--primary" :disabled="!publishSpaceId || working" type="submit"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button></footer>
       </form>
     </div>

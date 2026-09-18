@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bell, BookOpen, ChevronDown, ClipboardList, Clock3, House, Menu, Search, Settings, TriangleAlert, UserRound, X } from 'lucide-vue-next'
+import { Bell, BookOpen, ChevronDown, ClipboardList, House, Menu, Search, Settings, TriangleAlert, UserRound, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
@@ -64,7 +64,7 @@ const store = useAstraStore()
 const navOpen = ref(false)
 const searchInput = ref('')
 const pendingCount = computed(() => store.tasks.filter((task) =>
-  ['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION', 'EXECUTION_ERROR'].includes(task.status) || task.inactivity_alert,
+  ['WAITING', 'FAILED'].includes(task.status) || task.inactivity_alert,
 ).length)
 
 const navigation = computed(() => [
@@ -72,7 +72,6 @@ const navigation = computed(() => [
   { to: '/employees', label: '数字员工', icon: UserRound },
   { to: '/tasks', label: '任务管理', icon: ClipboardList },
   { to: '/library', label: '数字图书馆', icon: BookOpen },
-  { to: '/runs', label: '任务记录', icon: Clock3 },
   { to: '/settings', label: '设置', icon: Settings },
 ])
 

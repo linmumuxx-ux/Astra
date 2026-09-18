@@ -5,39 +5,28 @@ from app.state_machine import InvalidTransition, TaskStateMachine
 
 
 @pytest.mark.parametrize(
-    ("current", "target"),
-    [
-        (TaskStatus.READY, TaskStatus.RUNNING),
-        (TaskStatus.READY, TaskStatus.ASSIGNED),
-        (TaskStatus.READY, TaskStatus.QUEUED),
-        (TaskStatus.ASSIGNED, TaskStatus.QUEUED),
-        (TaskStatus.QUEUED, TaskStatus.RUNNING),
-        (TaskStatus.READY, TaskStatus.SUSPENDED),
-        (TaskStatus.RUNNING, TaskStatus.COMPLETED),
-        (TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN),
-        (TaskStatus.WAIT_HUMAN, TaskStatus.RUNNING),
-        (TaskStatus.WAIT_HUMAN, TaskStatus.READY),
-        (TaskStatus.SUSPENDED, TaskStatus.RUNNING),
-        (TaskStatus.SUSPENDED, TaskStatus.READY),
-        (TaskStatus.RUNNING, TaskStatus.PENDING_CONFIRMATION),
-        (TaskStatus.RUNNING, TaskStatus.EXECUTION_ERROR),
-        (TaskStatus.PENDING_CONFIRMATION, TaskStatus.COMPLETED),
-        (TaskStatus.EXECUTION_ERROR, TaskStatus.RUNNING),
-    ],
+    "current", [TaskStatus.FAILED, TaskStatus.WAITING, TaskStatus.SUCCEEDED, TaskStatus.CANCELED]
 )
-def test_valid_v04_transitions(current, target):
-    TaskStateMachine.validate(current, target)
+def test_explicit_continue_is_supported(current):
+    TaskStateMachine.validate(current, TaskStatus.RUNNING)
 
 
-@pytest.mark.parametrize(
-    "terminal",
-    [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED],
-)
-def test_terminal_statuses_cannot_restart(terminal):
+@pytest.mark.parametrize("target", [TaskStatus.WAITING, TaskStatus.SUCCEEDED, TaskStatus.FAILED])
+def test_native_session_outcomes_are_business_states(target):
+    TaskStateMachine.validate(TaskStatus.RUNNING, target)
+
+
+def test_canceled_task_does_not_accept_late_success():
     with pytest.raises(InvalidTransition):
-        TaskStateMachine.validate(terminal, TaskStatus.RUNNING)
+        TaskStateMachine.validate(TaskStatus.CANCELED, TaskStatus.SUCCEEDED)
 
 
-def test_ready_cannot_complete_without_working():
-    with pytest.raises(InvalidTransition):
-        TaskStateMachine.validate(TaskStatus.READY, TaskStatus.COMPLETED)
+def test_only_six_business_states_exist():
+    assert {state.value for state in TaskStatus} == {
+        "PENDING",
+        "RUNNING",
+        "WAITING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELED",
+    }

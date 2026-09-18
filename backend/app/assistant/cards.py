@@ -10,20 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.models import DigitalEmployee, KnowledgeItem, Run, Task
+from app.runtime.presentation import TASK_STATUS
 
-TASK_STATUS_LABEL = {
-    "READY": "待领取",
-    "ASSIGNED": "待启动",
-    "QUEUED": "排队中",
-    "RUNNING": "执行中",
-    "WAIT_HUMAN": "待人工",
-    "SUSPENDED": "已挂起",
-    "PENDING_CONFIRMATION": "待确认",
-    "COMPLETED": "已完成",
-    "FAILED": "已失败",
-    "EXECUTION_ERROR": "执行异常",
-    "CANCELLED": "已取消",
-}
+TASK_STATUS_LABEL = {key: value["label"] for key, value in TASK_STATUS.items()}
 
 EMPLOYEE_STATUS_LABEL = {
     "OFFLINE": "离线",
@@ -76,23 +65,11 @@ def task_card(task: Task) -> dict[str, Any]:
     if task.failure_reason:
         fields.append({"label": "失败原因", "value": task.failure_reason})
     actions = [_navigate("查看任务", f"/tasks/{task.id}")]
-    if task.status in {
-        "READY",
-        "ASSIGNED",
-        "QUEUED",
-        "RUNNING",
-        "WAIT_HUMAN",
-        "SUSPENDED",
-        "EXECUTION_ERROR",
-    }:
-        actions.append(_operation("取消任务", "task_cancel"))
-    if task.status == "EXECUTION_ERROR":
-        actions.append(_operation("重试任务", "task_retry"))
+    if task.status in {"PENDING", "RUNNING", "WAITING"}:
+        actions.append(_operation("停止任务", "task_cancel"))
     if task.status == "FAILED":
-        actions.append(_operation("重试任务", "task_retry"))
-    if task.status in {"SUSPENDED", "WAIT_HUMAN"}:
-        actions.append(_operation("恢复任务", "task_resume"))
-    if task.status in {"READY", "SUSPENDED"}:
+        actions.append(_operation("继续处理", "task_retry"))
+    if task.status == "PENDING" and not task.current_session_id:
         actions.append(_operation("重新分配", "task_reassign"))
     return {
         "card_type": "task",
@@ -143,7 +120,7 @@ def run_card(run: Run) -> dict[str, Any]:
         "status": run.status,
         "status_label": RUN_STATUS_LABEL.get(run.status, run.status),
         "fields": fields,
-        "actions": [_navigate("查看运行", f"/runs/{run.id}")],
+        "actions": [_navigate("查看运行", f"/tasks/{run.task_id}")],
     }
 
 

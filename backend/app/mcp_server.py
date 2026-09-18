@@ -18,6 +18,7 @@ from app.library_schemas import (
 )
 from app.library_service import KnowledgeService, LibraryError
 from app.llm_wiki import LlmWikiError
+from app.runtime.runtime_context import RuntimeContextError
 
 
 class StaticTokenVerifier:
@@ -96,26 +97,21 @@ def build_mcp_server() -> MCPServer:
 
     @server.tool(name="library_submit_experience", structured_output=True)
     async def library_submit_experience(
+        runtime_context: str,
         title: str,
         summary: str,
         content_md: str,
-        source_employee_id: str | None = None,
-        source_task_id: str | None = None,
-        source_run_id: str | None = None,
         evidence: list[dict[str, Any]] | None = None,
         tags: list[str] | None = None,
         experience_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """提交可复用经验；服务端始终创建 type=experience、status=candidate。"""
+        """提交可复用经验；来源身份由服务端根据 runtime_context 解析，始终创建候选。"""
 
         try:
             payload = LibrarySubmitExperienceInput(
                 title=title,
                 summary=summary,
                 content_md=content_md,
-                source_employee_id=source_employee_id,
-                source_task_id=source_task_id,
-                source_run_id=source_run_id,
                 evidence=evidence or [],
                 tags=tags or [],
                 experience_data=experience_data or {},
@@ -124,8 +120,10 @@ def build_mcp_server() -> MCPServer:
             raise ToolError(str(exc)) from None
         async with SessionLocal() as session:
             try:
-                result = await KnowledgeService(session).mcp_submit_experience(payload)
-            except LibraryError as exc:
+                result = await KnowledgeService(session).mcp_submit_experience(
+                    payload, runtime_context=runtime_context
+                )
+            except (LibraryError, RuntimeContextError) as exc:
                 raise ToolError(str(exc)) from None
         return result.model_dump(mode="json")
 

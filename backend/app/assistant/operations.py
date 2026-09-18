@@ -18,7 +18,7 @@ from app.assistant.models import AssistantOperation
 from app.config.settings import Settings, get_settings
 from app.domain import Priority, TaskStatus, TaskType
 from app.models import DigitalEmployee, Task, TaskCategory
-from app.schemas import AcceptanceCriterion, TaskAction, TaskCreate
+from app.schemas import AcceptanceCriterion, TaskCreate
 from app.services import TaskService
 
 RISK_LABEL = {"L1": "低", "L2": "中", "L3": "高"}
@@ -201,19 +201,19 @@ class OperationService:
 
         status = TaskStatus(task.status)
         if action == "cancel":
-            if status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            if status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
                 raise OperationError(f"任务已处于终态 {status.value}，无需取消")
             risk = "L3" if status is TaskStatus.RUNNING else "L2"
             operation_type = "task_cancel"
             note = reason or "平台助手取消任务"
         elif action == "retry":
-            if status not in {TaskStatus.FAILED, TaskStatus.EXECUTION_ERROR}:
+            if status not in {TaskStatus.FAILED}:
                 raise OperationError(f"只有失败或执行异常的任务可以重试，当前状态 {status.value}")
             risk = "L2"
             operation_type = "task_retry"
             note = reason or "平台助手重试任务"
         else:
-            if status not in {TaskStatus.SUSPENDED, TaskStatus.WAIT_HUMAN}:
+            if status not in {TaskStatus.WAITING}:
                 raise OperationError(f"只有挂起或待人工的任务可以恢复，当前状态 {status.value}")
             risk = "L2"
             operation_type = "task_resume"
@@ -252,7 +252,7 @@ class OperationService:
         if not task:
             raise OperationError(f"任务不存在：{task_id}", status_code=404)
         status = TaskStatus(task.status)
-        if status not in {TaskStatus.READY, TaskStatus.SUSPENDED}:
+        if status not in {TaskStatus.PENDING}:
             raise OperationError(
                 f"只有待领取或已挂起的任务可以重新分配，当前状态 {status.value}"
             )
@@ -359,7 +359,7 @@ class OperationService:
 
     async def _execute(self, operation: AssistantOperation) -> dict[str, Any]:
         # 延迟导入避免模块循环：app.api.routes 依赖大量运行时模块。
-        from app.api.routes import cancel_task, recover_task, resume_task
+        from app.runtime.lifecycle import RuntimeService
 
         request = operation.request_json or {}
         if operation.operation_type == "task_create":
@@ -389,35 +389,28 @@ class OperationService:
         if not task:
             raise OperationError(f"任务不存在：{task_id}", status_code=404)
         if operation.operation_type == "task_cancel":
-            result = await cancel_task(task_id, TaskAction(reason=request.get("reason")), self.session)
-        elif operation.operation_type == "task_resume":
-            result = await resume_task(task_id, TaskAction(note=request.get("reason")), self.session)
-        elif operation.operation_type == "task_retry":
-            if task.status == TaskStatus.EXECUTION_ERROR:
-                result = await recover_task(task_id, self.session)
-            else:
-                result = await TaskService(self.session).reopen(
-                    task,
-                    TaskStatus.READY,
-                    current_progress="等待重新领取",
-                    message="平台助手发起重试",
-                    detail={"by": operation.user_id, "operation_id": operation.operation_id},
-                )
+            result = await RuntimeService(self.session).stop(task_id)
+        elif operation.operation_type in {"task_resume", "task_retry"}:
+            result = await RuntimeService(self.session).send(task_id, {
+                "parts": [{"type": "text", "text": request.get("reason") or "请继续处理当前任务"}],
+            })
         elif operation.operation_type == "task_reassign":
             status = TaskStatus(task.status)
-            if status not in {TaskStatus.READY, TaskStatus.SUSPENDED}:
+            if status not in {TaskStatus.PENDING}:
                 raise OperationError(
                     f"任务状态已变为 {status.value}，请重新发起重分配"
                 )
             employee = await self._require_eligible_employee(
                 task, str(request.get("employee_id") or "")
             )
+            if task.current_session_id or task.pending_message_id:
+                raise OperationError("已绑定 Session 的任务不能重新分配员工")
             previous_employee_id = task.employee_id
             if previous_employee_id == employee.id:
                 raise OperationError(f"任务已分配给 {employee.name}")
             task.employee_id = employee.id
             task.claimed_at = None
-            task.opencode_session_id = None
+            task.current_session_id = None
             task.execution_environment_snapshot = None
             await TaskService(self.session).add_event(
                 task,

@@ -43,10 +43,10 @@ const STATUS_DETAIL: Record<string, string> = {
   OFFLINE: '当前不可用',
 }
 
-const activeTaskStatuses = new Set(['READY', 'ASSIGNED', 'QUEUED', 'RUNNING', 'WAIT_HUMAN', 'SUSPENDED', 'EXECUTION_ERROR'])
+const activeTaskStatuses = new Set(['PENDING', 'RUNNING', 'WAITING'])
 
 export function employeeCurrentTask(employeeId: string, tasks: Task[]): Task | undefined {
-  const statusPriority: Record<string, number> = { WAIT_HUMAN: 0, EXECUTION_ERROR: 0, RUNNING: 0, QUEUED: 1, SUSPENDED: 2, ASSIGNED: 3, READY: 4 }
+  const statusPriority: Record<string, number> = { RUNNING: 0, WAITING: 1, PENDING: 2 }
   return tasks
     .filter((task) => task.employee_id === employeeId && activeTaskStatuses.has(task.status))
     .sort((left, right) => (statusPriority[left.status] ?? 3) - (statusPriority[right.status] ?? 3) || right.updated_at.localeCompare(left.updated_at))[0]
@@ -73,7 +73,7 @@ export function toEmployeeViewModel(employee: Employee, tasks: Task[]): Employee
     currentTask,
     currentTaskName: currentTask?.title ?? '暂无当前任务',
     statusTextLong,
-    needHelp: employee.status === 'WAIT_HUMAN' || currentTask?.status === 'WAIT_HUMAN',
+    needHelp: employee.status === 'WAIT_HUMAN' || currentTask?.status === 'WAITING',
     lastActiveAt: currentTask?.last_activity_at ?? employee.last_heartbeat ?? employee.updated_at,
   }
 }

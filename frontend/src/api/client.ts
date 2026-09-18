@@ -22,12 +22,11 @@ import type {
   RelatedTask,
   Run,
   RunUsage,
-  RunPage,
   Task,
   TaskCategory,
   TaskCategoryWrite,
   TaskUsage,
-  TaskWorkbench,
+  TaskWorkspaceBinding,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
@@ -72,30 +71,30 @@ export const api = {
     request<Employee>('/api/employees', { method: 'POST', body: JSON.stringify(body) }),
   updateEmployee: (id: string, body: Record<string, unknown>) =>
     request<Employee>(`/api/employees/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteEmployee: (id: string) =>
+    request<{ deleted: string }>(`/api/employees/${id}`, { method: 'DELETE' }),
   updateEnvironment: (id: string, body: Record<string, unknown>) =>
     request<ExecutionEnvironment>(`/api/employees/${id}/environment`, { method: 'PUT', body: JSON.stringify(body) }),
   testEnvironment: (id: string) =>
     request<{ status: string; checked_at: string; checks: Array<{ name: string; passed: boolean; detail: string }> }>(`/api/employees/${id}/environment/test`, { method: 'POST' }),
   tasks: (query = '') => request<Task[]>(`/api/tasks${query}`),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
-  taskWorkbench: (id: string, beforeSequence?: number) =>
-    request<TaskWorkbench>(`/api/tasks/${id}/workspace${beforeSequence ? `?before_sequence=${beforeSequence}` : ''}`),
-  postTaskMessage: (id: string, content: string) =>
-    request<TaskWorkbench>(`/api/tasks/${id}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
-  answerInquiry: (id: string, answer: string) =>
-    request<TaskWorkbench>(`/api/inquiries/${id}/answer`, { method: 'POST', body: JSON.stringify({ answer }) }),
+  taskWorkspace: (id: string) => request<TaskWorkspaceBinding>(`/api/tasks/${id}/workspace`),
+  taskRepo: (id: string) => request<{name: string; branch: string; commit: string; dirty: boolean; changes: number}>(`/api/tasks/${id}/repo`),
+  uploadTaskFile: async (id: string, file: File): Promise<{path: string}> => {
+    const response = await fetch(`${API_BASE}/api/tasks/${id}/files/${encodeURIComponent(file.name)}`, { method: 'POST', body: file })
+    const result = await response.json()
+    if (!response.ok) throw new ApiError(result.detail, response.status)
+    return result
+  },
   taskUsage: (id: string) => request<TaskUsage>(`/api/tasks/${id}/usage`),
   events: (limit = 50) => request<AstraEvent[]>(`/api/events?limit=${limit}`),
   taskEvents: (id: string) => request<AstraEvent[]>(`/api/tasks/${id}/events`),
-  runPage: (params: URLSearchParams) => request<RunPage>(`/api/runs/page?${params}`),
-  runs: () => request<Run[]>('/api/runs'),
-  run: (id: string) => request<Run>(`/api/runs/${id}`),
-  runUsage: (id: string) => request<RunUsage>(`/api/runs/${id}/usage`),
-  runEvents: (id: string) => request<AstraEvent[]>(`/api/runs/${id}/events`),
-  taskRuns: (id: string) => request<Run[]>(`/api/tasks/${id}/runs`),
   evidence: (id: string) => request<Evidence[]>(`/api/tasks/${id}/evidence`),
   taskAction: (id: string, action: string, body: Record<string, unknown> = {}) =>
     request<Task>(`/api/tasks/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteTask: (id: string) =>
+    request<{ deleted: string }>(`/api/tasks/${id}`, { method: 'DELETE' }),
   employeeAction: (id: string, action: 'pause' | 'resume') =>
     request<Employee>(`/api/employees/${id}/${action}`, { method: 'POST' }),
   createTask: (body: Record<string, unknown>) =>

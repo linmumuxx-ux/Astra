@@ -85,7 +85,7 @@ async def summarize_runs(session: AsyncSession, runs: list[Run]) -> dict:
         tasks = (
             (
                 await session.execute(
-                    select(Task).where(Task.id.in_(task_ids), Task.status == TaskStatus.COMPLETED)
+                    select(Task).where(Task.id.in_(task_ids), Task.status == TaskStatus.SUCCEEDED)
                 )
             )
             .scalars()

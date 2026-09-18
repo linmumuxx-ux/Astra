@@ -1,7 +1,7 @@
 <template>
-  <AstraPanel
-    :title="creating ? '创建数字员工' : `${employeeDisplayName(employee?.name)} 配置`"
-    subtitle="配置描述员工职责与工作环境；运行状态由系统状态机维护。"
+  <component
+    :is="embedded ? 'div' : AstraPanel"
+    v-bind="embedded ? {} : { title: creating ? '创建数字员工' : `${employeeDisplayName(employee?.name)} 配置`, subtitle: '配置描述员工职责与工作环境；运行状态由系统状态机维护。' }"
   >
     <nav class="sub-tabs">
       <button v-for="item in tabs" :key="item.id" :class="{ active: employeeTab === item.id }" @click="switchTab(item.id)">{{ item.label }}</button>
@@ -90,8 +90,8 @@
       <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div>
     </form>
 
-    <StickyActionBar v-if="isDirty" :dirty="isDirty" :saving="saving" :save-label="creating ? '创建员工' : '保存配置'" @save="save" @cancel="reset" />
-  </AstraPanel>
+    <StickyActionBar v-if="isDirty && !embedded" :dirty="isDirty" :saving="saving" :save-label="creating ? '创建员工' : '保存配置'" @save="save" @cancel="reset" />
+  </component>
 </template>
 
 <script setup lang="ts">
@@ -110,8 +110,8 @@ import { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/scene
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, formatTime } from '@/utils/format'
 
-const props = defineProps<{ employee: Employee | null; creating: boolean; categories: TaskCategory[] }>()
-const emit = defineEmits<{ (e: 'saved', id: string): void }>()
+const props = defineProps<{ employee: Employee | null; creating: boolean; categories: TaskCategory[]; embedded?: boolean }>()
+const emit = defineEmits<{ (e: 'saved', id: string, environmentOk?: boolean): void }>()
 const store = useAstraStore()
 
 const tabs = [{ id: 'basic', label: '基本信息' }, { id: 'scope', label: '工作范围' }, { id: 'environment', label: '工作环境' }, { id: 'policy', label: '工作策略' }]
@@ -208,15 +208,16 @@ async function save() {
       if (environmentChanged()) { await api.updateEnvironment(employeeId, environmentPayload()); shouldCheckEnvironment = true }
     }
     const checkResult = shouldCheckEnvironment ? await api.testEnvironment(employeeId) : null
+    const environmentOk = checkResult ? checkResult.status === 'AVAILABLE' : true
     await store.refresh()
     originalSnapshot.value = snapshot()
-    emit('saved', employeeId)
     if (checkResult) {
-      checks.value = checkResult.checks; messageIsError.value = checkResult.status !== 'AVAILABLE'
-      message.value = checkResult.status === 'AVAILABLE' ? '配置已保存，工作环境检测正常。' : '配置已保存，但工作环境检测异常，请查看检查项。'
+      checks.value = checkResult.checks; messageIsError.value = !environmentOk
+      message.value = environmentOk ? '配置已保存，工作环境检测正常。' : '配置已保存，但工作环境检测异常，请查看检查项。'
     } else {
       message.value = '配置已保存，工作环境状态保持不变。'
     }
+    emit('saved', employeeId, environmentOk)
   } catch (error) {
     messageIsError.value = true; message.value = error instanceof Error ? error.message : '保存失败'
   } finally { saving.value = false }
@@ -247,7 +248,7 @@ function reset() {
   fill(props.employee ?? undefined)
 }
 
-defineExpose({ getDirty: () => isDirty.value, reset })
+defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving, reset, save })
 </script>
 
 <style scoped>

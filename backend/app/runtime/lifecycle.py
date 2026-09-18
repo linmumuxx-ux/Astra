@@ -1,1318 +1,573 @@
+"""Task business lifecycle backed by one native OpenCode Session.
+
+There is no Run execution state machine, event mirror, or message database here.
+The only retained outbound content is an unacknowledged submission, cleared on ACK.
+"""
+
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+import asyncio
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+from secrets import token_hex
+from time import time_ns
 
-from sqlalchemy import func, or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, ExecutionMode, RunStatus, RunTriggerReason, TaskStatus
+from app.domain import EmployeeStatus, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
 from app.event_bus import event_bus
-from app.models import (
-    DigitalEmployee,
-    Event,
-    OpenCodeExecutionEnvironment,
-    Run,
-    RunDispatchOutbox,
-    RunInquiry,
-    Task,
-    TaskSession,
+from app.executors.errors import OpenCodeExecutionError, OpenCodeSessionNotFound
+from app.executors.opencode_prompt import (
+    bind_task_prompt_context,
+    build_task_prompt,
+    resolve_task_prompt_context,
 )
+from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
-from app.runtime.failure import FailureCode, failure_for, record_failure
-from app.services import EmployeeService, TaskService, ensure_task_session
+from app.runtime.runtime_context import (
+    build_runtime_context_part,
+    generate_runtime_context,
+    hash_runtime_context,
+    runtime_context_id,
+)
+from app.runtime.session_connection import connect, prepare_workspace, resolve_environment
+from app.runtime.session_state import SessionState, derive_session_state
+from app.services import TaskService
 
-ACTIVE_RUN_STATUSES = {
-    RunStatus.QUEUED.value,
-    RunStatus.STARTING.value,
-    RunStatus.RUNNING.value,
-    RunStatus.WAITING_INPUT.value,
+_TERMINAL_SESSION_STATUSES = {
+    RuntimeSessionStatus.SUCCEEDED.value,
+    RuntimeSessionStatus.FAILED.value,
+    RuntimeSessionStatus.INTERRUPTED.value,
 }
-TERMINAL_RUN_STATUSES = {
-    RunStatus.COMPLETED.value,
-    RunStatus.FAILED.value,
-    RunStatus.TIMEOUT.value,
-    RunStatus.LOST.value,
-    RunStatus.SUSPENDED.value,
-    RunStatus.CANCELLED.value,
-}
+
+
+def message_id():
+    # Native OpenCode messages are ordered lexically by their 48-bit time prefix.
+    stamp = ((time_ns() // 1_000_000) * 0x1000) & ((1 << 48) - 1)
+    return f"msg_{stamp:012x}{token_hex(7)}"
 
 
 class RuntimeStateError(ValueError):
     pass
 
 
-def executor_type_for_snapshot(snapshot: dict | None) -> str:
-    settings = get_settings()
-    if str((snapshot or {}).get("mode") or "").upper() == ExecutionMode.LINUX_REMOTE:
-        return (
-            "opencode_server_ssh"
-            if settings.executor_type == "opencode_server"
-            else "opencode_cli_fallback_ssh"
-        )
-    return settings.executor_type
-
-
 class RuntimeService:
-    """Transactional owner of Task, Run and Employee execution state."""
-
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session):
         self.session = session
 
-    @staticmethod
-    def _resolve_trigger_reason(
-        task: Task,
-        detail: dict | None,
-        explicit: RunTriggerReason | str | None,
-    ) -> str:
-        if explicit is not None:
-            return RunTriggerReason(str(explicit)).value
-        detail = detail or {}
-        if detail.get("rerun"):
-            return RunTriggerReason.USER_CONTINUE.value
-        if detail.get("continue"):
-            return RunTriggerReason.USER_CONTINUE.value
-        if detail.get("dispatch") == "manual":
-            return RunTriggerReason.INITIAL.value
-        if task.status == TaskStatus.WAIT_HUMAN:
-            return RunTriggerReason.HUMAN_RESUME.value
-        if task.status == TaskStatus.SUSPENDED:
-            return RunTriggerReason.USER_CONTINUE.value
-        if task.status == TaskStatus.EXECUTION_ERROR or detail.get("recovery"):
-            return RunTriggerReason.WORKER_RECOVERY.value
-        return RunTriggerReason.INITIAL.value
-
-    @staticmethod
-    def reset_session(task: Task) -> None:
-        task.opencode_session_id = None
-        if task.human_intervention:
-            task.human_intervention = {
-                key: value for key, value in task.human_intervention.items() if not key.startswith("runtime_")
-            }
-
-    async def lock_task(self, task_id: str) -> Task | None:
-        return await self.session.scalar(
+    async def lock_task(self, task_id):
+        task = await self.session.scalar(
             select(Task).where(Task.id == task_id).with_for_update().execution_options(populate_existing=True)
         )
+        if not task:
+            raise RuntimeStateError("任务不存在")
+        return task
 
-    async def lock_employee(self, employee_id: str) -> DigitalEmployee | None:
-        return await self.session.scalar(
+    async def project(self, task, status, *, detail=None):
+        status = TaskStatus(status)
+        if status == TaskStatus.RUNNING and task.status != status:
+            task.turn_started_at = datetime.now(UTC)
+        if task.status != status:
+            await TaskService(self.session).transition(
+                task,
+                status,
+                current_progress=detail,
+                commit=False,
+            )
+        if task.employee_id:
+            employee = await self.session.get(DigitalEmployee, task.employee_id)
+            if employee:
+                active = await self.session.scalar(
+                    select(Task.id)
+                    .where(
+                        Task.employee_id == employee.id,
+                        or_(
+                            Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                            Task.pending_message_id.is_not(None),
+                        ),
+                    )
+                    .limit(1)
+                )
+                employee.current_task_count = int(bool(active))
+                if active:
+                    employee.status = (
+                        EmployeeStatus.WAIT_HUMAN if status == TaskStatus.WAITING else EmployeeStatus.WORKING
+                    )
+                elif employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
+                    employee.status = EmployeeStatus.IDLE
+        await self.session.commit()
+        await event_bus.publish({"type": "TASK_STATUS", "task_id": task.id, "status": task.status})
+
+    async def _runtime_session(self, task: Task) -> RuntimeSession | None:
+        if not task.current_session_id:
+            return None
+        return await self.session.get(RuntimeSession, task.current_session_id)
+
+    async def _sync_session_state(self, task: Task, state: SessionState) -> RuntimeSession | None:
+        """Persist the derived OpenCode outcome on the bound RuntimeSession."""
+        runtime_session = await self._runtime_session(task)
+        if not runtime_session:
+            return None
+        now = datetime.now(UTC)
+        runtime_session.status = state.status
+        runtime_session.terminal_reason = state.terminal_reason
+        runtime_session.finish_reason = state.finish_reason
+        if state.last_message_id:
+            runtime_session.last_message_id = state.last_message_id
+        runtime_session.last_activity_at = now
+        if state.status in _TERMINAL_SESSION_STATUSES:
+            runtime_session.finished_at = state.finished_at or now
+        elif state.status in {
+            RuntimeSessionStatus.RUNNING.value,
+            RuntimeSessionStatus.WAITING.value,
+        }:
+            # finished_at only ever holds the current terminal time.
+            runtime_session.finished_at = None
+        return runtime_session
+
+    async def apply_session_state(self, task: Task, state: SessionState) -> None:
+        """Persist one derived Session outcome and project it onto the Task."""
+        await self._sync_session_state(task, state)
+        await self._project_session_state(task, state)
+
+    async def _project_session_state(self, task: Task, state: SessionState) -> None:
+        """The single Session -> Task mapping. Never changes status on UNKNOWN."""
+        if state.status == RuntimeSessionStatus.RUNNING.value:
+            await self.project(task, TaskStatus.RUNNING)
+        elif state.status == RuntimeSessionStatus.WAITING.value:
+            await self.project(task, TaskStatus.WAITING)
+        elif state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            await self.project(task, TaskStatus.SUCCEEDED)
+        elif state.status == RuntimeSessionStatus.FAILED.value:
+            task.failure_reason = task.failure_reason or "Session 执行结束但未产生有效回复"
+            await self.project(task, TaskStatus.FAILED)
+        elif state.status == RuntimeSessionStatus.INTERRUPTED.value:
+            if state.terminal_reason == SessionTerminalReason.TIMEOUT.value:
+                task.failure_reason = "执行达到配置的时间上限，已停止当前 Session；可继续同一 Session"
+                await self.project(task, TaskStatus.FAILED)
+            else:
+                await self.session.commit()
+        else:
+            await self.session.commit()
+
+    async def _supersede_session(self, old_id: str | None, new_id: str, *, interrupted: bool) -> None:
+        if not old_id or old_id == new_id:
+            return
+        old = await self.session.get(RuntimeSession, old_id)
+        if not old:
+            return
+        if old.status not in _TERMINAL_SESSION_STATUSES:
+            old.status = RuntimeSessionStatus.INTERRUPTED.value
+            old.terminal_reason = SessionTerminalReason.ABORTED.value
+            old.finished_at = datetime.now(UTC)
+        old.superseded_by = new_id
+        old.superseded_at = datetime.now(UTC)
+
+    async def _wait_for_session_stop(self, client, directory: Path, session_id: str) -> None:
+        """Abort, then wait until the old Session can no longer write the workspace."""
+        timeout = get_settings().opencode_restart_abort_timeout_seconds
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                status = await client.status(directory, session_id)
+            except OpenCodeSessionNotFound:
+                return
+            if status not in {"busy", "retry"}:
+                return
+            await asyncio.sleep(0.2)
+        raise RuntimeStateError("旧 Session 未在超时时间内停止，未创建新 Session")
+
+    async def start(self, task_id: str, *, restart: bool = False):
+        task = await self.lock_task(task_id)
+        if task.current_session_id and not restart:
+            raise RuntimeStateError("任务已有 Session，请在 Workspace 中继续；重新开始需显式创建新 Session")
+        if task.status == TaskStatus.RUNNING and not restart:
+            raise RuntimeStateError("任务仍在运行，请在 Workspace 中继续；重新开始需显式创建新 Session")
+        if task.pending_message_id:
+            raise RuntimeStateError("任务有未确认的输入，请先停止或重连")
+        employee = await self.session.scalar(
             select(DigitalEmployee)
-            .where(DigitalEmployee.id == employee_id)
+            .where(
+                DigitalEmployee.id == task.employee_id,
+            )
             .options(selectinload(DigitalEmployee.execution_environment))
             .with_for_update()
-            .execution_options(populate_existing=True)
         )
-
-    async def active_run(self, task_id: str) -> Run | None:
-        task = await self.session.get(Task, task_id)
-        if task and task.active_run_id:
-            linked = await self.session.scalar(
-                select(Run).where(Run.id == task.active_run_id).with_for_update()
-            )
-            if linked and linked.task_id == task_id and linked.status in ACTIVE_RUN_STATUSES:
-                return linked
-        return await self.session.scalar(
-            select(Run)
-            .where(Run.task_id == task_id, Run.status.in_(ACTIVE_RUN_STATUSES))
-            .order_by(Run.run_number.desc())
-            .with_for_update()
-        )
-
-    async def _assert_slot_available(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-    ) -> None:
-        if task.active_run_id:
-            linked = await self.session.get(Run, task.active_run_id)
-            if linked and linked.task_id == task.id and linked.status in ACTIVE_RUN_STATUSES:
-                raise RuntimeStateError(f"任务已有活动运行：{linked.id}")
-            task.active_run_id = None
-        if employee.active_run_id:
-            linked = await self.session.get(Run, employee.active_run_id)
-            if linked and linked.employee_id == employee.id and linked.status in ACTIVE_RUN_STATUSES:
-                raise RuntimeStateError(f"员工已有活动运行：{linked.id}")
-            employee.active_run_id = None
-        reserved_for_task = task.status in {TaskStatus.ASSIGNED, TaskStatus.WAIT_HUMAN} or (
-            task.status == TaskStatus.READY and bool(task.claimed_at) and task.employee_id == employee.id
-        )
-        if employee.current_task_count > 0 and not reserved_for_task:
-            raise RuntimeStateError("员工执行槽已被其他任务占用")
-
-        active = await self.session.scalar(
-            select(Run)
-            .where(Run.task_id == task.id, Run.status.in_(ACTIVE_RUN_STATUSES))
-            .order_by(Run.run_number.desc())
-            .with_for_update()
-        )
-        if active:
-            task.active_run_id = active.id
-            raise RuntimeStateError(f"任务已有活动运行：{active.id}")
-        employee_active = await self.session.scalar(
-            select(Run)
+        if not employee or not employee.enabled or not employee.execution_environment:
+            raise RuntimeStateError("请先分配已配置运行环境的员工")
+        occupied = await self.session.scalar(
+            select(Task.id)
             .where(
-                Run.employee_id == employee.id,
-                Run.status.in_(ACTIVE_RUN_STATUSES),
-            )
-            .order_by(Run.created_at.desc())
-            .with_for_update()
-        )
-        if employee_active:
-            employee.active_run_id = employee_active.id
-            raise RuntimeStateError(f"员工已有活动运行：{employee_active.id}")
-
-    async def validate_invariants(self) -> list[str]:
-        """Read-only audit, including missing pointers and duplicate active executions."""
-        runs = (await self.session.scalars(select(Run).where(Run.status.in_(ACTIVE_RUN_STATUSES)))).all()
-        tasks = {task.id: task for task in (await self.session.scalars(select(Task))).all()}
-        employees = {
-            employee.id: employee for employee in (await self.session.scalars(select(DigitalEmployee))).all()
-        }
-        violations = []
-        for run in runs:
-            task, employee = tasks.get(run.task_id), employees.get(run.employee_id)
-            expected_task = {
-                "QUEUED": "QUEUED",
-                "STARTING": "QUEUED",
-                "RUNNING": "RUNNING",
-                "WAITING_INPUT": "WAIT_HUMAN",
-            }[run.status]
-            expected_employee = "WAIT_HUMAN" if run.status == "WAITING_INPUT" else "WORKING"
-            if not task or task.active_run_id != run.id or task.status != expected_task:
-                violations.append(f"task-run:{run.id}")
-            if (
-                not employee
-                or employee.active_run_id != run.id
-                or employee.status != expected_employee
-                or employee.current_task_count != 1
-            ):
-                violations.append(f"employee-run:{run.id}")
-        active_ids = {run.id for run in runs}
-        for task in tasks.values():
-            if task.status in {"QUEUED", "RUNNING", "WAIT_HUMAN"} and task.active_run_id not in active_ids:
-                violations.append(f"task-orphan:{task.id}")
-            if task.active_run_id and task.active_run_id not in active_ids:
-                violations.append(f"task-pointer:{task.id}")
-        for employee in employees.values():
-            if employee.status in {"WORKING", "WAIT_HUMAN"} and employee.active_run_id not in active_ids:
-                violations.append(f"employee-orphan:{employee.id}")
-            if employee.active_run_id and employee.active_run_id not in active_ids:
-                violations.append(f"employee-pointer:{employee.id}")
-        return violations
-
-    async def _prepare_outbox(self, run: Run, *, reset: bool = False) -> RunDispatchOutbox:
-        await self.session.flush()
-        outbox = await self.session.scalar(
-            select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id).with_for_update()
-        )
-        now = datetime.now(UTC)
-        if not outbox:
-            outbox = RunDispatchOutbox(
-                id=f"OUT-{uuid4().hex[:12].upper()}",
-                run_id=run.id,
-                status="PENDING",
-                next_retry_at=now,
-            )
-            self.session.add(outbox)
-        elif reset:
-            outbox.status = "PENDING"
-            outbox.next_retry_at = now
-            outbox.sent_at = None
-            outbox.last_error = None
-        return outbox
-
-    async def _cancel_open_inquiries(self, task_id: str) -> None:
-        session_ids = select(TaskSession.id).where(TaskSession.task_id == task_id)
-        inquiries = (
-            (
-                await self.session.execute(
-                    select(RunInquiry)
-                    .where(
-                        RunInquiry.session_id.in_(session_ids),
-                        RunInquiry.status.in_(["OPEN", "PENDING"]),
-                    )
-                    .with_for_update()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for inquiry in inquiries:
-            inquiry.status = "CANCELLED"
-
-    async def queue_new_run(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-        *,
-        current_progress: str,
-        message: str,
-        detail: dict | None = None,
-        trigger_reason: RunTriggerReason | str | None = None,
-        reset_runtime_session: bool = False,
-        commit: bool = True,
-    ) -> Run:
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(employee.id)
-        if not locked_task or not locked_employee:
-            raise RuntimeStateError("任务或员工不存在")
-        task = locked_task
-        employee = locked_employee
-        pending_abort = await self.session.scalar(
-            select(Run.id)
-            .where(
-                Run.task_id == task.id,
-                Run.executor_status == "ABORT_PENDING",
+                Task.employee_id == employee.id,
+                Task.id != task.id,
+                or_(
+                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                    Task.pending_message_id.is_not(None),
+                ),
             )
             .limit(1)
         )
-        if pending_abort:
-            raise RuntimeStateError("原 Agent 会话正在停止，Runtime 将自动重试，请稍后继续")
-        await self._assert_slot_available(task, employee)
-
-        previous_run = await self.session.scalar(
-            select(Run).where(Run.task_id == task.id).order_by(Run.run_number.desc()).limit(1)
+        if occupied:
+            raise RuntimeStateError("员工正在处理其他任务")
+        environment = employee.execution_environment
+        initial_id = message_id()
+        reserved = await self.session.execute(
+            update(Task)
+            .where(Task.id == task.id, Task.pending_message_id.is_(None))
+            .values(pending_message_id=initial_id)
         )
-        run_number = (
-            await self.session.scalar(select(func.max(Run.run_number)).where(Run.task_id == task.id)) or 0
-        ) + 1
-        if reset_runtime_session:
-            self.reset_session(task)
-        snapshot = task.execution_environment_snapshot
-        if not snapshot:
-            environment = employee.execution_environment
-            if not environment:
-                environment = await self.session.scalar(
-                    select(OpenCodeExecutionEnvironment).where(
-                        OpenCodeExecutionEnvironment.employee_id == employee.id
-                    )
-                )
-            snapshot = environment_snapshot(environment) if environment else {}
-        task.execution_environment_snapshot = snapshot
-        now = datetime.now(UTC)
-        resolved_trigger = self._resolve_trigger_reason(task, detail, trigger_reason)
-        run = Run(
-            id=f"RUN-{uuid4().hex[:10].upper()}",
-            task_id=task.id,
-            employee_id=employee.id,
-            previous_run_id=previous_run.id if previous_run else None,
-            run_number=run_number,
-            trigger_reason=resolved_trigger,
-            retry_index=0,
-            status=RunStatus.QUEUED,
-            executor_type=executor_type_for_snapshot(snapshot),
-            opencode_session_id=task.opencode_session_id,
-            queued_at=now,
-            execution_environment_snapshot=snapshot,
-        )
-        self.session.add(run)
-        await self.session.flush()
-        task.active_run_id = run.id
-        employee.active_run_id = run.id
-        work_session = await ensure_task_session(self.session, task)
-        work_session.current_run_id = run.id
-        work_session.status = "ACTIVE"
-        EmployeeService.reserve(employee)
-        task.finished_at = None
-        await self._prepare_outbox(run)
-        service = TaskService(self.session)
-        event_detail = {**(detail or {}), "trigger_reason": run.trigger_reason, "retry_index": 0}
-        if TaskStatus(task.status) in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
-            await service.reopen(
-                task,
-                TaskStatus.QUEUED,
-                current_progress=current_progress,
-                message=message,
-                detail=event_detail,
-                run_id=run.id,
-                commit=False,
-            )
-        else:
-            await service.transition(
-                task,
-                TaskStatus.QUEUED,
-                current_progress=current_progress,
-                message=message,
-                detail=event_detail,
-                run_id=run.id,
-                commit=False,
-            )
-        if commit:
-            await self.session.commit()
-            await self.session.refresh(run)
-            await event_bus.publish({"type": "TASK_QUEUED", "task_id": task.id, "status": task.status})
-        return run
-
-    async def queue_waiting_run(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-        *,
-        current_progress: str,
-        message: str,
-        detail: dict | None = None,
-        commit: bool = True,
-    ) -> Run:
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(employee.id)
-        if not locked_task or not locked_employee:
-            raise RuntimeStateError("任务或员工不存在")
-        task = locked_task
-        employee = locked_employee
-        run = await self.active_run(task.id)
-        if not run or run.status != RunStatus.WAITING_INPUT:
-            raise RuntimeStateError("任务没有可继续的等待中运行")
-        if employee.active_run_id not in {None, run.id}:
-            raise RuntimeStateError(f"员工已有活动运行：{employee.active_run_id}")
-        run.status = RunStatus.QUEUED
-        run.trigger_reason = RunTriggerReason.HUMAN_RESUME
-        run.queued_at = datetime.now(UTC)
-        run.dispatched_at = None
-        run.finished_at = None
-        record_failure(run, None)
-        task.active_run_id = run.id
-        employee.active_run_id = run.id
-        EmployeeService.reserve(employee)
-        await self._prepare_outbox(run, reset=True)
-        await TaskService(self.session).transition(
-            task,
-            TaskStatus.QUEUED,
-            current_progress=current_progress,
-            message=message,
-            detail=detail,
-            run_id=run.id,
-            commit=False,
-        )
-        if commit:
-            await self.session.commit()
-            await self.session.refresh(run)
-            await event_bus.publish({"type": "TASK_QUEUED", "task_id": task.id, "status": task.status})
-        return run
-
-    async def claim_run(
-        self,
-        run_id: str,
-        *,
-        worker_id: str,
-    ) -> tuple[Task, DigitalEmployee, Run, str] | None:
-        reference = await self.session.get(Run, run_id)
-        if not reference:
-            return None
-        task = await self.lock_task(reference.task_id)
-        employee = await self.lock_employee(reference.employee_id)
-        run = await self.session.scalar(select(Run).where(Run.id == run_id).with_for_update())
-        if not task or not employee or not run or run.status != RunStatus.QUEUED:
-            return None
-        if task.status != TaskStatus.QUEUED:
-            return None
-        if task.active_run_id not in {None, run.id} or employee.active_run_id not in {None, run.id}:
-            return None
-        token = uuid4().hex
-        now = datetime.now(UTC)
-        task.active_run_id = run.id
-        employee.active_run_id = run.id
-        EmployeeService.reserve(employee)
-        record_failure(run, None)
-        run.status = RunStatus.STARTING
-        run.worker_id = worker_id[:160]
-        run.execution_token = token
-        run.started_at = run.started_at or now
-        run.heartbeat_at = now
-        run.executor_status = "STARTING"
-        await self.session.commit()
-        return task, employee, run, token
-
-    async def bind_session(self, task: Task, run: Run, session_id: str, execution_token: str) -> bool:
-        task = await self.lock_task(task.id)
-        employee = await self.lock_employee(run.employee_id)
-        run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if (
-            not task
-            or not employee
-            or not run
-            or run.execution_token != execution_token
-            or run.status not in {RunStatus.STARTING, RunStatus.RUNNING}
-            or task.active_run_id != run.id
-            or employee.active_run_id != run.id
-        ):
-            await self.session.rollback()
-            return False
-        task.opencode_session_id = run.opencode_session_id = session_id
-        await TaskService(self.session).add_event(
-            task,
-            "OPENCODE_SESSION_BOUND",
-            "metadata",
-            "OpenCode Session 已绑定",
-            {"session_id": session_id, "runtime": run.executor_type},
-            run.id,
-        )
-        return True
-
-    async def mark_running(
-        self,
-        task: Task,
-        run: Run,
-        execution_token: str,
-    ) -> bool:
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(run.employee_id)
-        locked_run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if (
-            not locked_task
-            or not locked_employee
-            or not locked_run
-            or locked_task.status != TaskStatus.QUEUED
-            or locked_task.active_run_id != locked_run.id
-            or locked_employee.active_run_id != locked_run.id
-            or locked_run.status != RunStatus.STARTING
-            or locked_run.execution_token != execution_token
-        ):
-            return False
-        task = locked_task
-        run = locked_run
-        now = datetime.now(UTC)
-        run.status = RunStatus.RUNNING
-        run.heartbeat_at = now
-        run.executor_status = "RUNNING"
-        await TaskService(self.session).transition(
-            task,
-            TaskStatus.RUNNING,
-            current_progress="Agent 正在自主处理任务",
-            message="Agent Worker 已取得运行租约并开始处理",
-            run_id=run.id,
-            commit=False,
-        )
-        await self.session.commit()
-        await event_bus.publish({"type": "TASK_RUNNING", "task_id": task.id, "status": task.status})
-        return True
-
-    async def defer_session_probe(self, run: Run, execution_token: str, failure) -> bool:
-        await self.lock_task(run.task_id)
-        await self.lock_employee(run.employee_id)
-        run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if (
-            not run
-            or run.execution_token != execution_token
-            or run.status
-            not in {
-                RunStatus.STARTING,
-                RunStatus.RUNNING,
-            }
-        ):
-            await self.session.rollback()
-            return False
-        record_failure(run, failure.failure_code, failure.raw_error)
-        run.executor_status = "PROBE_ERROR"
-        timeout = max(get_settings().runtime_heartbeat_timeout, get_settings().runtime_startup_timeout)
-        run.heartbeat_at = datetime.now(UTC) - timedelta(seconds=timeout + 1)
-        await self.session.commit()
-        return True
-
-    async def heartbeat(
-        self,
-        run_id: str,
-        execution_token: str,
-        *,
-        executor_status: str = "RUNNING",
-    ) -> bool:
-        result = await self.session.execute(
-            update(Run)
-            .where(
-                Run.id == run_id,
-                Run.execution_token == execution_token,
-                Run.status.in_([RunStatus.STARTING, RunStatus.RUNNING]),
-            )
-            .values(
-                heartbeat_at=datetime.now(UTC),
-                executor_status=executor_status[:64],
-            )
-        )
-        await self.session.commit()
-        return bool(result.rowcount)
-
-    async def mark_waiting(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-        run: Run,
-        *,
-        current_progress: str,
-        message: str,
-        execution_token: str | None = None,
-    ) -> bool:
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(employee.id)
-        locked_run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if not locked_task or not locked_employee or not locked_run:
-            return False
-        if execution_token and locked_run.execution_token != execution_token:
-            return False
-        if (
-            locked_run.status not in {RunStatus.STARTING, RunStatus.RUNNING}
-            or locked_task.active_run_id not in {None, locked_run.id}
-            or locked_employee.active_run_id not in {None, locked_run.id}
-        ):
-            return False
-        task = locked_task
-        employee = locked_employee
-        run = locked_run
-        run.status = RunStatus.WAITING_INPUT
-        run.finished_at = None
-        run.executor_status = "WAITING_INPUT"
-        run.heartbeat_at = datetime.now(UTC)
-        task.active_run_id = run.id
-        employee.active_run_id = run.id
-        employee.status = EmployeeStatus.WAIT_HUMAN
+        if reserved.rowcount != 1:
+            raise RuntimeStateError("任务正在启动，请先重连核对或停止")
+        task.execution_environment_snapshot = environment_snapshot(environment)
         employee.current_task_count = 1
-        await TaskService(self.session).transition(
-            task,
-            TaskStatus.WAIT_HUMAN,
-            current_progress=current_progress,
-            message=message,
-            run_id=run.id,
-            commit=False,
-        )
+        employee.status = EmployeeStatus.WORKING
         await self.session.commit()
-        await event_bus.publish({"type": "WAIT_HUMAN", "task_id": task.id, "status": task.status})
-        return True
-
-    async def finalize_run(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-        run: Run,
-        *,
-        run_status: RunStatus,
-        task_status: TaskStatus | None,
-        current_progress: str,
-        message: str,
-        execution_token: str | None = None,
-        failure_code: str | None = None,
-        employee_status: EmployeeStatus = EmployeeStatus.IDLE,
-    ) -> bool:
-        if run_status.value not in TERMINAL_RUN_STATUSES:
-            raise RuntimeStateError(f"非终态 Run 不能 finalize：{run_status}")
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(employee.id)
-        locked_run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if not locked_task or not locked_employee or not locked_run:
-            return False
-        task = locked_task
-        employee = locked_employee
-        run = locked_run
-        if execution_token and run.execution_token != execution_token:
-            return False
-        if run.status in TERMINAL_RUN_STATUSES:
-            return False
-        if task.active_run_id not in {None, run.id}:
-            return False
-        if employee.active_run_id not in {None, run.id}:
-            return False
-        run.status = run_status
-        run.finished_at = run.finished_at or datetime.now(UTC)
-        run.heartbeat_at = datetime.now(UTC)
-        run.executor_status = run_status.value
-        record_failure(run, failure_code, str((run.result or {}).get("stderr") or message))
-        if failure_code:
-            task.execution_error = {
-                **(task.execution_error or {}),
-                "failure": failure_for(failure_code, run.raw_error or "").as_dict(),
-            }
-        elif run_status == RunStatus.COMPLETED:
-            task.execution_error = None
-        if task_status and task.status != task_status:
-            await TaskService(self.session).transition(
-                task,
-                task_status,
-                current_progress=current_progress,
-                message=message,
-                run_id=run.id,
-                commit=False,
-            )
-        await self._cancel_open_inquiries(task.id)
-        task.active_run_id = None
-        employee.active_run_id = None
-        EmployeeService.release(employee, status=employee_status)
-        outbox = await self.session.scalar(
-            select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
-        )
-        if outbox and outbox.status != "SENT":
-            outbox.status = "CANCELLED"
-            outbox.next_retry_at = None
-        await self.session.commit()
-        event_type = {
-            TaskStatus.COMPLETED: "TASK_COMPLETED",
-            TaskStatus.PENDING_CONFIRMATION: "RESULT_SUBMITTED",
-            TaskStatus.EXECUTION_ERROR: "EXECUTION_ERROR",
-            TaskStatus.FAILED: "TASK_FAILED",
-            TaskStatus.CANCELLED: "TASK_CANCELLED",
-            TaskStatus.SUSPENDED: "TASK_SUSPENDED",
-        }.get(task_status, "RUN_FINALIZED")
-        await event_bus.publish({"type": event_type, "task_id": task.id, "status": task.status})
-        return True
-
-    async def stop_task(
-        self,
-        task: Task,
-        *,
-        target: TaskStatus,
-        current_progress: str,
-        message: str,
-        detail: dict | None = None,
-    ) -> Task:
-        locked_task = await self.lock_task(task.id)
-        if not locked_task:
-            raise RuntimeStateError("任务不存在")
-        task = locked_task
-        employee = await self.lock_employee(task.employee_id) if task.employee_id else None
-        runs = (
-            (
-                await self.session.execute(
-                    select(Run)
-                    .where(
-                        Run.task_id == task.id,
-                        Run.status.in_(ACTIVE_RUN_STATUSES),
-                    )
-                    .order_by(Run.run_number.desc())
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        run = next((item for item in runs if item.id == task.active_run_id), None)
-        run = run or (runs[0] if runs else None)
-        await TaskService(self.session).transition(
-            task,
-            target,
-            current_progress=current_progress,
-            message=message,
-            detail=detail,
-            run_id=run.id if run else None,
-            commit=False,
-        )
-        run_status = RunStatus.SUSPENDED if target == TaskStatus.SUSPENDED else RunStatus.CANCELLED
-        now = datetime.now(UTC)
-        for active_run in runs:
-            active_run.status = run_status
-            active_run.finished_at = now
-            active_run.heartbeat_at = now
-            active_run.executor_status = (
-                "ABORT_PENDING"
-                if active_run.opencode_session_id and active_run.executor_type.startswith("opencode_server")
-                else run_status.value
-            )
-            record_failure(
-                active_run,
-                (
-                    FailureCode.USER_SUSPENDED
-                    if target == TaskStatus.SUSPENDED
-                    else FailureCode.USER_CANCELLED
-                ),
-                message,
-            )
-        if runs:
-            outboxes = (
-                (
-                    await self.session.execute(
-                        select(RunDispatchOutbox).where(
-                            RunDispatchOutbox.run_id.in_([item.id for item in runs])
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            for outbox in outboxes:
-                if outbox.status != "SENT":
-                    outbox.status = "CANCELLED"
-                    outbox.next_retry_at = None
-        await self._cancel_open_inquiries(task.id)
-        stopped_run_ids = {item.id for item in runs}
-        linked_task_run = await self.session.get(Run, task.active_run_id) if task.active_run_id else None
-        if (
-            task.active_run_id in stopped_run_ids
-            or not linked_task_run
-            or linked_task_run.status in TERMINAL_RUN_STATUSES
-        ):
-            task.active_run_id = None
-        if employee:
-            linked_employee_run = (
-                await self.session.get(Run, employee.active_run_id) if employee.active_run_id else None
-            )
-            other_active = await self.session.scalar(
-                select(Run).where(
-                    Run.employee_id == employee.id,
-                    Run.id.not_in(stopped_run_ids) if stopped_run_ids else True,
-                    Run.status.in_(ACTIVE_RUN_STATUSES),
-                )
-            )
-            if (
-                employee.active_run_id in stopped_run_ids
-                or not linked_employee_run
-                or linked_employee_run.status in TERMINAL_RUN_STATUSES
-            ) and not other_active:
-                employee.active_run_id = None
-                EmployeeService.release(employee)
-        await self.session.commit()
-        await event_bus.publish(
-            {
-                "type": "TASK_SUSPENDED" if target == TaskStatus.SUSPENDED else "TASK_CANCELLED",
-                "task_id": task.id,
-                "status": task.status,
-            }
-        )
-        return task
-
-    async def continue_run(
-        self,
-        task: Task,
-        employee: DigitalEmployee,
-        previous_run: Run,
-        *,
-        previous_status: RunStatus,
-        failure_code: str | None,
-        message: str,
-        execution_token: str | None = None,
-        trigger_reason: RunTriggerReason = RunTriggerReason.USER_CONTINUE,
-    ) -> Run:
-        """Close the old execution and queue its continuation in the same transaction."""
-
-        if previous_status.value not in TERMINAL_RUN_STATUSES:
-            raise RuntimeStateError(f"继续运行的前置状态必须是终态：{previous_status}")
-        locked_task = await self.lock_task(task.id)
-        locked_employee = await self.lock_employee(employee.id)
-        locked_previous = await self.session.scalar(
-            select(Run)
-            .where(Run.id == previous_run.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if not locked_task or not locked_employee or not locked_previous:
-            raise RuntimeStateError("任务、员工或前置运行不存在")
-        task = locked_task
-        employee = locked_employee
-        previous_run = locked_previous
-        if execution_token and previous_run.execution_token != execution_token:
-            raise RuntimeStateError("前置运行的执行租约已变更")
-        if previous_run.status in TERMINAL_RUN_STATUSES and previous_run.status != previous_status:
-            raise RuntimeStateError(f"前置运行已终结：{previous_run.status}")
-        if previous_run.status not in {
-            RunStatus.STARTING,
-            RunStatus.RUNNING,
-            previous_status,
-        }:
-            raise RuntimeStateError(f"前置运行不可继续：{previous_run.status}")
-        if task.active_run_id not in {None, previous_run.id}:
-            raise RuntimeStateError(f"任务租约已指向其他运行：{task.active_run_id}")
-        if employee.active_run_id not in {None, previous_run.id}:
-            raise RuntimeStateError(f"员工租约已指向其他运行：{employee.active_run_id}")
-
-        now = datetime.now(UTC)
-        previous_run.status = previous_status
-        previous_run.finished_at = previous_run.finished_at or now
-        previous_run.heartbeat_at = now
-        previous_run.executor_status = previous_status.value
-        record_failure(previous_run, failure_code, str((previous_run.result or {}).get("stderr") or message))
-        run_number = (
-            await self.session.scalar(select(func.max(Run.run_number)).where(Run.task_id == task.id)) or 0
-        ) + 1
-        retry_index = (
-            (previous_run.retry_index or 0) + 1
-            if trigger_reason == RunTriggerReason.AUTO_RETRY
-            else (previous_run.retry_index or 0)
-            if trigger_reason == RunTriggerReason.SESSION_RECOVERY
-            else 0
-        )
-        run = Run(
-            id=f"RUN-{uuid4().hex[:10].upper()}",
-            task_id=task.id,
-            employee_id=employee.id,
-            previous_run_id=previous_run.id,
-            run_number=run_number,
-            trigger_reason=trigger_reason,
-            retry_index=retry_index,
-            status=RunStatus.QUEUED,
-            executor_type=previous_run.executor_type,
-            opencode_session_id=task.opencode_session_id,
-            queued_at=now,
-            executor_status="QUEUED",
-            execution_environment_snapshot=task.execution_environment_snapshot or {},
-        )
-        self.session.add(run)
-        await self.session.flush()
-        task.status = TaskStatus.QUEUED
-        task.active_run_id = run.id
-        employee.active_run_id = run.id
-        EmployeeService.reserve(employee)
-        work_session = await ensure_task_session(self.session, task)
-        work_session.current_run_id = run.id
-        work_session.status = "ACTIVE"
-        await TaskService(self.session).add_event(
-            task,
-            "RUN_CONTINUED",
-            "runtime",
-            message,
-            {
-                "previous_run_id": previous_run.id,
-                "failure_code": failure_code,
-                "trigger_reason": trigger_reason,
-                "retry_index": retry_index,
-            },
-            run.id,
-            commit=False,
-        )
-        await self._prepare_outbox(run)
-        await self.session.commit()
-        await event_bus.publish({"type": "RUN_CONTINUED", "task_id": task.id, "status": task.status})
-        return run
-
-    async def enqueue(self, task: Task, run: Run) -> bool:
-        """Publish a transactional Outbox row for one queued Run."""
-
-        outbox = await self.session.scalar(
-            select(RunDispatchOutbox).where(RunDispatchOutbox.run_id == run.id)
-        )
-        if not outbox:
-            if run.status != RunStatus.QUEUED:
-                return False
-            outbox = await self._prepare_outbox(run)
-            await self.session.commit()
-        return await self.publish_outbox(outbox.id)
-
-    async def redeliver(self, task: Task, run: Run) -> bool:
-        locked_task = await self.lock_task(task.id)
-        locked_run = await self.session.scalar(
-            select(Run).where(Run.id == run.id).with_for_update().execution_options(populate_existing=True)
-        )
-        if (
-            not locked_task
-            or not locked_run
-            or locked_run.status != RunStatus.QUEUED
-            or locked_task.status != TaskStatus.QUEUED
-            or locked_task.active_run_id not in {None, locked_run.id}
-        ):
-            await self.session.commit()
-            return False
-        task = locked_task
-        run = locked_run
-        run.dispatched_at = None
-        await self._prepare_outbox(run, reset=True)
-        await self.session.commit()
-        return await self.enqueue(task, run)
-
-    async def publish_outbox(self, outbox_id: str) -> bool:
-        reference = await self.session.get(RunDispatchOutbox, outbox_id)
-        if not reference:
-            return False
-        run_reference = await self.session.get(Run, reference.run_id)
-        if not run_reference:
-            return False
-        task = await self.lock_task(run_reference.task_id)
-        run = await self.session.scalar(select(Run).where(Run.id == run_reference.id).with_for_update())
-        outbox = await self.session.scalar(
-            select(RunDispatchOutbox).where(RunDispatchOutbox.id == outbox_id).with_for_update()
-        )
-        if not task or not run or not outbox:
-            return False
-        if run.status != RunStatus.QUEUED or task.status != TaskStatus.QUEUED:
-            if outbox.status != "SENT":
-                outbox.status = "CANCELLED"
-                outbox.next_retry_at = None
-                await self.session.commit()
-            return False
-        if outbox.status == "SENT":
-            return True
-
-        settings = get_settings()
-        celery_task_id = f"run-{run.id}"
-        run.dispatch_attempt = (run.dispatch_attempt or 0) + 1
-        outbox.attempts = (outbox.attempts or 0) + 1
         try:
-            from app.runtime.celery_app import process_task
-
-            result = process_task.apply_async(
-                args=[run.id],
-                queue="agent",
-                task_id=celery_task_id,
-            )
-        except Exception as exc:
-            now = datetime.now(UTC)
-            task.current_progress = "运行已排队，消息队列恢复后将自动重试"
-            outbox.status = "PENDING"
-            outbox.next_retry_at = now + timedelta(seconds=settings.outbox_retry_seconds)
-            outbox.last_error = str(exc)[:4000]
-            record_failure(run, FailureCode.DISPATCH_FAILED, str(exc))
-            event = await TaskService(self.session).add_event(
-                task,
-                "RUN_DISPATCH_FAILED",
-                "runtime",
-                "运行消息投递失败，将通过 Outbox 自动重试",
-                {"run_id": run.id, "attempt": run.dispatch_attempt, "error": str(exc)},
-                run.id,
-                commit=False,
-            )
+            workspace = await prepare_workspace(task, environment)
+            task = await self.lock_task(task_id)
+            if task.pending_message_id != initial_id:
+                return task
+            task.workspace = workspace
             await self.session.commit()
-            await event_bus.publish(
-                {
-                    "type": "RUN_DISPATCH_FAILED",
-                    "task_id": task.id,
-                    "event_id": event.id,
-                }
-            )
-            return False
-
-        now = datetime.now(UTC)
-        record_failure(run, None)
-        run.celery_task_id = result.id or celery_task_id
-        run.dispatched_at = now
-        outbox.status = "SENT"
-        outbox.sent_at = now
-        outbox.next_retry_at = None
-        outbox.last_error = None
-        event = await TaskService(self.session).add_event(
-            task,
-            "RUN_DISPATCHED",
-            "runtime",
-            "Outbox 已将运行发送至 Agent 队列",
-            {
-                "run_id": run.id,
-                "celery_task_id": run.celery_task_id,
-                "attempt": run.dispatch_attempt,
-            },
-            run.id,
-            commit=False,
-        )
-        await self.session.commit()
-        await event_bus.publish({"type": "RUN_DISPATCHED", "task_id": task.id, "event_id": event.id})
-        return True
-
-    async def publish_pending_outbox(self, *, limit: int = 50) -> list[str]:
-        now = datetime.now(UTC)
-        ids = (
-            (
-                await self.session.execute(
-                    select(RunDispatchOutbox.id)
-                    .where(
-                        RunDispatchOutbox.status == "PENDING",
-                        or_(
-                            RunDispatchOutbox.next_retry_at.is_(None),
-                            RunDispatchOutbox.next_retry_at <= now,
-                        ),
-                    )
-                    .order_by(RunDispatchOutbox.created_at)
-                    .limit(limit)
+            async with connect(environment, start=True) as client:
+                old_session_id = task.current_session_id if restart else None
+                if old_session_id:
+                    await client.abort(Path(workspace), old_session_id)
+                    await self._wait_for_session_stop(client, Path(workspace), old_session_id)
+                runtime_token = generate_runtime_context()
+                created = await client.create_session(
+                    Path(workspace),
+                    title=task.title,
+                    model_name=environment.model_name,
+                    agent=get_settings().opencode_agent or "build",
                 )
-            )
-            .scalars()
-            .all()
-        )
-        sent: list[str] = []
-        for outbox_id in ids:
-            if await self.publish_outbox(outbox_id):
-                sent.append(outbox_id)
-        return sent
-
-    @staticmethod
-    def release_employee(
-        employee: DigitalEmployee,
-        *,
-        status: EmployeeStatus = EmployeeStatus.IDLE,
-    ) -> None:
-        EmployeeService.release(employee, status=status)
-
-    async def reconcile(self) -> list[str]:
-        session = self.session
-        """Repair safe pointer projections and surface irreconcilable fake-running tasks."""
-
-        changed: list[str] = []
-        tasks_with_leases = (
-            (await session.execute(select(Task).where(Task.active_run_id.is_not(None)))).scalars().all()
-        )
-        for candidate in tasks_with_leases:
-            task = await RuntimeService(session).lock_task(candidate.id)
-            if not task or not task.active_run_id:
-                continue
-            run = await session.get(Run, task.active_run_id)
-            if run and run.task_id == task.id and run.status in ACTIVE_RUN_STATUSES:
-                continue
-            stale_run_id = task.active_run_id
-            if run and run.task_id == task.id and task.status in {"QUEUED", "RUNNING", "WAIT_HUMAN"}:
-                task.status = {
-                    "COMPLETED": (
-                        TaskStatus.PENDING_CONFIRMATION
-                        if task.completion_policy == "MANUAL_CONFIRM"
-                        else TaskStatus.COMPLETED
-                    ),
-                    "CANCELLED": TaskStatus.CANCELLED,
-                    "SUSPENDED": TaskStatus.SUSPENDED,
-                }.get(run.status, TaskStatus.EXECUTION_ERROR)
-                if (run.result or {}).get("work_result"):
-                    task.result = run.result["work_result"]
-                task.finished_at = run.finished_at
-            task.active_run_id = None
-            session.add(
-                Event(
-                    task_id=task.id,
-                    employee_id=task.employee_id,
-                    run_id=stale_run_id if run else None,
-                    event_type="STATE_RECONCILED",
-                    phase="runtime",
-                    message="已清理指向终态或缺失 Run 的任务租约",
-                    detail={"stale_run_id": stale_run_id},
-                )
-            )
-            changed.append(f"task-lease:{task.id}")
-
-        employees = (
-            (await session.execute(select(DigitalEmployee).where(DigitalEmployee.active_run_id.is_not(None))))
-            .scalars()
-            .all()
-        )
-        for candidate in employees:
-            employee = await RuntimeService(session).lock_employee(candidate.id)
-            if not employee or not employee.active_run_id:
-                continue
-            run = await session.get(Run, employee.active_run_id)
-            if run and run.employee_id == employee.id and run.status in ACTIVE_RUN_STATUSES:
-                continue
-            stale_run_id = employee.active_run_id
-            employee.active_run_id = None
-            current_status = EmployeeStatus(employee.status)
-            release_status = (
-                current_status
-                if current_status in {EmployeeStatus.OFFLINE, EmployeeStatus.PAUSED, EmployeeStatus.ERROR}
-                else EmployeeStatus.IDLE
-            )
-            EmployeeService.release(employee, status=release_status)
-            session.add(
-                Event(
-                    employee_id=employee.id,
-                    run_id=stale_run_id if run else None,
-                    event_type="STATE_RECONCILED",
-                    phase="runtime",
-                    message="已释放指向终态或缺失 Run 的员工占用",
-                    detail={"stale_run_id": stale_run_id},
-                )
-            )
-            changed.append(f"employee:{employee.id}")
-
-        # Release pointer-cleanup locks before the next pass starts acquiring
-        # Task -> Employee -> Run leases for active executions.
-        await session.commit()
-
-        active_runs = (
-            (
-                await session.execute(
-                    select(Run).where(Run.status.in_(ACTIVE_RUN_STATUSES)).order_by(Run.created_at.desc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        runtime = RuntimeService(session)
-        for candidate in active_runs:
-            task = await runtime.lock_task(candidate.task_id)
-            employee = await runtime.lock_employee(candidate.employee_id)
-            run = await session.scalar(
-                select(Run)
-                .where(Run.id == candidate.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-            if not task or not employee or not run or run.status not in ACTIVE_RUN_STATUSES:
-                continue
-            if task.active_run_id in {None, run.id} and employee.active_run_id in {None, run.id}:
-                projected_task = {
-                    RunStatus.QUEUED: TaskStatus.QUEUED,
-                    RunStatus.STARTING: TaskStatus.QUEUED,
-                    RunStatus.RUNNING: TaskStatus.RUNNING,
-                    RunStatus.WAITING_INPUT: TaskStatus.WAIT_HUMAN,
-                }[run.status]
-                projected_employee = (
-                    EmployeeStatus.WAIT_HUMAN
-                    if run.status == RunStatus.WAITING_INPUT
-                    else EmployeeStatus.WORKING
-                )
-                repaired = (
-                    task.active_run_id != run.id
-                    or employee.active_run_id != run.id
-                    or task.status != projected_task
-                    or employee.status != projected_employee
-                    or employee.current_task_count != 1
-                    or task.employee_id != employee.id
-                )
-                task.status = projected_task
-                task.employee_id = employee.id
-                task.active_run_id = run.id
-                employee.active_run_id = run.id
-                employee.current_task_count = 1
-                employee.status = (
-                    EmployeeStatus.WAIT_HUMAN
-                    if run.status in {RunStatus.WAITING_INPUT}
-                    else EmployeeStatus.WORKING
-                )
-                if repaired:
-                    session.add(
-                        Event(
-                            task_id=task.id,
-                            employee_id=employee.id,
-                            run_id=run.id,
-                            event_type="STATE_RECONCILED",
-                            phase="runtime",
-                            message="已按活动 Run 恢复 Task/Employee 租约指针",
-                            detail={"run_status": run.status},
-                        )
-                    )
-                    changed.append(f"run:{run.id}")
-            else:
-                run.status = RunStatus.LOST
-                run.finished_at = datetime.now(UTC)
-                run.executor_status = "LEASE_CONFLICT"
-                record_failure(run, FailureCode.INVARIANT_VIOLATION, "活动运行租约冲突")
-                session.add(
-                    Event(
+                task = await self.lock_task(task_id)
+                if task.pending_message_id != initial_id:
+                    await client.abort(Path(workspace), created["id"])
+                    return task
+                task.current_session_id = created["id"]
+                now = datetime.now(UTC)
+                context_digest = hash_runtime_context(runtime_token)
+                self.session.add(
+                    RuntimeSession(
+                        id=created["id"],
                         task_id=task.id,
                         employee_id=employee.id,
-                        run_id=run.id,
-                        event_type="STATE_CONFLICT",
-                        phase="runtime",
-                        message="活动 Run 与现有租约指针冲突，已保留现场等待处理",
-                        detail={
-                            "task_active_run_id": task.active_run_id,
-                            "employee_active_run_id": employee.active_run_id,
-                        },
+                        workspace=workspace,
+                        environment=task.execution_environment_snapshot,
+                        status=RuntimeSessionStatus.RUNNING.value,
+                        started_at=now,
+                        last_activity_at=now,
+                        model_name=environment.model_name,
+                        runtime_context_hash=context_digest,
+                        runtime_context_id=runtime_context_id(context_digest),
                     )
                 )
-                changed.append(f"conflict:{run.id}")
-
-        await session.commit()
-
-        orphan_tasks = (
-            (
-                await session.execute(
-                    select(Task).where(
-                        Task.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN]),
-                        Task.active_run_id.is_(None),
-                    )
+                await self._supersede_session(old_session_id, created["id"], interrupted=True)
+                category = (
+                    await self.session.get(TaskCategory, task.category_id) if task.category_id else None
                 )
+                bind_task_prompt_context(task, resolve_task_prompt_context(task, category))
+                task.pending_prompt = {
+                    "action": "prompt_async",
+                    "body": {
+                        "messageID": initial_id,
+                        "parts": [
+                            {
+                                "type": "text",
+                                "text": build_task_prompt(
+                                    task,
+                                    Path(workspace),
+                                    native_question=True,
+                                ),
+                            },
+                            build_runtime_context_part(runtime_token),
+                        ],
+                    },
+                }
+                task.last_message_id = initial_id
+                task.runtime_connection = "CONNECTED"
+                task.runtime_error = None
+                task.failure_reason = None
+                task.finished_at = None
+                # Bind and retain the first submission together before any prompt reaches OpenCode.
+                await self.session.commit()
+            return await self.retry_submission(task.id)
+        except Exception as exc:
+            await self.session.rollback()
+            await self.disconnected(task_id, exc)
+            raise
+
+    async def send(self, task_id, body, *, native_action="prompt_async", expected_session_id=None):
+        if native_action not in {"prompt_async", "command"}:
+            raise RuntimeStateError("不支持的 Session 输入")
+        task = await self.lock_task(task_id)
+        if not task.current_session_id:
+            raise RuntimeStateError("Session 不存在；请显式启动任务")
+        if expected_session_id and task.current_session_id != expected_session_id:
+            raise RuntimeStateError("当前 Session 已切换，请刷新 Workspace")
+        submitted_session = task.current_session_id
+        if task.pending_message_id:
+            raise RuntimeStateError("上次输入尚未确认，请重连核对 Session 后再发送")
+        environment = await resolve_environment(self.session, task)
+        employee = await self.session.scalar(
+            select(DigitalEmployee)
+            .where(
+                DigitalEmployee.id == task.employee_id,
             )
-            .scalars()
-            .all()
+            .with_for_update()
         )
-        for candidate in orphan_tasks:
-            task = await runtime.lock_task(candidate.id)
-            if (
-                not task
-                or task.active_run_id
-                or task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.WAIT_HUMAN}
-            ):
-                continue
-            active = await session.scalar(
-                select(Run).where(
-                    Run.task_id == task.id,
-                    Run.status.in_(ACTIVE_RUN_STATUSES),
-                )
+        occupied = await self.session.scalar(
+            select(Task.id)
+            .where(
+                Task.employee_id == task.employee_id,
+                Task.id != task.id,
+                or_(
+                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                    Task.pending_message_id.is_not(None),
+                ),
             )
-            if active:
-                continue
-            task.execution_error = {
-                "reason": "任务处于执行态但没有活动 Run",
-                "occurred_at": datetime.now(UTC).isoformat(),
-            }
-            await TaskService(session).transition(
+            .limit(1)
+        )
+        if occupied:
+            raise RuntimeStateError("员工正在处理其他任务")
+        outbound_id = body.get("messageID") or message_id()
+        if not re.fullmatch(r"msg_[a-zA-Z0-9]{8,100}", outbound_id):
+            raise RuntimeStateError("消息 ID 无效")
+        async with connect(environment) as client:
+            pending = await client.questions(Path(task.workspace)) + await client.permissions(
+                Path(task.workspace)
+            )
+            if any(item.get("sessionID") == task.current_session_id for item in pending):
+                raise RuntimeStateError("请先在 Workspace 回答当前 Session 的问题或权限请求")
+        employee.current_task_count = 1
+        employee.status = EmployeeStatus.WORKING
+        body = {**body, "messageID": outbound_id}
+        task.last_message_id = outbound_id
+        # Reserve before network I/O. A second sender cannot silently overwrite a pending submission.
+        reserved = await self.session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.pending_message_id.is_(None),
+            )
+            .values(pending_message_id=outbound_id, pending_prompt={"action": native_action, "body": body})
+        )
+        if reserved.rowcount != 1:
+            raise RuntimeStateError("已有待确认输入")
+        await self.session.commit()
+        try:
+            async with connect(environment) as client:
+                await client.session(Path(task.workspace), task.current_session_id)
+                await client.request(
+                    "POST",
+                    f"/session/{task.current_session_id}/{native_action}",
+                    directory=Path(task.workspace),
+                    body=body,
+                )
+        except Exception as exc:
+            task = await self.lock_task(task_id)
+            if task.pending_message_id != outbound_id:
+                raise
+            if type(exc) is OpenCodeExecutionError or isinstance(exc, OpenCodeSessionNotFound):
+                task.pending_message_id = None
+                task.pending_prompt = None
+            task.runtime_connection = "UNAVAILABLE"
+            task.runtime_error = str(exc)
+            await self.session.commit()
+            raise
+        task = await self.lock_task(task_id)
+        if task.pending_message_id != outbound_id or task.current_session_id != submitted_session:
+            async with connect(environment) as client:
+                await client.abort(Path(task.workspace), submitted_session)
+            return task
+        task.pending_message_id = None
+        task.pending_prompt = None
+        task.runtime_connection = "CONNECTED"
+        task.runtime_error = None
+        task.failure_reason = None
+        await self._mark_session_running(task)
+        return task
+
+    async def _mark_session_running(self, task: Task) -> None:
+        await self.apply_session_state(
+            task, SessionState(status=RuntimeSessionStatus.RUNNING.value)
+        )
+
+    async def retry_submission(self, task_id):
+        task = await self.lock_task(task_id)
+        if not task.pending_message_id or not task.pending_prompt:
+            raise RuntimeStateError("没有待确认输入")
+        environment = await resolve_environment(self.session, task)
+        async with connect(environment) as client:
+            messages = await client.messages(Path(task.workspace), task.current_session_id)
+            acknowledged = any(item["info"]["id"] == task.pending_message_id for item in messages)
+            if not acknowledged:
+                await client.request(
+                    "POST",
+                    f"/session/{task.current_session_id}/{task.pending_prompt['action']}",
+                    directory=Path(task.workspace),
+                    body=task.pending_prompt["body"],
+                )
+            task.pending_message_id = None
+            task.pending_prompt = None
+            task.runtime_error = None
+            await self._mark_session_running(task)
+        return task
+
+    async def stop(self, task_id):
+        task = await self.lock_task(task_id)
+        if task.current_session_id:
+            environment = await resolve_environment(self.session, task)
+            async with connect(environment) as client:
+                await client.abort(Path(task.workspace), task.current_session_id)
+            runtime_session = await self._runtime_session(task)
+            if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+                runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
+                runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
+                runtime_session.finished_at = datetime.now(UTC)
+        task.pending_message_id = None
+        task.pending_prompt = None
+        task.runtime_error = None
+        await self.project(task, TaskStatus.CANCELED)
+        return task
+
+    async def refresh(self, task_id, *, client=None):
+        task = await self.lock_task(task_id)
+        if not task.current_session_id:
+            return task
+        if task.pending_message_id and not task.pending_prompt:
+            task.runtime_error = "Session 启动尚未确认；请先停止，再显式重新开始"
+            await self.session.commit()
+            return task
+        if client is None:
+            environment = await resolve_environment(self.session, task)
+            async with connect(environment) as connection:
+                return await self.refresh(task_id, client=connection)
+        directory = Path(task.workspace)
+        try:
+            await client.session(directory, task.current_session_id)
+        except OpenCodeSessionNotFound:
+            runtime_session = await self._runtime_session(task)
+            if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+                runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
+                runtime_session.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
+                await self.session.commit()
+            raise
+        status = await client.status(directory, task.current_session_id)
+        if task.runtime_connection != "CONNECTED":
+            await TaskService(self.session).add_event(
+                task, "RUNTIME_CONNECTED", "runtime", "OpenCode Runtime 已连接", commit=False
+            )
+        task.runtime_connection = "CONNECTED"
+        task.runtime_error = None
+        if task.status == TaskStatus.CANCELED:
+            await self.session.commit()
+            return task
+        questions = await client.questions(directory)
+        permissions = await client.permissions(directory)
+        has_pending = any(
+            item.get("sessionID") == task.current_session_id for item in questions + permissions
+        )
+        timed_out = False
+        if status in {"busy", "retry"} and not has_pending:
+            started = task.turn_started_at
+            if (
+                task.status == TaskStatus.RUNNING
+                and started
+                and (datetime.now(UTC) - started.replace(tzinfo=UTC)).total_seconds()
+                >= get_settings().opencode_timeout_seconds
+            ):
+                await client.abort(directory, task.current_session_id)
+                timed_out = True
+        messages = await client.messages(directory, task.current_session_id)
+        if task.pending_message_id:
+            if any(item["info"]["id"] == task.pending_message_id for item in messages):
+                task.pending_message_id = None
+                task.pending_prompt = None
+            else:
+                task.runtime_error = "输入尚未被 Session 确认，请核对后重试提交"
+                await self.session.commit()
+                return task
+        state = derive_session_state(
+            messages=messages,
+            server_status=status,
+            has_pending_question=has_pending,
+            has_pending_permission=False,
+            pending_ack=False,
+            turn_anchor_id=task.last_message_id,
+            turn_started_at=task.turn_started_at,
+            timed_out=timed_out,
+            grace_seconds=get_settings().opencode_no_reply_grace_seconds,
+        )
+        await self.apply_session_state(task, state)
+        return task
+
+    async def disconnected(self, task_id, error):
+        task = await self.lock_task(task_id)
+        if task.runtime_connection != "UNAVAILABLE":
+            await TaskService(self.session).add_event(
                 task,
-                TaskStatus.EXECUTION_ERROR,
-                current_progress="状态已校正：缺少活动运行",
-                message="检测到假运行状态，已转为执行异常",
-                detail={"reconciliation": "missing_active_run"},
+                "RUNTIME_DISCONNECTED",
+                "runtime",
+                "OpenCode Runtime 连接中断，保留任务状态",
                 commit=False,
             )
-            if task.employee_id:
-                employee = await runtime.lock_employee(task.employee_id)
-                if employee and not employee.active_run_id:
-                    EmployeeService.release(employee, status=EmployeeStatus.ERROR)
-            changed.append(f"task:{task.id}")
+        runtime_session = await self._runtime_session(task)
+        if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+            runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
+            runtime_session.terminal_reason = SessionTerminalReason.TRANSPORT_UNKNOWN.value
+        task.runtime_connection = "UNAVAILABLE"
+        task.runtime_error = str(error)
+        await self.session.commit()
 
-        orphan_employees = (
-            await session.scalars(
-                select(DigitalEmployee).where(
-                    DigitalEmployee.active_run_id.is_(None),
-                    or_(
-                        DigitalEmployee.status.in_([EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN]),
-                        DigitalEmployee.current_task_count > 0,
-                    ),
-                )
+    async def refresh_employee_heartbeats(self):
+        employees = (
+            await self.session.scalars(
+                select(DigitalEmployee)
+                .options(selectinload(DigitalEmployee.execution_environment))
+                .where(DigitalEmployee.enabled.is_(True))
             )
         ).all()
-        for candidate in orphan_employees:
-            employee = await self.lock_employee(candidate.id)
-            assigned = await session.scalar(
-                select(Task.id)
+        healthy = []
+        for employee in employees:
+            environment = employee.execution_environment
+            if not environment:
+                continue
+            try:
+                async with connect(environment) as client:
+                    await client.health()
+            except Exception:
+                if employee.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
+                    employee.status = EmployeeStatus.OFFLINE
+                continue
+            employee.last_heartbeat = datetime.now(UTC)
+            healthy.append(employee.id)
+            active = await self.session.scalar(
+                select(Task)
                 .where(
-                    Task.employee_id == candidate.id,
-                    Task.status == TaskStatus.ASSIGNED,
+                    Task.employee_id == employee.id,
+                    or_(
+                        Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                        Task.pending_message_id.is_not(None),
+                    ),
                 )
                 .limit(1)
             )
-            if employee and not employee.active_run_id and not assigned:
-                EmployeeService.release(employee)
-                changed.append(f"employee:{employee.id}")
-        await session.commit()
-        return changed
-
-    async def refresh_employee_heartbeats(self) -> list[str]:
-        employees = (
-            await self.session.scalars(
-                select(DigitalEmployee).where(
-                    DigitalEmployee.status.not_in([EmployeeStatus.PAUSED, EmployeeStatus.ERROR]),
-                )
-            )
-        ).all()
-        now = datetime.now(UTC)
-        for candidate in employees:
-            employee = await self.lock_employee(candidate.id)
-            run = await self.session.get(Run, employee.active_run_id) if employee.active_run_id else None
-            if run and run.employee_id == employee.id and run.status in ACTIVE_RUN_STATUSES:
+            employee.current_task_count = int(active is not None)
+            if employee.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
                 employee.status = (
-                    EmployeeStatus.WAIT_HUMAN
-                    if run.status == RunStatus.WAITING_INPUT
-                    else EmployeeStatus.WORKING
+                    (
+                        EmployeeStatus.WAIT_HUMAN
+                        if active.status == TaskStatus.WAITING
+                        else EmployeeStatus.WORKING
+                    )
+                    if active
+                    else EmployeeStatus.IDLE
                 )
-                employee.current_task_count = 1
-            elif employee.status == EmployeeStatus.OFFLINE:
-                employee.status = EmployeeStatus.IDLE
-            employee.last_heartbeat = now
-            employee.online_since = employee.online_since or now
         await self.session.commit()
-        return [employee.id for employee in employees]
-
-    async def confirm_session_aborted(self, task_id: str, session_id: str | None) -> None:
-        await self.lock_task(task_id)
-        rows = (
-            await self.session.scalars(
-                select(Run)
-                .where(
-                    Run.task_id == task_id,
-                    Run.executor_status == "ABORT_PENDING",
-                )
-                .with_for_update()
-            )
-        ).all()
-        for run in rows:
-            run.executor_status = run.status
-        await self.session.commit()
+        return healthy

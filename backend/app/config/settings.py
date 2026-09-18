@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     opencode_server_password: str | None = None
     opencode_server_min_version: str = "1.18.25"
     opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    # A turn with no assistant reply is only a failure after this window; a
+    # freshly submitted prompt must never be classified as failed.
+    opencode_no_reply_grace_seconds: int = Field(default=15, ge=1, le=3600)
+    # restart must never start a second Session while the old one can still
+    # write to the shared task workspace.
+    opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
@@ -74,6 +80,9 @@ class Settings(BaseSettings):
     mcp_port: int = Field(default=8201, ge=1, le=65535)
     mcp_streamable_http_path: str = "/mcp"
     mcp_api_key: str | None = None
+    # Reachable Streamable HTTP MCP endpoint for remote Linux OpenCode servers.
+    # When unset, an SSH reverse tunnel to mcp_port is used instead.
+    mcp_public_url: str | None = None
     mcp_issuer_url: str = "http://127.0.0.1:8201"
     mcp_resource_server_url: str = "http://127.0.0.1:8201/mcp"
 

@@ -11,43 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import get_settings
 from app.domain import EmployeeStatus, TaskStatus
 from app.models import DigitalEmployee, Event, Task
+from app.runtime.presentation import TASK_STATUS
 from app.services import dashboard_metrics
 from app.usage import day_bounds
 
-ATTENTION_STATUSES = {
-    TaskStatus.WAIT_HUMAN,
-    TaskStatus.SUSPENDED,
-    TaskStatus.PENDING_CONFIRMATION,
-    TaskStatus.FAILED,
-    TaskStatus.EXECUTION_ERROR,
-}
-ACTIVE_TASK_STATUSES = {
-    TaskStatus.READY,
-    TaskStatus.ASSIGNED,
-    TaskStatus.QUEUED,
-    TaskStatus.RUNNING,
-    TaskStatus.WAIT_HUMAN,
-    TaskStatus.SUSPENDED,
-    TaskStatus.EXECUTION_ERROR,
-}
+ATTENTION_STATUSES = {key for key, value in TASK_STATUS.items() if value["group"] == "attention"}
+ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING}
 ACTIVITY_EVENT_TYPES = {
     "TASK_CREATED",
     "TASK_RUNNING",
-    "TASK_COMPLETED",
+    "TASK_SUCCEEDED",
     "TASK_FAILED",
-    "EXECUTION_ERROR",
-    "WAIT_HUMAN",
+    "TASK_WAITING",
     "EMPLOYEE_CREATED",
 }
-TASK_PRIORITY = {
-    TaskStatus.EXECUTION_ERROR: 0,
-    TaskStatus.WAIT_HUMAN: 1,
-    TaskStatus.RUNNING: 2,
-    TaskStatus.QUEUED: 3,
-    TaskStatus.SUSPENDED: 4,
-    TaskStatus.ASSIGNED: 5,
-    TaskStatus.READY: 6,
-}
+TASK_PRIORITY = {key: value["rank"] for key, value in TASK_STATUS.items()}
 KNOWN_TEAMS = (
     ("automation", "自动化工程", 10, re.compile(r"自动化|集成|接口"), {"automation", "integration"}),
     ("testing-platform", "测试平台", 20, re.compile(r"测试平台|平台开发|平台测试"), {"testing-platform"}),
@@ -93,7 +71,7 @@ def _employee_state(status: str) -> tuple[str, str]:
 
 def _attention_condition():
     return or_(
-        Task.status.in_([status.value for status in ATTENTION_STATUSES]),
+        Task.status.in_(ATTENTION_STATUSES),
         Task.inactivity_alert.is_(True),
     )
 
@@ -156,7 +134,6 @@ async def dashboard_employees(session: AsyncSession) -> dict:
                 "runtime_state": employee.runtime_state,
                 "runtime_status_label": employee.runtime_status_label,
                 "runtime_detail": employee.runtime_detail,
-                "active_run": employee.active_run,
                 "failure": employee.failure,
                 "state": state,
                 "state_label": state_label,
@@ -170,13 +147,7 @@ async def dashboard_employees(session: AsyncSession) -> dict:
 
 
 def _attention_status(task: Task) -> tuple[str, str]:
-    if task.status == TaskStatus.EXECUTION_ERROR:
-        return "execution_failed", "执行失败"
-    if task.inactivity_alert or task.status == TaskStatus.SUSPENDED:
-        return "blocked", "任务阻塞"
-    if task.status in {TaskStatus.WAIT_HUMAN, TaskStatus.PENDING_CONFIRMATION}:
-        return "waiting", "等待处理"
-    return "exception", "异常"
+    return task.status, task.runtime_status_label
 
 
 async def dashboard_attention(session: AsyncSession) -> dict:
@@ -210,14 +181,6 @@ async def dashboard_attention(session: AsyncSession) -> dict:
 async def dashboard_tasks(session: AsyncSession) -> dict:
     metrics = await dashboard_metrics(session)
     start, end = day_bounds(7)
-    today_start, today_end = day_bounds()
-    execution_errors_today = await session.scalar(
-        select(func.count(Task.id)).where(
-            Task.status == TaskStatus.EXECUTION_ERROR,
-            Task.updated_at >= today_start,
-            Task.updated_at < today_end,
-        )
-    )
     rows = (
         await session.execute(
             select(Task.created_at, Task.finished_at, Task.status).where(
@@ -240,7 +203,7 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
         created_key = _local_date(created_at)
         if created_key in points:
             points[created_key]["total"] += 1
-        if status == TaskStatus.COMPLETED and finished_at:
+        if status == TaskStatus.SUCCEEDED and finished_at:
             finished_key = _local_date(finished_at)
             if finished_key in points:
                 points[finished_key]["completed"] += 1
@@ -254,11 +217,9 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
     ).all()
     return {
         "running": metrics["running_tasks"],
-        "waiting": metrics["wait_human_tasks"]
-        + metrics["pending_confirmation_tasks"]
-        + metrics["task_status_distribution"].get(TaskStatus.SUSPENDED, 0),
+        "waiting": metrics["waiting_tasks"],
         "completed_today": metrics["completed_today"],
-        "failed_today": metrics["failed_today"] + (execution_errors_today or 0),
+        "failed_today": metrics["failed_today"],
         "trend": trend,
         "recent": [
             {
@@ -268,7 +229,6 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
                 "runtime_state": task.runtime_state,
                 "runtime_status_label": task.runtime_status_label,
                 "runtime_detail": task.runtime_detail,
-                "active_run": task.active_run,
                 "failure": task.failure,
                 "employee_id": task.employee_id,
                 "employee_name": employee_name or "未分配",
@@ -294,7 +254,7 @@ def _activity_copy(
         return "task_created", f"创建任务：{title}"
     if event.event_type == "TASK_RUNNING":
         return "task_started", f"开始执行：{title}"
-    if event.event_type == "TASK_COMPLETED":
+    if event.event_type == "TASK_SUCCEEDED":
         return "task_completed", f"完成任务：{title}"
     if event.event_type in {"TASK_FAILED", "EXECUTION_ERROR"}:
         return "task_failed", f"任务失败：{title}"

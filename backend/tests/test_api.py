@@ -1,14 +1,12 @@
 import asyncio
 import sys
-from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.domain import TaskStatus
 from app.main import app
-from app.models import Event, OpenCodeExecutionEnvironment, Run, Task
+from app.models import OpenCodeExecutionEnvironment, Task
 
 
 def task_payload(**overrides):
@@ -25,33 +23,59 @@ def task_payload(**overrides):
     return payload
 
 
-def test_task_api_uses_v04_business_fields_and_statuses():
+def test_task_api_uses_session_business_contract():
     with TestClient(app) as client:
         created = client.post("/api/tasks", json=task_payload())
         assert created.status_code == 201
         task = created.json()
-        assert task["status"] == "READY"
+        assert task["status"] == "PENDING"
         assert task["task_type"] == "ISSUE"
         assert task["category_id"] == "testing-platform"
         assert task["acceptance_criteria"] == [{"id": "AC-01", "content": "任务结果可追溯"}]
-        assert "workspace" not in task
+        assert task["workspace"] is None
+        assert task["current_session_id"] is None
         assert "current_phase" not in task
         assert "progress" not in task
 
         filtered = client.get(
             "/api/tasks",
-            params={"q": "API 集成", "status": "READY", "task_type": "ISSUE"},
+            params={"q": "API 集成", "status": "PENDING", "task_type": "ISSUE"},
         )
         assert filtered.status_code == 200
         assert [item["id"] for item in filtered.json()] == [task["id"]]
 
-        paused = client.post(f"/api/tasks/{task['id']}/pause", json={"reason": "测试暂停"})
-        assert paused.status_code == 200
-        assert paused.json()["status"] == "SUSPENDED"
+        stopped = client.post(f"/api/tasks/{task['id']}/stop")
+        assert stopped.status_code == 200
+        assert stopped.json()["status"] == "CANCELED"
+        assert client.post(f"/api/tasks/{task['id']}/resume", json={}).status_code == 404
 
-        resumed = client.post(f"/api/tasks/{task['id']}/resume", json={})
-        assert resumed.status_code == 200
-        assert resumed.json()["status"] == "READY"
+
+def test_task_delete_only_allows_pending_or_terminal_states():
+    def set_status(task_id: str, status: TaskStatus) -> None:
+        async def _update() -> None:
+            async with SessionLocal() as session:
+                task = await session.get(Task, task_id)
+                task.status = status
+                await session.commit()
+
+        asyncio.run(_update())
+
+    with TestClient(app) as client:
+        pending = client.post("/api/tasks", json=task_payload(title="待执行任务删除")).json()
+        running = client.post("/api/tasks", json=task_payload(title="执行中任务删除")).json()
+        set_status(running["id"], TaskStatus.RUNNING)
+
+        blocked = client.delete(f"/api/tasks/{running['id']}")
+        assert blocked.status_code == 409
+        assert client.get(f"/api/tasks/{running['id']}").status_code == 200
+
+        deleted = client.delete(f"/api/tasks/{pending['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": pending["id"]}
+        assert client.get(f"/api/tasks/{pending['id']}").status_code == 404
+
+        missing = client.delete("/api/tasks/T-DOES-NOT-EXIST")
+        assert missing.status_code == 404
 
 
 def test_home_dashboard_exposes_only_aggregated_business_sections():
@@ -78,7 +102,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
                     "status",
                     "state",
                     "state_label",
-                    "runtime_state", "runtime_status_label", "runtime_detail", "active_run", "failure",
+                    "runtime_state", "runtime_status_label", "runtime_detail", "failure",
                     "current_task",
                 }
                 assert "execution_environment" not in employee
@@ -92,7 +116,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
         assert len(tasks.json()["trend"]) == 7
         assert len(tasks.json()["recent"]) <= 6
         expected_recent_task_fields = {
-            "runtime_state", "runtime_status_label", "runtime_detail", "active_run", "failure",
+            "runtime_state", "runtime_status_label", "runtime_detail", "failure",
             "id",
             "title",
             "status",
@@ -116,154 +140,8 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
         assert all(set(item) == {"id", "title"} for item in knowledge.json()["recent"])
 
 
-def test_task_workbench_keeps_one_session_for_messages_inquiries_and_follow_up_runs():
-    with TestClient(app) as client:
-        created = client.post(
-            "/api/tasks",
-            json=task_payload(title="持续任务工作台", priority="MEDIUM"),
-        ).json()
-        task_id = created["id"]
-
-        initial = client.get(f"/api/tasks/{task_id}/workspace")
-        assert initial.status_code == 200
-        initial_workspace = initial.json()
-        session_id = initial_workspace["session"]["id"]
-        assert initial_workspace["messages"][0]["role"] == "user"
-        assert initial_workspace["events"][0]["event_type"] == "run.created"
-        session_events = client.get(f"/api/sessions/{session_id}/events")
-        assert session_events.status_code == 200
-        assert session_events.json()[0]["session_id"] == session_id
-        assert session_events.json()[0]["event_type"] == "run.created"
-
-        queued = client.post(
-            f"/api/tasks/{task_id}/messages",
-            json={"content": "增加一个异常测试场景"},
-        )
-        assert queued.status_code == 200
-        assert queued.json()["session"]["id"] == session_id
-        assert queued.json()["messages"][-1]["status"] == "QUEUED"
-
-        async def mark_waiting():
-            async with SessionLocal() as session:
-                row = await session.get(Task, task_id)
-                row.status = TaskStatus.WAIT_HUMAN
-                row.human_intervention = {
-                    "blocking_reason": "存在两个候选方案",
-                    "requested_input": "请选择方案 A 或方案 B",
-                    "options": [{"label": "方案 A", "value": "A"}, {"label": "方案 B", "value": "B"}],
-                }
-                await session.commit()
-
-        asyncio.run(mark_waiting())
-        waiting = client.get(f"/api/tasks/{task_id}/workspace").json()
-        inquiry = waiting["inquiries"][-1]
-        assert inquiry["status"] == "OPEN"
-        assert inquiry["options"][1]["value"] == "B"
-
-        status_reply = client.post(
-            f"/api/tasks/{task_id}/messages",
-            json={"content": "/status"},
-        )
-        assert status_reply.status_code == 200
-        assert status_reply.json()["task"]["status"] == "WAIT_HUMAN"
-        assert status_reply.json()["inquiries"][-1]["status"] == "OPEN"
-        assert status_reply.json()["messages"][-1]["role"] == "agent"
-        assert "WAIT_HUMAN" in status_reply.json()["messages"][-1]["content"]
-
-        answered = client.post(
-            f"/api/inquiries/{inquiry['id']}/answer",
-            json={"answer": "B"},
-        )
-        assert answered.status_code == 200
-        answered_workspace = answered.json()
-        assert answered_workspace["session"]["id"] == session_id
-        assert answered_workspace["inquiries"][-1]["status"] == "ANSWERED"
-        assert answered_workspace["task"]["status"] == "READY"
-
-        async def mark_completed():
-            async with SessionLocal() as session:
-                row = await session.get(Task, task_id)
-                row.status = TaskStatus.COMPLETED
-                await session.commit()
-
-        asyncio.run(mark_completed())
-        continued = client.post(
-            f"/api/sessions/{session_id}/messages",
-            json={"content": "继续优化脚本"},
-        )
-        assert continued.status_code == 200
-        assert continued.json()["session"]["id"] == session_id
-        assert continued.json()["task"]["status"] == "READY"
 
 
-def test_workbench_projects_structured_task_tool_into_subagent_session_block():
-    with TestClient(app) as client:
-        task = client.post(
-            "/api/tasks",
-            json=task_payload(title="结构化 Subagent 事件", priority="MEDIUM"),
-        ).json()
-
-        async def add_runtime_events():
-            async with SessionLocal() as session:
-                session.add(
-                    Event(
-                        task_id=task["id"],
-                        event_type="TOOL_ACTIVITY",
-                        phase="operation",
-                        message="Print hello world",
-                        detail={
-                            "tool": "task",
-                            "status": "completed",
-                            "title": "Print hello world",
-                            "call_id": "call_structured_subagent",
-                            "input": {
-                                "description": "Print hello world",
-                                "prompt": "打印 hello world",
-                                "subagent_type": "general",
-                            },
-                            "output": "<task_result>hello world</task_result>",
-                            "metadata": {
-                                "parentSessionId": "ses_parent",
-                                "sessionId": "ses_child",
-                            },
-                            "semantic_event_type": "tool.completed",
-                        },
-                    )
-                )
-                session.add(
-                    Event(
-                        task_id=task["id"],
-                        event_type="MESSAGE_AGENT",
-                        phase="message",
-                        message="新的 subagent 返回了 hello world",
-                        detail={},
-                    )
-                )
-                await session.commit()
-
-        asyncio.run(add_runtime_events())
-        workspace = client.get(f"/api/tasks/{task['id']}/workspace")
-
-        assert workspace.status_code == 200
-        payload = workspace.json()
-        subagent_events = [
-            event for event in payload["events"] if event["event_type"].startswith("subagent.")
-        ]
-        assert len(subagent_events) == 1
-        assert subagent_events[0]["event_type"] == "subagent.completed"
-        assert subagent_events[0]["agent_name"] == "general"
-        assert subagent_events[0]["payload"]["child_session_id"] == "ses_child"
-        assert subagent_events[0]["payload"]["compatibility_projection"] is True
-        assert any(
-            block["block_type"] == "operation_group" and block["semantic_type"] == "tool.group"
-            for block in payload["blocks"]
-        )
-        assert any(
-            block["block_type"] == "event"
-            and block["semantic_type"] == "subagent.completed"
-            and block["visibility"] == "primary"
-            for block in payload["blocks"]
-        )
 
 
 def test_employee_scope_environment_and_category_configuration(tmp_path):
@@ -322,6 +200,37 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
         assert checked.status_code == 200
         assert checked.json()["status"] == "AVAILABLE"
         assert all(item["passed"] for item in checked.json()["checks"])
+
+
+def test_employee_without_task_history_can_be_deleted(tmp_path):
+    with TestClient(app) as client:
+        category = client.post(
+            "/api/task-categories",
+            json={"name": "员工删除测试", "description": "删除无任务员工"},
+        )
+        assert category.status_code == 201
+        created = client.post(
+            "/api/employees",
+            json={
+                "id": "astra-api-deletable",
+                "name": "可删除员工",
+                "role": "删除测试",
+                "category_ids": [category.json()["id"]],
+                "execution_environment": {
+                    "mode": "LOCAL",
+                    "name": "删除测试环境",
+                    "opencode_server_port": 55199,
+                    "opencode_path": sys.executable,
+                    "workspace_root": str(tmp_path / "deletable-workspace"),
+                },
+            },
+        )
+        assert created.status_code == 201
+        assert client.delete("/api/employees/astra-api-deletable").json() == {
+            "deleted": "astra-api-deletable"
+        }
+        assert client.get("/api/employees/astra-api-deletable").status_code == 404
+        assert client.delete("/api/employees/astra-api-deletable").status_code == 404
 
 
 def test_remote_ssh_password_is_never_returned_and_blank_update_keeps_value():
@@ -383,140 +292,3 @@ def test_remote_ssh_password_is_never_returned_and_blank_update_keeps_value():
                 return row.ssh_password
 
         assert asyncio.run(load_password()) == "database-only-secret"
-
-
-def test_employee_can_submit_structured_completion():
-    with TestClient(app) as client:
-        employees = client.get("/api/employees").json()
-        employee = next(
-            item
-            for item in employees
-            if "ISSUE" in item["task_types"] and "testing-platform" in item["category_ids"]
-        )
-        created = client.post(
-            "/api/tasks",
-            json=task_payload(employee_id=employee["id"], title="结构化结果任务"),
-        )
-        assert created.status_code == 201
-        task = created.json()
-
-        async def mark_running():
-            async with SessionLocal() as session:
-                row = await session.get(Task, task["id"])
-                from app.models import DigitalEmployee
-                from app.runtime.lifecycle import RuntimeService
-                runtime = RuntimeService(session)
-                employee_row = await session.get(DigitalEmployee, row.employee_id)
-                employee_row.current_task_count = 0
-                run = await runtime.queue_new_run(row, employee_row, current_progress="测试", message="测试")
-                claimed = await runtime.claim_run(run.id, worker_id="api-test")
-                await runtime.mark_running(row, run, claimed[3])
-
-        asyncio.run(mark_running())
-        completed = client.post(
-            f"/api/tasks/{task['id']}/complete",
-            json={
-                "result": {
-                    "summary": "已完成接口治理",
-                    "changes": ["补充状态记录"],
-                    "files": ["app/service.py"],
-                    "commits": ["abc1234"],
-                },
-                "acceptance_results": [
-                    {
-                        "criterion_id": "AC-01",
-                        "status": "SATISFIED",
-                        "description": "已提供任务记录",
-                        "evidence": ["commit abc1234"],
-                    }
-                ],
-            },
-        )
-        assert completed.status_code == 200
-        assert completed.json()["status"] == "COMPLETED"
-        assert completed.json()["result"]["acceptance_results"][0]["status"] == "SATISFIED"
-
-
-def test_rerun_creates_new_queued_run_and_rejects_double_click(monkeypatch, tmp_path):
-    class Published:
-        id = "run-published-test"
-
-    from app.runtime.celery_app import process_task
-
-    monkeypatch.setattr(process_task, "apply_async", lambda *args, **kwargs: Published())
-    employee_id = "astra-rerun-api"
-    old_run_id = "RUN-RERUN-OLD"
-    with TestClient(app) as client:
-        employee = client.post(
-            "/api/employees",
-            json={
-                "id": employee_id,
-                "name": "重新执行员工",
-                "role": "测试员工",
-                "category_ids": ["testing-platform"],
-                "auto_claim": False,
-                "auto_execute": False,
-                "execution_environment": {
-                    "mode": "LOCAL",
-                    "name": "重新执行环境",
-                    "workspace_root": str(tmp_path),
-                },
-            },
-        )
-        assert employee.status_code == 201
-        task = client.post(
-            "/api/tasks",
-            json=task_payload(employee_id=employee_id, title="重新执行 API"),
-        ).json()
-
-        async def mark_failed():
-            async with SessionLocal() as session:
-                row = await session.get(Task, task["id"])
-                environment = await session.scalar(
-                    select(OpenCodeExecutionEnvironment).where(
-                        OpenCodeExecutionEnvironment.employee_id == employee_id
-                    )
-                )
-                environment.status = "AVAILABLE"
-                row.status = TaskStatus.FAILED
-                row.opencode_session_id = "ses-old-failed"
-                row.result = {"summary": "旧运行失败"}
-                session.add(
-                    Run(
-                        id=old_run_id,
-                        task_id=row.id,
-                        employee_id=employee_id,
-                        run_number=1,
-                        status="FAILED",
-                        started_at=datetime.now(UTC),
-                        finished_at=datetime.now(UTC),
-                    )
-                )
-                await session.commit()
-
-        asyncio.run(mark_failed())
-        rerun = client.post(f"/api/tasks/{task['id']}/rerun")
-
-        assert rerun.status_code == 200
-        assert rerun.json()["status"] == "QUEUED"
-        assert rerun.json()["opencode_session_id"] is None
-        assert client.post(f"/api/tasks/{task['id']}/rerun").status_code == 409
-
-        async def load_runs():
-            async with SessionLocal() as session:
-                return (
-                    (
-                        await session.execute(
-                            select(Run)
-                            .where(Run.task_id == task["id"])
-                            .order_by(Run.run_number)
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-
-        runs = asyncio.run(load_runs())
-        assert [run.status for run in runs] == ["FAILED", "QUEUED"]
-        assert runs[1].previous_run_id == old_run_id
-        assert runs[1].celery_task_id == "run-published-test"

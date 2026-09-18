@@ -6,23 +6,15 @@
     </section>
 
     <nav class="task-tabs" aria-label="任务状态筛选">
-      <button type="button" :class="{ active: filters.status === '' }" @click="setStatus('')">全部 <b>{{ counts.all }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'READY' }" @click="setStatus('READY')">{{ runtimeStatusLabel('READY') }} <b>{{ counts.ready }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'ASSIGNED' }" @click="setStatus('ASSIGNED')">{{ runtimeStatusLabel('ASSIGNED') }} <b>{{ counts.assigned }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'QUEUED' }" @click="setStatus('QUEUED')">{{ runtimeStatusLabel('QUEUED') }} <b>{{ counts.queued }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'STARTING' }" @click="setStatus('STARTING')">{{ runtimeStatusLabel('STARTING') }} <b>{{ counts.starting }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'RUNNING' }" @click="setStatus('RUNNING')">{{ runtimeStatusLabel('RUNNING') }} <b>{{ counts.running }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'WAITING_INPUT' }" @click="setStatus('WAITING_INPUT')">{{ runtimeStatusLabel('WAITING_INPUT') }} <b>{{ counts.waitingInput }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'PENDING_CONFIRMATION' }" @click="setStatus('PENDING_CONFIRMATION')">{{ runtimeStatusLabel('PENDING_CONFIRMATION') }} <b>{{ counts.pending }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'ABNORMAL' }" @click="setStatus('ABNORMAL')">异常 <b>{{ counts.abnormal }}</b></button>
-      <button type="button" :class="{ active: filters.status === 'COMPLETED' }" @click="setStatus('COMPLETED')">{{ runtimeStatusLabel('COMPLETED') }} <b>{{ counts.completed }}</b></button>
+      <button type="button" :class="{ active: filters.status === '' }" @click="setStatus('')">全部 <b>{{ store.tasks.length }}</b></button>
+      <button v-for="state in statuses" :key="state" type="button" :class="{ active: filters.status === state }" @click="setStatus(state)">{{ runtimeStatusLabel(state) }} <b>{{ runtimeCount(state) }}</b></button>
     </nav>
 
     <div class="filter-bar task-filters">
       <div class="search-box"><Search :size="15" /><input v-model="filters.query" placeholder="搜索任务 ID 或标题" aria-label="搜索任务" /></div>
       <select v-model="filters.type" aria-label="类型"><option value="">全部类型</option><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select>
       <select v-model="filters.category" aria-label="分类"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
-      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">异常（失败/异常/超时/丢失/待校正）</option><option v-for="item in statuses" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
+      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">执行失败</option><option v-for="item in statuses" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
       <select v-model="filters.employee" aria-label="执行员工"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
       <button class="button button--ghost" type="button" @click="showMore = !showMore"><SlidersHorizontal :size="14" /> 更多筛选 <ChevronDown :size="14" :class="{ rot: showMore }" /></button>
       <button class="button button--ghost" type="button" @click="resetFilters"><RotateCcw :size="14" /> 重置</button>
@@ -58,7 +50,7 @@
                 <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>
                 <td class="actions-cell" @click.stop>
                   <div class="actions-wrap">
-                    <button class="task-primary-btn" :data-kind="primaryAction(task).kind" type="button" @click="onPrimary(task)">{{ primaryAction(task).label }}</button>
+                    <button class="task-primary-btn" type="button" @click="openTask(task.id)">查看详情</button>
                     <div class="menu-wrap">
                       <button class="task-menu-btn" type="button" aria-label="更多操作" @click="toggleMenu(task.id)"><MoreHorizontal :size="17" /></button>
                       <div v-if="openMenu === task.id" class="task-menu">
@@ -88,30 +80,34 @@
       </footer>
     </AstraPanel>
 
-    <div v-if="dialogOpen" class="modal-backdrop" data-testid="task-create-modal" @click.self="dialogOpen = false">
-      <form class="modal-card task-create-card" @submit.prevent="createTask">
-        <header><div><h3>创建任务</h3><p>定义目标和验收标准，执行方式由数字员工决定。</p></div><button type="button" aria-label="关闭创建任务" @click="dialogOpen = false"><X :size="17" /></button></header>
-        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
-        <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="5" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><label>附件<input type="file" multiple @change="selectFiles" /><small v-if="attachments.length">已选择 {{ attachments.map((item) => item.name).join('、') }}</small></label></section>
-        <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
-        <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
-        <footer><button type="button" class="button" @click="dialogOpen = false">取消</button><button class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button></footer>
-      </form>
-    </div>
-
-    <div v-if="pending" class="modal-backdrop" data-testid="task-action-confirm" @click.self="pending = null">
-      <div class="modal-card confirm-action-card">
-        <header><div><h3>{{ pending.label }}</h3><p>确认对「{{ shortTitle(pending.task.title) }}」执行该操作？</p></div><button type="button" aria-label="关闭确认" @click="pending = null"><X :size="17" /></button></header>
-        <footer><button type="button" class="button" @click="pending = null">取消</button><button class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button></footer>
+    <Teleport to="body">
+      <div v-if="dialogOpen" class="modal-backdrop" data-testid="task-create-modal" @click.self="dialogOpen = false">
+        <form class="modal-card task-create-card" @submit.prevent="createTask">
+          <header><div><h3>创建任务</h3><p>定义目标和验收标准，执行方式由数字员工决定。</p></div><button type="button" aria-label="关闭创建任务" @click="dialogOpen = false"><X :size="17" /></button></header>
+          <div class="modal-body">
+            <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
+            <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
+            <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
+            <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
+          </div>
+          <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
+          <footer><button type="button" class="button" @click="dialogOpen = false">取消</button><button class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button></footer>
+        </form>
       </div>
-    </div>
+
+      <div v-if="pending" class="modal-backdrop" data-testid="task-action-confirm" @click.self="pending = null">
+        <div class="modal-card confirm-action-card">
+          <header><div><h3>{{ pending.label }}</h3><p>确认对「{{ shortTitle(pending.task.title) }}」执行该操作？</p></div><button type="button" aria-label="关闭确认" @click="pending = null"><X :size="17" /></button></header>
+          <footer><button type="button" class="button" @click="pending = null">取消</button><button class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button></footer>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import FormField from '@/components/forms/FormField.vue'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, MoreHorizontal, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, FileText, LoaderCircle, MoreHorizontal, Paperclip, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -121,7 +117,6 @@ import AstraPanel from '@/components/astra/AstraPanel.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import {
   TASK_RUNTIME_FILTER_STATES,
-  isAbnormalRuntimeState,
   runtimeStatusLabel,
   runtimeStatusMatchesFilter,
   type RuntimeStatusFilter,
@@ -139,12 +134,14 @@ const showMore = ref(false)
 const pageSize = ref(20)
 const currentPage = ref(1)
 const openMenu = ref<string | null>(null)
-const pending = ref<{ task: Task; name: string; label: string } | null>(null)
+type MenuAction = 'start' | 'cancel' | 'rerun' | 'delete'
+interface MenuItem { label: string; action: MenuAction; danger?: boolean }
+const pending = ref<{ task: Task; name: MenuAction; label: string } | null>(null)
 const acting = ref(false)
 
 const statuses = TASK_RUNTIME_FILTER_STATES
 const priorities: TaskPriority[] = ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW']
-const terminalStatuses: TaskStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED']
+const terminalStatuses: TaskStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELED']
 
 const filters = reactive({
   query: typeof route.query.q === 'string' ? route.query.q : '',
@@ -160,9 +157,11 @@ const filters = reactive({
 const form = reactive({ title: '', task_type: 'ISSUE' as 'ISSUE' | 'REQUIREMENT', category_id: '', priority: 'MEDIUM' as TaskPriority, completion_policy: 'AUTO' as 'AUTO' | 'MANUAL_CONFIRM', description: '', employee_id: '' })
 const criteria = ref([{ key: safeUUID(), content: '' }])
 const attachments = ref<Array<{ name: string; size: number; content_type: string; content: string }>>([])
+const fileInput = ref<HTMLInputElement | null>(null)
 const isInitialLoading = computed(() => store.loading && !store.tasks.length)
 
 watch(() => filters, () => { currentPage.value = 1 }, { deep: true })
+watch([dialogOpen, pending], ([create, confirm]) => document.body.classList.toggle('overlay-open', Boolean(create) || Boolean(confirm)))
 watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
 
 onMounted(async () => {
@@ -170,24 +169,12 @@ onMounted(async () => {
   form.category_id = store.categories[0]?.id ?? ''
   document.addEventListener('click', closeMenu)
 })
-onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
+onBeforeUnmount(() => { document.removeEventListener('click', closeMenu); document.body.classList.remove('overlay-open') })
 
 function closeMenu() { openMenu.value = null }
 function toggleMenu(id: string) { openMenu.value = openMenu.value === id ? null : id }
 const runtimeCount = (state: string) => store.tasks.filter((task) => task.runtime_state === state).length
 
-const counts = computed(() => ({
-  all: store.tasks.length,
-  ready: runtimeCount('READY'),
-  assigned: runtimeCount('ASSIGNED'),
-  queued: runtimeCount('QUEUED'),
-  starting: runtimeCount('STARTING'),
-  running: runtimeCount('RUNNING'),
-  waitingInput: runtimeCount('WAITING_INPUT'),
-  pending: runtimeCount('PENDING_CONFIRMATION'),
-  abnormal: store.tasks.filter((task) => isAbnormalRuntimeState(task.runtime_state)).length,
-  completed: runtimeCount('COMPLETED'),
-}))
 
 const filtered = computed(() => store.tasks.filter((task) => {
   const query = filters.query.toLowerCase().trim()
@@ -236,35 +223,42 @@ const shortTitle = (value: string) => value.length > 24 ? `${value.slice(0, 24)}
 const resetFilters = () => Object.assign(filters, { query: '', type: '', category: '', priority: '', status: '', employee: '', timeType: 'updated', dateFrom: '', dateTo: '' })
 const openTask = (id: string) => router.push(`/tasks/${id}`)
 
-function primaryAction(task: Task) {
-  if (task.status === 'ASSIGNED') return { label: '启动', kind: 'start' }
-  if (task.status === 'WAIT_HUMAN') return { label: '处理', kind: 'view' }
-  if (task.status === 'PENDING_CONFIRMATION') return { label: '确认', kind: 'confirm' }
-  if (task.status === 'EXECUTION_ERROR') return { label: '恢复', kind: 'recover' }
-  return { label: '查看', kind: 'view' }
+const ACTION_ENDPOINT: Record<Exclude<MenuAction, 'delete'>, string> = { start: 'start', cancel: 'stop', rerun: 'restart' }
+
+function menuItems(task: Task): MenuItem[] {
+  if (task.status === 'PENDING') {
+    return [
+      { label: '开始执行', action: 'start' },
+      { label: '取消任务', action: 'cancel', danger: true },
+      { label: '删除任务', action: 'delete', danger: true },
+    ]
+  }
+  if (task.status === 'RUNNING' || task.status === 'WAITING') {
+    return [{ label: '取消任务', action: 'cancel', danger: true }]
+  }
+  if (isTerminal(task.status)) {
+    return [
+      { label: '重新执行', action: 'rerun' },
+      { label: '删除任务', action: 'delete', danger: true },
+    ]
+  }
+  return []
 }
-function onPrimary(task: Task) {
-  const { kind, label } = primaryAction(task)
-  if (kind === 'view') return openTask(task.id)
-  pending.value = { task, name: kind, label }
-}
-function menuItems(task: Task) {
-  const items: Array<{ label: string; name?: string; action?: 'open'; danger?: boolean }> = []
-  if (task.status === 'RUNNING') items.push({ label: '挂起任务', name: 'pause' })
-  if (task.status === 'SUSPENDED') items.push({ label: '继续任务', name: 'resume' })
-  if (!isTerminal(task.status)) items.push({ label: '取消任务', name: 'cancel', danger: true })
-  items.push({ label: '查看运行记录', action: 'open' })
-  return items
-}
-function onMenu(item: { label: string; name?: string; action?: 'open'; danger?: boolean }, task: Task) {
+function onMenu(item: MenuItem, task: Task) {
   openMenu.value = null
-  if (item.action === 'open') return openTask(task.id)
-  if (item.name === 'cancel') return (pending.value = { task, name: item.name, label: item.label })
-  void runAction(task, item.name ?? '')
+  if (item.action === 'cancel' || item.action === 'delete') {
+    pending.value = { task, name: item.action, label: item.label }
+    return
+  }
+  void runAction(task, item.action)
 }
-async function runAction(task: Task, name: string) {
+async function dispatchAction(task: Task, action: MenuAction) {
+  if (action === 'delete') await api.deleteTask(task.id)
+  else await api.taskAction(task.id, ACTION_ENDPOINT[action], { reason: '从任务中心操作' })
+}
+async function runAction(task: Task, action: MenuAction) {
   try {
-    await api.taskAction(task.id, name, { reason: '从任务中心操作' })
+    await dispatchAction(task, action)
     await store.refresh()
   } catch (error) {
     window.alert(error instanceof Error ? error.message : '操作失败')
@@ -275,7 +269,7 @@ async function runPendingAction() {
   acting.value = true
   const { task, name } = pending.value
   try {
-    await api.taskAction(task.id, name, { reason: '从任务中心操作' })
+    await dispatchAction(task, name)
     pending.value = null
     await store.refresh()
   } catch (error) {
@@ -288,7 +282,17 @@ async function runPendingAction() {
 
 const addCriterion = () => criteria.value.push({ key: safeUUID(), content: '' })
 function moveCriterion(index: number, direction: number) { const target = index + direction; if (target < 0 || target >= criteria.value.length) return; [criteria.value[index], criteria.value[target]] = [criteria.value[target], criteria.value[index]] }
-async function selectFiles(event: Event) { const files = Array.from((event.target as HTMLInputElement).files ?? []); attachments.value = await Promise.all(files.map(async (file) => ({ name: file.name, size: file.size, content_type: file.type || 'application/octet-stream', content: await readFile(file) }))) }
+function pickFiles() { fileInput.value?.click() }
+function removeAttachment(index: number) { attachments.value.splice(index, 1) }
+const fileSizeLabel = (size: number) => size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1048576).toFixed(1)} MB`
+async function selectFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!files.length) return
+  const picked = await Promise.all(files.map(async (file) => ({ name: file.name, size: file.size, content_type: file.type || 'application/octet-stream', content: await readFile(file) })))
+  attachments.value = [...attachments.value, ...picked.filter((item) => !attachments.value.some((existing) => existing.name === item.name && existing.size === item.size))]
+}
 const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
 async function createTask() { submitting.value = true; createError.value = ''; try { const task = await api.createTask({ source: 'manual', title: form.title, task_type: form.task_type, category_id: form.category_id, priority: form.priority, completion_policy: form.completion_policy, description: form.description, acceptance_criteria: criteria.value.map((item) => ({ content: item.content })), attachments: attachments.value, employee_id: form.employee_id || null }); dialogOpen.value = false; await store.refresh(); openTask(task.id) } catch (error) { createError.value = error instanceof Error ? error.message : '创建失败' } finally { submitting.value = false } }
 </script>
@@ -344,10 +348,8 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .progress-cell span, .time-cell time { color: var(--astra-text-muted); }
 
 .actions-wrap { display: flex; align-items: center; gap: 6px; }
-.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: #fff; border: 0; border-radius: 7px; background: var(--astra-primary); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); cursor: pointer; white-space: nowrap; transition: .14s ease; }
-.task-primary-btn[data-kind='view'] { color: var(--astra-text-secondary); border: 1px solid var(--astra-border); background: var(--astra-bg-panel); }
-.task-primary-btn[data-kind='view']:hover { border-color: var(--astra-border-hover); }
-.task-primary-btn:hover { filter: brightness(.96); }
+.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); cursor: pointer; white-space: nowrap; transition: .14s ease; }
+.task-primary-btn:hover { border-color: var(--astra-border-hover); }
 .menu-wrap { position: relative; }
 .task-menu-btn { display: grid; place-items: center; width: 30px; height: 30px; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); cursor: pointer; }
 .task-menu-btn:hover { color: var(--astra-text-primary); border-color: var(--astra-border-hover); }
@@ -370,6 +372,21 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 
 .confirm-action-card { width: min(440px,100%); }
 .confirm-action-card header p { margin: 5px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.55; }
+
+.attachment-field { display: grid; gap: 7px; min-width: 0; }
+.attachment-field__label { color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
+.attachment-field__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.attachment-field__hint { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+.attachment-add { gap: 6px; min-height: var(--astra-control-height-compact); padding: 0 12px; color: var(--astra-primary-bright); border-style: dashed; border-color: var(--astra-primary-border); background: var(--astra-primary-soft); }
+.attachment-add:hover:not(:disabled) { color: var(--astra-primary-bright); border-color: var(--astra-primary-border); background: rgba(24,184,117,.16); }
+.attachment-input { display: none; }
+.attachment-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.attachment-chips li { display: flex; align-items: center; gap: 6px; max-width: 280px; height: 30px; padding: 0 5px 0 9px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 8px; background: #f8fbf9; font-size: var(--astra-font-helper); }
+.attachment-chips li > svg { flex: none; color: var(--astra-primary-bright); }
+.attachment-chips span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chips em { flex: none; color: var(--astra-text-muted); font-style: normal; }
+.attachment-chips button { display: grid; place-items: center; flex: none; width: 20px; height: 20px; padding: 0; color: var(--astra-text-muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
+.attachment-chips button:hover { color: var(--astra-danger); background: var(--astra-danger-soft); }
 
 @keyframes task-shimmer { to { background-position: -200% 0; } }
 

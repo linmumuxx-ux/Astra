@@ -134,7 +134,6 @@ async def seed_demo_data(session: AsyncSession) -> None:
             status=TaskStatus.RUNNING,
             employee_id="astra-01",
             current_progress="已定位权限缓存问题，正在检查影响范围",
-            opencode_session_id="session-task-001",
             execution_environment_snapshot=snapshots["astra-01"],
             created_at=now - timedelta(minutes=34),
             updated_at=now - timedelta(minutes=8),
@@ -156,7 +155,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             priority="HIGH",
             priority_weight=3,
             completion_policy="MANUAL_CONFIRM",
-            status=TaskStatus.WAIT_HUMAN,
+            status=TaskStatus.WAITING,
             employee_id="astra-02",
             current_progress="已完成场景设计，等待测试环境访问权限",
             human_required_reason="当前账号没有修改测试环境配置的权限",
@@ -188,7 +187,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             priority="MEDIUM",
             priority_weight=2,
             completion_policy="AUTO",
-            status=TaskStatus.COMPLETED,
+            status=TaskStatus.SUCCEEDED,
             employee_id="astra-03",
             current_progress="任务已完成",
             result={
@@ -214,7 +213,6 @@ async def seed_demo_data(session: AsyncSession) -> None:
                     },
                 ],
             },
-            opencode_session_id="session-task-003",
             execution_environment_snapshot=snapshots["astra-03"],
             created_at=now - timedelta(hours=2, minutes=10),
             updated_at=now - timedelta(hours=1, minutes=24),
@@ -237,7 +235,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             priority="LOW",
             priority_weight=1,
             completion_policy="AUTO",
-            status=TaskStatus.READY,
+            status=TaskStatus.PENDING,
             current_progress="等待领取",
             created_at=now - timedelta(minutes=20),
             updated_at=now - timedelta(minutes=20),
@@ -254,7 +252,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
             priority="HIGH",
             priority_weight=3,
             completion_policy="MANUAL_CONFIRM",
-            status=TaskStatus.PENDING_CONFIRMATION,
+            status=TaskStatus.WAITING,
             employee_id="astra-03",
             current_progress="结果已提交，等待确认",
             result={
@@ -290,10 +288,9 @@ async def seed_demo_data(session: AsyncSession) -> None:
             priority="MEDIUM",
             priority_weight=2,
             completion_policy="AUTO",
-            status=TaskStatus.SUSPENDED,
+            status=TaskStatus.WAITING,
             employee_id="astra-02",
             current_progress="已保留工作现场，等待外部数据",
-            opencode_session_id="session-task-006",
             suspension={
                 "reason": "外部测试数据尚未生成",
                 "scene_context": "已排除本地配置问题",
@@ -350,9 +347,7 @@ async def seed_demo_data(session: AsyncSession) -> None:
     session.add_all([active_run, waiting_run, run])
     await session.flush()
     for execution in (active_run, waiting_run):
-        task_row = await session.get(Task, execution.task_id)
         employee_row = await session.get(DigitalEmployee, execution.employee_id)
-        task_row.active_run_id = employee_row.active_run_id = execution.id
         employee_row.current_task_count = 1
     session.add_all(
         [

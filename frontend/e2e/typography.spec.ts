@@ -5,7 +5,7 @@ const cjkPlatformFonts = new Set(['Microsoft YaHei', 'WenQuanYi Zen Hei'])
 const acceptedPlatformFonts = new Set([...latinPlatformFonts, ...cjkPlatformFonts])
 
 test('主要页面、控件与弹层使用全局字体，实际中英文字形正确', async ({ page }) => {
-  const routes = ['/', '/employees', '/employees/astra-01', '/tasks', '/tasks/T-20260827-003', '/runs', '/runs/RUN-DEMO-003', '/library', '/settings', '/interventions']
+  const routes = ['/', '/employees', '/employees/astra-01', '/tasks', '/tasks/T-20260827-003', '/library', '/settings', '/interventions']
   const cdp = await page.context().newCDPSession(page)
   await cdp.send('DOM.enable')
   await cdp.send('CSS.enable')
@@ -13,7 +13,7 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
     await page.goto(route)
     await page.locator('main').first().waitFor()
     await expect(page.locator('.error-banner')).toHaveCount(0)
-    await expect(page.locator('.task-title-row h2')).toHaveCount(route.startsWith('/tasks/') ? 1 : 0)
+    await expect(page.locator('.task-title h1')).toHaveCount(route.startsWith('/tasks/') ? 1 : 0)
     await page.evaluate(() => document.fonts.ready)
     const mismatches = await page.evaluate(() => Array.from(document.querySelectorAll('body *')).filter(el =>
       el.getBoundingClientRect().width > 0 && Array.from(el.childNodes).some(n => n.nodeType === Node.TEXT_NODE && n.textContent?.trim())
@@ -35,7 +35,9 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
       }
     }).toPass({ timeout: 5000, intervals: [100, 250, 500] })
 
-    const titles = page.locator('.page-intro h2, .task-head h2, .task-title-row h2, .employee-hero h2, .task-hero h2, .library-intro h2')
+    // 任务详情已改为原生 Workspace，使用紧凑的 17px 头部标题（.task-title h1），
+    // 不属于 22px 页面级标题，故不纳入此处一致性校验。
+    const titles = page.locator('.page-intro h2, .task-head h2, .employee-hero h2, .task-hero h2, .library-intro h2')
     for (const title of await titles.all()) {
       await expect(title).toHaveCSS('font-size', '22px')
       await expect(title).toHaveCSS('font-weight', '700')
@@ -89,7 +91,7 @@ test('知识正文、表格、代码及设置各页签字体一致', async ({ pa
     await expect(element).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
   }
   await page.screenshot({ path: '../artifacts/typography/knowledge-dialog.png', fullPage: true })
-  for (const tab of ['employees', 'categories', 'sources', 'system']) {
+  for (const tab of ['categories', 'sources', 'system']) {
     await page.goto(`/settings?tab=${tab}`)
     await expect(page.locator('.settings-tabs button.active')).toBeVisible()
     await page.screenshot({ path: `../artifacts/typography/settings-${tab}.png`, fullPage: true })

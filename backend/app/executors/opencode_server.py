@@ -270,7 +270,7 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         return await self._execute(task, workspace)
 
     async def resume(self, task: Task, run: Run, workspace: WorkspacePath) -> ExecutorResult:
-        session_id = task.opencode_session_id or run.opencode_session_id
+        session_id = task.current_session_id or run.opencode_session_id
         if not session_id:
             return await self._execute(task, workspace)
         return await self._execute(task, workspace, session_id=session_id)

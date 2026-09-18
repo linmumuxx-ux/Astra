@@ -4,7 +4,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain import (
-    AcceptanceStatus,
     CompletionPolicy,
     EnvironmentStatus,
     ExecutionMode,
@@ -21,7 +20,6 @@ class RuntimeRead(ORMModel):
     runtime_state: str
     runtime_status_label: str
     runtime_detail: str
-    active_run: dict[str, Any] | None
     failure: dict[str, Any] | None
 
 
@@ -183,7 +181,6 @@ class EmployeeRead(RuntimeRead):
     auto_execute: bool
     max_auto_retries: int
     current_task_count: int
-    active_run_id: str | None
     last_heartbeat: datetime | None
     online_since: datetime | None
     created_at: datetime
@@ -198,21 +195,8 @@ class AcceptanceCriterion(BaseModel):
     content: str = Field(min_length=1, max_length=500)
 
 
-class AcceptanceResult(BaseModel):
-    criterion_id: str
-    status: AcceptanceStatus
-    description: str = ""
-    evidence: list[str] = Field(default_factory=list)
 
 
-class WorkResult(BaseModel):
-    summary: str = Field(min_length=1)
-    changes: list[str] = Field(default_factory=list)
-    files: list[str] = Field(default_factory=list)
-    commits: list[str] = Field(default_factory=list)
-    logs: list[str] = Field(default_factory=list)
-    attachments: list[str] = Field(default_factory=list)
-    other: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskCreate(BaseModel):
@@ -253,8 +237,11 @@ class TaskRead(RuntimeRead):
     completion_policy: str
     status: str
     employee_id: str | None
-    active_run_id: str | None
-    opencode_session_id: str | None
+    current_session_id: str | None
+    workspace: str | None
+    runtime_connection: str
+    pending_message_id: str | None
+    runtime_error: str | None
     current_progress: str
     suspension: dict[str, Any] | None
     execution_error: dict[str, Any] | None
@@ -276,87 +263,20 @@ class TaskRead(RuntimeRead):
     updated_at: datetime
 
 
-class TaskAction(BaseModel):
-    reason: str | None = None
-    note: str | None = None
 
 
-class TaskProgressUpdate(BaseModel):
-    current_progress: str = Field(min_length=1, max_length=500)
 
 
-class HumanInterventionWrite(BaseModel):
-    blocking_reason: str = Field(min_length=1)
-    completed_work: str = ""
-    current_state: str = ""
-    requested_input: str = Field(min_length=1)
-    can_suspend: bool = False
-    scene_context: str = ""
 
 
-class TaskSuspendWrite(BaseModel):
-    reason: str = Field(min_length=1)
-    current_state: str = ""
-    scene_context: str = ""
-    requested_input: str = ""
 
 
-class TaskRejectWrite(BaseModel):
-    feedback: str = Field(min_length=1, max_length=2000)
 
 
-class TaskCompletionWrite(BaseModel):
-    result: WorkResult
-    acceptance_results: list[AcceptanceResult] = Field(min_length=1)
 
 
-class RunRead(RuntimeRead):
-    id: str
-    task_id: str
-    employee_id: str
-    previous_run_id: str | None
-    run_number: int
-    trigger_reason: str
-    retry_index: int
-    status: str
-    executor_type: str
-    opencode_session_id: str | None
-    queued_at: datetime | None
-    dispatched_at: datetime | None
-    started_at: datetime | None
-    finished_at: datetime | None
-    celery_task_id: str | None
-    dispatch_attempt: int
-    heartbeat_at: datetime | None
-    worker_id: str | None
-    executor_status: str | None
-    failure_code: str | None
-    failure_scope: str | None
-    retryable: bool | None
-    recovery_action: str | None
-    raw_error: str | None
-    exit_code: int | None
-    result: dict[str, Any] | None
-    execution_environment_snapshot: dict[str, Any]
-    model_name: str | None
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    total_tokens: int | None
-    llm_call_count: int | None
-    tool_call_count: int | None
-    created_at: datetime
 
 
-class ToolUsageRead(ORMModel):
-    id: int
-    run_id: str
-    tool_name: str
-    call_count: int
-    success_count: int
-    failure_count: int
-    duration_ms: int
 
 
 class EventRead(ORMModel):
@@ -371,78 +291,18 @@ class EventRead(ORMModel):
     created_at: datetime
 
 
-class TaskSessionRead(ORMModel):
-    id: str
-    task_id: str
-    status: str
-    current_run_id: str | None
-    created_at: datetime
-    updated_at: datetime
 
 
-class SessionMessageWrite(BaseModel):
-    content: str = Field(min_length=1, max_length=8000)
 
 
-class SessionMessageRead(ORMModel):
-    id: str
-    session_id: str
-    run_id: str | None
-    role: str
-    content: str
-    status: str
-    created_at: datetime
 
 
-class InquiryAnswerWrite(BaseModel):
-    answer: str = Field(min_length=1, max_length=8000)
 
 
-class RunInquiryRead(ORMModel):
-    id: str
-    session_id: str
-    run_id: str | None
-    agent_name: str | None
-    question: str
-    description: str
-    options: list[dict[str, Any]]
-    answer: str | None
-    status: str
-    created_at: datetime
-    answered_at: datetime | None
 
 
-class RuntimeEventRead(BaseModel):
-    id: str
-    session_id: str
-    run_id: str | None
-    sequence: int
-    event_type: str
-    agent_name: str | None
-    timestamp: datetime
-    phase: str
-    summary: str
-    payload: dict[str, Any]
 
 
-class SessionBlockRead(BaseModel):
-    """Stable workbench projection independent of an Agent CLI wire format."""
-
-    id: str
-    session_id: str
-    run_id: str | None
-    sequence: int | None
-    block_type: Literal["message", "inquiry", "event", "operation_group"]
-    semantic_type: str
-    visibility: Literal["primary", "diagnostic"] = "primary"
-    actor_name: str | None = None
-    status: str | None = None
-    timestamp: datetime
-    summary: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-    message: SessionMessageRead | None = None
-    inquiry: RunInquiryRead | None = None
-    events: list[RuntimeEventRead] = Field(default_factory=list)
 
 
 class EvidenceRead(ORMModel):
@@ -456,15 +316,3 @@ class EvidenceRead(ORMModel):
     content_type: str
     metadata_: dict[str, Any]
     created_at: datetime
-
-
-class TaskWorkbenchRead(BaseModel):
-    task: TaskRead
-    session: TaskSessionRead
-    messages: list[SessionMessageRead]
-    events: list[RuntimeEventRead]
-    blocks: list[SessionBlockRead]
-    inquiries: list[RunInquiryRead]
-    artifacts: list[EvidenceRead]
-    runs: list[RunRead]
-    has_more_events: bool = False

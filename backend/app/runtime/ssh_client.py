@@ -1,5 +1,6 @@
 import asyncio
 import select
+import socket
 import socketserver
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -123,6 +124,58 @@ class SSHTunnel:
         await _run_blocking(stop)
 
 
+def _bridge_forwarded(channel: Any, local_host: str, local_port: int) -> None:
+    try:
+        sock = socket.create_connection((local_host, local_port), timeout=10)
+    except OSError:
+        channel.close()
+        return
+    try:
+        while True:
+            readable, _, _ = select.select([channel, sock], [], [])
+            if channel in readable:
+                payload = channel.recv(65536)
+                if not payload:
+                    break
+                sock.sendall(payload)
+            if sock in readable:
+                payload = sock.recv(65536)
+                if not payload:
+                    break
+                channel.sendall(payload)
+    except (EOFError, OSError):
+        pass
+    finally:
+        channel.close()
+        sock.close()
+
+
+class SSHReverseTunnel:
+    """Remote loopback port forwarded back to an Astra-local endpoint."""
+
+    def __init__(self, transport: Any, remote_port: int, thread: threading.Thread, stop: threading.Event):
+        self._transport = transport
+        self.remote_port = remote_port
+        self._thread = thread
+        self._stop = stop
+        self._closed = False
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        def stop() -> None:
+            self._stop.set()
+            try:
+                self._transport.cancel_port_forward("127.0.0.1", self.remote_port)
+            except Exception:
+                pass
+            self._thread.join(timeout=5)
+
+        await _run_blocking(stop)
+
+
 class SSHSession:
     """One password-authenticated Paramiko connection used for remote execution."""
 
@@ -182,6 +235,40 @@ class SSHSession:
             )
             thread.start()
             return SSHTunnel(server, thread)
+
+        return await _run_blocking(start)
+
+    async def open_reverse_tunnel(
+        self,
+        *,
+        remote_port: int,
+        local_host: str = "127.0.0.1",
+        local_port: int,
+    ) -> SSHReverseTunnel:
+        def start() -> SSHReverseTunnel:
+            transport = self._client.get_transport()
+            if transport is None or not transport.is_active():
+                raise RuntimeError("SSH 连接未建立或已断开")
+            transport.request_port_forward("127.0.0.1", remote_port)
+            stop = threading.Event()
+
+            def serve() -> None:
+                while not stop.is_set():
+                    channel = transport.accept(1)
+                    if channel is None:
+                        continue
+                    threading.Thread(
+                        target=_bridge_forwarded,
+                        args=(channel, local_host, local_port),
+                        name=f"astra-ssh-reverse-{remote_port}",
+                        daemon=True,
+                    ).start()
+
+            thread = threading.Thread(
+                target=serve, name=f"astra-ssh-reverse-accept-{remote_port}", daemon=True
+            )
+            thread.start()
+            return SSHReverseTunnel(transport, remote_port, thread, stop)
 
         return await _run_blocking(start)
 

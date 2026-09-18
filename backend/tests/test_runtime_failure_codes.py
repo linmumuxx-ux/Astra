@@ -36,7 +36,7 @@ async def test_missing_opencode_session_returns_structured_failure(tmp_path: Pat
         source="manual",
         task_type="ISSUE",
         title="Session recovery",
-        opencode_session_id="ses-missing",
+        current_session_id="ses-missing",
     )
     run = Run(
         id="RUN-SESSION-MISSING",

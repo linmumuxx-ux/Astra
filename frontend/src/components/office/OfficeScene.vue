@@ -47,7 +47,7 @@
     <div v-if="!employees.length" class="office-scene__message">
       <strong>数字办公室还没有员工</strong>
       <span>创建员工后，他们会进入对应团队的固定工位。</span>
-      <RouterLink class="button button--primary" to="/settings?create=1">创建数字员工</RouterLink>
+      <RouterLink class="button button--primary" to="/employees?create=1">创建数字员工</RouterLink>
     </div>
     <div v-else-if="query && !matchedIds.size" class="office-scene__message">
       <strong>没有找到“{{ query }}”</strong><span>可搜索员工姓名、编号、岗位或当前任务。</span>

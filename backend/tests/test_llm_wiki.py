@@ -327,7 +327,7 @@ def test_migration_backfills_usage_and_published_sources(tmp_path):
             "VALUES ('library_search','search','{\"knowledge_ids\":[\"KNOW_old\"]}',"
             "'2026-09-08 00:00:00')"
         )
-    migrate("upgrade", "head")
+    migrate("upgrade", "0019_library_llm_wiki")
     with sqlite3.connect(database) as conn:
         assert conn.execute("SELECT resource_id,action FROM knowledge_usage ORDER BY id").fetchall() == [
             ("astra:KNOW_old", "read"),
@@ -339,7 +339,7 @@ def test_migration_backfills_usage_and_published_sources(tmp_path):
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     migrate("downgrade", "0018_merge_runtime_category")
-    migrate("upgrade", "head")
+    migrate("upgrade", "0019_library_llm_wiki")
 
 
 async def test_batch_publishes_rescan_once_and_reports_disk_failure(wiki_env, monkeypatch):
