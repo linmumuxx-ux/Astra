@@ -141,7 +141,8 @@ async def test_lifecycle_and_resource_usage_without_runtime_identity(wiki_env):
         ).all()
         assert [event.action for event in events] == ["search_hit", "read", "feedback"]
         assert all(
-            event.employee_id is None and event.task_id is None and event.run_id is None for event in events
+            event.employee_id is None and event.task_id is None and event.session_id is None
+            for event in events
         )
         summary = await service.usage_summary()
         assert summary.total_references == 1 and summary.used_resources == 1

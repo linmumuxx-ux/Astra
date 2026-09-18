@@ -10,7 +10,6 @@ export type TaskPriority = 'VERY_HIGH' | 'HIGH' | 'MEDIUM' | 'LOW'
 export type TaskStatus = import('@/features/runtime/status').TaskState
 export type CompletionPolicy = 'AUTO' | 'MANUAL_CONFIRM'
 export type AcceptanceStatus = 'SATISFIED' | 'UNSATISFIED' | 'UNCONFIRMED'
-export type RunTriggerReason = 'INITIAL' | 'HUMAN_RESUME' | 'WORKER_RECOVERY' | 'USER_CONTINUE' | 'AUTO_RETRY' | 'SESSION_RECOVERY'
 
 export interface TaskCategory {
   id: string
@@ -171,46 +170,10 @@ export interface Task extends RuntimeProjection {
   updated_at: string
 }
 
-export interface Run extends RuntimeProjection {
-  id: string
-  task_id: string
-  employee_id: string
-  previous_run_id: string | null
-  run_number: number
-  trigger_reason: RunTriggerReason
-  retry_index: number
-  status: string
-  executor_type: string
-  opencode_session_id: string | null
-  queued_at: string | null
-  dispatched_at: string | null
-  started_at: string | null
-  finished_at: string | null
-  celery_task_id: string | null
-  dispatch_attempt: number
-  heartbeat_at: string | null
-  worker_id: string | null
-  executor_status: string | null
-  failure_code: string | null
-  exit_code: number | null
-  result: Record<string, unknown> | null
-  execution_environment_snapshot: Record<string, unknown>
-  model_name: string | null
-  input_tokens: number | null
-  output_tokens: number | null
-  cache_read_tokens: number | null
-  cache_write_tokens: number | null
-  total_tokens: number | null
-  llm_call_count: number | null
-  tool_call_count: number | null
-  created_at: string
-}
-
 export interface AstraEvent {
   id: number
   task_id: string | null
   employee_id: string | null
-  run_id: string | null
   event_type: string
   phase: string
   message: string
@@ -301,7 +264,11 @@ export interface KnowledgeSource {
 export interface ExperienceEvidence {
   id: number
   task_id: string | null
-  run_id: string | null
+  source_session_id: string | null
+  message_id: string | null
+  part_id: string | null
+  file_path: string | null
+  diff_hash: string | null
   evidence_type: string
   content: string | null
   uri: string | null
@@ -316,7 +283,10 @@ export interface KnowledgeDetail extends KnowledgeListItem {
   source_employee_id: string | null
   source_employee_name: string | null
   source_task_title: string | null
-  source_run_id: string | null
+  source_session_id: string | null
+  experience_type: string | null
+  verified_at: string | null
+  verification_session_status: string | null
   experience_data: Record<string, unknown>
   review_note: string | null
   created_by: string
@@ -492,6 +462,13 @@ export interface TaskWorkspaceBinding {
   task_id: string
   task_status: TaskStatus
   runtime: { server: string; session_id: string | null; workspace: string | null; connection: string; error: string | null }
-  sessions: Array<{ id: string; workspace: string; created_at: string; current: boolean }>
-  history: Array<{ id: string; status: string; result: unknown; started_at: string | null; finished_at: string | null }>
+  sessions: Array<{
+    id: string
+    workspace: string
+    created_at: string
+    status: string
+    superseded_by: string | null
+    finished_at: string | null
+    current: boolean
+  }>
 }

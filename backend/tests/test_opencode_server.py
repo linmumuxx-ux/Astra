@@ -8,7 +8,7 @@ from app.executors.opencode_remote_server import (
     RemoteOpenCodeServerExecutor,
 )
 from app.executors.opencode_server import OpenCodeServerExecutor, OpenCodeServerUnavailable
-from app.models import OpenCodeExecutionEnvironment, Run, Task
+from app.models import OpenCodeExecutionEnvironment, Task
 
 
 class FakeServerClient:
@@ -198,14 +198,6 @@ async def test_server_executor_blocks_on_native_question_and_replies_in_same_ses
     assert first.status == "WAITING_INPUT"
     assert first.inquiry and first.inquiry["runtime_request_id"] == "que_1"
     current_task.human_intervention = {**first.inquiry, "response": "BLUE"}
-    current_task.opencode_session_id = "ses_main"
-    run = Run(
-        id="RUN-SERVER-QUESTION",
-        task_id=current_task.id,
-        employee_id="employee",
-        run_number=1,
-        opencode_session_id="ses_main",
-    )
     second_client = FakeServerClient(
         [
             raw_event("server.connected"),
@@ -229,10 +221,10 @@ async def test_server_executor_blocks_on_native_question_and_replies_in_same_ses
         ],
     )
 
-    resumed = await OpenCodeServerExecutor(settings(), client=second_client).resume(
+    resumed = await OpenCodeServerExecutor(settings(), client=second_client)._execute(
         current_task,
-        run,
         tmp_path,
+        session_id="ses_main",
     )
 
     assert resumed.status == "SUCCEEDED"

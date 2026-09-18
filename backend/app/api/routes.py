@@ -29,7 +29,6 @@ from app.models import (
     KnowledgeItem,
     KnowledgeUsage,
     OpenCodeExecutionEnvironment,
-    Run,
     RuntimeSession,
     Task,
     TaskCategory,
@@ -403,10 +402,7 @@ async def delete_employee(employee_id: str, session: AsyncSession = Depends(get_
     task_count = await session.scalar(
         select(func.count()).select_from(Task).where(Task.employee_id == employee_id)
     )
-    run_count = await session.scalar(
-        select(func.count()).select_from(Run).where(Run.employee_id == employee_id)
-    )
-    if task_count or run_count:
+    if task_count:
         raise HTTPException(status_code=409, detail="该员工已有任务记录，不能删除；可先停用员工")
     # 数字图书馆引用属于历史审计信息，删除员工后置空引用而不是级联删除知识条目。
     await session.execute(
@@ -514,12 +510,12 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
     await session.execute(
         update(KnowledgeItem)
         .where(KnowledgeItem.source_task_id == task_id)
-        .values(source_task_id=None, source_run_id=None, source_session_id=None)
+        .values(source_task_id=None, source_session_id=None)
     )
     await session.execute(
         update(KnowledgeUsage)
         .where(KnowledgeUsage.task_id == task_id)
-        .values(task_id=None, run_id=None, session_id=None)
+        .values(task_id=None, session_id=None)
     )
     await session.execute(
         update(KnowledgeFeedback).where(KnowledgeFeedback.task_id == task_id).values(task_id=None)
@@ -527,9 +523,8 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
     await session.execute(
         update(ExperienceEvidence)
         .where(ExperienceEvidence.task_id == task_id)
-        .values(task_id=None, run_id=None, source_session_id=None)
+        .values(task_id=None, source_session_id=None)
     )
-    await session.execute(update(Run).where(Run.task_id == task_id).values(previous_run_id=None))
     await session.execute(delete(TaskSummary).where(TaskSummary.task_id == task_id))
     await session.execute(delete(RuntimeSession).where(RuntimeSession.task_id == task_id))
     await session.delete(task)

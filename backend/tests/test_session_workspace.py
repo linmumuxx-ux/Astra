@@ -15,9 +15,7 @@ from app.models import (
     Base,
     DigitalEmployee,
     OpenCodeExecutionEnvironment,
-    Run,
     RuntimeSession,
-    SessionMessage,
     Task,
     TaskSummary,
 )
@@ -162,8 +160,6 @@ async def test_continue_keeps_session_and_does_not_create_execution_copies(runti
     await r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
     assert r.task.status == "RUNNING"
     assert r.task.current_session_id == "ses_current"
-    assert await r.session.scalar(select(func.count()).select_from(Run)) == 0
-    assert await r.session.scalar(select(func.count()).select_from(SessionMessage)) == 0
     assert await r.session.scalar(select(func.count()).select_from(RuntimeSession)) == 1
     assert r.task.pending_prompt is None
 

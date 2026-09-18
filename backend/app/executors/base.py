@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.models import Run, Task
+from app.models import Task
 
 
 @dataclass(slots=True)
@@ -43,18 +43,6 @@ class ExecutorResult:
 class AgentExecutor(ABC):
     @abstractmethod
     async def start(self, task: Task, workspace: Path) -> ExecutorResult: ...
-
-    @abstractmethod
-    async def resume(self, task: Task, run: Run, workspace: Path) -> ExecutorResult: ...
-
-    @abstractmethod
-    async def get_status(self, run: Run) -> str: ...
-
-    @abstractmethod
-    async def abort(self, run: Run) -> None: ...
-
-    @abstractmethod
-    async def collect_result(self, run: Run) -> dict[str, Any]: ...
 
 
 # Executor interface names used by the concrete adapters.

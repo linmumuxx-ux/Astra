@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.api.routes import require_task
 from app.database import get_session
 from app.executors.errors import OpenCodeSessionNotFound
-from app.models import Run, RuntimeSession
+from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment
 from app.runtime.workspace_files import MAX_UPLOAD, upload, validate_path
@@ -141,17 +141,6 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
     selected = next((item for item in bindings if item.id == (session_id or task.current_session_id)), None)
     if session_id and not selected:
         raise HTTPException(404, "Session 不属于此任务")
-    # Historical snapshots stay read-only and never pretend to be native Sessions.
-    history = (
-        await session.scalars(
-            select(Run)
-            .where(
-                Run.task_id == task.id,
-                Run.opencode_session_id.is_(None),
-            )
-            .order_by(Run.run_number.desc())
-        )
-    ).all()
     return {
         "task_id": task.id,
         "task_status": task.status,
@@ -173,16 +162,6 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
                 "current": item.id == task.current_session_id,
             }
             for item in bindings
-        ],
-        "history": [
-            {
-                "id": item.id,
-                "status": item.status,
-                "result": item.result,
-                "started_at": item.started_at,
-                "finished_at": item.finished_at,
-            }
-            for item in history
         ],
     }
 

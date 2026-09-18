@@ -82,7 +82,6 @@ class TaskService:
         current_progress: str | None = None,
         message: str | None = None,
         detail: dict | None = None,
-        run_id: str | None = None,
         commit: bool = True,
     ) -> Task:
         previous = TaskStatus(task.status)
@@ -94,7 +93,6 @@ class TaskService:
             current_progress=current_progress,
             message=message,
             detail=detail,
-            run_id=run_id,
             commit=commit,
         )
 
@@ -107,7 +105,6 @@ class TaskService:
         current_progress: str | None,
         message: str | None,
         detail: dict | None,
-        run_id: str | None = None,
         commit: bool = True,
     ) -> Task:
         now = datetime.now(UTC)
@@ -130,7 +127,6 @@ class TaskService:
             "work",
             message or f"任务状态从 {previous.value} 变更为 {target.value}",
             {"from": previous.value, "to": target.value, **(detail or {})},
-            run_id=run_id,
         )
         if commit:
             await self.session.commit()
@@ -145,11 +141,10 @@ class TaskService:
         phase: str,
         message: str,
         detail: dict | None = None,
-        run_id: str | None = None,
         *,
         commit: bool = True,
     ) -> Event:
-        event = await self._record(task, event_type, phase, message, detail, run_id)
+        event = await self._record(task, event_type, phase, message, detail)
         if commit:
             await self.session.commit()
             await self.session.refresh(event)
@@ -163,12 +158,10 @@ class TaskService:
         phase: str,
         message: str,
         detail: dict | None = None,
-        run_id: str | None = None,
     ) -> Event:
         event = Event(
             task_id=task.id,
             employee_id=task.employee_id,
-            run_id=run_id,
             event_type=event_type,
             phase=phase,
             message=message,

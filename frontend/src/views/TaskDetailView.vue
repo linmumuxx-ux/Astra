@@ -27,7 +27,6 @@
     <iframe v-if="frameUrl" :key="frameKey" :src="frameUrl" title="OpenCode Task Workspace" class="native-workspace" allow="clipboard-read; clipboard-write" />
     <div v-else-if="binding" class="workspace-empty">
       <p>{{ task?.current_session_id ? 'Session 绑定异常，请重连检查；系统不会自动创建新 Session。' : '任务尚未创建 Session，请先启动任务。' }}</p>
-      <article v-for="snapshot in binding.history" :key="snapshot.id"><h3>历史快照 · {{ snapshot.id }}</h3><pre>{{ JSON.stringify(snapshot.result, null, 2) }}</pre></article>
     </div>
   </section>
 </template>

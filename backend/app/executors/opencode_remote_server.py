@@ -16,7 +16,7 @@ from app.executors.opencode_server import (
     OpenCodeServerUnavailable,
     SessionCallback,
 )
-from app.models import OpenCodeExecutionEnvironment, Run, Task
+from app.models import OpenCodeExecutionEnvironment, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.opencode_config import remote_runtime_config_content
 from app.runtime.ssh_client import SSHReverseTunnel, SSHSession, SSHTunnel
@@ -199,10 +199,6 @@ class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
     async def start(self, task: Task, _workspace: Path) -> ExecutorResult:
         return await self._execute_remote(task)
 
-    async def resume(self, task: Task, run: Run, _workspace: Path) -> ExecutorResult:
-        session_id = task.current_session_id or run.opencode_session_id
-        return await self._execute_remote(task, session_id=session_id)
-
     async def _execute_remote(
         self,
         task: Task,
@@ -220,33 +216,6 @@ class RemoteOpenCodeServerExecutor(OpenCodeServerExecutor):
     async def abort_session(self, session_id: str) -> bool:
         async with self.connection() as client:
             return await client.abort(self.remote_workspace, session_id)
-
-    async def abort(self, run: Run) -> None:
-        active = self._active.get(run.task_id)
-        if active:
-            await self.client.abort(active[1], active[0])
-        elif run.opencode_session_id:
-            await self.abort_session(run.opencode_session_id)
-
-    async def get_status(self, run: Run) -> str:
-        if not run.opencode_session_id:
-            return run.status
-        async with self.connection() as client:
-            if await self.pending_inquiry(client, self.remote_workspace, run.opencode_session_id):
-                return "WAITING_INPUT"
-            status = await client.status(self.remote_workspace, run.opencode_session_id)
-        return status.upper()
-
-    async def collect_result(self, run: Run) -> dict:
-        existing = run.result or {}
-        if existing.get("work_result") or not run.opencode_session_id:
-            return existing
-        async with self.connection() as client:
-            inquiry = await self.pending_inquiry(client, self.remote_workspace, run.opencode_session_id)
-            if inquiry:
-                return {"inquiry": inquiry}
-            messages = await client.messages(self.remote_workspace, run.opencode_session_id)
-        return self.recovered_message_result(run, messages, existing)
 
 
 async def test_remote_server(

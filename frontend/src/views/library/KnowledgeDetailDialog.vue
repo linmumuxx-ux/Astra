@@ -22,7 +22,8 @@
             <dl class="origin-facts">
               <div><dt>来源员工</dt><dd>{{ detail.source_employee_name || detail.source_employee_id || '—' }}</dd></div>
               <div><dt>来源任务</dt><dd>{{ detail.source_task_id || '—' }}</dd></div>
-              <div><dt>Run</dt><dd>{{ detail.source_run_id || '—' }}</dd></div>
+              <div><dt>执行会话</dt><dd>{{ detail.source_session_id || '—' }}</dd></div>
+              <div><dt>验证状态</dt><dd>{{ detail.verified_at ? '已随来源会话成功验证' : '未验证' }}</dd></div>
               <div><dt>执行时间</dt><dd>{{ experienceValue(['task_executed_at', 'executed_at']) }}</dd></div>
               <div><dt>处理前</dt><dd>{{ experienceValue(['before_status', 'status_before', 'problem_symptom']) }}</dd></div>
               <div><dt>处理后</dt><dd>{{ experienceValue(['after_status', 'status_after', 'retry_result', 'run_status']) }}</dd></div>
@@ -33,7 +34,7 @@
             <div class="experience-details">
               <article v-for="field in experienceFields" :key="field.label"><h4>{{ field.label }}</h4><p>{{ field.value }}</p></article>
             </div>
-            <div class="evidence-list"><h4>相关日志 / Run / Task 证据</h4><article v-for="evidence in detail.evidence" :key="evidence.id"><span :data-result="evidence.result"><FileCheck2 :size="15" /></span><div><strong>{{ evidence.evidence_type }}</strong><p>{{ evidence.content || evidence.uri || '已关联结构化证据' }}</p><small>{{ evidence.task_id || '—' }} · {{ evidence.run_id || '—' }} · {{ evidence.result || '未标记结果' }}</small></div><a v-if="safeExternalUrl(evidence.uri)" :href="safeExternalUrl(evidence.uri)" target="_blank" rel="noopener noreferrer">打开</a></article><p v-if="!detail.evidence.length" class="evidence-empty">暂无额外证据，审核时请重点核对来源 Task 与 Run。</p></div>
+            <div class="evidence-list"><h4>相关日志 / 会话 / Task 证据</h4><article v-for="evidence in detail.evidence" :key="evidence.id"><span :data-result="evidence.result"><FileCheck2 :size="15" /></span><div><strong>{{ evidence.evidence_type }}</strong><p>{{ evidence.content || evidence.uri || '已关联结构化证据' }}</p><small>{{ evidence.task_id || '—' }} · {{ evidence.source_session_id || '—' }} · {{ evidence.result || '未标记结果' }}</small></div><a v-if="safeExternalUrl(evidence.uri)" :href="safeExternalUrl(evidence.uri)" target="_blank" rel="noopener noreferrer">打开</a></article><p v-if="!detail.evidence.length" class="evidence-empty">暂无额外证据，审核时请重点核对来源 Task 与 Session。</p></div>
           </section>
 
           <section v-if="reviewEditing" class="review-editor">

@@ -54,7 +54,6 @@ from app.models import (
     KnowledgeSpace,
     KnowledgeSync,
     KnowledgeUsage,
-    Run,
     RuntimeSession,
     Task,
     utcnow,
@@ -662,7 +661,6 @@ class KnowledgeService:
             source_employee_id=item.source_employee_id,
             source_employee_name=employee_name,
             source_task_title=task_title,
-            source_run_id=item.source_run_id,
             source_session_id=item.source_session_id,
             experience_type=item.experience_type,
             verified_at=item.verified_at,
@@ -935,7 +933,6 @@ class KnowledgeService:
             employee_id=None,
             comment=payload.comment,
             task_id=payload.task_id,
-            run_id=None,
         )
 
     async def _feedback(
@@ -948,7 +945,6 @@ class KnowledgeService:
         employee_id: str | None,
         comment: str | None,
         task_id: str | None,
-        run_id: str | None,
     ) -> KnowledgeFeedbackResult:
         if feedback_type not in FEEDBACK_TYPES:
             raise LibraryValidationError("未知反馈类型")
@@ -981,7 +977,6 @@ class KnowledgeService:
                 knowledge_id=item.id,
                 employee_id=employee_id,
                 task_id=task_id,
-                run_id=run_id,
                 tool_name="library_feedback",
                 action="feedback",
                 result={"feedback_type": feedback_type, "created": created},
@@ -1119,28 +1114,20 @@ class KnowledgeService:
             for usage in rows
         ]
 
-    async def _validate_mcp_context(
+    async def _validate_source_context(
         self,
         employee_id: str | None,
         task_id: str | None,
-        run_id: str | None,
-    ) -> tuple[DigitalEmployee | None, Task | None, Run | None]:
+    ) -> tuple[DigitalEmployee | None, Task | None]:
         employee = await self.session.get(DigitalEmployee, employee_id) if employee_id else None
         task = await self.session.get(Task, task_id) if task_id else None
-        run = await self.session.get(Run, run_id) if run_id else None
         if employee_id and not employee:
             raise LibraryValidationError("数字员工不存在")
         if task_id and not task:
             raise LibraryValidationError("来源任务不存在")
-        if run_id and not run:
-            raise LibraryValidationError("来源 Run 不存在")
-        if run and task and run.task_id != task.id:
-            raise LibraryValidationError("Run 与 Task 不匹配")
-        if run and employee and run.employee_id != employee.id:
-            raise LibraryValidationError("Run 与 Employee 不匹配")
         if task and employee and task.employee_id != employee.id:
             raise LibraryValidationError("Task 与 Employee 不匹配")
-        return employee, task, run
+        return employee, task
 
     async def mcp_search(self, payload: LibrarySearchInput) -> list[LibrarySearchResult]:
         results = await LlmWikiClient().search(payload.query, payload.limit)
@@ -1198,16 +1185,14 @@ class KnowledgeService:
                 update={
                     "source_employee_id": context.employee_id,
                     "source_task_id": context.task_id,
-                    "source_run_id": None,
                 }
             )
             source_session_id = context.session_id
             runtime_session = await self.session.get(RuntimeSession, source_session_id)
             origin = "runtime"
-        employee, task, run = await self._validate_mcp_context(
+        employee, task = await self._validate_source_context(
             payload.source_employee_id,
             payload.source_task_id,
-            payload.source_run_id,
         )
         experience_type = (
             payload.experience_type if payload.experience_type in EXPERIENCE_TYPES else "other"
@@ -1220,11 +1205,7 @@ class KnowledgeService:
         created_by = f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp"
         dedupe_key = f"session:{source_session_id}" if source_session_id else f"manual:{created_by}"
         experience_data = dict(payload.experience_data)
-        experience_data.setdefault(
-            "task_executed_at",
-            run.started_at.isoformat() if run and run.started_at else None,
-        )
-        experience_data.setdefault("run_status", run.status if run else None)
+        experience_data.setdefault("source", "runtime" if source_session_id else "manual")
         snapshot = {
             "task_id": task.id if task else None,
             "task_title": task.title if task else None,
@@ -1269,7 +1250,6 @@ class KnowledgeService:
             source_ref=payload.source_task_id,
             source_employee_id=payload.source_employee_id,
             source_task_id=payload.source_task_id,
-            source_run_id=payload.source_run_id,
             source_session_id=source_session_id,
             origin=origin,
             dedupe_key=dedupe_key,
@@ -1290,7 +1270,6 @@ class KnowledgeService:
                 ExperienceEvidence(
                     knowledge_id=item.id,
                     task_id=evidence.task_id or payload.source_task_id,
-                    run_id=evidence.run_id or payload.source_run_id,
                     source_session_id=source_session_id,
                     message_id=evidence.message_id,
                     part_id=evidence.part_id,
@@ -1311,7 +1290,6 @@ class KnowledgeService:
             {
                 "employee_id": employee.id if employee else None,
                 "task_id": task.id if task else None,
-                "run_id": run.id if run else None,
                 "session_id": source_session_id,
                 "evidence_count": len(payload.evidence),
             },
@@ -1322,7 +1300,6 @@ class KnowledgeService:
                 knowledge_id=item.id,
                 employee_id=payload.source_employee_id,
                 task_id=payload.source_task_id,
-                run_id=payload.source_run_id,
                 session_id=source_session_id,
                 tool_name="library_submit_experience",
                 action="experience_submitted",

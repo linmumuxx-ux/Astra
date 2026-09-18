@@ -11,7 +11,7 @@ from app.library_schemas import (
 from app.library_service import KnowledgeService
 from app.main import app
 from app.mcp_server import mcp
-from app.models import KnowledgeAudit, KnowledgeItem, Run
+from app.models import KnowledgeAudit, KnowledgeItem
 
 
 def unique(prefix: str) -> str:
@@ -118,7 +118,6 @@ def test_library_web_api_browses_drafts_publishes_and_enforces_review_permission
 
 def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
     employee_id = unique("employee-library")
-    run_id = unique("RUN-LIBRARY")
     with TestClient(app) as client:
         employee = client.post(
             "/api/employees",
@@ -150,17 +149,6 @@ def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
 
         async def run_flow():
             async with SessionLocal() as session:
-                session.add(
-                    Run(
-                        id=run_id,
-                        task_id=task_id,
-                        employee_id=employee_id,
-                        run_number=1,
-                        status="PASSED",
-                    )
-                )
-                await session.commit()
-            async with SessionLocal() as session:
                 candidate = await KnowledgeService(session).mcp_submit_experience(
                     LibrarySubmitExperienceInput(
                         title=unique("并发任务调度超时处理经验"),
@@ -170,10 +158,9 @@ def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
                         ),
                         source_employee_id=employee_id,
                         source_task_id=task_id,
-                        source_run_id=run_id,
                         evidence=[
                             {
-                                "evidence_type": "run_result",
+                                "evidence_type": "observation",
                                 "content": "处理后 PASS",
                                 "result": "PASS",
                             }

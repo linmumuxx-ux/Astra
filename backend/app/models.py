@@ -160,73 +160,10 @@ class Task(RuntimeProjection, Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
-    runs: Mapped[list["Run"]] = relationship(
-        back_populates="task",
-        cascade="all, delete-orphan",
-        foreign_keys="Run.task_id",
-    )
     events: Mapped[list["Event"]] = relationship(back_populates="task", cascade="all, delete-orphan")
-    evidence: Mapped[list["Evidence"]] = relationship(back_populates="task", cascade="all, delete-orphan")
-    work_session: Mapped["TaskSession | None"] = relationship(
-        back_populates="task", uselist=False, cascade="all, delete-orphan"
-    )
     summary: Mapped["TaskSummary | None"] = relationship(
         back_populates="task", uselist=False, cascade="all, delete-orphan"
     )
-
-
-class Run(RuntimeProjection, Base):
-    """Deprecated execution lease. Read-only legacy; the Session runtime never writes it."""
-
-    __tablename__ = "runs"
-    __table_args__ = (
-        UniqueConstraint("task_id", "run_number", name="uq_task_run_number"),
-        UniqueConstraint("execution_token", name="uq_runs_execution_token"),
-        Index("ix_runs_task_active", "task_id", "status"),
-        Index("ix_runs_employee_active", "employee_id", "status"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
-    employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
-    previous_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
-    run_number: Mapped[int] = mapped_column(Integer)
-    trigger_reason: Mapped[str] = mapped_column(String(64), default="INITIAL", server_default="INITIAL")
-    retry_index: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    status: Mapped[str] = mapped_column(String(32), default="QUEUED")
-    executor_type: Mapped[str] = mapped_column(String(64), default="opencode_server")
-    opencode_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    queued_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
-    dispatched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    celery_task_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
-    dispatch_attempt: Mapped[int] = mapped_column(Integer, default=0)
-    heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
-    worker_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
-    execution_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    executor_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    failure_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    recovery_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    raw_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    execution_environment_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    model_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    llm_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    tool_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-
-    task: Mapped[Task] = relationship(back_populates="runs", foreign_keys=[task_id])
-    events: Mapped[list["Event"]] = relationship(back_populates="run")
-    tool_usages: Mapped[list["ToolUsage"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
 class RuntimeSession(Base):
@@ -263,30 +200,12 @@ class RuntimeSession(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
-class ToolUsage(Base):
-    """Deprecated per-Run tool aggregate. Session tool stats live on RuntimeSession."""
-
-    __tablename__ = "tool_usages"
-    __table_args__ = (UniqueConstraint("run_id", "tool_name", name="uq_run_tool_name"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
-    tool_name: Mapped[str] = mapped_column(String(160), index=True)
-    call_count: Mapped[int] = mapped_column(Integer, default=0)
-    success_count: Mapped[int] = mapped_column(Integer, default=0)
-    failure_count: Mapped[int] = mapped_column(Integer, default=0)
-    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
-
-    run: Mapped[Run] = relationship(back_populates="tool_usages")
-
-
 class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
     event_type: Mapped[str] = mapped_column(String(80), index=True)
     phase: Mapped[str] = mapped_column(String(80), default="system")
     message: Mapped[str] = mapped_column(Text)
@@ -294,26 +213,6 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
     task: Mapped[Task | None] = relationship(back_populates="events")
-    run: Mapped[Run | None] = relationship(back_populates="events")
-
-
-class Evidence(Base):
-    """Deprecated work-record mirror. Experience evidence lives in ExperienceEvidence."""
-
-    __tablename__ = "evidence"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
-    name: Mapped[str] = mapped_column(String(180))
-    kind: Mapped[str] = mapped_column(String(64))
-    path: Mapped[str] = mapped_column(Text)
-    size: Mapped[int] = mapped_column(Integer, default=0)
-    content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
-    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-
-    task: Mapped[Task] = relationship(back_populates="evidence")
 
 
 class TaskSummary(Base):
@@ -342,63 +241,6 @@ class TaskSummary(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="summary")
-
-
-class TaskSession(Base):
-    """Deprecated durable collaboration space; RuntimeSession replaced it."""
-
-    __tablename__ = "task_sessions"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), unique=True, index=True)
-    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
-    current_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
-
-    task: Mapped[Task] = relationship(back_populates="work_session")
-    messages: Mapped[list["SessionMessage"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
-    )
-    inquiries: Mapped[list["RunInquiry"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
-    )
-
-
-class SessionMessage(Base):
-    """Deprecated message mirror. OpenCode Sessions own all messages."""
-
-    __tablename__ = "session_messages"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    session_id: Mapped[str] = mapped_column(ForeignKey("task_sessions.id"), index=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
-    role: Mapped[str] = mapped_column(String(24), index=True)
-    content: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
-
-    session: Mapped[TaskSession] = relationship(back_populates="messages")
-
-
-class RunInquiry(Base):
-    """Deprecated inquiry mirror. OpenCode native questions own this interaction."""
-
-    __tablename__ = "run_inquiries"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    session_id: Mapped[str] = mapped_column(ForeignKey("task_sessions.id"), index=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
-    agent_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    question: Mapped[str] = mapped_column(Text)
-    description: Mapped[str] = mapped_column(Text, default="")
-    options: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
-    answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-
-    session: Mapped[TaskSession] = relationship(back_populates="inquiries")
 
 
 class KnowledgeSpace(Base):
@@ -443,7 +285,6 @@ class KnowledgeItem(Base):
         ForeignKey("digital_employees.id"), nullable=True, index=True
     )
     source_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
-    source_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     source_session_id: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -545,7 +386,6 @@ class KnowledgeUsage(Base):
         ForeignKey("digital_employees.id"), nullable=True, index=True
     )
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     session_id: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -601,7 +441,6 @@ class ExperienceEvidence(Base):
         ForeignKey("knowledge_items.id", ondelete="CASCADE"), index=True
     )
     task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
-    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True, index=True)
     source_session_id: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id", ondelete="SET NULL"), nullable=True, index=True
     )

@@ -53,28 +53,6 @@ class ExperienceType(StrEnum):
     OTHER = "other"
 
 
-class RunStatus(StrEnum):
-    QUEUED = "QUEUED"
-    STARTING = "STARTING"
-    RUNNING = "RUNNING"
-    WAITING_INPUT = "WAITING_INPUT"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    SUSPENDED = "SUSPENDED"
-    TIMEOUT = "TIMEOUT"
-    LOST = "LOST"
-    CANCELLED = "CANCELLED"
-
-
-class RunTriggerReason(StrEnum):
-    INITIAL = "INITIAL"
-    HUMAN_RESUME = "HUMAN_RESUME"
-    WORKER_RECOVERY = "WORKER_RECOVERY"
-    USER_CONTINUE = "USER_CONTINUE"
-    AUTO_RETRY = "AUTO_RETRY"
-    SESSION_RECOVERY = "SESSION_RECOVERY"
-
-
 class ExecutionMode(StrEnum):
     LOCAL = "LOCAL"
     LINUX_REMOTE = "LINUX_REMOTE"

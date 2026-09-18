@@ -7,7 +7,7 @@
       </button>
     </div>
     <div v-else class="activity-bar__empty">暂无实时动态</div>
-    <RouterLink class="activity-bar__more" to="/runs">查看更多<ChevronRight :size="14" /></RouterLink>
+    <RouterLink class="activity-bar__more" to="/tasks">查看更多<ChevronRight :size="14" /></RouterLink>
   </section>
 </template>
 

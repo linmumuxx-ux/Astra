@@ -10,7 +10,7 @@ from app.executors.base import ExecutorResult, OpenCodeExecutor
 from app.executors.opencode_prompt import build_task_prompt
 from app.executors.process import local_command, process_group_options, terminate_process
 from app.executors.usage import parse_opencode_usage
-from app.models import Run, Task
+from app.models import Task
 from app.runtime.semantic_events import extract_inquiry
 
 
@@ -170,23 +170,5 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
     async def start(self, task: Task, workspace: Path) -> ExecutorResult:
         return await self._execute(task, workspace)
 
-    async def resume(self, task: Task, run: Run, workspace: Path) -> ExecutorResult:
-        session_id = task.current_session_id or run.opencode_session_id
-        return await self._execute(task, workspace, session_id=session_id)
-
-    async def get_status(self, run: Run) -> str:
-        process = self._processes.get(run.task_id)
-        if not process:
-            return run.status
-        return "RUNNING" if process.returncode is None else "FINISHED"
-
-    async def abort(self, run: Run) -> None:
-        process = self._processes.get(run.task_id)
-        if process and process.returncode is None:
-            await self._terminate_process(process)
-
     async def _terminate_process(self, process: Any) -> None:
         await terminate_process(process)
-
-    async def collect_result(self, run: Run) -> dict[str, Any]:
-        return run.result or {}

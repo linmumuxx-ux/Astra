@@ -19,7 +19,7 @@ from app.executors.errors import (
 )
 from app.executors.opencode_prompt import build_task_prompt
 from app.executors.usage import parse_opencode_usage
-from app.models import Run, Task
+from app.models import Task
 from app.runtime.failure import FailureCode
 from app.runtime.opencode_server import OpenCodeServerManager
 
@@ -264,16 +264,9 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         self.event_callback = event_callback
         self.session_callback = session_callback
         self.client = client or OpenCodeServerClient(self.settings)
-        self._active: dict[str, tuple[str, WorkspacePath]] = {}
 
     async def start(self, task: Task, workspace: WorkspacePath) -> ExecutorResult:
         return await self._execute(task, workspace)
-
-    async def resume(self, task: Task, run: Run, workspace: WorkspacePath) -> ExecutorResult:
-        session_id = task.current_session_id or run.opencode_session_id
-        if not session_id:
-            return await self._execute(task, workspace)
-        return await self._execute(task, workspace, session_id=session_id)
 
     async def _execute(
         self,
@@ -306,7 +299,6 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                 )
                 session_id = str(created["id"])
             relevant_sessions.add(session_id)
-            self._active[task.id] = (session_id, workspace)
             if self.session_callback:
                 await self.session_callback(session_id)
             baseline_errors = set(self._message_errors(await self.client.messages(workspace, session_id)))
@@ -392,7 +384,6 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         finally:
             listener.cancel()
             await asyncio.gather(listener, return_exceptions=True)
-            self._active.pop(task.id, None)
 
         if not session_id:
             return ExecutorResult(status="FAILED", exit_code=1, stderr="OpenCode Session 创建失败")
@@ -605,85 +596,4 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
                 errors.append(f"{name}: {detail}".rstrip(": "))
         return errors
 
-    async def pending_inquiry(self, client, workspace, session_id) -> dict | None:
-        for request in await client.questions(workspace):
-            if request.get("sessionID") == session_id:
-                return self._question_inquiry(request)
-        for request in await client.permissions(workspace):
-            if request.get("sessionID") == session_id:
-                return self.permission_inquiry(request)
-        return None
-
-    async def get_status(self, run: Run) -> str:
-        session_id = run.opencode_session_id
-        snapshot = run.execution_environment_snapshot or {}
-        workspace_value = snapshot.get("workspace_root")
-        if not session_id or not workspace_value:
-            return run.status
-        workspace = self.settings.employee_workspace_path(workspace_value)
-        inquiry = await self.pending_inquiry(self.client, workspace, session_id)
-        if inquiry:
-            return "WAITING_INPUT"
-        return (await self.client.status(workspace, session_id)).upper()
-
-    async def abort(self, run: Run) -> None:
-        active = self._active.get(run.task_id)
-        if active:
-            await self.client.abort(active[1], active[0])
-            return
-        if run.opencode_session_id:
-            workspace_value = (run.execution_environment_snapshot or {}).get("workspace_root")
-            if workspace_value:
-                workspace = self.settings.employee_workspace_path(workspace_value)
-                await self.client.abort(workspace, run.opencode_session_id)
-
-    async def collect_result(self, run: Run) -> dict[str, Any]:
-        existing = run.result or {}
-        if existing.get("work_result"):
-            return existing
-        session_id = run.opencode_session_id
-        workspace_value = (run.execution_environment_snapshot or {}).get("workspace_root")
-        if not session_id or not workspace_value:
-            return existing
-        workspace = self.settings.employee_workspace_path(workspace_value)
-        inquiry = await self.pending_inquiry(self.client, workspace, session_id)
-        if inquiry:
-            return {"inquiry": inquiry}
-        messages = await self.client.messages(workspace, session_id)
-        return self.recovered_message_result(run, messages, existing)
-
-    @classmethod
-    def recovered_message_result(cls, run: Run, messages: list[dict], existing: dict) -> dict:
-        latest = next(
-            (item for item in reversed(messages) if (item.get("info") or {}).get("role") == "assistant"), None
-        )
-        if latest and cls._message_errors([latest]):
-            return {
-                "failure_code": FailureCode.SESSION_ERROR,
-                "raw_error": "; ".join(cls._message_errors([latest])),
-            }
-        # A previous turn's text cannot complete a newer prompt after Worker loss.
-        created = ((latest or {}).get("info") or {}).get("time", {}).get("created")
-        boundary = run.queued_at or run.started_at
-        if boundary and (not created or float(created) / 1000 < boundary.timestamp()):
-            return {}
-        raw_text = cls._last_assistant_message(messages[-1:] if latest is None else [latest])
-        return {**existing, "raw_text": raw_text} if raw_text else existing
-
-    @staticmethod
-    def _last_assistant_message(messages: list[dict[str, Any]]) -> str:
-        for message in reversed(messages):
-            info = message.get("info") if isinstance(message.get("info"), dict) else {}
-            if str(info.get("role") or "").lower() != "assistant":
-                continue
-            parts = message.get("parts") if isinstance(message.get("parts"), list) else []
-            texts = [
-                str(part.get("text") or "").strip()
-                for part in parts
-                if isinstance(part, dict)
-                and str(part.get("type") or "").lower() == "text"
-                and str(part.get("text") or "").strip()
-            ]
-            if texts:
-                return "\n".join(texts)
-        return ""
+    

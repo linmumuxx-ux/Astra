@@ -3,8 +3,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain import EmployeeStatus, EnvironmentStatus, RunStatus, TaskStatus
-from app.models import DigitalEmployee, Event, Evidence, OpenCodeExecutionEnvironment, Run, Task, ToolUsage
+from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
+from app.models import (
+    DigitalEmployee,
+    Event,
+    OpenCodeExecutionEnvironment,
+    RuntimeSession,
+    Task,
+)
 from app.runtime.environment import environment_snapshot
 
 
@@ -305,169 +311,91 @@ async def seed_demo_data(session: AsyncSession) -> None:
     session.add_all(tasks)
     await session.flush()
 
-    active_run = Run(
-        id="RUN-DEMO-001",
-        task_id="T-20260827-001",
-        employee_id="astra-01",
-        run_number=1,
-        status=RunStatus.RUNNING,
-        executor_type="opencode_server",
-        opencode_session_id="session-task-001",
-        started_at=now - timedelta(minutes=30),
-        execution_environment_snapshot=snapshots["astra-01"],
+    session.add_all(
+        [
+            RuntimeSession(
+                id="session-task-001",
+                task_id="T-20260827-001",
+                employee_id="astra-01",
+                workspace=snapshots["astra-01"]["workspace_root"],
+                environment=snapshots["astra-01"],
+                status="RUNNING",
+                started_at=now - timedelta(minutes=30),
+                last_activity_at=now - timedelta(minutes=30),
+            ),
+            RuntimeSession(
+                id="session-task-002",
+                task_id="T-20260827-002",
+                employee_id="astra-02",
+                workspace=snapshots["astra-02"]["workspace_root"],
+                environment=snapshots["astra-02"],
+                status="WAITING",
+                started_at=now - timedelta(minutes=47),
+            ),
+            RuntimeSession(
+                id="session-task-003",
+                task_id="T-20260827-003",
+                employee_id="astra-03",
+                workspace=snapshots["astra-03"]["workspace_root"],
+                environment=snapshots["astra-03"],
+                status="SUCCEEDED",
+                started_at=now - timedelta(hours=2),
+                finished_at=now - timedelta(hours=1, minutes=24),
+                model_name="deepseek/deepseek-v4-flash",
+                input_tokens=42000,
+                output_tokens=6800,
+                cache_read_tokens=112000,
+                cache_write_tokens=0,
+                total_tokens=160800,
+                llm_call_count=7,
+                tool_call_count=32,
+                tool_usage=[
+                    {"tool_name": "bash", "call_count": 12, "success_count": 11,
+                     "failure_count": 1, "duration_ms": 18400},
+                    {"tool_name": "read", "call_count": 11, "success_count": 11,
+                     "failure_count": 0, "duration_ms": 3200},
+                    {"tool_name": "edit", "call_count": 6, "success_count": 6,
+                     "failure_count": 0, "duration_ms": 5100},
+                    {"tool_name": "skill", "call_count": 3, "success_count": 3,
+                     "failure_count": 0, "duration_ms": 2100},
+                ],
+            ),
+        ]
     )
-    run = Run(
-        id="RUN-DEMO-003",
-        task_id="T-20260827-003",
-        employee_id="astra-03",
-        run_number=1,
-        status=RunStatus.COMPLETED,
-        executor_type="opencode_server_ssh",
-        opencode_session_id="session-task-003",
-        started_at=now - timedelta(hours=2),
-        finished_at=now - timedelta(hours=1, minutes=24),
-        exit_code=0,
-        result={"status": "SUCCEEDED", "summary": tasks[2].result["summary"]},
-        execution_environment_snapshot=snapshots["astra-03"],
-        model_name="deepseek/deepseek-v4-flash",
-        input_tokens=42000,
-        output_tokens=6800,
-        cache_read_tokens=112000,
-        cache_write_tokens=0,
-        total_tokens=160800,
-        llm_call_count=7,
-        tool_call_count=32,
-    )
-    waiting_run = Run(
-        id="RUN-DEMO-002", task_id="T-20260827-002", employee_id="astra-02",
-        run_number=1, status=RunStatus.WAITING_INPUT, executor_type="opencode_server",
-        opencode_session_id="session-task-002", started_at=now - timedelta(minutes=47),
-        execution_environment_snapshot=snapshots["astra-02"],
-    )
-    session.add_all([active_run, waiting_run, run])
     await session.flush()
-    for execution in (active_run, waiting_run):
-        employee_row = await session.get(DigitalEmployee, execution.employee_id)
+    for task_id, session_id in (
+        ("T-20260827-001", "session-task-001"),
+        ("T-20260827-002", "session-task-002"),
+        ("T-20260827-003", "session-task-003"),
+    ):
+        task_row = await session.get(Task, task_id)
+        task_row.current_session_id = session_id
+    for employee_id in ("astra-01", "astra-02"):
+        employee_row = await session.get(DigitalEmployee, employee_id)
         employee_row.current_task_count = 1
     session.add_all(
         [
             Event(
                 task_id=task_id,
                 employee_id=employee_id,
-                run_id=run_id,
-                event_type="RUN_STATUS",
-                phase="run",
-                message=message,
-                detail={"status": status},
-                created_at=created_at,
-            )
-            for task_id, employee_id, run_id, status, message, created_at in (
-                (
-                    "T-20260827-001",
-                    "astra-01",
-                    "RUN-DEMO-001",
-                    "QUEUED",
-                    "运行状态变更为 QUEUED",
-                    now - timedelta(minutes=33),
-                ),
-                (
-                    "T-20260827-001",
-                    "astra-01",
-                    "RUN-DEMO-001",
-                    "STARTING",
-                    "运行状态变更为 STARTING",
-                    now - timedelta(minutes=31),
-                ),
-                (
-                    "T-20260827-001",
-                    "astra-01",
-                    "RUN-DEMO-001",
-                    "RUNNING",
-                    "运行状态变更为 RUNNING",
-                    now - timedelta(minutes=30),
-                ),
-                (
-                    "T-20260827-003",
-                    "astra-03",
-                    "RUN-DEMO-003",
-                    "QUEUED",
-                    "运行状态变更为 QUEUED",
-                    now - timedelta(hours=2, minutes=6),
-                ),
-                (
-                    "T-20260827-003",
-                    "astra-03",
-                    "RUN-DEMO-003",
-                    "RUNNING",
-                    "运行状态变更为 RUNNING",
-                    now - timedelta(hours=2),
-                ),
-                (
-                    "T-20260827-003",
-                    "astra-03",
-                    "RUN-DEMO-003",
-                    "COMPLETED",
-                    "运行状态变更为 COMPLETED",
-                    now - timedelta(hours=1, minutes=24),
-                ),
-            )
-        ]
-    )
-    session.add(
-        Evidence(
-            task_id="T-20260827-003",
-            run_id=run.id,
-            name="RUN-DEMO-003-opencode.json",
-            kind="work_record",
-            path="records/T-20260827-003/RUN-DEMO-003-opencode.json",
-            size=2048,
-            content_type="application/json",
-            created_at=now - timedelta(hours=1, minutes=24),
-        )
-    )
-    session.add_all(
-        [
-            ToolUsage(
-                run_id=run.id,
-                tool_name=name,
-                call_count=calls,
-                success_count=success,
-                failure_count=calls - success,
-                duration_ms=duration,
-            )
-            for name, calls, success, duration in (
-                ("bash", 12, 11, 18400),
-                ("read", 11, 11, 3200),
-                ("edit", 6, 6, 5100),
-                ("skill", 3, 3, 2100),
-            )
-        ]
-    )
-    session.add_all(
-        [
-            Event(
-                task_id=task_id,
-                employee_id=employee_id,
-                run_id=run_id,
                 event_type=event_type,
                 phase="work",
                 message=message,
                 detail={},
                 created_at=now + timedelta(minutes=offset),
             )
-            for task_id, employee_id, run_id, event_type, message, offset in (
-                ("T-20260827-001", None, None, "TASK_CREATED", "任务已创建", -34),
-                ("T-20260827-001", "astra-01", None, "TASK_ASSIGNED", "任务已分配给 Astra-01", -32),
+            for task_id, employee_id, event_type, message, offset in (
+                ("T-20260827-001", None, "TASK_CREATED", "任务已创建", -34),
+                ("T-20260827-001", "astra-01", "TASK_ASSIGNED", "任务已分配给 Astra-01", -32),
                 (
                     "T-20260827-001",
                     "astra-01",
-                    None,
                     "WORK_PROGRESS",
                     "已定位权限缓存问题，正在检查影响范围",
                     -8,
                 ),
-                ("T-20260827-002", "astra-02", None, "WAIT_HUMAN", "Astra-02 请求人工协助", -47),
-                ("T-20260827-003", "astra-03", "RUN-DEMO-003", "TASK_COMPLETED", "Astra-03 完成任务", -84),
+                ("T-20260827-002", "astra-02", "WAIT_HUMAN", "Astra-02 请求人工协助", -47),
+                ("T-20260827-003", "astra-03", "TASK_COMPLETED", "Astra-03 完成任务", -84),
             )
         ]
     )

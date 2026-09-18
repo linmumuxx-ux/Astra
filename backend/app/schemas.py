@@ -283,7 +283,6 @@ class EventRead(ORMModel):
     id: int
     task_id: str | None
     employee_id: str | None
-    run_id: str | None
     event_type: str
     phase: str
     message: str

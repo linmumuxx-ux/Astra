@@ -6,7 +6,7 @@ from typing import Any
 from app.config.settings import Settings
 from app.executors.base import ExecutorResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
-from app.models import OpenCodeExecutionEnvironment, Run, Task
+from app.models import OpenCodeExecutionEnvironment, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.ssh_client import RemoteExecChannel
 
@@ -49,6 +49,3 @@ class RemoteOpenCodeExecutor(OpenCodeCLIExecutor):
 
     async def _terminate_process(self, process: RemoteExecChannel) -> None:
         await process.terminate()
-
-    async def resume(self, task: Task, run: Run, workspace: Path) -> ExecutorResult:
-        return await super().resume(task, run, workspace)

@@ -63,7 +63,6 @@ class ExperienceEvidenceWrite(BaseModel):
     uri: str | None = None
     result: str | None = Field(default=None, max_length=64)
     task_id: str | None = None
-    run_id: str | None = None
     message_id: str | None = Field(default=None, max_length=160)
     part_id: str | None = Field(default=None, max_length=160)
     file_path: str | None = None
@@ -73,7 +72,6 @@ class ExperienceEvidenceWrite(BaseModel):
 class ExperienceEvidenceRead(LibraryORMModel):
     id: int
     task_id: str | None
-    run_id: str | None
     source_session_id: str | None
     message_id: str | None
     part_id: str | None
@@ -97,7 +95,6 @@ class KnowledgeCreate(BaseModel):
     source_type: str | None = Field(default=None, max_length=64)
     source_ref: str | None = Field(default=None, max_length=240)
     source_task_id: str | None = None
-    source_run_id: str | None = None
 
     @field_validator("tags")
     @classmethod
@@ -202,7 +199,6 @@ class KnowledgeDetail(KnowledgeListItem):
     source_employee_id: str | None
     source_employee_name: str | None = None
     source_task_title: str | None = None
-    source_run_id: str | None
     source_session_id: str | None = None
     experience_type: str | None = None
     verified_at: datetime | None = None
@@ -313,7 +309,6 @@ class LibrarySubmitExperienceInput(BaseModel):
     scope: dict[str, Any] = Field(default_factory=dict)
     source_employee_id: str | None = None
     source_task_id: str | None = None
-    source_run_id: str | None = None
     evidence: list[ExperienceEvidenceWrite] = Field(default_factory=list, max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=50)
     experience_data: dict[str, Any] = Field(default_factory=dict)
