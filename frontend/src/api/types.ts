@@ -78,8 +78,7 @@ export interface EmployeeUsage {
   tools: ToolUsage[]
 }
 
-export interface TaskUsage { summary: UsageSummary; tools: ToolUsage[]; runs: number }
-export interface RunUsage { summary: UsageSummary; tools: ToolUsage[] }
+export interface TaskUsage { summary: UsageSummary; tools: ToolUsage[]; sessions: number }
 
 export interface Employee extends RuntimeProjection {
   id: string

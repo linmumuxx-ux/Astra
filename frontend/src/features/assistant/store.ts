@@ -22,8 +22,6 @@ function pageContextFromLocation(): AssistantPageContext | null {
   if (taskId) return { route: path, type: 'task', id: taskId }
   const employeeId = match('/employees/')
   if (employeeId) return { route: path, type: 'employee', id: employeeId }
-  const runId = match('/runs/')
-  if (runId) return { route: path, type: 'run', id: runId }
   if (path.startsWith('/library')) return { route: path, type: 'library' }
   return null
 }

@@ -16,18 +16,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.assistant.models import AssistantContextRef, AssistantConversation, AssistantMessage
 from app.assistant.schemas import PageContext
 from app.config.settings import get_settings
-from app.models import DigitalEmployee, KnowledgeItem, Run, Task
+from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task
 
 PAGE_TYPE_LABEL = {
     "task": "任务详情",
     "employee": "员工详情",
-    "run": "运行详情",
+    "session": "执行会话",
     "knowledge": "数字图书馆",
     "library": "数字图书馆",
     "dashboard": "平台总览",
 }
 
-REF_LABEL = {"TASK": "任务", "EMPLOYEE": "员工", "RUN": "运行", "KNOWLEDGE": "知识"}
+REF_LABEL = {"TASK": "任务", "EMPLOYEE": "员工", "SESSION": "执行会话", "KNOWLEDGE": "知识"}
 
 
 class AssistantContextService:
@@ -59,14 +59,14 @@ class AssistantContextService:
                     f"岗位 {employee.role}，状态 {employee.status}。"
                 )
                 return text, [("EMPLOYEE", employee.id)]
-        elif entity_type == "run" and entity_id:
-            run = await self.session.get(Run, entity_id)
-            if run:
+        elif entity_type == "session" and entity_id:
+            item = await self.session.get(RuntimeSession, entity_id)
+            if item:
                 text = (
-                    f"当前页面对象是运行记录 {run.id}，属于任务 {run.task_id}，"
-                    f"第 {run.run_number} 次执行，状态 {run.status}。"
+                    f"当前页面对象是执行会话 {item.id}，属于任务 {item.task_id}，"
+                    f"状态 {item.status}。"
                 )
-                return text, [("RUN", run.id)]
+                return text, [("SESSION", item.id)]
         elif entity_type in {"knowledge", "library"}:
             label = PAGE_TYPE_LABEL.get(entity_type, "数字图书馆")
             if entity_id:

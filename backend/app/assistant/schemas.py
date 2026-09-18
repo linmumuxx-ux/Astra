@@ -11,7 +11,7 @@ class PageContext(BaseModel):
     不把前端提交的对象当作可信数据。"""
 
     route: str | None = None
-    type: Literal["task", "employee", "run", "knowledge", "library", "dashboard"] | None = None
+    type: Literal["task", "employee", "session", "knowledge", "library", "dashboard"] | None = None
     id: str | None = None
 
 

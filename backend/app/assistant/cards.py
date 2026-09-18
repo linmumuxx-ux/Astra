@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models import DigitalEmployee, KnowledgeItem, Run, Task
+from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task
 from app.runtime.presentation import TASK_STATUS
 
 TASK_STATUS_LABEL = {key: value["label"] for key, value in TASK_STATUS.items()}
@@ -23,17 +23,13 @@ EMPLOYEE_STATUS_LABEL = {
     "ERROR": "异常",
 }
 
-RUN_STATUS_LABEL = {
-    "QUEUED": "排队中",
-    "STARTING": "启动中",
+SESSION_STATUS_LABEL = {
     "RUNNING": "执行中",
-    "WAITING_INPUT": "等待输入",
-    "COMPLETED": "已完成",
+    "WAITING": "等待输入",
+    "SUCCEEDED": "已完成",
     "FAILED": "已失败",
-    "SUSPENDED": "已挂起",
-    "TIMEOUT": "已超时",
-    "LOST": "运行丢失",
-    "CANCELLED": "已取消",
+    "INTERRUPTED": "已中断",
+    "UNKNOWN": "状态未知",
 }
 
 OPERATION_LABEL = {
@@ -100,27 +96,25 @@ def employee_card(employee: DigitalEmployee) -> dict[str, Any]:
     }
 
 
-def run_card(run: Run) -> dict[str, Any]:
+def session_card(item: RuntimeSession) -> dict[str, Any]:
     fields = [
-        {"label": "状态", "value": RUN_STATUS_LABEL.get(run.status, run.status)},
-        {"label": "第几次执行", "value": f"#{run.run_number}"},
-        {"label": "模型", "value": run.model_name or "-"},
-        {"label": "Token", "value": str(run.total_tokens or "-")},
+        {"label": "状态", "value": SESSION_STATUS_LABEL.get(item.status, item.status)},
+        {"label": "模型", "value": item.model_name or "-"},
+        {"label": "Token", "value": str(item.total_tokens or "-")},
+        {"label": "工具调用", "value": str(item.tool_call_count or "-")},
     ]
-    if run.exit_code is not None:
-        fields.append({"label": "退出码", "value": str(run.exit_code)})
-    if run.failure_code:
-        fields.append({"label": "失败类型", "value": run.failure_code})
-    if run.worker_id:
-        fields.append({"label": "Worker", "value": run.worker_id})
+    if item.terminal_reason:
+        fields.append({"label": "结束原因", "value": item.terminal_reason})
+    if item.superseded_by:
+        fields.append({"label": "已被替代", "value": item.superseded_by})
     return {
-        "card_type": "run",
-        "id": run.id,
-        "title": f"{run.task_id} 的第 {run.run_number} 次执行",
-        "status": run.status,
-        "status_label": RUN_STATUS_LABEL.get(run.status, run.status),
+        "card_type": "session",
+        "id": item.id,
+        "title": f"{item.task_id} 的执行会话",
+        "status": item.status,
+        "status_label": SESSION_STATUS_LABEL.get(item.status, item.status),
         "fields": fields,
-        "actions": [_navigate("查看运行", f"/tasks/{run.task_id}")],
+        "actions": [_navigate("查看任务", f"/tasks/{item.task_id}")],
     }
 
 
@@ -161,6 +155,6 @@ def confirm_card(
 CARD_PART_TYPE = {
     "task": "TASK_CARD",
     "employee": "EMPLOYEE_CARD",
-    "run": "RUN_CARD",
+    "session": "SESSION_CARD",
     "knowledge": "KNOWLEDGE_CARD",
 }

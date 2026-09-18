@@ -244,8 +244,14 @@ class RuntimeSession(Base):
     last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    llm_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_usage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     superseded_by: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id"), nullable=True, index=True
     )

@@ -48,7 +48,7 @@ const icon = computed(() =>
     ? ClipboardList
     : props.card.card_type === 'employee'
       ? Bot
-      : props.card.card_type === 'run'
+      : props.card.card_type === 'session'
         ? History
         : FileText,
 )

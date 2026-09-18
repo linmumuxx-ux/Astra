@@ -4,7 +4,7 @@ export type AssistantPartType =
   | 'TEXT'
   | 'TASK_CARD'
   | 'EMPLOYEE_CARD'
-  | 'RUN_CARD'
+  | 'SESSION_CARD'
   | 'KNOWLEDGE_CARD'
   | 'CONFIRM_CARD'
   | 'STATUS'
@@ -56,7 +56,7 @@ export interface AssistantOperation {
 
 export interface AssistantPageContext {
   route?: string
-  type?: 'task' | 'employee' | 'run' | 'knowledge' | 'library' | 'dashboard'
+  type?: 'task' | 'employee' | 'session' | 'knowledge' | 'library' | 'dashboard'
   id?: string
 }
 
@@ -68,7 +68,7 @@ export interface AssistantCardAction {
 }
 
 export interface AssistantCardPayload {
-  card_type?: 'task' | 'employee' | 'run' | 'knowledge' | 'confirm' | string
+  card_type?: 'task' | 'employee' | 'session' | 'knowledge' | 'confirm' | string
   result?: Record<string, any>
   id?: string
   title?: string

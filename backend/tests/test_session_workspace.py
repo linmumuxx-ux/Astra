@@ -468,8 +468,18 @@ async def test_timeout_aborts_native_busy_but_waiting_does_not_timeout(runtime):
 
 async def _complete_current_turn(r):
     r.native.state = "idle"
-    r.native.sessions["ses_current"][-1]["parts"] = [{"type": "text", "text": "DONE"}]
-    r.native.sessions["ses_current"][-1]["info"].update({"time": {"completed": 1}, "finish": "stop"})
+    assistant = r.native.sessions["ses_current"][-1]
+    assistant["parts"] = [
+        {"type": "text", "text": "DONE"},
+        {"type": "tool", "tool": "bash", "callID": "call_1", "state": {"status": "completed"}},
+    ]
+    assistant["info"].update(
+        {
+            "time": {"completed": 1},
+            "finish": "stop",
+            "tokens": {"input": 100, "output": 20, "cache": {"read": 5}},
+        }
+    )
     await r.service.refresh("T1")
 
 
@@ -483,6 +493,27 @@ async def test_succeeded_persists_runtime_session_terminal(runtime):
     assert session.finish_reason == "stop"
     assert session.finished_at is not None
     assert session.terminal_reason == "completed"
+
+
+async def test_terminal_session_stores_aggregate_usage(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    session = await r.session.get(RuntimeSession, "ses_current")
+    assert session.total_tokens == 125
+    assert session.input_tokens == 100 and session.output_tokens == 20
+    assert session.cache_read_tokens == 5
+    assert session.llm_call_count == 1
+    assert session.tool_call_count == 1
+    assert session.tool_usage == [
+        {
+            "tool_name": "bash",
+            "call_count": 1,
+            "success_count": 1,
+            "failure_count": 0,
+            "duration_ms": 0,
+        }
+    ]
 
 
 async def test_continue_after_success_clears_finished_at(runtime):

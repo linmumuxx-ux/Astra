@@ -47,7 +47,7 @@ const emit = defineEmits<{ modify: [text: string]; preset: [text: string] }>()
 const store = useAssistantStore()
 const listRef = ref<HTMLElement | null>(null)
 
-const CARD_TYPES = new Set(['TASK_CARD', 'EMPLOYEE_CARD', 'RUN_CARD', 'KNOWLEDGE_CARD'])
+const CARD_TYPES = new Set(['TASK_CARD', 'EMPLOYEE_CARD', 'SESSION_CARD', 'KNOWLEDGE_CARD'])
 
 const streamingId = ref<string | null>(null)
 watch(

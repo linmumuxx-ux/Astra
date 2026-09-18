@@ -64,8 +64,8 @@ from app.services import (
 from app.usage import (
     day_bounds,
     employee_usage,
-    load_runs,
-    summarize_runs,
+    load_sessions,
+    summarize_sessions,
     task_usage,
 )
 
@@ -92,8 +92,8 @@ async def require_employee(employee_id: str, session: AsyncSession) -> DigitalEm
 
 async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> EmployeeRead:
     start, end = day_bounds()
-    runs = await load_runs(session, employee_id=employee.id, start=start, end=end)
-    usage = await summarize_runs(session, runs)
+    sessions = await load_sessions(session, employee_id=employee.id, start=start, end=end)
+    usage = await summarize_sessions(session, sessions)
     base = EmployeeRead.model_validate(employee)
     return EmployeeRead.model_validate(
         {

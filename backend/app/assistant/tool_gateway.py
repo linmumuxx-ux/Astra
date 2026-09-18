@@ -15,10 +15,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.assistant.cards import employee_card, knowledge_card, run_card, task_card
+from app.assistant.cards import employee_card, knowledge_card, session_card, task_card
 from app.assistant.operations import OperationService
-from app.domain import RunStatus, TaskStatus
-from app.models import DigitalEmployee, KnowledgeItem, Run, Task
+from app.domain import RuntimeSessionStatus, TaskStatus
+from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task
 
 MAX_LIMIT = 50
 
@@ -267,26 +267,23 @@ async def employee_recommend(
     return {"items": candidates[:10], "total": len(candidates)}
 
 
-def _run_summary(run: Run) -> dict[str, Any]:
+def _session_summary(item: RuntimeSession) -> dict[str, Any]:
     return {
-        "run_id": run.id,
-        "task_id": run.task_id,
-        "employee_id": run.employee_id,
-        "run_number": run.run_number,
-        "status": run.status,
-        "model_name": run.model_name,
-        "exit_code": run.exit_code,
-        "worker_id": run.worker_id,
-        "executor_status": run.executor_status,
-        "failure_code": run.failure_code,
-        "total_tokens": run.total_tokens,
-        "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "session_id": item.id,
+        "task_id": item.task_id,
+        "employee_id": item.employee_id,
+        "status": item.status,
+        "terminal_reason": item.terminal_reason,
+        "model_name": item.model_name,
+        "total_tokens": item.total_tokens,
+        "tool_call_count": item.tool_call_count,
+        "superseded_by": item.superseded_by,
+        "started_at": item.started_at.isoformat() if item.started_at else None,
+        "finished_at": item.finished_at.isoformat() if item.finished_at else None,
     }
 
 
-async def run_search(
+async def session_search(
     session: AsyncSession,
     *,
     task_id: str | None = None,
@@ -294,40 +291,47 @@ async def run_search(
     limit: int = 20,
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit or 20), MAX_LIMIT))
-    query = select(Run)
+    query = select(RuntimeSession)
     if task_id:
-        query = query.where(Run.task_id == task_id)
+        query = query.where(RuntimeSession.task_id == task_id)
     if status:
-        query = query.where(Run.status.in_([str(item).upper() for item in status]))
-    rows = (await session.execute(query.order_by(Run.started_at.desc()).limit(limit))).scalars().all()
-    return {"items": [_run_summary(run) for run in rows], "total": len(rows)}
+        query = query.where(RuntimeSession.status.in_([str(item).upper() for item in status]))
+    rows = (
+        (await session.execute(query.order_by(RuntimeSession.created_at.desc()).limit(limit)))
+        .scalars()
+        .all()
+    )
+    return {"items": [_session_summary(item) for item in rows], "total": len(rows)}
 
 
-async def run_get(session: AsyncSession, run_id: str) -> dict[str, Any]:
-    run = await session.get(Run, run_id)
-    if not run:
-        raise ValueError(f"运行记录不存在：{run_id}")
-    return {**_run_summary(run), "card": run_card(run)}
+async def session_get(session: AsyncSession, session_id: str) -> dict[str, Any]:
+    item = await session.get(RuntimeSession, session_id)
+    if not item:
+        raise ValueError(f"执行会话不存在：{session_id}")
+    return {**_session_summary(item), "card": session_card(item)}
 
 
-async def run_failure_summary(session: AsyncSession, *, task_id: str | None = None) -> dict[str, Any]:
+async def session_failure_summary(session: AsyncSession, *, task_id: str | None = None) -> dict[str, Any]:
     """后端汇总失败现场，再交给模型解释。"""
-    query = select(Run).where(
-        Run.status.in_(
-            [RunStatus.FAILED, RunStatus.TIMEOUT, RunStatus.LOST]
+    query = select(RuntimeSession).where(
+        RuntimeSession.status.in_(
+            [RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value]
         )
     )
     if task_id:
-        query = query.where(Run.task_id == task_id)
-    runs = (await session.execute(query.order_by(Run.started_at.desc()).limit(5))).scalars().all()
+        query = query.where(RuntimeSession.task_id == task_id)
+    rows = (
+        (await session.execute(query.order_by(RuntimeSession.created_at.desc()).limit(5)))
+        .scalars()
+        .all()
+    )
     items = []
-    for run in runs:
-        task = await session.get(Task, run.task_id)
-        error = task.execution_error or {}
+    for item in rows:
+        task = await session.get(Task, item.task_id)
+        error = (task.execution_error if task else None) or {}
         items.append(
             {
-                **_run_summary(run),
-                "executor_type": run.executor_type,
+                **_session_summary(item),
                 "task_status": task.status if task else None,
                 "execution_error": error.get("reason") or error.get("message") or error.get("error"),
                 "failure_reason": task.failure_reason if task else None,

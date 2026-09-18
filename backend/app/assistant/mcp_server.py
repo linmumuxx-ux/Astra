@@ -179,26 +179,30 @@ def build_assistant_mcp_server() -> MCPServer:
             )
         )
 
-    # ── Run Tools ─────────────────────────────────────────────
+    # ── Session Tools ─────────────────────────────────────────
 
-    @server.tool(name="nexus_run_search", structured_output=True)
-    async def nexus_run_search(
+    @server.tool(name="nexus_session_search", structured_output=True)
+    async def nexus_session_search(
         task_id: str | None = None, status: list[str] | None = None, limit: int = 20
     ) -> dict[str, Any]:
-        """搜索任务执行记录。"""
+        """搜索任务执行会话。"""
         return await _run(
-            lambda session: tool_gateway.run_search(session, task_id=task_id, status=status, limit=limit)
+            lambda session: tool_gateway.session_search(
+                session, task_id=task_id, status=status, limit=limit
+            )
         )
 
-    @server.tool(name="nexus_run_get", structured_output=True)
-    async def nexus_run_get(run_id: str) -> dict[str, Any]:
-        """获取单次执行记录详情。"""
-        return await _run(lambda session: tool_gateway.run_get(session, run_id))
+    @server.tool(name="nexus_session_get", structured_output=True)
+    async def nexus_session_get(session_id: str) -> dict[str, Any]:
+        """获取单次执行会话详情。"""
+        return await _run(lambda session: tool_gateway.session_get(session, session_id))
 
-    @server.tool(name="nexus_run_failure_summary", structured_output=True)
-    async def nexus_run_failure_summary(task_id: str | None = None) -> dict[str, Any]:
-        """后端汇总失败现场（执行错误、退出码、当前进展），再交给模型解释。"""
-        return await _run(lambda session: tool_gateway.run_failure_summary(session, task_id=task_id))
+    @server.tool(name="nexus_session_failure_summary", structured_output=True)
+    async def nexus_session_failure_summary(task_id: str | None = None) -> dict[str, Any]:
+        """后端汇总失败现场（结束原因、任务进展），再交给模型解释。"""
+        return await _run(
+            lambda session: tool_gateway.session_failure_summary(session, task_id=task_id)
+        )
 
     # ── Knowledge Tools ───────────────────────────────────────
 

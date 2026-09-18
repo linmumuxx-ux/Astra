@@ -20,8 +20,6 @@ const context = computed(() => {
   if (taskId) return { type: 'task' as const, id: taskId }
   const employeeId = match('/employees/')
   if (employeeId) return { type: 'employee' as const, id: employeeId }
-  const runId = match('/runs/')
-  if (runId) return { type: 'run' as const, id: runId }
   if (path.startsWith('/library')) return { type: 'library' as const, id: null }
   return null
 })
@@ -30,7 +28,6 @@ const LABELS: Record<string, string> = {
   dashboard: '平台总览',
   task: '任务',
   employee: '员工',
-  run: '运行记录',
   library: '数字图书馆',
 }
 

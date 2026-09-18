@@ -25,6 +25,7 @@ from app.executors.opencode_prompt import (
     build_task_prompt,
     resolve_task_prompt_context,
 )
+from app.executors.usage import parse_opencode_usage
 from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
 from app.runtime.runtime_context import (
@@ -131,6 +132,42 @@ class RuntimeService:
             # finished_at only ever holds the current terminal time.
             runtime_session.finished_at = None
         return runtime_session
+
+    async def _update_session_usage(self, task: Task, messages: list[dict]) -> None:
+        """Store aggregate token/tool counters derived from native messages."""
+        runtime_session = await self._runtime_session(task)
+        if not runtime_session:
+            return
+        # parse_opencode_usage consumes one event per message info (tokens/model)
+        # plus one event per part (tool calls); native messages group both.
+        events: list[dict] = []
+        for message in messages:
+            info = message.get("info") if isinstance(message.get("info"), dict) else {}
+            events.append({"info": info})
+            for part in message.get("parts", []):
+                if isinstance(part, dict):
+                    events.append({"part": part})
+        token_usage, tools, model_name = parse_opencode_usage(events)
+        runtime_session.input_tokens = token_usage.input_tokens
+        runtime_session.output_tokens = token_usage.output_tokens
+        runtime_session.cache_read_tokens = token_usage.cache_read_tokens
+        runtime_session.cache_write_tokens = token_usage.cache_write_tokens
+        runtime_session.total_tokens = token_usage.total_tokens
+        runtime_session.llm_call_count = token_usage.llm_call_count
+        if tools:
+            runtime_session.tool_usage = [
+                {
+                    "tool_name": item.name,
+                    "call_count": item.call_count,
+                    "success_count": item.success_count,
+                    "failure_count": item.failure_count,
+                    "duration_ms": item.duration_ms,
+                }
+                for item in tools
+            ]
+            runtime_session.tool_call_count = sum(item.call_count for item in tools)
+        if model_name:
+            runtime_session.model_name = model_name
 
     async def apply_session_state(
         self, task: Task, state: SessionState, *, final_text: str | None = None
@@ -517,6 +554,7 @@ class RuntimeService:
                 await client.abort(directory, task.current_session_id)
                 timed_out = True
         messages = await client.messages(directory, task.current_session_id)
+        await self._update_session_usage(task, messages)
         if task.pending_message_id:
             if any(item["info"]["id"] == task.pending_message_id for item in messages):
                 task.pending_message_id = None

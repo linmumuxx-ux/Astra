@@ -45,7 +45,12 @@ PREPARE_TOOLS = {
     "nexus_task_prepare_reassign",
 }
 
-REF_BY_CARD = {"task": "TASK", "employee": "EMPLOYEE", "run": "RUN", "knowledge": "KNOWLEDGE"}
+REF_BY_CARD = {
+    "task": "TASK",
+    "employee": "EMPLOYEE",
+    "session": "SESSION",
+    "knowledge": "KNOWLEDGE",
+}
 
 
 def new_conversation_id() -> str:

@@ -146,6 +146,8 @@ async def run(model: str, binary: str, keep: bool) -> dict:
         result["session_status"] = runtime_session.status
         result["session_finished_at"] = bool(runtime_session.finished_at)
         result["context_hash_present"] = bool(runtime_session.runtime_context_hash)
+        result["session_total_tokens"] = runtime_session.total_tokens
+        result["session_tool_call_count"] = runtime_session.tool_call_count
         smoke_file = Path(task.workspace) / "phase1a.txt"
         if smoke_file.exists():
             result["smoke_file"] = smoke_file.read_text(encoding="utf-8").strip()
@@ -251,6 +253,8 @@ def main() -> int:
         and result.get("session_status") == "SUCCEEDED"
         and result.get("synthetic_context_in_session")
         and result.get("smoke_file") == "PHASE1A_OK"
+        and result.get("session_total_tokens") is not None
+        and (result.get("session_tool_call_count") or 0) >= 1
         and result.get("old_session_status") == "INTERRUPTED"
         and result.get("old_session_superseded_by")
         and result.get("old_session_stopped_writing")
