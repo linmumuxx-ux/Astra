@@ -135,7 +135,6 @@ async def run(model: str, binary: str, keep: bool) -> dict:
         await RuntimeService(session).start("T-SMOKE")
 
     status = await wait_for_terminal("T-SMOKE", 240)
-    output_file = workspace / ".astra-tasks" / "phase1a" / "T-SMOKE" / "phase1a.txt"
     result: dict = {"smoke_task_status": status, "smoke_file": None}
 
     from app.runtime.session_connection import connect, resolve_environment
@@ -147,6 +146,9 @@ async def run(model: str, binary: str, keep: bool) -> dict:
         result["session_status"] = runtime_session.status
         result["session_finished_at"] = bool(runtime_session.finished_at)
         result["context_hash_present"] = bool(runtime_session.runtime_context_hash)
+        smoke_file = Path(task.workspace) / "phase1a.txt"
+        if smoke_file.exists():
+            result["smoke_file"] = smoke_file.read_text(encoding="utf-8").strip()
         async with connect(env) as client:
             messages = await client.messages(Path(task.workspace), task.current_session_id)
             result["synthetic_context_in_session"] = any(
@@ -160,9 +162,6 @@ async def run(model: str, binary: str, keep: bool) -> dict:
                 result["mcp"] = mcp
             except Exception as exc:  # noqa: BLE001 - report the real server response
                 result["mcp_error"] = str(exc)
-
-    if output_file.exists():
-        result["smoke_file"] = output_file.read_text(encoding="utf-8").strip()
 
     # Long-write restart scenario.
     from sqlalchemy import select
@@ -181,10 +180,12 @@ async def run(model: str, binary: str, keep: bool) -> dict:
                 status="PENDING",
                 employee_id="phase1a",
                 description=(
-                    "在任务工作空间运行下面的 shell 命令，然后再回复 LONG_DONE：\n"
-                    "for i in $(seq 1 120); do echo tick >> longwrite.txt; sleep 1; done"
+                    "如果当前工作空间里不存在 longwrite.txt，就运行下面的 shell 命令，"
+                    "然后回复 LONG_DONE：\n"
+                    "for i in $(seq 1 120); do echo tick >> longwrite.txt; sleep 1; done\n"
+                    "如果 longwrite.txt 已经存在，不要运行任何命令，直接回复 LONG_DONE。"
                 ),
-                acceptance_criteria=[{"id": "AC-01", "content": "命令已运行"}],
+                acceptance_criteria=[{"id": "AC-01", "content": "命令已按条件运行"}],
                 execution_environment_snapshot=environment_snapshot(environment),
             )
         )
@@ -193,13 +194,19 @@ async def run(model: str, binary: str, keep: bool) -> dict:
     async with SessionLocal() as session:
         await RuntimeService(session).start("T-LONG")
 
-    long_dir = workspace / ".astra-tasks" / "phase1a" / "T-LONG"
-    long_file = long_dir / "longwrite.txt"
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline and not long_file.exists():
+    # The old Session must be actively writing before we restart it.
+    long_file: Path | None = None
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        async with SessionLocal() as session:
+            long_task = await session.get(Task, "T-LONG")
+            if long_task.workspace:
+                long_file = Path(long_task.workspace) / "longwrite.txt"
+        if long_file and long_file.exists() and long_file.stat().st_size > 20:
+            break
         await asyncio.sleep(2)
 
-    size_before = long_file.stat().st_size if long_file.exists() else 0
+    size_growing = long_file.stat().st_size if long_file and long_file.exists() else 0
     async with SessionLocal() as session:
         first = await session.get(Task, "T-LONG")
         old_session_id = first.current_session_id
@@ -213,11 +220,17 @@ async def run(model: str, binary: str, keep: bool) -> dict:
         result["old_session_superseded_by"] = old.superseded_by == new_session_id
         result["new_session_id_differs"] = new_session_id != old_session_id
 
-    await asyncio.sleep(4)
-    size_after = long_file.stat().st_size if long_file.exists() else 0
-    result["longwrite_size_before"] = size_before
-    result["longwrite_size_after"] = size_after
-    result["old_session_stopped_writing"] = size_after == size_before
+    # Two post-abort measurements prove the old Session stopped writing.
+    await asyncio.sleep(2)
+    size_after_restart = long_file.stat().st_size if long_file and long_file.exists() else 0
+    await asyncio.sleep(5)
+    size_after_wait = long_file.stat().st_size if long_file and long_file.exists() else 0
+    result["longwrite_size_growing"] = size_growing
+    result["longwrite_size_after_restart"] = size_after_restart
+    result["longwrite_size_after_wait"] = size_after_wait
+    result["old_session_stopped_writing"] = (
+        size_growing > 0 and size_after_restart == size_after_wait
+    )
 
     result["workspace"] = str(workspace)
     result["root"] = str(root)
