@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import shlex
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from app.config.settings import Settings
@@ -35,7 +35,9 @@ _mcp_tunnels: dict[tuple[str, int, str, int], _PersistentMcpTunnel] = {}
 _mcp_tunnel_locks: dict[tuple[str, int, str, int], asyncio.Lock] = {}
 
 
-def _mcp_tunnel_key(environment: OpenCodeExecutionEnvironment, settings: Settings) -> tuple[str, int, str, int]:
+def _mcp_tunnel_key(
+    environment: OpenCodeExecutionEnvironment, settings: Settings
+) -> tuple[str, int, str, int]:
     return (
         str(environment.host),
         int(environment.port),

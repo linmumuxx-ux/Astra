@@ -23,7 +23,6 @@ from app.models import (
     TaskSummary,
 )
 
-
 _REUSABLE_HINTS = re.compile(
     r"根因|原因|定位|修复|解决|规避|配置|环境|命令|工具|步骤|方法|规则|约束|"
     r"验证|测试|兼容|依赖|超时|权限|接口|git|pytest|bun|npm|mypy",
