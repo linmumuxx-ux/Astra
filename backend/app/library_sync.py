@@ -74,6 +74,37 @@ def write_source(directory: Path, knowledge_id: str, content: str | None) -> Non
             temp_path.unlink(missing_ok=True)
 
 
+def _try_lock_file(handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        if handle.read(1) == b"":
+            handle.seek(0)
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_file(handle) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 async def sync_pending(session: AsyncSession, settings: Settings | None = None) -> int:
     settings = settings or get_settings()
     if not settings.llm_wiki_enabled:
@@ -93,12 +124,10 @@ async def sync_pending(session: AsyncSession, settings: Settings | None = None) 
     # The deployment shares one filesystem. An OS lock covers Celery duplicates and
     # manual runs, and is released automatically on process termination. No lease can
     # expire while an old worker is still writing. Do not block the worker event loop.
-    import fcntl
-
     lock_path = settings.resolved_runtime_dir / "library-sync.lock"
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = lock_path.open("a")
+        lock_file = lock_path.open("a+b")
     except OSError as exc:
         for knowledge_id, revision in rows:
             await _finish(
@@ -107,8 +136,8 @@ async def sync_pending(session: AsyncSession, settings: Settings | None = None) 
         return 0
     with lock_file as lock:
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            _try_lock_file(lock)
+        except OSError:
             return 0
         try:
             await client.verify_project()
@@ -165,6 +194,8 @@ async def sync_pending(session: AsyncSession, settings: Settings | None = None) 
         for knowledge_id, revision in written:
             await _finish(session, knowledge_id, revision, error)
         return len(written) if error is None else 0
+        finally:
+            _unlock_file(lock)
 
 
 async def _finish(session: AsyncSession, knowledge_id: str, revision: str, error: str | None) -> None:
