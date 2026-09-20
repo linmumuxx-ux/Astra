@@ -97,8 +97,10 @@ def upgrade():
     op.drop_table("run_dispatch_outbox")
     for table in ("tasks", "digital_employees"):
         with op.batch_alter_table(table) as batch:
-            batch.drop_index(f"ix_{table}_active_run_id")
+            # MySQL 8 refuses to drop an index that is still required by a FK.
+            # Always remove dependency -> index -> column in that order.
             batch.drop_constraint(f"fk_{table}_active_run_id_runs", type_="foreignkey")
+            batch.drop_index(f"ix_{table}_active_run_id")
             batch.drop_column("active_run_id")
 
 
