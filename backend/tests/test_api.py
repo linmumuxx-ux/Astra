@@ -164,7 +164,6 @@ def test_employee_scope_environment_and_category_configuration(tmp_path):
                 "category_ids": [category_id],
                 "auto_claim": True,
                 "auto_execute": False,
-                "max_auto_retries": 2,
                 "execution_environment": {
                     "mode": "LOCAL",
                     "name": "API 本地工作空间",
