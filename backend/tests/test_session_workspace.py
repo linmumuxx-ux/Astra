@@ -31,6 +31,7 @@ class NativeServer:
         self.pending = []
         self.sent = []
         self.fail_after_accept = False
+        self.created_options = []
         self.auth = None
         self.base_url = "http://native"
 
@@ -87,6 +88,7 @@ class NativeServer:
         return True
 
     async def create_session(self, directory, **kwargs):
+        self.created_options.append(kwargs)
         sid = f"ses_{len(self.sessions)}"
         self.sessions[sid] = []
         return {"id": sid}
@@ -256,6 +258,22 @@ async def test_disconnect_preserves_running_and_cancel_is_explicit(runtime):
     r.native.state = "idle"
     await r.service.refresh("T1")
     assert r.task.status == "CANCELED"
+
+
+async def test_employee_without_model_inherits_global_runtime_model(runtime, monkeypatch):
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "opencode_model", "local-proxy/GLM-5.2-Tester")
+    runtime.environment.model_name = None
+    runtime.task.execution_environment_snapshot["model_name"] = None
+    await runtime.session.commit()
+
+    await runtime.service.start("T1", restart=True)
+
+    assert runtime.native.created_options[-1]["model_name"] == "local-proxy/GLM-5.2-Tester"
+    current = await runtime.session.get(RuntimeSession, runtime.task.current_session_id)
+    assert current.model_name == "local-proxy/GLM-5.2-Tester"
 
 
 async def test_explicit_restart_supersedes_each_running_session(runtime):
