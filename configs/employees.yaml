@@ -14,7 +14,7 @@ employees:
       mode: LOCAL
       name: 本地 Agent
       opencode_path: opencode
-      model_name: deepseek/deepseek-v4-flash
+      model_name: null  # 默认继承 ASTRA_OPENCODE_MODEL；员工需要特殊模型时再覆盖
       workspace_root: ./workspaces/astra-01
     policy:
       auto_claim: true
