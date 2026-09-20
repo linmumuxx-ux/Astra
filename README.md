@@ -1,4 +1,4 @@
-# Astra V0.4
+# Astra V0.6
 
 Astra 是面向长期数字员工的任务分配、工作观察、人工介入和结果管理平台。
 
@@ -11,7 +11,7 @@ Astra 是面向长期数字员工的任务分配、工作观察、人工介入�
 - 本地或 Linux SSH 远程 Agent 工作环境；
 - 每项任务独立执行会话，支持挂起、恢复和异常处理；
 - 持续任务工作台、数字办公室和待处理中心；
-- 任务结果、逐项验收证据及 Run / Token / Tool 汇总；
+- 任务结果、Task Summary 及 Session / Token / Tool 汇总；
 - Vue 3 管理台、FastAPI、MySQL、Redis、Celery 与 OpenCode Server。
 
 ## 环境要求
@@ -42,6 +42,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 
 `setup-windows.ps1` 仅负责首次安装；平台启停统一使用 `scripts/astra_service.py`。
 
+`workspace-ui` 在公司 Windows 环境优先使用 pnpm 安装和构建；未安装 pnpm 时可通过 Corepack，其他环境仍可回退 bun。统一入口为 `node scripts/workspace_ui.mjs <install|build|type-check>`。
+
 ## 开发环境
 
 ```powershell
@@ -58,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 
 开发模式：
 
-- Backend：Uvicorn `--reload`
+- Backend：Linux/Mac 开发模式使用 Uvicorn `--reload`；Windows 为保证 asyncio 子进程稳定，使用普通 Uvicorn，代码变更后执行 `dev restart`
 - Frontend：Vite Dev Server
 - 自动执行 Alembic migration 和 preflight
 - 启动 Beat、Control Worker、Agent Worker
@@ -133,9 +135,11 @@ CI 使用相同入口，不再依赖 Shell 脚本。
 
 ## Runtime 说明
 
-运行入队会在同一数据库事务中创建 Run、占用 Task / Employee 租约并写入 Outbox。Redis 短暂不可用时任务保持 `QUEUED`，由控制 Worker 重投。
+Task 是业务闭环边界，OpenCode Session 是执行事实源，`RuntimeSession` 只保存 Session 绑定、终态和用量索引，不复制消息或执行日志。Task 完成后生成一条 `TaskSummary`；重新执行会创建新的 OpenCode Session。
 
-Agent Worker 使用 execution token 和 Run heartbeat 报活。watchdog 发现心跳丢失后先检查 OpenCode Session；仍在 busy 的 Session 不会重复执行，无法恢复时才标记 `LOST` 并等待明确重跑。
+本地数字员工的 OpenCode Server 采用按需启动：空闲时 Server 未运行属于正常状态；任务启动、重连、停止和历史 Session 读取时会按需检查并启动对应员工 Serve。网络或 Runtime 不可达不会被直接等同于任务失败。
+
+数据库事务只用于短状态更新。OpenCode、SSH、文件和网络 I/O 不应在持有 Task/Employee 行锁期间执行。生产环境建议 Astra 使用独立 MySQL Database，避免其他业务长事务阻塞 Astra 写操作。
 
 平台助手使用独立 OpenCode Server；助手启动失败时降级，不阻断任务核心 Runtime。
 
