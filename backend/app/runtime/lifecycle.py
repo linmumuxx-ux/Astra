@@ -15,11 +15,11 @@ from pathlib import Path
 from secrets import token_hex
 from time import time_ns
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, ExecutionMode, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
+from app.domain import CompletionPolicy, EmployeeStatus, ExecutionMode, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
 from app.event_bus import event_bus
 from app.executors.errors import OpenCodeExecutionError, OpenCodeSessionNotFound
 from app.executors.opencode_prompt import (
@@ -28,7 +28,7 @@ from app.executors.opencode_prompt import (
     resolve_task_prompt_context,
 )
 from app.executors.usage import parse_opencode_usage
-from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
+from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory, TaskSummary
 from app.runtime.environment import environment_snapshot
 from app.runtime.runtime_context import (
     build_runtime_context_part,
@@ -92,7 +92,8 @@ class RuntimeService:
                     .where(
                         Task.employee_id == employee.id,
                         or_(
-                            Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                            Task.status == TaskStatus.RUNNING,
+                            and_(Task.status == TaskStatus.WAITING, Task.submitted_at.is_(None)),
                             Task.pending_message_id.is_not(None),
                         ),
                     )
@@ -106,7 +107,11 @@ class RuntimeService:
                 elif employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
                     employee.status = EmployeeStatus.IDLE
         if status == TaskStatus.RUNNING:
-            # A reopened task invalidates its previous final summary.
+            # A reopened task starts a new business completion attempt.
+            task.submitted_at = None
+            task.confirmed_at = None
+            task.human_required_reason = None
+            task.human_intervention = None
             await TaskSummaryService(self.session).mark_stale(task, commit=False)
         await self.session.commit()
         await event_bus.publish({"type": "TASK_STATUS", "task_id": task.id, "status": task.status})
@@ -190,9 +195,13 @@ class RuntimeService:
                 primary_session_id=task.current_session_id,
                 summary_text=final_text or "",
             )
-            if state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            # Session completion is only execution evidence. Experience becomes
+            # verified after the Task itself reaches business SUCCEEDED.
+            if task.status == TaskStatus.SUCCEEDED:
                 await self._reconcile_experience(task)
-            await self._extract_experience(task)
+                await self._extract_experience(task)
+            elif task.status == TaskStatus.FAILED:
+                await self._extract_experience(task)
 
     async def _reconcile_experience(self, task: Task) -> None:
         """Only a successful source Session verifies its submitted candidates."""
@@ -223,7 +232,26 @@ class RuntimeService:
         elif state.status == RuntimeSessionStatus.SUCCEEDED.value:
             task.failure_reason = None
             task.execution_error = None
-            await self.project(task, TaskStatus.SUCCEEDED)
+            if task.completion_policy == CompletionPolicy.MANUAL_CONFIRM.value:
+                now = datetime.now(UTC)
+                task.submitted_at = task.submitted_at or now
+                task.confirmed_at = None
+                task.human_required_reason = "执行已完成，等待人工确认任务结果"
+                task.human_intervention = {
+                    "blocking_reason": "任务完成策略要求人工确认",
+                    "completed_work": "OpenCode Session 已正常结束并生成结果摘要",
+                    "current_state": "等待确认任务完成",
+                    "requested_input": "确认结果后完成任务；如结果不符合预期，可重新执行或取消",
+                    "kind": "completion_confirmation",
+                }
+                await self.project(
+                    task,
+                    TaskStatus.WAITING,
+                    detail="执行已完成，等待人工确认",
+                )
+            else:
+                task.confirmed_at = datetime.now(UTC)
+                await self.project(task, TaskStatus.SUCCEEDED)
         elif state.status == RuntimeSessionStatus.FAILED.value:
             message = task.failure_reason or {
                 SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode Assistant 返回原生执行错误",
@@ -728,8 +756,44 @@ class RuntimeService:
             timed_out=timed_out,
             grace_seconds=get_settings().opencode_no_reply_grace_seconds,
         )
-        final_text, _ = extract_final_assistant_text(messages)
+        final_text, _ = extract_final_assistant_text(messages, turn_anchor_id=task.last_message_id)
         await self.apply_session_state(task, state, final_text=final_text)
+        return task
+
+    async def confirm_completion(self, task_id: str):
+        """Confirm a MANUAL_CONFIRM task after its Session completed."""
+
+        task = await self.lock_task(task_id)
+        if task.completion_policy != CompletionPolicy.MANUAL_CONFIRM.value:
+            await self.session.rollback()
+            raise RuntimeStateError("当前任务不是人工确认完成策略")
+        if task.pending_message_id:
+            await self.session.rollback()
+            raise RuntimeStateError("仍有未确认输入，不能确认任务完成")
+        if task.status != TaskStatus.WAITING or not task.submitted_at:
+            await self.session.rollback()
+            raise RuntimeStateError("任务当前不处于待完成确认状态")
+        runtime_session = await self._runtime_session(task)
+        if not runtime_session or runtime_session.status != RuntimeSessionStatus.SUCCEEDED.value:
+            await self.session.rollback()
+            raise RuntimeStateError("当前 Session 尚未正常完成")
+
+        task.confirmed_at = datetime.now(UTC)
+        task.human_required_reason = None
+        task.human_intervention = None
+        await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")
+
+        summary = await self.session.scalar(
+            select(TaskSummary).where(TaskSummary.task_id == task.id)
+        )
+        await TaskSummaryService(self.session).upsert(
+            task,
+            source_status=TaskStatus.SUCCEEDED.value,
+            primary_session_id=task.current_session_id,
+            summary_text=summary.summary if summary else task.current_progress,
+        )
+        await self._reconcile_experience(task)
+        await self._extract_experience(task)
         return task
 
     async def disconnected(self, task_id, error):
