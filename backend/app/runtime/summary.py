@@ -53,13 +53,14 @@ def extract_final_assistant_text(
     return "", None
 
 
-def _snapshot(task: Task) -> dict:
+def _snapshot(task: Task, *, final_message_id: str | None = None) -> dict:
     return {
         "task_id": task.id,
         "title": task.title,
         "task_type": task.task_type,
         "employee_id": task.employee_id,
         "source": task.source,
+        "final_message_id": final_message_id,
     }
 
 
@@ -121,6 +122,12 @@ class TaskSummaryService:
             )
         ).all()
         now = datetime.now(UTC)
+        primary_session = (
+            await self.session.get(RuntimeSession, primary_session_id)
+            if primary_session_id
+            else None
+        )
+        final_message_id = primary_session.last_message_id if primary_session else None
         key_changes = await collect_workspace_changes(self.session, task)
         result_text = (
             summary_text
@@ -174,7 +181,7 @@ class TaskSummaryService:
             existing.primary_session_id = primary_session_id
             existing.referenced_session_ids = list(referenced)
             existing.generated_by = generated_by
-            existing.source_ref_snapshot = _snapshot(task)
+            existing.source_ref_snapshot = _snapshot(task, final_message_id=final_message_id)
             existing.updated_at = now
             summary = existing
         else:
@@ -191,7 +198,7 @@ class TaskSummaryService:
                 generation=1,
                 stale=False,
                 generated_by=generated_by,
-                source_ref_snapshot=_snapshot(task),
+                source_ref_snapshot=_snapshot(task, final_message_id=final_message_id),
                 generated_at=now,
                 updated_at=now,
             )
