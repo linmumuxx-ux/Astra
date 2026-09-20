@@ -418,18 +418,6 @@ export interface DashboardKnowledge {
   recent: Array<{ id: string; title: string }>
 }
 
-export interface RunStats {
-  run_count: number
-  task_count: number
-  completed_count: number
-  failed_count: number
-  retry_count: number
-  waiting_input_count: number
-  success_rate: number | null
-  avg_duration_seconds: number | null
-  total_tokens: number | null
-}
-
 export interface LibraryServiceStatus {
   enabled: boolean
   healthy: boolean
