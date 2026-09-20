@@ -140,60 +140,68 @@ async def sync_pending(session: AsyncSession, settings: Settings | None = None) 
         except OSError:
             return 0
         try:
-            await client.verify_project()
-        except LlmWikiError as exc:
-            for knowledge_id, revision in rows:
-                await _finish(session, knowledge_id, revision, str(exc))
-            return 0
-        directory = settings.absolute_path(settings.llm_wiki_project_path) / "raw" / "sources" / "astra"
-        written = []
-        for knowledge_id, _ in rows:
-            # Read after taking the lock; never replay an old serialized Knowledge payload.
-            row = await session.scalar(
-                select(KnowledgeSync)
-                .where(KnowledgeSync.knowledge_id == knowledge_id)
-                .execution_options(populate_existing=True)
-            )
-            if row is None or row.status != "pending":
-                continue
-            revision = row.revision
-            item = await session.scalar(
-                select(KnowledgeItem)
-                .where(KnowledgeItem.id == knowledge_id)
-                .execution_options(populate_existing=True)
-            )
-            content = None
-            if item is not None and item.status == "published":
-                from app.library_service import KnowledgeService, LibraryPrincipal
+            try:
+                await client.verify_project()
+            except LlmWikiError as exc:
+                for knowledge_id, revision in rows:
+                    await _finish(session, knowledge_id, revision, str(exc))
+                return 0
 
-                # Preserve the existing Library MCP viewer scope, including ancestor scopes.
-                visible = await KnowledgeService(session)._visible_space_ids(
-                    LibraryPrincipal(user_id="mcp", role="viewer")
+            directory = (
+                settings.absolute_path(settings.llm_wiki_project_path)
+                / "raw"
+                / "sources"
+                / "astra"
+            )
+            written = []
+            for knowledge_id, _ in rows:
+                # Read after taking the lock; never replay an old serialized Knowledge payload.
+                row = await session.scalar(
+                    select(KnowledgeSync)
+                    .where(KnowledgeSync.knowledge_id == knowledge_id)
+                    .execution_options(populate_existing=True)
                 )
-                if item.space_id is None or item.space_id in visible:
-                    content = source_markdown(item)
-            await session.commit()
+                if row is None or row.status != "pending":
+                    continue
+                revision = row.revision
+                item = await session.scalar(
+                    select(KnowledgeItem)
+                    .where(KnowledgeItem.id == knowledge_id)
+                    .execution_options(populate_existing=True)
+                )
+                content = None
+                if item is not None and item.status == "published":
+                    from app.library_service import KnowledgeService, LibraryPrincipal
+
+                    visible = await KnowledgeService(session)._visible_space_ids(
+                        LibraryPrincipal(user_id="mcp", role="viewer")
+                    )
+                    if item.space_id is None or item.space_id in visible:
+                        content = source_markdown(item)
+                await session.commit()
+
+                error = None
+                try:
+                    write_source(directory, knowledge_id, content)
+                except LlmWikiError as exc:
+                    error = str(exc)
+                except OSError as exc:
+                    error = f"知识同步失败：raw source 写入或删除失败（errno={exc.errno}）"
+                if error:
+                    await _finish(session, knowledge_id, revision, error)
+                else:
+                    written.append((knowledge_id, revision))
+
+            if not written:
+                return 0
             error = None
             try:
-                write_source(directory, knowledge_id, content)
+                await client.rescan()
             except LlmWikiError as exc:
                 error = str(exc)
-            except OSError as exc:
-                error = f"知识同步失败：raw source 写入或删除失败（errno={exc.errno}）"
-            if error:
+            for knowledge_id, revision in written:
                 await _finish(session, knowledge_id, revision, error)
-            else:
-                written.append((knowledge_id, revision))
-        if not written:
-            return 0
-        error = None
-        try:
-            await client.rescan()
-        except LlmWikiError as exc:
-            error = str(exc)
-        for knowledge_id, revision in written:
-            await _finish(session, knowledge_id, revision, error)
-        return len(written) if error is None else 0
+            return len(written) if error is None else 0
         finally:
             _unlock_file(lock)
 
