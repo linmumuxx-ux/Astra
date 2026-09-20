@@ -5,12 +5,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config.settings import Settings
-from app.library_schemas import LibrarySubmitExperienceInput
+from app.library_schemas import LibraryResource, LibrarySubmitExperienceInput
 from app.library_service import KnowledgeService
 from app.models import (
     Base,
     DigitalEmployee,
     KnowledgeItem,
+    KnowledgeUsage,
     OpenCodeExecutionEnvironment,
     RuntimeSession,
     Task,
@@ -144,6 +145,54 @@ async def test_runtime_submission_ignores_agent_supplied_identity():
     assert item.source_task_id == "T1"
     assert item.source_employee_id == "E1"
     assert item.source_session_id == "ses_a"
+
+
+async def test_runtime_library_read_records_task_session_and_knowledge(monkeypatch):
+    async with context_session() as (session, token):
+        item = KnowledgeItem(
+            id="KNOW_READ_1",
+            title="参数升级规则",
+            type="rule",
+            summary="升级规则",
+            content_md="# 参数升级规则",
+            status="published",
+            verification_status="verified",
+            tags=[],
+            origin="manual",
+            scope={},
+            source_ref_snapshot={},
+            experience_data={},
+            created_by="test",
+            updated_by="test",
+        )
+        session.add(item)
+        await session.commit()
+
+        async def fake_read(_client, resource_id):
+            return LibraryResource(
+                resource_id=resource_id,
+                path=resource_id,
+                content_md=(
+                    "---\n"
+                    "astra_knowledge_id: KNOW_READ_1\n"
+                    "---\n\n"
+                    "# 参数升级规则"
+                ),
+            )
+
+        monkeypatch.setattr("app.library_service.LlmWikiClient.read", fake_read)
+        await KnowledgeService(session).mcp_get(
+            "wiki/parameter-upgrade.md",
+            runtime_context=token,
+        )
+
+        usage = await session.scalar(
+            select(KnowledgeUsage).where(KnowledgeUsage.action == "read")
+        )
+        assert usage.knowledge_id == "KNOW_READ_1"
+        assert usage.employee_id == "E1"
+        assert usage.task_id == "T1"
+        assert usage.session_id == "ses_a"
 
 
 async def test_invalid_token_never_echoes_the_token(caplog):
