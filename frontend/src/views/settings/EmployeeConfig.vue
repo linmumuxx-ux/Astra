@@ -84,7 +84,6 @@
           <FormField class="check-row" label="自动领取任务" help="空闲时可以领取匹配的新任务。每位员工同时只处理一项任务。" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_claim" /></FormField>
           <FormField class="check-row" label="允许自主执行" help="领取后自动启动任务独立执行会话" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_execute" /></FormField>
         </div>
-        <FormField class="num-field" label="最大自动重试次数" help="用于 Agent 执行异常时的恢复上限；员工工作方法不由 Astra 规定。" v-slot="{ id }"><input :id="id" v-model.number="form.max_auto_retries" type="number" min="0" max="20" /></FormField>
       </div>
 
       <div v-if="message" class="form-message" :data-error="messageIsError">{{ message }}</div>
@@ -125,7 +124,7 @@ const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
 const originalSnapshot = ref('')
 
 const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 Agent 工作环境', description: '', host: '', port: 22, username: '', ssh_password: '', opencode_server_port: 4096, opencode_path: 'opencode', model_name: '', workspace_root: '', labels: [] as string[] })
-const form = reactive({ id: '', name: '', role: '', description: '', default_work_area: 'development' as WorkspaceAreaId, task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, max_auto_retries: 3, environment: emptyEnvironment() })
+const form = reactive({ id: '', name: '', role: '', description: '', default_work_area: 'development' as WorkspaceAreaId, task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, environment: emptyEnvironment() })
 
 const selectedEnvironment = computed(() => props.employee?.execution_environment ?? null)
 const selectedEnvironmentStatus = computed(() => selectedEnvironment.value?.status ?? 'UNKNOWN')
@@ -155,7 +154,6 @@ function fill(employee?: Employee) {
     task_types: [...(employee?.task_types ?? ['ISSUE', 'REQUIREMENT'])],
     category_ids: [...(employee?.category_ids ?? props.categories.filter((item) => item.enabled).map((item) => item.id))],
     enabled: employee?.enabled ?? true, auto_claim: employee?.auto_claim ?? true, auto_execute: employee?.auto_execute ?? true,
-    max_auto_retries: employee?.max_auto_retries ?? 3,
     environment: environment ? { mode: environment.mode, name: environment.name, description: environment.description, host: environment.host ?? '', port: environment.port, username: environment.username ?? '', ssh_password: '', opencode_server_port: environment.opencode_server_port ?? 4096, opencode_path: environment.opencode_path, model_name: environment.model_name ?? '', workspace_root: environment.workspace_root, labels: [...environment.labels] } : emptyEnvironment(),
   })
   checks.value = []; message.value = ''; employeeTab.value = 'basic'
@@ -166,7 +164,6 @@ function snapshot(): string {
   return JSON.stringify({
     id: form.id, name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area,
     task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute,
-    max_auto_retries: form.max_auto_retries,
     environment: { mode: form.environment.mode, name: form.environment.name, description: form.environment.description, host: form.environment.host ?? null, port: Number(form.environment.port), username: form.environment.username ?? null, opencode_server_port: Number(form.environment.opencode_server_port ?? 4096), opencode_path: form.environment.opencode_path, model_name: form.environment.model_name ?? null, workspace_root: form.environment.workspace_root, ssh_password: form.environment.ssh_password || null },
   })
 }
@@ -185,7 +182,7 @@ function environmentPayload() {
   return { ...form.environment, host: form.environment.mode === 'LOCAL' ? null : form.environment.host || null, username: form.environment.mode === 'LOCAL' ? null : form.environment.username || null, ssh_password: form.environment.mode === 'LINUX_REMOTE' ? form.environment.ssh_password || null : null, model_name: form.environment.model_name || null }
 }
 function employeePayload() {
-  return { name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute, max_auto_retries: form.max_auto_retries }
+  return { name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute }
 }
 function normalizedEnvironment(value: ReturnType<typeof environmentPayload> | Employee['execution_environment']) {
   return value ? { mode: value.mode, name: value.name, description: value.description ?? '', host: value.host ?? null, port: Number(value.port), username: value.username ?? null, opencode_server_port: Number(value.opencode_server_port ?? 4096), opencode_path: value.opencode_path, model_name: value.model_name ?? null, workspace_root: value.workspace_root, labels: [...(value.labels ?? [])] } : null
