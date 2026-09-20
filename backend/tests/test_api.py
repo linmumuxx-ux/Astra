@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.domain import TaskStatus
 from app.main import app
-from app.models import OpenCodeExecutionEnvironment, RuntimeSession, Task
+from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, RuntimeSession, Task
 
 
 def task_payload(**overrides):
@@ -82,6 +82,9 @@ def test_task_delete_rejects_terminal_business_state_with_active_runtime():
     async def prepare(task_id: str) -> None:
         async with SessionLocal() as session:
             task = await session.get(Task, task_id)
+            session.add(DigitalEmployee(id="E-delete-guard", name="Guard", role="build", status="IDLE"))
+            await session.flush()
+            task.employee_id = "E-delete-guard"
             task.status = TaskStatus.FAILED
             task.pending_message_id = "msg_pendingdelete01"
             task.current_session_id = "ses_pending_delete"
@@ -89,7 +92,7 @@ def test_task_delete_rejects_terminal_business_state_with_active_runtime():
                 RuntimeSession(
                     id="ses_pending_delete",
                     task_id=task.id,
-                    employee_id=task.employee_id,
+                    employee_id="E-delete-guard",
                     workspace=task.workspace or ".",
                     environment=task.execution_environment_snapshot or {},
                     status="RUNNING",
