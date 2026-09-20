@@ -91,7 +91,6 @@ export interface Employee extends RuntimeProjection {
   enabled: boolean
   auto_claim: boolean
   auto_execute: boolean
-  max_auto_retries: number
   current_task_count: number
   last_heartbeat: string | null
   online_since: string | null
