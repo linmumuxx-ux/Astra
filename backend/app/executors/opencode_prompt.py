@@ -91,6 +91,17 @@ def build_task_prompt(
         if prompt_context.prompt:
             category_text += f"\n分类执行要求：\n{prompt_context.prompt}\n"
 
+    attachment_rows = [
+        f"- {item.get('name') or '附件'}：{item.get('workspace_path')}"
+        for item in (task.attachments or [])
+        if item.get("workspace_path")
+    ]
+    attachment_text = (
+        "\n任务附件（已写入当前 Workspace，可直接读取）：\n" + "\n".join(attachment_rows)
+        if attachment_rows
+        else ""
+    )
+
     intervention_instructions = """
 当任务必须询问使用者或等待业务答案时，必须使用 OpenCode 原生 question Tool；
 需要操作授权时使用 OpenCode 原生 Permission。收到回答或授权后继续当前 Session。
@@ -113,7 +124,7 @@ def build_task_prompt(
 {task.description}
 
 员工工作空间：
-{workspace}
+{workspace}{attachment_text}
 
 验收标准：
 {criteria}
