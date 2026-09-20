@@ -295,6 +295,8 @@ async def test_terminal_task_auto_extracts_reusable_candidate():
         assert item.source_session_id == "ses_a"
         assert item.experience_data["summary_generation"] == 1
         assert "src/cache.py" in item.content_md
+        assert await ExperienceExtractionService(session).extract("T1") == []
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
 
 
 async def test_generic_failed_task_does_not_create_noise_experience():
