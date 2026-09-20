@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "npm run build:workspace && vue-tsc -b && vite build",
-    "type-check": "vue-tsc -b && bun run --cwd ../workspace-ui type-check",
+    "type-check": "vue-tsc -b && node ../scripts/workspace_ui.mjs type-check",
     "preview": "vite preview --host 0.0.0.0",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "build:workspace": "bun run --cwd ../workspace-ui build"
+    "build:workspace": "node ../scripts/workspace_ui.mjs build"
   },
   "dependencies": {
     "@vueuse/core": "^13.9.0",
