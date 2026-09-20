@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,8 @@ class NativeServer:
         self.sent = []
         self.fail_after_accept = False
         self.created_options = []
+        self.children_by_session = {}
+        self.abort_count = 0
         self.auth = None
         self.base_url = "http://native"
 
@@ -54,7 +57,7 @@ class NativeServer:
         return []
 
     async def children(self, directory, sid):
-        return []
+        return self.children_by_session.get(sid, [])
 
     async def messages(self, directory, sid):
         await self.session(directory, sid)
@@ -83,6 +86,8 @@ class NativeServer:
             return []
 
     async def abort(self, directory, sid):
+        await self.session(directory, sid)
+        self.abort_count += 1
         self.state = "idle"
         self.pending = []
         return True
@@ -155,6 +160,7 @@ async def runtime(tmp_path, monkeypatch):
                 task=task,
                 environment=environment,
                 service=RuntimeService(session),
+                factory=factory,
                 api=api,
                 workspace=workspace,
             )
@@ -215,6 +221,114 @@ async def test_previous_completed_turn_cannot_complete_new_submission(runtime):
     )
     await r.service.refresh("T1")
     assert r.task.status == "SUCCEEDED"
+
+
+async def test_manual_confirm_waits_for_business_confirmation(runtime):
+    r = runtime
+    r.task.completion_policy = "MANUAL_CONFIRM"
+    await r.session.commit()
+
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+
+    session = await r.session.get(RuntimeSession, "ses_current")
+    employee = await r.session.get(DigitalEmployee, "E1")
+    assert session.status == "SUCCEEDED"
+    assert r.task.status == "WAITING"
+    assert r.task.submitted_at is not None
+    assert r.task.confirmed_at is None
+    assert employee.current_task_count == 0
+
+    response = await r.api.post("/api/tasks/T1/confirm")
+    assert response.status_code == 200
+    assert response.json()["status"] == "SUCCEEDED"
+    assert r.task.confirmed_at is not None
+
+
+async def test_child_session_question_projects_task_waiting(runtime):
+    r = runtime
+    r.native.sessions["ses_child"] = []
+    r.native.children_by_session["ses_current"] = [{"id": "ses_child"}]
+    r.native.state = "busy"
+    r.native.pending = [{"id": "q_child", "sessionID": "ses_child"}]
+
+    await r.service.refresh("T1")
+
+    assert r.task.status == "WAITING"
+    with pytest.raises(RuntimeStateError, match="Session 树"):
+        await r.service.send("T1", {"parts": [{"type": "text", "text": "should block"}]})
+
+
+async def test_retry_submission_aborts_if_stop_invalidates_inflight_send(runtime):
+    r = runtime
+    pending_id = "msg_retryrace01"
+    r.task.pending_message_id = pending_id
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    r.task.status = "FAILED"
+    await r.session.commit()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_request = r.native.request
+
+    async def delayed_request(method, path, **kwargs):
+        result = await original_request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed_request
+    retry_task = asyncio.create_task(r.service.retry_submission("T1"))
+    await started.wait()
+
+    async with r.factory() as control_session:
+        await RuntimeService(control_session).stop("T1")
+
+    release.set()
+    with pytest.raises(RuntimeStateError, match="失效"):
+        await retry_task
+
+    await r.session.refresh(r.task)
+    assert r.task.status == "CANCELED"
+    assert r.native.state == "idle"
+    assert r.native.abort_count >= 2
+
+
+async def test_failed_current_turn_summary_never_reuses_previous_success(runtime):
+    r = runtime
+    r.native.sessions["ses_current"] = [
+        {
+            "info": {
+                "id": "old_success",
+                "role": "assistant",
+                "time": {"completed": 1},
+                "finish": "stop",
+            },
+            "parts": [{"type": "text", "text": "上一轮修复完成，测试全部通过"}],
+        }
+    ]
+    await r.service.send(
+        "T1",
+        {"messageID": "msg_currentfail1", "parts": [{"type": "text", "text": "next"}]},
+    )
+    r.native.sessions["ses_current"] = [
+        r.native.sessions["ses_current"][0],
+        {"info": {"id": "msg_currentfail1", "role": "user"}, "parts": []},
+    ]
+    r.native.state = "idle"
+    r.task.turn_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    await r.session.commit()
+
+    await r.service.refresh("T1")
+
+    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
+    assert r.task.status == "FAILED"
+    assert "上一轮修复完成" not in summary.summary
+    assert summary.summary == r.task.failure_reason
 
 
 async def test_turn_without_assistant_reply_projects_failed(runtime):
@@ -569,6 +683,33 @@ async def test_terminal_session_stores_aggregate_usage(runtime):
     ]
 
 
+async def test_step_finish_tokens_do_not_double_count_message_usage(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    assistant = r.native.sessions["ses_current"][-1]
+    assistant["parts"] = [
+        {
+            "type": "step-finish",
+            "tokens": {"input": 100, "output": 20, "cache": {"read": 5}},
+        },
+        {"type": "text", "text": "DONE"},
+    ]
+    assistant["info"].update(
+        {
+            "time": {"completed": datetime.now(UTC).timestamp()},
+            "finish": "stop",
+            "tokens": {"input": 100, "output": 20, "cache": {"read": 5}},
+        }
+    )
+    r.native.state = "idle"
+
+    await r.service.refresh("T1")
+
+    session = await r.session.get(RuntimeSession, "ses_current")
+    assert session.total_tokens == 125
+    assert session.llm_call_count == 1
+
+
 async def test_continue_after_success_clears_finished_at(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
@@ -611,6 +752,7 @@ async def test_task_summary_is_one_row_with_generation_and_stale(runtime):
     assert summary.primary_session_id == "ses_current"
     assert summary.summary == "DONE"
     assert summary.source_status == "SUCCEEDED"
+    assert summary.source_ref_snapshot["final_message_id"] == r.native.sessions["ses_current"][-1]["info"]["id"]
     assert [item["status"] for item in summary.acceptance_results] == []
 
     await r.service.send("T1", {"parts": [{"type": "text", "text": "again"}]})
@@ -662,6 +804,44 @@ async def test_task_summary_survives_restart_with_new_primary_session(runtime):
     assert summary.summary == "RESTART_DONE"
     assert set(summary.referenced_session_ids) == {"ses_current", new_id}
     assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 1
+
+
+async def test_restart_allows_explicit_new_session_when_old_session_is_missing(runtime):
+    r = runtime
+    await r.service.project(r.task, "RUNNING")
+    r.native.sessions.clear()
+
+    await r.service.start("T1", restart=True)
+
+    assert r.task.current_session_id != "ses_current"
+    old = await r.session.get(RuntimeSession, "ses_current")
+    assert old.status == "INTERRUPTED"
+    assert old.terminal_reason == "session_missing"
+    assert old.superseded_by == r.task.current_session_id
+
+
+async def test_restart_aborts_old_session_with_old_environment_binding(runtime, tmp_path, monkeypatch):
+    r = runtime
+    old_root = r.task.execution_environment_snapshot["workspace_root"]
+    new_root = tmp_path / "new-employee-root"
+    new_root.mkdir()
+    r.environment.workspace_root = str(new_root)
+    await r.session.commit()
+
+    observed_roots = []
+
+    @asynccontextmanager
+    async def observed_connect(environment, **kwargs):
+        observed_roots.append(environment.workspace_root)
+        yield r.native
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", observed_connect)
+
+    await r.service.start("T1", restart=True)
+
+    assert observed_roots[0] == old_root
+    assert str(new_root) in observed_roots[1:]
+    assert r.task.execution_environment_snapshot["workspace_root"] == str(new_root)
 
 
 async def test_restart_refuses_when_old_session_does_not_stop(runtime, monkeypatch):
