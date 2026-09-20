@@ -32,7 +32,7 @@ Astra 使用主机原生进程部署，不维护 Docker Compose、bat/sh 启停�
 
 基础设施：
 
-- MySQL：业务数据、任务、Run、配置和审计数据
+- MySQL：业务数据、Task、RuntimeSession、TaskSummary、配置和审计数据
 - Redis：Celery Broker / Result Backend
 - 员工 Workspace：员工长期工程目录
 - `ASTRA_LOG_DIR`：服务日志
@@ -55,9 +55,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 1. 定位 Python 3.11+
 2. 创建根目录 `.venv`
 3. 安装 Backend 依赖
-4. 执行 `npm ci`
-5. 执行一次前端生产构建
-6. 首次运行时生成根目录 `.env`
+4. 使用 pnpm（优先）/ Corepack pnpm / bun 安装 `workspace-ui` 依赖
+5. 执行前端 `npm ci`
+6. 执行一次完整前端生产构建（包含 workspace-ui）
+7. 首次运行时生成根目录 `.env`
 
 安装脚本只负责环境准备，不负责平台启停。
 
@@ -82,6 +83,7 @@ ASTRA_DATABASE_NAME=astra
 ASTRA_DATABASE_USERNAME=astra
 ASTRA_DATABASE_PASSWORD=replace-with-a-strong-password
 ASTRA_DATABASE_CHARSET=utf8mb4
+ASTRA_DATABASE_LOCK_WAIT_TIMEOUT=10
 
 ASTRA_REDIS_URL=redis://127.0.0.1:6379/0
 
@@ -97,6 +99,8 @@ ASTRA_OPENCODE_BINARY=opencode
 ASTRA_OPENCODE_SERVER_HOSTNAME=127.0.0.1
 ASTRA_OPENCODE_SERVER_PORT=4096
 ASTRA_OPENCODE_SERVER_USERNAME=opencode
+# 公司环境示例：ASTRA_OPENCODE_MODEL=local-proxy/GLM-5.2-Tester
+ASTRA_OPENCODE_MODEL=
 
 ASTRA_ASSISTANT_ENABLED=true
 ASTRA_ASSISTANT_OPENCODE_HOSTNAME=127.0.0.1
@@ -126,6 +130,8 @@ FLUSH PRIVILEGES;
 
 生产建议：
 
+- Astra 使用独立 MySQL Database/Schema，不与其他业务表共用数据库；preflight 检测到非 Astra 表时会给出 WARN
+- `ASTRA_DATABASE_LOCK_WAIT_TIMEOUT` 建议保持较短（默认 10 秒），避免共享环境锁等待拖住 API/Worker
 - MySQL 与 Redis 只开放给受控应用网段
 - 使用企业秘密系统或受保护 `.env`
 - MySQL 字符集固定 `utf8mb4`
@@ -157,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 - Workspace / 日志 / Runtime 目录
 - MCP 配置
 
-正式启动也会自动执行数据库迁移和同一套 preflight。
+正式启动也会自动执行数据库迁移和同一套 preflight。数据库隔离检查属于非阻断 WARN：共享数据库仍可启动，但外部业务长事务不受 Astra 控制，仍建议迁移到独立 Database。
 
 ## 7. 开发环境
 
@@ -167,7 +173,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 
 开发模式：
 
-- Backend 使用 Uvicorn reload
+- Linux/Mac Backend 使用 Uvicorn reload；Windows 不启用 reload，代码变更后执行 `dev restart`，避免 reloader 子进程影响 asyncio subprocess
 - Frontend 使用 Vite Dev Server
 - Runtime、OpenCode、Assistant、MCP 与正式环境共用同一套启动逻辑
 
