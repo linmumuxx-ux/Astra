@@ -675,7 +675,7 @@ async def test_refresh_recovers_unknown_session_to_terminal(runtime):
         {"info": {"id": "u1", "role": "user"}, "parts": []},
         {
             "info": {"id": "a1", "role": "assistant", "time": {"completed": 1}, "finish": "stop"},
-            "parts": [],
+            "parts": [{"type": "text", "text": "恢复后确认执行完成"}],
         },
     ]
     r.task.last_message_id = "u1"
