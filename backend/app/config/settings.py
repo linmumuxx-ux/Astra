@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     database_password: str = ""
     database_charset: str = "utf8mb4"
     database_pool_recycle: int = 1800
+    database_lock_wait_timeout: int = Field(default=10, ge=1, le=120)
 
     data_dir: Path = BACKEND_ROOT / "data"
     workspace_root: Path = BACKEND_ROOT / "workspaces"
