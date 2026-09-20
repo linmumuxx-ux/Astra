@@ -50,7 +50,6 @@ class Settings(BaseSettings):
     heartbeat_interval: int = 10
     heartbeat_timeout: int = 60
     inactivity_timeout: int = 900
-    recovery_interval: int = 30
     outbox_interval: int = Field(default=2, ge=1, le=3600)
     outbox_retry_seconds: int = Field(default=5, ge=1, le=3600)
     runtime_startup_timeout: int = Field(default=120, ge=10, le=86400)
