@@ -318,7 +318,10 @@ def backend_command(mode: str) -> list[str]:
         "--port",
         str(BACKEND_PORT),
     ]
-    if mode == "dev":
+    # Uvicorn's Windows reload subprocess can run under a launcher/event-loop
+    # combination that cannot create asyncio subprocesses. Keep hot reload on
+    # Unix, but use explicit "dev restart" on Windows.
+    if mode == "dev" and os.name != "nt":
         command.append("--reload")
     return command
 
