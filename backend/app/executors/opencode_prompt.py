@@ -91,20 +91,10 @@ def build_task_prompt(
         if prompt_context.prompt:
             category_text += f"\n分类执行要求：\n{prompt_context.prompt}\n"
 
-    if native_question:
-        intervention_instructions = """
-当任务必须询问使用者或等待业务答案时，必须使用 OpenCode 原生 question Tool
-提出可直接回答的具体问题。收到回答后继续当前 Session，不要另建任务。
-不要用文本标记或自定义 JSON 伪装成 OpenCode 原生 Question。
-"""
-    else:
-        intervention_instructions = """
-当任务必须询问使用者、等待业务答案、权限或其他人工输入时，不要猜测或自行跳过。
-当前执行环境完全非交互，不能直接联系使用者。需要人工输入时返回下述标记：
-ASTRA_INTERVENTION_JSON: {"blocking_reason":"为什么需要人工输入",
-"completed_work":"已完成的工作","current_state":"当前保留状态",
-"requested_input":"需要请使用者回答的具体问题"}
-不要同时返回完成结果。
+    intervention_instructions = """
+当任务必须询问使用者或等待业务答案时，必须使用 OpenCode 原生 question Tool；
+需要操作授权时使用 OpenCode 原生 Permission。收到回答或授权后继续当前 Session。
+不要用文本标记、自定义 JSON 或约定字符串伪装成人工阻塞状态。
 """
 
     return f"""当前任务：
@@ -130,13 +120,13 @@ ASTRA_INTERVENTION_JSON: {"blocking_reason":"为什么需要人工输入",
 
 请在该工作空间内自主决定完成方式。Astra 不规定你使用的 Agent、Skill、Tool、命令、
 检查方式或内部步骤。分类执行要求用于补充该业务分类的处理规范，不替代当前任务目标、
-任务描述、验收标准或 Astra Runtime 的结果协议。请在完成后如实说明处理结果，并逐项说明
-验收标准是否满足及相关证据。
+任务描述或验收标准。Astra 会直接依据 OpenCode Session、Workspace 和最终回复获取执行事实，
+不要输出 Astra 专用 JSON 协议，也不要自行决定任务的系统状态。
 {intervention_instructions}
-最终回复末尾必须追加以下 JSON；ASTRA_RESULT_JSON 标记与 JSON 开头
-保持在同一行，且每个验收项都必须选择一个确切结论：
-ASTRA_RESULT_JSON: {{"summary":"面向使用者的结果摘要","changes":[],"files":[],"commits":[],
-"logs":[],"attachments":[],"other":{{}},"acceptance_results":[{{"criterion_id":"AC-01",
-"status":"SATISFIED 或 UNSATISFIED 或 UNCONFIRMED","description":"结论说明","evidence":[]}}]}}
-不要省略或改写 ASTRA_RESULT_JSON 标记。{context_text}{retry_text}
+完成任务后，请在最终回复中简洁说明：
+1. 完成了什么；
+2. 关键修改是什么；
+3. 已完成哪些验证；
+4. 如有未完成事项，明确说明原因。
+{context_text}{retry_text}
 """
