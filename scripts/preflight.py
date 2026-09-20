@@ -150,8 +150,9 @@ async def check_database(settings) -> list[CheckResult]:
                 "digital_employees",
                 "events",
                 "opencode_execution_environments",
-                "runs",
+                "runtime_sessions",
                 "task_categories",
+                "task_summaries",
                 "tasks",
             }
             missing_tables = sorted(required_tables - tables)
