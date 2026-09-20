@@ -155,14 +155,18 @@ class RuntimeService:
         runtime_session = await self._runtime_session(task)
         if not runtime_session:
             return
-        # parse_opencode_usage consumes one event per message info (tokens/model)
-        # plus one event per part (tool calls); native messages group both.
+        # Native message info is the single token/model source. Step-finish
+        # parts may repeat the same usage and must not be counted a second time.
+        # Tool parts are still consumed for call/status/duration aggregation.
         events: list[dict] = []
         for message in messages:
             info = message.get("info") if isinstance(message.get("info"), dict) else {}
             events.append({"info": info})
             for part in message.get("parts", []):
-                if isinstance(part, dict):
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type", "")).lower()
+                if "tool" in part_type:
                     events.append({"part": part})
         token_usage, tools, model_name = parse_opencode_usage(events)
         runtime_session.input_tokens = token_usage.input_tokens
@@ -883,6 +887,14 @@ class RuntimeService:
                 await client.abort(directory, session_id)
                 timed_out = True
         messages = await client.messages(directory, session_id)
+        usage_messages = list(messages)
+        for child_session_id in sorted(allowed_sessions - {session_id}):
+            try:
+                usage_messages.extend(
+                    await client.messages(directory, child_session_id)
+                )
+            except OpenCodeSessionNotFound:
+                continue
 
         task = await self.lock_task(task_id)
         if task.current_session_id != session_id:
@@ -898,7 +910,7 @@ class RuntimeService:
             await self.session.commit()
             return task
 
-        await self._update_session_usage(task, messages)
+        await self._update_session_usage(task, usage_messages)
         if task.pending_message_id:
             if any(item["info"]["id"] == task.pending_message_id for item in messages):
                 task.pending_message_id = None
