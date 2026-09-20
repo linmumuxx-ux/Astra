@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.domain import TaskStatus
 from app.main import app
-from app.models import OpenCodeExecutionEnvironment, Task
+from app.models import OpenCodeExecutionEnvironment, RuntimeSession, Task
 
 
 def task_payload(**overrides):
@@ -76,6 +76,37 @@ def test_task_delete_only_allows_pending_or_terminal_states():
 
         missing = client.delete("/api/tasks/T-DOES-NOT-EXIST")
         assert missing.status_code == 404
+
+
+def test_task_delete_rejects_terminal_business_state_with_active_runtime():
+    async def prepare(task_id: str) -> None:
+        async with SessionLocal() as session:
+            task = await session.get(Task, task_id)
+            task.status = TaskStatus.FAILED
+            task.pending_message_id = "msg_pendingdelete01"
+            task.current_session_id = "ses_pending_delete"
+            session.add(
+                RuntimeSession(
+                    id="ses_pending_delete",
+                    task_id=task.id,
+                    employee_id=task.employee_id,
+                    workspace=task.workspace or ".",
+                    environment=task.execution_environment_snapshot or {},
+                    status="RUNNING",
+                )
+            )
+            await session.commit()
+
+    with TestClient(app) as client:
+        task = client.post(
+            "/api/tasks",
+            json=task_payload(title="终态但执行仍活动"),
+        ).json()
+        asyncio.run(prepare(task["id"]))
+
+        blocked = client.delete(f"/api/tasks/{task['id']}")
+        assert blocked.status_code == 409
+        assert "待确认提交" in blocked.json()["detail"]
 
 
 def test_home_dashboard_exposes_only_aggregated_business_sections():
