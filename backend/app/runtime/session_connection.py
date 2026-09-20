@@ -16,6 +16,20 @@ from app.models import OpenCodeExecutionEnvironment, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime, environment_from_snapshot
 
 
+async def session_tree(client, directory: Path, root: str) -> set[str]:
+    """Return the native root Session plus all current descendants."""
+
+    allowed, pending = {root}, [root]
+    while pending:
+        children = await client.children(directory, pending.pop())
+        for child in children:
+            child_id = child.get("id")
+            if child_id and child_id not in allowed:
+                allowed.add(child_id)
+                pending.append(child_id)
+    return allowed
+
+
 async def resolve_environment(session, task: Task):
     snapshot = task.execution_environment_snapshot
     if not snapshot:
