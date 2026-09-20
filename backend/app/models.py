@@ -173,6 +173,7 @@ class RuntimeSession(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
     employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"))
     workspace: Mapped[str] = mapped_column(Text)
+    workspace_base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     environment: Mapped[dict[str, Any]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", server_default="UNKNOWN", index=True)
     terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -233,6 +234,9 @@ class TaskSummary(Base):
     key_changes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_status: Mapped[str] = mapped_column(String(32), default="PENDING")
     generation: Mapped[int] = mapped_column(Integer, default=0)
+    artifacts_processed_generation: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
     stale: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     generated_by: Mapped[str] = mapped_column(String(120), default="deterministic")
     source_ref_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
