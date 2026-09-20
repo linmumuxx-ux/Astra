@@ -16,8 +16,10 @@ from app.models import (
     OpenCodeExecutionEnvironment,
     RuntimeSession,
     Task,
+    TaskSummary,
 )
 from app.runtime.environment import environment_snapshot
+from app.runtime.experience import ExperienceExtractionService
 from app.runtime.runtime_context import (
     generate_runtime_context,
     hash_runtime_context,
@@ -250,3 +252,71 @@ def test_published_knowledge_survives_task_deletion():
     source_task_id, snapshot = asyncio.run(read())
     assert source_task_id is None
     assert snapshot == {"task_title": "待删除任务"}
+
+
+async def test_terminal_task_auto_extracts_reusable_candidate():
+    async with experience_session() as (session, _token):
+        task = await session.get(Task, "T1")
+        task.status = "SUCCEEDED"
+        runtime_session = await session.get(RuntimeSession, "ses_a")
+        runtime_session.status = "SUCCEEDED"
+        runtime_session.last_message_id = "a-final"
+        session.add(
+            TaskSummary(
+                id="TS-AUTO",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="已定位缓存刷新遗漏，并在写入后补充刷新逻辑；pytest 回归验证通过。",
+                content_md="缓存刷新问题处理结果",
+                acceptance_results=[],
+                key_changes={
+                    "changed_files": 1,
+                    "added_files": 0,
+                    "deleted_files": 0,
+                    "files": ["src/cache.py"],
+                    "commits": ["abc123"],
+                },
+                source_status="SUCCEEDED",
+                generation=1,
+                stale=False,
+            )
+        )
+        await session.commit()
+
+        items = await ExperienceExtractionService(session).extract("T1")
+
+        assert len(items) == 1
+        item = items[0]
+        assert item.origin == "auto"
+        assert item.status == "candidate"
+        assert item.verification_status == "verified"
+        assert item.source_task_id == "T1"
+        assert item.source_session_id == "ses_a"
+        assert item.experience_data["summary_generation"] == 1
+        assert "src/cache.py" in item.content_md
+
+
+async def test_generic_failed_task_does_not_create_noise_experience():
+    async with experience_session() as (session, _token):
+        task = await session.get(Task, "T1")
+        task.status = "FAILED"
+        task.failure_reason = "执行达到配置的时间上限"
+        session.add(
+            TaskSummary(
+                id="TS-FAILED",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="执行达到配置的时间上限",
+                content_md="执行达到配置的时间上限",
+                acceptance_results=[],
+                key_changes={},
+                source_status="FAILED",
+                generation=1,
+                stale=False,
+            )
+        )
+        await session.commit()
+
+        assert await ExperienceExtractionService(session).extract("T1") == []
