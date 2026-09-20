@@ -36,7 +36,7 @@ from app.runtime.runtime_context import (
     hash_runtime_context,
     runtime_context_id,
 )
-from app.runtime.session_connection import connect, prepare_workspace, resolve_environment
+from app.runtime.session_connection import connect, prepare_workspace, resolve_environment, session_tree
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
 from app.runtime.workspace_files import materialize_task_attachments
@@ -276,6 +276,18 @@ class RuntimeService:
                     "session_id": task.current_session_id,
                 }
                 await self.project(task, TaskStatus.FAILED)
+            elif state.terminal_reason == SessionTerminalReason.INCOMPLETE.value:
+                task.failure_reason = None
+                task.execution_error = None
+                task.human_required_reason = "OpenCode Session 已空闲，但当前轮次未形成完整结束结果"
+                task.human_intervention = {
+                    "blocking_reason": "当前轮次未完整结束",
+                    "completed_work": "已保留当前 Session 和 Workspace，不自动创建替代执行",
+                    "current_state": "等待人工决定继续或重新执行",
+                    "requested_input": "可在 Workspace 检查后继续，或显式重新开始新 Session",
+                    "kind": "runtime_recovery",
+                }
+                await self.project(task, TaskStatus.WAITING, detail="当前轮次未完整结束，等待处理")
             else:
                 await self.session.commit()
         else:
@@ -715,6 +727,7 @@ class RuntimeService:
         try:
             await client.session(directory, session_id)
             status = await client.status(directory, session_id)
+            allowed_sessions = await session_tree(client, directory, session_id)
             questions = await client.questions(directory)
             permissions = await client.permissions(directory)
         except OpenCodeSessionNotFound:
@@ -729,7 +742,9 @@ class RuntimeService:
                 await self.session.rollback()
             raise
 
-        has_pending = any(item.get("sessionID") == session_id for item in questions + permissions)
+        has_pending = any(
+            item.get("sessionID") in allowed_sessions for item in questions + permissions
+        )
         task_snapshot = await self.session.get(Task, task_id)
         turn_started = task_snapshot.turn_started_at
         task_status = task_snapshot.status
