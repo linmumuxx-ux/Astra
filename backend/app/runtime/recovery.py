@@ -51,7 +51,7 @@ async def watch_session(task_id):
                     return
                 environment = await resolve_environment(session, task)
                 session_id, workspace = task.current_session_id, task.workspace
-            async with connect(environment) as client:
+            async with connect(environment, start=True) as client:
                 async with SessionLocal() as session:
                     await RuntimeService(session).refresh(task_id, client=client)
                 async for event in client.events(Path(workspace)):
