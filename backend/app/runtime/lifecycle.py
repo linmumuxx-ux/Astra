@@ -38,6 +38,7 @@ from app.runtime.runtime_context import (
 from app.runtime.session_connection import connect, prepare_workspace, resolve_environment
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
+from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,10 @@ class RuntimeService:
             if task.pending_message_id != initial_id:
                 return task
             task.workspace = workspace
+            if task.attachments:
+                task.attachments = await materialize_task_attachments(
+                    environment, workspace, task.attachments
+                )
             await self.session.commit()
             async with connect(environment, start=True) as client:
                 old_session_id = task.current_session_id if restart else None
