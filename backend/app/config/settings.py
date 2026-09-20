@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     # A turn with no assistant reply is only a failure after this window; a
     # freshly submitted prompt must never be classified as failed.
     opencode_no_reply_grace_seconds: int = Field(default=15, ge=1, le=3600)
+    opencode_reconcile_interval_seconds: int = Field(default=10, ge=2, le=300)
+    terminal_artifact_reconcile_interval_seconds: int = Field(default=30, ge=5, le=3600)
     # restart must never start a second Session while the old one can still
     # write to the shared task workspace.
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)
