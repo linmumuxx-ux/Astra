@@ -46,6 +46,23 @@ def _last_with_role(messages: list[dict], role: str) -> tuple[int, dict] | None:
     return None
 
 
+def _native_completed_at(info: dict, fallback: datetime) -> datetime:
+    value = info.get("time", {}).get("completed") if isinstance(info.get("time"), dict) else None
+    if isinstance(value, (int, float)):
+        seconds = value / 1000 if value > 10_000_000_000 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            return fallback
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        except ValueError:
+            return fallback
+    return fallback
+
+
 def _has_visible_reply(message: dict) -> bool:
     return any(
         isinstance(part, dict)
@@ -117,7 +134,7 @@ def derive_session_state(
                 status=RuntimeSessionStatus.FAILED.value,
                 terminal_reason=SessionTerminalReason.ASSISTANT_ERROR.value,
                 last_message_id=last_message_id or assistant_info.get("id"),
-                finished_at=now,
+                finished_at=_native_completed_at(assistant_info, now),
             )
         finish = assistant_info.get("finish")
         completed = bool(assistant_info.get("time", {}).get("completed"))
@@ -134,14 +151,14 @@ def derive_session_state(
                     terminal_reason=SessionTerminalReason.NO_REPLY.value,
                     finish_reason=str(finish),
                     last_message_id=last_message_id or assistant_info.get("id"),
-                    finished_at=now,
+                    finished_at=_native_completed_at(assistant_info, now),
                 )
             return SessionState(
                 status=RuntimeSessionStatus.SUCCEEDED.value,
                 terminal_reason=SessionTerminalReason.COMPLETED.value,
                 finish_reason=str(finish),
                 last_message_id=last_message_id or assistant_info.get("id"),
-                finished_at=now,
+                finished_at=_native_completed_at(assistant_info, now),
             )
         if server_status == "idle" and turn:
             started = turn_started_at
