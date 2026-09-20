@@ -36,7 +36,13 @@ from app.runtime.runtime_context import (
     hash_runtime_context,
     runtime_context_id,
 )
-from app.runtime.session_connection import connect, prepare_workspace, resolve_environment, session_tree
+from app.runtime.session_connection import (
+    connect,
+    prepare_workspace,
+    resolve_environment,
+    resolve_runtime_session_environment,
+    session_tree,
+)
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
 from app.runtime.workspace_changes import workspace_head_commit
@@ -343,11 +349,16 @@ class RuntimeService:
             raise RuntimeStateError("任务仍在运行，请在 Workspace 中继续；重新开始需显式创建新 Session")
         if task.pending_message_id:
             raise RuntimeStateError("任务有未确认的输入，请先停止或重连")
+
+        old_session_id = task.current_session_id if restart else None
+        old_binding = (
+            await self.session.get(RuntimeSession, old_session_id)
+            if old_session_id
+            else None
+        )
         employee = await self.session.scalar(
             select(DigitalEmployee)
-            .where(
-                DigitalEmployee.id == task.employee_id,
-            )
+            .where(DigitalEmployee.id == task.employee_id)
             .options(selectinload(DigitalEmployee.execution_environment))
             .with_for_update()
         )
@@ -368,7 +379,16 @@ class RuntimeService:
         )
         if occupied:
             raise RuntimeStateError("员工正在处理其他任务")
+        if (
+            old_session_id
+            and old_binding is None
+            and task.status in {TaskStatus.RUNNING, TaskStatus.WAITING}
+            and task.submitted_at is None
+        ):
+            raise RuntimeStateError("旧 Session 绑定缺失，无法确认旧执行已停止")
+
         environment = employee.execution_environment
+        new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
         reserved = await self.session.execute(
             update(Task)
@@ -377,64 +397,121 @@ class RuntimeService:
         )
         if reserved.rowcount != 1:
             raise RuntimeStateError("任务正在启动，请先重连核对或停止")
-        task.execution_environment_snapshot = environment_snapshot(environment)
         employee.current_task_count = 1
         employee.status = EmployeeStatus.WORKING
         await self.session.commit()
-        try:
-            workspace = await prepare_workspace(task, environment)
-            base_commit = await workspace_head_commit(environment, workspace)
-            task = await self.lock_task(task_id)
-            if task.pending_message_id != initial_id:
-                await self.session.rollback()
-                return task
-            attachments = list(task.attachments or [])
-            task.workspace = workspace
-            await self.session.commit()
 
-            materialized_attachments = (
-                await materialize_task_attachments(environment, workspace, attachments)
-                if attachments
-                else []
-            )
-            if attachments:
-                task = await self.lock_task(task_id)
-                if task.pending_message_id != initial_id:
-                    await self.session.rollback()
-                    return task
-                task.attachments = materialized_attachments
+        created_session_id: str | None = None
+        new_workspace: str | None = None
+        try:
+            # Stop the previous execution using the immutable RuntimeSession binding,
+            # never the employee's newly edited environment.
+            if old_binding and old_binding.status not in _TERMINAL_SESSION_STATUSES:
+                old_environment = await resolve_runtime_session_environment(
+                    self.session, old_binding
+                )
                 await self.session.commit()
+                try:
+                    async with connect(old_environment, start=True) as old_client:
+                        await old_client.abort(Path(old_binding.workspace), old_binding.id)
+                        await self._wait_for_session_stop(
+                            old_client,
+                            Path(old_binding.workspace),
+                            old_binding.id,
+                        )
+                except OpenCodeSessionNotFound:
+                    stale = await self.session.get(RuntimeSession, old_binding.id)
+                    if stale and stale.status not in _TERMINAL_SESSION_STATUSES:
+                        stale.status = RuntimeSessionStatus.INTERRUPTED.value
+                        stale.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
+                        stale.finished_at = datetime.now(UTC)
+                        await self.session.commit()
+                except Exception:
+                    if (
+                        old_environment.mode != ExecutionMode.LOCAL
+                        or self._local_port_in_use(old_environment.opencode_server_port)
+                    ):
+                        raise
+                    stale = await self.session.get(RuntimeSession, old_binding.id)
+                    if stale and stale.status not in _TERMINAL_SESSION_STATUSES:
+                        stale.status = RuntimeSessionStatus.INTERRUPTED.value
+                        stale.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
+                        stale.finished_at = datetime.now(UTC)
+                        await self.session.commit()
+
+            old_location = old_binding.environment if old_binding else task.execution_environment_snapshot
+            location_keys = ("mode", "host", "port", "username", "workspace_root")
+            reuse_workspace = bool(
+                task.workspace
+                and old_location
+                and all(old_location.get(key) == new_snapshot.get(key) for key in location_keys)
+            )
+            new_workspace = await prepare_workspace(
+                task,
+                environment,
+                reuse_existing=reuse_workspace,
+            )
+            base_commit = await workspace_head_commit(environment, new_workspace)
+
+            # New environment relocation cannot safely reuse materialized attachment
+            # paths from the old host. Preserve metadata, but only materialize payloads
+            # that still carry their original data URL.
+            attachments = list(task.attachments or [])
+            materialized_attachments = attachments
+            if attachments and reuse_workspace:
+                materialized_attachments = await materialize_task_attachments(
+                    environment, new_workspace, attachments
+                )
+            elif attachments:
+                materialized_attachments = []
+                for item in attachments:
+                    copied = dict(item)
+                    if copied.get("content"):
+                        materialized_attachments.extend(
+                            await materialize_task_attachments(
+                                environment, new_workspace, [copied]
+                            )
+                        )
+                    else:
+                        copied.pop("workspace_path", None)
+                        materialized_attachments.append(copied)
 
             async with connect(environment, start=True) as client:
-                old_session_id = task.current_session_id if restart else None
-                if old_session_id:
-                    await client.abort(Path(workspace), old_session_id)
-                    await self._wait_for_session_stop(client, Path(workspace), old_session_id)
                 runtime_token = generate_runtime_context()
                 settings = get_settings()
                 effective_model = environment.model_name or settings.opencode_model
                 created = await client.create_session(
-                    Path(workspace),
+                    Path(new_workspace),
                     title=task.title,
                     model_name=effective_model,
                     agent=settings.opencode_agent or "build",
                 )
+                created_session_id = created["id"]
+
                 task = await self.lock_task(task_id)
-                if task.pending_message_id != initial_id:
+                if (
+                    task.pending_message_id != initial_id
+                    or task.current_session_id != old_session_id
+                ):
                     await self.session.rollback()
-                    await client.abort(Path(workspace), created["id"])
+                    await client.abort(Path(new_workspace), created_session_id)
                     return await self.session.get(Task, task_id)
-                task.current_session_id = created["id"]
+
+                # Only now switch the business pointer to the new environment/session.
+                task.workspace = new_workspace
+                task.execution_environment_snapshot = new_snapshot
+                task.attachments = materialized_attachments
+                task.current_session_id = created_session_id
                 now = datetime.now(UTC)
                 context_digest = hash_runtime_context(runtime_token)
                 self.session.add(
                     RuntimeSession(
-                        id=created["id"],
+                        id=created_session_id,
                         task_id=task.id,
                         employee_id=employee.id,
-                        workspace=workspace,
+                        workspace=new_workspace,
                         workspace_base_commit=base_commit,
-                        environment=task.execution_environment_snapshot,
+                        environment=new_snapshot,
                         status=RuntimeSessionStatus.RUNNING.value,
                         started_at=now,
                         last_activity_at=now,
@@ -443,9 +520,15 @@ class RuntimeService:
                         runtime_context_id=runtime_context_id(context_digest),
                     )
                 )
-                await self._supersede_session(old_session_id, created["id"], interrupted=True)
+                await self._supersede_session(
+                    old_session_id,
+                    created_session_id,
+                    interrupted=True,
+                )
                 category = (
-                    await self.session.get(TaskCategory, task.category_id) if task.category_id else None
+                    await self.session.get(TaskCategory, task.category_id)
+                    if task.category_id
+                    else None
                 )
                 bind_task_prompt_context(task, resolve_task_prompt_context(task, category))
                 task.pending_prompt = {
@@ -457,7 +540,7 @@ class RuntimeService:
                                 "type": "text",
                                 "text": build_task_prompt(
                                     task,
-                                    Path(workspace),
+                                    Path(new_workspace),
                                     native_question=True,
                                 ),
                             },
@@ -470,12 +553,36 @@ class RuntimeService:
                 task.runtime_error = None
                 task.failure_reason = None
                 task.finished_at = None
-                # Bind and retain the first submission together before any prompt reaches OpenCode.
                 await self.session.commit()
             return await self.retry_submission(task.id)
         except Exception as exc:
             await self.session.rollback()
-            await self.disconnected(task_id, exc)
+            task = await self.lock_task(task_id)
+            if task.pending_message_id == initial_id:
+                task.pending_message_id = None
+                task.pending_prompt = None
+                task.runtime_error = str(exc)
+                active = (
+                    task.status == TaskStatus.RUNNING
+                    or (task.status == TaskStatus.WAITING and task.submitted_at is None)
+                )
+                employee = await self.session.get(DigitalEmployee, task.employee_id)
+                if employee and not active:
+                    employee.current_task_count = 0
+                    if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
+                        employee.status = EmployeeStatus.IDLE
+                await self.session.commit()
+            else:
+                await self.session.rollback()
+            if created_session_id and new_workspace:
+                try:
+                    async with connect(environment, start=True) as client:
+                        await client.abort(Path(new_workspace), created_session_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to abort unbound restart Session %s",
+                        created_session_id,
+                    )
             raise
 
     async def send(self, task_id, body, *, native_action="prompt_async", expected_session_id=None):
