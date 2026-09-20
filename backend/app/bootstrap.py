@@ -89,7 +89,6 @@ async def bootstrap_employees(session: AsyncSession, config_path) -> None:
             enabled=item.get("enabled", True),
             auto_claim=item.get("policy", {}).get("auto_claim", True),
             auto_execute=item.get("policy", {}).get("auto_execute", True),
-            max_auto_retries=item.get("policy", {}).get("max_auto_retries", 3),
             online_since=now,
             last_heartbeat=now,
         )
