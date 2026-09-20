@@ -41,6 +41,17 @@ async def resolve_environment(session, task: Task):
     return environment
 
 
+async def resolve_runtime_session_environment(session, binding):
+    """Resolve credentials from a RuntimeSession's immutable environment binding."""
+
+    snapshot = binding.environment
+    environment = environment_from_snapshot(snapshot, binding.employee_id)
+    stored = await session.get(OpenCodeExecutionEnvironment, snapshot.get("environment_id"))
+    if stored:
+        environment.ssh_password = stored.ssh_password
+    return environment
+
+
 @asynccontextmanager
 async def connect(environment, *, start: bool = False):
     settings = get_settings()
@@ -65,9 +76,9 @@ async def connect(environment, *, start: bool = False):
         await ssh.close()
 
 
-async def prepare_workspace(task: Task, environment) -> str:
-    """Each task owns one directory; a repository gets a native Git worktree."""
-    if task.workspace:
+async def prepare_workspace(task: Task, environment, *, reuse_existing: bool = True) -> str:
+    """Prepare a task directory; environment relocation gets a distinct worktree."""
+    if reuse_existing and task.workspace:
         return task.workspace
     settings = get_settings()
     root = (
@@ -75,7 +86,8 @@ async def prepare_workspace(task: Task, environment) -> str:
         if (environment.mode == ExecutionMode.LOCAL)
         else environment.workspace_root
     )
-    target = str(Path(root).parent / ".astra-tasks" / environment.employee_id / task.id)
+    target_name = task.id if reuse_existing else f"{task.id}-env-{environment.id}"
+    target = str(Path(root).parent / ".astra-tasks" / environment.employee_id / target_name)
     if environment.mode == ExecutionMode.LOCAL:
         if not Path(root).is_dir():
             raise FileNotFoundError(f"Workspace 不存在：{root}")
