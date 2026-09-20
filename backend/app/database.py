@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from anyio import CancelScope
 from sqlalchemy import event, inspect
@@ -11,7 +12,7 @@ database_url = settings.sqlalchemy_database_url
 if database_url.startswith("sqlite"):
     settings.resolved_data_dir.mkdir(parents=True, exist_ok=True)
 
-engine_options: dict = {"pool_pre_ping": True}
+engine_options: dict = {"pool_pre_ping": True, "pool_reset_on_return": "rollback"}
 if database_url.startswith("mysql"):
     engine_options["pool_recycle"] = settings.database_pool_recycle
 
@@ -40,11 +41,22 @@ if database_url.startswith("mysql"):
         try:
             cursor.execute("SET time_zone = '+00:00'")
             cursor.execute(f"SET NAMES {settings.database_charset}")
+            cursor.execute(
+                f"SET SESSION innodb_lock_wait_timeout = {int(settings.database_lock_wait_timeout)}"
+            )
         finally:
             cursor.close()
 
 
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
+async def _close_session(session: AsyncSession) -> None:
+    # Always return pooled connections transaction-clean, including cancellation.
+    with CancelScope(shield=True):
+        if session.in_transaction():
+            await session.rollback()
+        await session.close()
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -54,8 +66,23 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     finally:
         # ASGI disconnects use level cancellation; shield rollback/close so the
         # pooled DB connection is not abandoned while a page or SSE closes.
+        await _close_session(session)
+
+
+@asynccontextmanager
+async def worker_session() -> AsyncIterator[AsyncSession]:
+    """Celery-safe session scope with explicit rollback on every exit path."""
+
+    session = SessionLocal()
+    try:
+        yield session
+    except BaseException:
         with CancelScope(shield=True):
-            await session.close()
+            if session.in_transaction():
+                await session.rollback()
+        raise
+    finally:
+        await _close_session(session)
 
 
 async def init_database() -> None:
