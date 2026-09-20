@@ -39,6 +39,7 @@ from app.runtime.runtime_context import (
 from app.runtime.session_connection import connect, prepare_workspace, resolve_environment, session_tree
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
+from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
 
@@ -189,19 +190,14 @@ class RuntimeService:
             RuntimeSessionStatus.SUCCEEDED.value,
             RuntimeSessionStatus.FAILED.value,
         } or state.terminal_reason == SessionTerminalReason.TIMEOUT.value:
-            await TaskSummaryService(self.session).upsert(
+            summary = await TaskSummaryService(self.session).upsert(
                 task,
                 source_status=task.status,
                 primary_session_id=task.current_session_id,
                 summary_text=final_text or "",
             )
-            # Session completion is only execution evidence. Experience becomes
-            # verified after the Task itself reaches business SUCCEEDED.
-            if task.status == TaskStatus.SUCCEEDED:
-                await self._reconcile_experience(task)
-                await self._extract_experience(task)
-            elif task.status == TaskStatus.FAILED:
-                await self._extract_experience(task)
+            if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                await self.process_terminal_artifacts(task, summary)
 
     async def _reconcile_experience(self, task: Task) -> None:
         """Only a successful source Session verifies its submitted candidates."""
@@ -212,13 +208,31 @@ class RuntimeService:
         )
 
     async def _extract_experience(self, task: Task) -> None:
-        """Terminal experience extraction is best-effort and never changes Task outcome."""
         from app.runtime.experience import ExperienceExtractionService
 
+        await ExperienceExtractionService(self.session).extract(task.id)
+
+    async def process_terminal_artifacts(self, task: Task, summary: TaskSummary) -> None:
+        """Idempotently finish post-terminal verification/extraction for one summary generation."""
+
+        if summary.artifacts_processed_generation >= summary.generation:
+            return
         try:
-            await ExperienceExtractionService(self.session).extract(task.id)
+            if task.status == TaskStatus.SUCCEEDED:
+                await self._reconcile_experience(task)
+            if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                await self._extract_experience(task)
+            # Extraction may commit internally; reload before advancing the durable cursor.
+            summary = await self.session.get(TaskSummary, summary.id)
+            if summary:
+                summary.artifacts_processed_generation = summary.generation
+                await self.session.commit()
         except Exception:
-            logger.exception("Experience extraction failed for task %s", task.id)
+            logger.exception(
+                "Terminal artifact processing failed for task %s generation %s",
+                task.id,
+                summary.generation,
+            )
             await self.session.rollback()
 
     async def _project_session_state(self, task: Task, state: SessionState) -> None:
@@ -369,6 +383,7 @@ class RuntimeService:
         await self.session.commit()
         try:
             workspace = await prepare_workspace(task, environment)
+            base_commit = await workspace_head_commit(environment, workspace)
             task = await self.lock_task(task_id)
             if task.pending_message_id != initial_id:
                 await self.session.rollback()
@@ -418,6 +433,7 @@ class RuntimeService:
                         task_id=task.id,
                         employee_id=employee.id,
                         workspace=workspace,
+                        workspace_base_commit=base_commit,
                         environment=task.execution_environment_snapshot,
                         status=RuntimeSessionStatus.RUNNING.value,
                         started_at=now,
@@ -822,14 +838,13 @@ class RuntimeService:
         summary = await self.session.scalar(
             select(TaskSummary).where(TaskSummary.task_id == task.id)
         )
-        await TaskSummaryService(self.session).upsert(
+        summary = await TaskSummaryService(self.session).upsert(
             task,
             source_status=TaskStatus.SUCCEEDED.value,
             primary_session_id=task.current_session_id,
             summary_text=summary.summary if summary else task.current_progress,
         )
-        await self._reconcile_experience(task)
-        await self._extract_experience(task)
+        await self.process_terminal_artifacts(task, summary)
         return task
 
     async def disconnected(self, task_id, error):
