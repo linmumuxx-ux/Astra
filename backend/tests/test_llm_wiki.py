@@ -25,7 +25,21 @@ from app.library_schemas import (
 from app.library_service import KnowledgeService, LibraryPrincipal
 from app.library_sync import sync_pending, write_source
 from app.llm_wiki import LlmWikiClient, LlmWikiError
-from app.models import Base, KnowledgeFeedback, KnowledgeItem, KnowledgeSync, KnowledgeUsage
+from app.models import (
+    Base,
+    DigitalEmployee,
+    KnowledgeFeedback,
+    KnowledgeItem,
+    KnowledgeSync,
+    KnowledgeUsage,
+    RuntimeSession,
+    Task,
+)
+from app.runtime.runtime_context import (
+    generate_runtime_context,
+    hash_runtime_context,
+    runtime_context_id,
+)
 
 
 @pytest.fixture
@@ -95,9 +109,38 @@ async def wiki_env(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("app.llm_wiki.get_settings", lambda: settings)
     monkeypatch.setattr("app.library_service.get_settings", lambda: settings)
+    token = generate_runtime_context()
+    digest = hash_runtime_context(token)
+    state["runtime_context"] = token
     async with sessions() as session:
+        session.add(DigitalEmployee(id="E-wiki", name="Wiki", role="build", status="IDLE"))
+        session.add(
+            Task(
+                id="T-wiki",
+                title="Wiki",
+                task_type="ISSUE",
+                status="RUNNING",
+                employee_id="E-wiki",
+                current_session_id="ses_wiki",
+                workspace="/tmp/wiki-ws",
+                execution_environment_snapshot={},
+            )
+        )
+        session.add(
+            RuntimeSession(
+                id="ses_wiki",
+                task_id="T-wiki",
+                employee_id="E-wiki",
+                workspace="/tmp/wiki-ws",
+                environment={},
+                status="RUNNING",
+                runtime_context_hash=digest,
+                runtime_context_id=runtime_context_id(digest),
+            )
+        )
         service = KnowledgeService(session)
         space = await service.create_space(KnowledgeSpaceCreate(name="Public"), LibraryPrincipal())
+        await session.commit()
     yield settings, sessions, state, space.id, directory
     await engine.dispose()
 
@@ -112,8 +155,9 @@ async def publish(sessions, space_id, title="timeout"):
         return item.id
 
 
-async def test_lifecycle_and_resource_usage_without_runtime_identity(wiki_env):
+async def test_lifecycle_and_resource_usage_records_runtime_identity(wiki_env):
     settings, sessions, state, space_id, directory = wiki_env
+    runtime_context = state["runtime_context"]
     async with sessions() as session:
         service = KnowledgeService(session)
         candidate = await service.mcp_submit_experience(
@@ -127,8 +171,10 @@ async def test_lifecycle_and_resource_usage_without_runtime_identity(wiki_env):
         assert await sync_pending(session, settings) == 1
         source = directory / f"{candidate.id}.md"
         assert "astra_knowledge_id:" in source.read_text()
-        hits = await service.mcp_search(LibrarySearchInput(query="流水线环境初始化超时"))
-        resource = await service.mcp_get(hits[0].resource_id)
+        hits = await service.mcp_search(
+            LibrarySearchInput(query="流水线环境初始化超时"), runtime_context=runtime_context
+        )
+        resource = await service.mcp_get(hits[0].resource_id, runtime_context=runtime_context)
         assert "检查初始化日志" in resource.content_md
         feedback = await service.mcp_feedback(
             LibraryFeedbackInput(resource_id=resource.resource_id, feedback_type="helpful")
@@ -141,8 +187,16 @@ async def test_lifecycle_and_resource_usage_without_runtime_identity(wiki_env):
         ).all()
         assert [event.action for event in events] == ["search_hit", "read", "feedback"]
         assert all(
+            event.employee_id == "E-wiki"
+            and event.task_id == "T-wiki"
+            and event.session_id == "ses_wiki"
+            for event in events
+            if event.action in {"search_hit", "read"}
+        )
+        assert all(
             event.employee_id is None and event.task_id is None and event.session_id is None
             for event in events
+            if event.action == "feedback"
         )
         summary = await service.usage_summary()
         assert summary.total_references == 1 and summary.used_resources == 1
@@ -154,13 +208,21 @@ async def test_lifecycle_and_resource_usage_without_runtime_identity(wiki_env):
             candidate.id, KnowledgePatch(content_md="更新后的步骤"), LibraryPrincipal()
         )
         await sync_pending(session, settings)
-        assert "更新后的步骤" in (await service.mcp_get(resource.resource_id)).content_md
+        assert (
+            "更新后的步骤"
+            in (await service.mcp_get(resource.resource_id, runtime_context=runtime_context)).content_md
+        )
         await service.archive(candidate.id, LibraryPrincipal())
         await sync_pending(session, settings)
         assert not source.exists()
-        assert await service.mcp_search(LibrarySearchInput(query="初始化")) == []
+        assert (
+            await service.mcp_search(
+                LibrarySearchInput(query="初始化"), runtime_context=runtime_context
+            )
+            == []
+        )
         with pytest.raises(LlmWikiError, match="不存在"):
-            await service.mcp_get(resource.resource_id)
+            await service.mcp_get(resource.resource_id, runtime_context=runtime_context)
         await service.delete_knowledge(candidate.id, LibraryPrincipal())
         assert await session.get(KnowledgeSync, candidate.id) is not None
         assert await session.scalar(select(func.count(KnowledgeFeedback.id))) == 1
@@ -188,7 +250,9 @@ async def test_unavailable_persists_failure_without_rolling_back_publication(wik
         assert "test-secret" not in sync.error
         assert (await session.get(KnowledgeItem, knowledge_id)).status == "published"
         with pytest.raises(LlmWikiError, match=message):
-            await KnowledgeService(session).mcp_search(LibrarySearchInput(query="original"))
+            await KnowledgeService(session).mcp_search(
+                LibrarySearchInput(query="original"), runtime_context=state["runtime_context"]
+            )
         assert await session.scalar(select(func.count(KnowledgeUsage.id))) == 0
         state["status"] = 200
         await KnowledgeService(session).resync(LibraryPrincipal())
@@ -380,7 +444,9 @@ async def test_disabled_service_and_all_feedback_types(wiki_env):
     async with sessions() as session:
         service = KnowledgeService(session)
         with pytest.raises(LlmWikiError, match="知识服务暂不可用：未启用"):
-            await service.mcp_search(LibrarySearchInput(query="anything"))
+            await service.mcp_search(
+                LibrarySearchInput(query="anything"), runtime_context=state["runtime_context"]
+            )
         for kind in ("helpful", "incorrect", "outdated", "missing", "mismatch"):
             result = await service.mcp_feedback(
                 LibraryFeedbackInput(resource_id="wiki/topic.md", feedback_type=kind)
@@ -390,18 +456,24 @@ async def test_disabled_service_and_all_feedback_types(wiki_env):
         assert not state["calls"]
 
 
-async def test_mcp_expected_errors_are_not_masked_by_sdk(wiki_env):
+async def test_mcp_expected_errors_are_not_masked_by_sdk(wiki_env, monkeypatch):
     from mcp.server.mcpserver.exceptions import ToolError
 
     from app.mcp_server import mcp
 
-    settings, _, _, _, _ = wiki_env
+    settings, sessions, state, _, _ = wiki_env
     settings.llm_wiki_enabled = False
+    monkeypatch.setattr("app.mcp_server.SessionLocal", sessions)
+    runtime_context = state["runtime_context"]
     with pytest.raises(ToolError, match="知识服务暂不可用") as error:
-        await mcp.call_tool("library_search", {"query": "timeout"})
+        await mcp.call_tool(
+            "library_search", {"query": "timeout", "runtime_context": runtime_context}
+        )
     assert type(error.value) is ToolError
     with pytest.raises(ToolError, match="limit") as error:
-        await mcp.call_tool("library_search", {"query": "timeout", "limit": 0})
+        await mcp.call_tool(
+            "library_search", {"query": "timeout", "limit": 0, "runtime_context": runtime_context}
+        )
     assert type(error.value) is ToolError
 
 
