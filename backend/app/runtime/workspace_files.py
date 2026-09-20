@@ -34,12 +34,18 @@ def same_workspace_path(environment, workspace: str, value: str) -> bool:
 
 def relative_path(value: str, workspace: str, *, local: bool = False) -> str:
     value = value or "."
-    if "\x00" in value:
+    if "\x00" in value or "\\" in value:
+        # A backslash is a Windows path separator; treat it as an escape attempt on
+        # every host so LOCAL classification cannot bypass the workspace boundary.
         raise PermissionError("不允许访问此路径")
     if local:
         root = Path(workspace).resolve(strict=True)
         candidate = Path(value)
-        target = candidate.resolve(strict=False) if candidate.is_absolute() else (root / candidate).resolve(strict=False)
+        target = (
+            candidate.resolve(strict=False)
+            if candidate.is_absolute()
+            else (root / candidate).resolve(strict=False)
+        )
         try:
             relative = target.relative_to(root)
         except ValueError as exc:
@@ -55,7 +61,7 @@ def relative_path(value: str, workspace: str, *, local: bool = False) -> str:
             path = path.relative_to(root)
         except ValueError as exc:
             raise PermissionError("路径不属于此任务 Workspace") from exc
-    if ".." in path.parts or ".git" in path.parts or "\\" in value:
+    if ".." in path.parts or ".git" in path.parts:
         raise PermissionError("不允许访问此路径")
     return str(path)
 
@@ -148,7 +154,9 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
             await _run_blocking(write)
         finally:
             await ssh.close()
-    return str(Path(workspace) / relative) if environment.mode == ExecutionMode.LOCAL else f"{workspace}/{relative}"
+    if environment.mode == ExecutionMode.LOCAL:
+        return str(Path(workspace) / relative)
+    return f"{workspace}/{relative}"
 
 
 async def materialize_task_attachments(environment, workspace: str, attachments: list[dict]) -> list[dict]:
