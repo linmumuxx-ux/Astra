@@ -101,16 +101,13 @@ async def watch_session(task_id):
 
 
 async def supervise_sessions():
-    """Task discovery is local; native SSE carries execution facts and message deltas."""
+    """Reconcile once at startup, then let native SSE/reconnect drive Session state."""
     listeners = {}
-    reconcile = None
-    next_reconcile = 0.0
+    # Startup-only reconciliation covers process restarts without introducing a
+    # second periodic state owner beside the native OpenCode event stream.
+    await refresh_sessions()
     try:
         while True:
-            now = asyncio.get_running_loop().time()
-            if now >= next_reconcile and (reconcile is None or reconcile.done()):
-                reconcile = asyncio.create_task(refresh_sessions())
-                next_reconcile = now + 15
             async with SessionLocal() as session:
                 ids = set(
                     (
@@ -134,9 +131,6 @@ async def supervise_sessions():
                     await asyncio.gather(listener, return_exceptions=True)
             await asyncio.sleep(2)
     finally:
-        if reconcile:
-            reconcile.cancel()
-            await asyncio.gather(reconcile, return_exceptions=True)
         for listener in listeners.values():
             listener.cancel()
         await asyncio.gather(*listeners.values(), return_exceptions=True)
