@@ -224,7 +224,7 @@ class RuntimeService:
             task.execution_error = None
             await self.project(task, TaskStatus.SUCCEEDED)
         elif state.status == RuntimeSessionStatus.FAILED.value:
-            message = {
+            message = task.failure_reason or {
                 SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode Assistant 返回原生执行错误",
                 SessionTerminalReason.NO_REPLY.value: "OpenCode Session 已空闲且超过等待窗口，当前 Turn 无 Assistant 回复",
             }.get(state.terminal_reason, "OpenCode Session 执行失败")
