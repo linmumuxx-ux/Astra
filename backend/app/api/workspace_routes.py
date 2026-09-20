@@ -20,7 +20,7 @@ from app.domain import ExecutionMode
 from app.executors.errors import OpenCodeSessionNotFound
 from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.session_connection import connect, resolve_environment
+from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
 from app.schemas import TaskRead
 
@@ -189,17 +189,6 @@ async def upload_file(task_id: str, filename: str, request: Request, session=Dep
     except Exception as exc:
         raise error_response(exc) from exc
     return {"path": path}
-
-
-async def session_tree(client, directory, root):
-    allowed, pending = {root}, [root]
-    while pending:
-        children = await client.children(directory, pending.pop())
-        for child in children:
-            if child["id"] not in allowed:
-                allowed.add(child["id"])
-                pending.append(child["id"])
-    return allowed
 
 
 def event_session(event):
