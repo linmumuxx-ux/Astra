@@ -591,6 +591,19 @@ async def test_task_summary_is_one_row_with_generation_and_stale(runtime):
     assert count == 1
 
 
+async def test_repeated_terminal_refresh_does_not_regenerate_summary(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+
+    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
+    assert summary.generation == 1
+
+    await r.service.refresh("T1")
+    await r.session.refresh(summary)
+    assert summary.generation == 1
+
+
 async def test_task_summary_survives_restart_with_new_primary_session(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
