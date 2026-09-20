@@ -57,10 +57,9 @@ def _is_reusable(task: Task, summary: TaskSummary) -> bool:
         if value
     ).strip()
     if task.status == "SUCCEEDED":
-        changes = summary.key_changes or {}
-        return bool(changes.get("changed_files")) and (
-            len(summary.summary.strip()) >= 60 or bool(_REUSABLE_HINTS.search(text))
-        )
+        # Successful work is not necessarily a code change. A reusable
+        # diagnostic/method/result may be valuable even with a clean Workspace.
+        return len(summary.summary.strip()) >= 60 or bool(_REUSABLE_HINTS.search(text))
     if task.status == "FAILED":
         # A plain timeout/no-reply marker is an execution fact, not reusable
         # experience. Failure candidates require additional diagnostic content.
@@ -143,6 +142,7 @@ class ExperienceExtractionService:
                 select(KnowledgeUsage.knowledge_id)
                 .where(
                     KnowledgeUsage.task_id == task.id,
+                    KnowledgeUsage.action == "read",
                     KnowledgeUsage.knowledge_id.is_not(None),
                 )
                 .distinct()
