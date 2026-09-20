@@ -56,13 +56,63 @@ def upgrade():
         )
 
     db = op.get_bind()
-    # Historical sessions have no reliable execution outcome. Do not fabricate
-    # success; mark them UNKNOWN and keep their creation time as a weak start.
-    db.execute(
-        sa.text(
-            "UPDATE runtime_sessions SET status = 'UNKNOWN', "
-            "started_at = COALESCE(started_at, created_at)"
+    metadata = sa.MetaData()
+    runs = sa.Table("runs", metadata, autoload_with=db)
+    sessions = sa.Table("runtime_sessions", metadata, autoload_with=db)
+
+    status_mapping = {
+        "COMPLETED": ("SUCCEEDED", "completed"),
+        "FAILED": ("FAILED", "assistant_error"),
+        "CANCELLED": ("INTERRUPTED", "aborted"),
+        "TIMEOUT": ("INTERRUPTED", "timeout"),
+        "WAITING_INPUT": ("WAITING", None),
+        "RUNNING": ("UNKNOWN", "transport_unknown"),
+        "STARTING": ("UNKNOWN", "transport_unknown"),
+        "QUEUED": ("UNKNOWN", "transport_unknown"),
+        "SUSPENDED": ("INTERRUPTED", "incomplete"),
+        "LOST": ("UNKNOWN", "transport_unknown"),
+    }
+
+    # A RuntimeSession may have appeared in more than one legacy Run when the
+    # same OpenCode Session was continued. The latest Run is the best final
+    # snapshot and avoids double-counting cumulative usage.
+    rows = (
+        db.execute(
+            sa.select(runs)
+            .where(runs.c.opencode_session_id.is_not(None))
+            .order_by(runs.c.task_id, runs.c.run_number)
         )
+        .mappings()
+        .all()
+    )
+    latest_by_session = {}
+    for row in rows:
+        latest_by_session[row["opencode_session_id"]] = row
+
+    for session_id, row in latest_by_session.items():
+        status, terminal_reason = status_mapping.get(
+            row["status"], ("UNKNOWN", "transport_unknown")
+        )
+        db.execute(
+            sessions.update()
+            .where(sessions.c.id == session_id)
+            .values(
+                status=status,
+                terminal_reason=terminal_reason,
+                started_at=row["started_at"] or row["created_at"],
+                finished_at=row["finished_at"],
+                model_name=row["model_name"],
+                total_tokens=row["total_tokens"],
+                tool_call_count=row["tool_call_count"],
+                last_activity_at=row["finished_at"] or row["heartbeat_at"] or row["started_at"],
+            )
+        )
+
+    # Bindings not backed by a legacy Run remain explicitly unknown.
+    db.execute(
+        sessions.update()
+        .where(sessions.c.started_at.is_(None))
+        .values(status="UNKNOWN", started_at=sessions.c.created_at)
     )
 
 
