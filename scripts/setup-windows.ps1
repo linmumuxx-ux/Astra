@@ -42,6 +42,16 @@ if (-not $Npm) {
     throw "未找到 npm.cmd。请安装 Node.js 20+ 并加入 PATH。"
 }
 
+$Node = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $Node) {
+    throw "未找到 node.exe。请安装 Node.js 20+ 并加入 PATH。"
+}
+
+& $Node.Source (Join-Path $ProjectRoot "scripts\workspace_ui.mjs") install
+if ($LASTEXITCODE -ne 0) {
+    throw "workspace-ui 依赖安装失败。公司网络优先使用 pnpm；没有 pnpm 时会尝试 bun。"
+}
+
 Push-Location (Join-Path $ProjectRoot "frontend")
 try {
     & $Npm.Source ci
