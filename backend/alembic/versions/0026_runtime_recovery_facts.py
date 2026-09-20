@@ -24,6 +24,17 @@ def upgrade():
             )
         )
 
+    # Existing summaries were produced before this durable cursor existed.
+    # Treat their already-finished post-processing as the baseline rather than
+    # re-extracting historical experiences on the first v0.6 startup.
+    db = op.get_bind()
+    db.execute(
+        sa.text(
+            "UPDATE task_summaries "
+            "SET artifacts_processed_generation = generation"
+        )
+    )
+
 
 def downgrade():
     with op.batch_alter_table("digital_employees") as batch:
