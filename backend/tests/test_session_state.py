@@ -13,7 +13,7 @@ def assistant(message_id, *, completed=True, finish="stop", error=None):
         info["finish"] = finish
     if error is not None:
         info["error"] = error
-    return {"info": info, "parts": []}
+    return {"info": info, "parts": [{"type": "text", "text": "done"}]}
 
 
 def user(message_id):
@@ -82,6 +82,14 @@ def test_completed_stop_is_succeeded():
 def test_completed_end_turn_is_succeeded():
     state = derive([assistant("a1", finish="end_turn")])
     assert state.status == "SUCCEEDED"
+
+
+def test_completed_turn_without_visible_final_reply_is_failed():
+    message = assistant("a1")
+    message["parts"] = []
+    state = derive([message])
+    assert state.status == "FAILED"
+    assert state.terminal_reason == "no_reply"
 
 
 def test_new_user_turn_after_completion_is_not_succeeded():
