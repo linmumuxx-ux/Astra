@@ -21,7 +21,7 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.workspace_files import materialize_task_attachments, upload, validate_path
+from app.runtime.workspace_files import materialize_task_attachments, same_workspace_path, upload, validate_path
 
 
 class NativeServer:
@@ -271,6 +271,14 @@ async def test_explicit_restart_supersedes_each_running_session(runtime):
     first = await r.session.get(RuntimeSession, first_new)
     assert first.status == "INTERRUPTED"
     assert first.superseded_by == second_new
+
+
+def test_windows_workspace_path_comparison_accepts_slash_and_case_variants(runtime):
+    assert same_workspace_path(
+        runtime.environment,
+        r"D:\Code\Astra\.astra-tasks\E1\T1",
+        "d:/Code/Astra/.astra-tasks/E1/T1",
+    )
 
 
 @pytest.mark.parametrize("path", ["../secret", "/etc/passwd", ".git/config", "..\\secret"])
@@ -725,3 +733,57 @@ async def test_native_vcs_diff_is_forwarded_with_workspace_containment(runtime, 
     assert raw.text == patch
     outside = await runtime.api.get(base, params={"directory": str(runtime.workspace.parent)})
     assert outside.status_code == 403
+
+
+async def test_idle_employee_heartbeat_does_not_require_on_demand_server(runtime, monkeypatch):
+    @asynccontextmanager
+    async def unavailable_connect(*args, **kwargs):
+        raise AssertionError("idle employee heartbeat must not start OpenCode Serve")
+        yield
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", unavailable_connect)
+    employee = await runtime.session.get(DigitalEmployee, "E1")
+    employee.status = "OFFLINE"
+    runtime.task.status = "FAILED"
+    await runtime.session.commit()
+
+    healthy = await runtime.service.refresh_employee_heartbeats()
+
+    await runtime.session.refresh(employee)
+    assert "E1" in healthy
+    assert employee.status == "IDLE"
+    assert employee.current_task_count == 0
+
+
+async def test_active_employee_heartbeat_releases_db_transaction_before_runtime_io(runtime, monkeypatch):
+    observations = []
+
+    @asynccontextmanager
+    async def observed_connect(*args, **kwargs):
+        observations.append((kwargs.get("start"), runtime.session.in_transaction()))
+        yield runtime.native
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", observed_connect)
+    runtime.task.status = "RUNNING"
+    await runtime.session.commit()
+
+    await runtime.service.refresh_employee_heartbeats()
+
+    assert observations == [(True, False)]
+
+
+async def test_stop_can_force_cancel_local_session_when_no_runtime_listener(runtime, monkeypatch):
+    @asynccontextmanager
+    async def unavailable_connect(*args, **kwargs):
+        raise ConnectionError("runtime process is gone")
+        yield
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", unavailable_connect)
+    await runtime.service.project(runtime.task, "WAITING")
+
+    stopped = await runtime.service.stop("T1")
+
+    assert stopped.status == "CANCELED"
+    session = await runtime.session.get(RuntimeSession, "ses_current")
+    assert session.status == "INTERRUPTED"
+    assert session.terminal_reason == "aborted"
