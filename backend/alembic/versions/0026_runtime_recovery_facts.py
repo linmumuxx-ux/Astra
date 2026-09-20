@@ -10,6 +10,8 @@ depends_on = None
 
 
 def upgrade():
+    with op.batch_alter_table("digital_employees") as batch:
+        batch.drop_column("max_auto_retries")
     with op.batch_alter_table("runtime_sessions") as batch:
         batch.add_column(sa.Column("workspace_base_commit", sa.String(64), nullable=True))
     with op.batch_alter_table("task_summaries") as batch:
@@ -24,6 +26,8 @@ def upgrade():
 
 
 def downgrade():
+    with op.batch_alter_table("digital_employees") as batch:
+        batch.add_column(sa.Column("max_auto_retries", sa.Integer(), nullable=False, server_default="3"))
     with op.batch_alter_table("task_summaries") as batch:
         batch.drop_column("artifacts_processed_generation")
     with op.batch_alter_table("runtime_sessions") as batch:
