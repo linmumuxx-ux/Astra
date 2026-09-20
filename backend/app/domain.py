@@ -32,6 +32,7 @@ class SessionTerminalReason(StrEnum):
     COMPLETED = "completed"
     ASSISTANT_ERROR = "assistant_error"
     NO_REPLY = "no_reply"
+    INCOMPLETE = "incomplete"
     ABORTED = "aborted"
     TIMEOUT = "timeout"
     SESSION_MISSING = "session_missing"
