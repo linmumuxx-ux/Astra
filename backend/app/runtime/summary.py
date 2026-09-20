@@ -1,8 +1,8 @@
 """Deterministic Task summary: one durable record per Task.
 
 The summary is composed from Task facts plus the completing OpenCode Session's
-final assistant reply. It never mirrors messages, never depends on
-ASTRA_RESULT_JSON, and never forges business acceptance.
+final assistant reply and stable Workspace/Git facts. It never mirrors messages,
+never depends on ASTRA_RESULT_JSON, and never forges business acceptance.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.domain import AcceptanceStatus
 from app.models import RuntimeSession, Task, TaskSummary
+from app.runtime.workspace_changes import collect_workspace_changes
 
 
 def extract_final_assistant_text(messages: list[dict]) -> tuple[str, str | None]:
@@ -36,19 +36,6 @@ def extract_final_assistant_text(messages: list[dict]) -> tuple[str, str | None]
     return "", None
 
 
-def derive_acceptance_results(criteria: list[dict]) -> list[dict]:
-    """Acceptance stays UNCONFIRMED unless a human or structured flow states otherwise."""
-    return [
-        {
-            "criterion_id": str(item.get("id")),
-            "status": AcceptanceStatus.UNCONFIRMED.value,
-            "description": "未提供结构化验收结论，请人工核对处理结果",
-            "evidence": [],
-        }
-        for item in criteria
-    ]
-
-
 def _snapshot(task: Task) -> dict:
     return {
         "task_id": task.id,
@@ -57,6 +44,33 @@ def _snapshot(task: Task) -> dict:
         "employee_id": task.employee_id,
         "source": task.source,
     }
+
+
+def _criteria_markdown(criteria: list[dict]) -> str:
+    rows = []
+    for index, item in enumerate(criteria, start=1):
+        criterion_id = item.get("id") or f"AC-{index:02d}"
+        content = str(item.get("content") or "").strip()
+        if content:
+            rows.append(f"- {criterion_id}：{content}")
+    return "\n".join(rows)
+
+
+def _changes_markdown(changes: dict) -> str:
+    if not changes:
+        return ""
+    rows = [
+        f"- 变更文件：{changes.get('changed_files', 0)}",
+        f"- 新增文件：{changes.get('added_files', 0)}",
+        f"- 删除文件：{changes.get('deleted_files', 0)}",
+    ]
+    files = changes.get("files") or []
+    commits = changes.get("commits") or []
+    if files:
+        rows.append("- 文件：" + "、".join(str(item) for item in files))
+    if commits:
+        rows.append("- 提交：" + "、".join(str(item)[:12] for item in commits))
+    return "\n".join(rows)
 
 
 class TaskSummaryService:
@@ -88,7 +102,15 @@ class TaskSummaryService:
             )
         ).all()
         now = datetime.now(UTC)
-        acceptance = derive_acceptance_results(task.acceptance_criteria or [])
+        key_changes = await collect_workspace_changes(self.session, task)
+        result_text = (
+            summary_text
+            or task.failure_reason
+            or task.current_progress
+            or "无可见最终回复"
+        ).strip()
+        criteria_md = _criteria_markdown(task.acceptance_criteria or [])
+        changes_md = _changes_markdown(key_changes)
         content_md = "\n\n".join(
             part
             for part in (
@@ -98,12 +120,11 @@ class TaskSummaryService:
                 f"- 完成 Session：{primary_session_id or '-'}",
                 f"- 执行员工：{task.employee_id or '-'}",
                 "## 结果摘要",
-                (summary_text or task.current_progress or "无可见最终回复").strip(),
-                "## 验收标准",
-                "\n".join(
-                    f"- {item['criterion_id']}：{item['status']}"
-                    for item in acceptance
-                ),
+                result_text,
+                "## 关键变更" if changes_md else "",
+                changes_md,
+                "## 原始验收标准" if criteria_md else "",
+                criteria_md,
             )
             if part
         )
@@ -113,10 +134,12 @@ class TaskSummaryService:
         if existing:
             existing.generation += 1
             existing.stale = False
-            existing.summary = (summary_text or task.current_progress or "").strip()
+            existing.summary = result_text
             existing.content_md = content_md
-            existing.acceptance_results = acceptance
-            existing.key_changes = {}
+            # No reliable structured acceptance source exists. Keep the field
+            # for API compatibility, but never manufacture UNCONFIRMED rows.
+            existing.acceptance_results = []
+            existing.key_changes = key_changes
             existing.source_status = source_status
             existing.primary_session_id = primary_session_id
             existing.referenced_session_ids = list(referenced)
@@ -130,10 +153,10 @@ class TaskSummaryService:
                 task_id=task.id,
                 primary_session_id=primary_session_id,
                 referenced_session_ids=list(referenced),
-                summary=(summary_text or task.current_progress or "").strip(),
+                summary=result_text,
                 content_md=content_md,
-                acceptance_results=acceptance,
-                key_changes={},
+                acceptance_results=[],
+                key_changes=key_changes,
                 source_status=source_status,
                 generation=1,
                 stale=False,
