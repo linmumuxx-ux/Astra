@@ -3,7 +3,7 @@ import asyncio
 from celery import Celery
 
 from app.config.settings import get_settings
-from app.database import SessionLocal, init_database
+from app.database import init_database, worker_session
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
 from app.runtime.lifecycle import RuntimeService
@@ -61,7 +61,7 @@ def run_async(coro):
 def scout() -> list[str]:
     async def execute():
         await init_database()
-        async with SessionLocal() as session:
+        async with worker_session() as session:
             return await TaskScout(session, [NrTestSystemSource(settings)]).poll_once()
 
     return run_async(execute())
@@ -71,7 +71,7 @@ def scout() -> list[str]:
 def dispatch() -> str | None:
     async def execute():
         await init_database()
-        async with SessionLocal() as session:
+        async with worker_session() as session:
             task = await Dispatcher(session).claim_once()
             if not task:
                 return None
@@ -88,7 +88,7 @@ def dispatch() -> str | None:
 @celery.task(name="astra.heartbeat-check")
 def heartbeat_check() -> list[str]:
     async def execute():
-        async with SessionLocal() as session:
+        async with worker_session() as session:
             return await mark_stale_employees_offline(session, settings)
 
     return run_async(execute())
@@ -97,7 +97,7 @@ def heartbeat_check() -> list[str]:
 @celery.task(name="astra.employee-heartbeat")
 def employee_heartbeat() -> list[str]:
     async def execute():
-        async with SessionLocal() as session:
+        async with worker_session() as session:
             return await heartbeat_active_employees(session)
 
     return run_async(execute())
@@ -110,7 +110,7 @@ def library_sync() -> int:
 
     async def execute():
         await init_database()
-        async with SessionLocal() as session:
+        async with worker_session() as session:
             return await sync_pending(session, settings)
 
     return run_async(execute())
