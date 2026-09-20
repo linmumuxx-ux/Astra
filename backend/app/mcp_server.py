@@ -63,26 +63,34 @@ def build_mcp_server() -> MCPServer:
     )
 
     @server.tool(name="library_search", structured_output=True)
-    async def library_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """通过知识服务 Hybrid Search 搜索 Wiki，返回可用于 library_get 的 resource_id。"""
+    async def library_search(
+        runtime_context: str,
+        query: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """搜索 Wiki；runtime_context 用于记录本次知识读取所属 Task/Session。"""
         try:
             payload = LibrarySearchInput(query=query, limit=limit)
         except ValidationError as exc:
             raise ToolError(str(exc)) from None
         async with SessionLocal() as session:
             try:
-                results = await KnowledgeService(session).mcp_search(payload)
-            except (LibraryError, LlmWikiError) as exc:
+                results = await KnowledgeService(session).mcp_search(
+                    payload, runtime_context=runtime_context
+                )
+            except (LibraryError, LlmWikiError, RuntimeContextError) as exc:
                 raise ToolError(str(exc)) from None
         return [result.model_dump(mode="json") for result in results]
 
     @server.tool(name="library_get", structured_output=True)
-    async def library_get(resource_id: str) -> dict[str, Any]:
-        """读取 Wiki 完整 Markdown，并记录一次实际读取。"""
+    async def library_get(runtime_context: str, resource_id: str) -> dict[str, Any]:
+        """读取 Wiki 完整 Markdown，并记录本次读取所属 Task/Session。"""
         async with SessionLocal() as session:
             try:
-                result = await KnowledgeService(session).mcp_get(resource_id)
-            except (LibraryError, LlmWikiError) as exc:
+                result = await KnowledgeService(session).mcp_get(
+                    resource_id, runtime_context=runtime_context
+                )
+            except (LibraryError, LlmWikiError, RuntimeContextError) as exc:
                 raise ToolError(str(exc)) from None
         return result.model_dump(mode="json")
 
