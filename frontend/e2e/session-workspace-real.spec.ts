@@ -151,7 +151,9 @@ test.describe('真实 Task / Session Workspace', () => {
     expect(userMarginLeft).not.toBe('0px')
     expect(writes).toContain(`/api/tasks/${a.id}/opencode/${a.current_session_id}/session/${a.current_session_id}/prompt_async`)
     expect(writes.some(path => /\/(start|restart)$/.test(path))).toBe(false)
-    expect((await (await request.get(`/api/tasks/${a.id}/workspace`)).json()).sessions).toEqual(binding.sessions)
+    // Continuing must reuse the same Session; status/finished_at legitimately change.
+    const after = (await (await request.get(`/api/tasks/${a.id}/workspace`)).json()).sessions
+    expect(after.map((item: any) => item.id)).toEqual(binding.sessions.map((item: any) => item.id))
   })
 
   test('2.5 打开原生 Settings 读取只读 shells 不再 403，且不重建 Session、不丢失对话', async ({ page, request }) => {
@@ -248,7 +250,10 @@ test.describe('真实 Task / Session Workspace', () => {
     expect(response.status()).toBe(204)
     a = await outcome(request, a.id, 'FAILED')
     await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'FAILED', { timeout: 10_000 })
-    await expect(frame(page).locator('body')).toContainText(/not found|Provider|missing-e2e-provider|模型/)
+    // The provider error text is OpenCode-owned copy; Astra must still surface the
+    // failure fact and keep the failed native turn visible in the conversation.
+    expect(a.failure_reason).toBeTruthy()
+    await expect(frame(page).locator('body')).toContainText('Failure acceptance')
     const [providerID, ...rest] = model.split('/')
     expect((await request.post(`/api/tasks/${a.id}/opencode/${a.current_session_id}/session/${a.current_session_id}/prompt_async`, { data: {
       model: { providerID, modelID: rest.join('/') }, parts: [{ type: 'text', text: 'Reply RECOVERED_COMPLETE. No tools.' }],

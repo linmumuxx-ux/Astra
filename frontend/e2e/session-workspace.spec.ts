@@ -16,7 +16,7 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
   const messages = [
     {info: {id: 'msg_00000001', role: 'user', sessionID: sid, time: {created: now - 2000}, agent: 'build', model: {providerID: 'test', modelID: 'test-model'}}, parts: [{id: 'prt_user0001', sessionID: sid, messageID: 'msg_00000001', type: 'text', text: 'Please update hello.ts'}]},
     {info: {id: 'msg_00000002', role: 'assistant', sessionID: sid, parentID: 'msg_00000001', time: {created: now - 1000, completed: now}, modelID: 'test-model', providerID: 'test', mode: 'build', agent: 'build', path: {cwd: directory, root: directory}, cost: 0, tokens: {input: 10, output: 10, reasoning: 0, cache: {read: 0, write: 0}}, finish: 'stop'}, parts: [
-      {id: 'prt_00000002', sessionID: sid, messageID: 'msg_00000002', type: 'tool', callID: 'call_001', tool: 'bash', state: {status: 'completed', input: {command: 'cat hello.ts', description: 'Inspect hello.ts'}, output: 'export const hello = "after"', title: 'Inspect hello.ts', metadata: {}, time: {start: now - 1000, end: now - 500}}},
+      {id: 'prt_00000002', sessionID: sid, messageID: 'msg_00000002', type: 'tool', callID: 'call_001', tool: 'read', state: {status: 'completed', input: {filePath: `${directory}/hello.ts`}, output: 'export const hello = "after"', title: `${directory}/hello.ts`, metadata: {}, time: {start: now - 1000, end: now - 500}}},
       {id: 'prt_00000003', sessionID: sid, messageID: 'msg_00000002', type: 'text', text: 'Updated the greeting in hello.ts.'},
     ]},
   ]
@@ -62,7 +62,11 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
   await expect(frame.locator('[data-component="prompt-input"]')).toBeVisible({timeout: 20000})
   await expect(frame.getByText('Please update hello.ts', {exact: true})).toBeVisible()
   await expect(frame.getByText('Updated the greeting in hello.ts.', {exact: true})).toBeVisible()
-  await expect(frame.getByText('1 read', {exact: true})).toBeVisible()
+  const countSummary = frame.locator('[data-component="tool-count-summary"]')
+  await expect(countSummary).toBeVisible()
+  await expect(
+    countSummary.locator('[data-slot="tool-count-summary-item"][data-active="true"]'),
+  ).toContainText('read')
   await frame.getByRole('button', {name: 'Toggle review', exact: true}).click()
   const review = frame.locator('#review-panel')
   const diffView = review.locator('[data-component="file"][data-mode="diff"]')

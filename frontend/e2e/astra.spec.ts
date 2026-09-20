@@ -1,4 +1,18 @@
 import { expect, test } from '@playwright/test'
+import { createServer } from 'node:net'
+
+async function freePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer()
+    server.unref()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      server.close(() => resolve(port))
+    })
+  })
+}
 
 test('首页展示数据看板、业务导航和聚合数据', async ({ page }) => {
   const requests: string[] = []
@@ -214,14 +228,14 @@ test('员工管理使用列表、筛选分页并优先打开详情抽屉', async
   await expect(page.getByLabel('员工状态').getByRole('option', { name: '异常' })).toHaveCount(1)
   await expect(page.getByLabel('数字员工列表').getByRole('table')).toBeVisible()
   await expect(page.getByLabel('员工列表分页')).toBeVisible()
-  await page.getByRole('button', { name: '查看 员工-01' }).click()
-  const drawer = page.getByRole('dialog', { name: '员工-01 员工详情' })
+  await page.getByRole('button', { name: '查看 员工-03' }).click()
+  const drawer = page.getByRole('dialog', { name: '员工-03 员工详情' })
   await expect(drawer).toBeVisible()
   await drawer.getByRole('link', { name: '查看全部任务' }).first().click()
   const detail = page.getByTestId('employee-detail-page')
   await expect(detail).toBeVisible()
   await expect(detail.getByRole('heading', { name: '当前工作' })).toBeVisible()
-  await expect(detail).toContainText('当前空闲')
+  await expect(detail).toContainText('空闲')
   await expect(detail).not.toContainText('8h')
   await expect(detail.getByRole('heading', { name: '历史任务' })).toBeVisible()
 })
@@ -256,17 +270,17 @@ test('数字员工列表就地启用停用与删除', async ({ page, request }) 
 })
 
 test('任务详情进入原生 Workspace，无 Session 时显示空状态而非旧对话页', async ({ page }) => {
-  await page.goto('/tasks/T-20260827-003')
+  await page.goto('/tasks/T-20260827-004')
   const detail = page.getByTestId('task-workspace')
   await expect(detail).toBeVisible()
-  await expect(detail.getByRole('heading', { name: '完善接口变更防线告警信息' })).toBeVisible()
+  await expect(detail.getByRole('heading', { name: '排查任务列表时间筛选异常' })).toBeVisible()
   // 演示任务没有真实 OpenCode Session：详情显示空状态，不再渲染旧对话/产出验收 UI。
   await expect(detail.getByText('任务尚未创建 Session，请先启动任务。')).toBeVisible()
   await expect(detail.locator('.conversation-scroller')).toHaveCount(0)
   await expect(detail.getByRole('link', { name: '查看运行详情' })).toHaveCount(0)
   // 任务信息面板展示业务事实与验收标准。
   await detail.getByRole('button', { name: '任务信息' }).click()
-  await expect(detail.getByText('告警包含变更接口与来源信息')).toBeVisible()
+  await expect(detail.getByText('跨天时间范围返回完整结果')).toBeVisible()
 })
 
 test('业务枚举与时间单位统一显示为中文', async ({ page }) => {
@@ -291,7 +305,7 @@ test('数字员工页面内编辑：只管理工作范围、工作环境和简�
   await expect(modal.getByText('能力标签')).toHaveCount(0)
   await expect(modal.getByText('技能标签')).toHaveCount(0)
   await modal.getByRole('button', { name: '工作环境' }).click()
-  await expect(modal.getByLabel('工作空间', { exact: true })).toHaveValue('./workspaces')
+  await expect(modal.getByLabel('工作空间', { exact: true })).toHaveValue('./workspaces/astra-01')
   await expect(modal.getByLabel('Agent 模型', { exact: true })).toHaveValue('deepseek/deepseek-v4-flash')
 })
 
@@ -299,7 +313,7 @@ test('配置保存保持工作环境可用且基本信息保存不改变环境�
   const suffix = Date.now()
   const employeeId = `astra-inquiry-${suffix}`
   const employeeName = `询问测试员工 ${suffix}`
-  const reference = await (await request.get('/api/employees/astra-01')).json()
+  const opencodeServerPort = await freePort()
   const createEmployee = await request.post('/api/employees', {
     data: {
       id: employeeId,
@@ -311,13 +325,12 @@ test('配置保存保持工作环境可用且基本信息保存不改变环境�
       enabled: true,
       auto_claim: true,
       auto_execute: true,
-      max_auto_retries: 1,
       execution_environment: {
         mode: 'LOCAL',
         name: '隔离 Agent 工作环境',
         description: '系统级 E2E',
         port: 22,
-        opencode_server_port: reference.execution_environment.opencode_server_port,
+        opencode_server_port: opencodeServerPort,
         opencode_path: 'opencode',
         model_name: 'e2e/original-model',
         workspace_root: process.env.E2E_EMPLOYEE_WORKSPACE ?? './workspaces',

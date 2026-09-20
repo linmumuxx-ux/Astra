@@ -64,7 +64,7 @@ test('员工配置说明悬停显示且控件对齐，错误与检测结果保�
   await expect(page.locator('.environment-checks')).toContainText('测试异常：Server 无法连接')
   await expect(page.locator('.environment-checks')).toBeVisible()
   await page.getByRole('button', { name: '工作策略', exact: true }).click()
-  await checkHelp(page, '最大自动重试次数', '恢复上限')
+  await checkHelp(page, '自动领取任务', '空闲时可以领取')
   await page.screenshot({ path: '../artifacts/form-help/employee-policy.png', fullPage: true })
   await page.goto('/employees?edit=astra-01')
   await page.getByRole('button', { name: '工作环境', exact: true }).click()
