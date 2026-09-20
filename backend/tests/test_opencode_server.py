@@ -165,7 +165,9 @@ async def test_server_executor_streams_tools_messages_and_usage(tmp_path: Path):
     assert any(item.get("part", {}).get("tool") == "bash" for item in observed)
     assert result.token_usage.total_tokens == 18
     assert result.tool_usage[0].name == "bash"
-    assert client.prompts and "ASTRA_RESULT_JSON" in client.prompts[0][1]
+    assert client.prompts and client.prompts[0][0] == "ses_main"
+    assert "Server runtime test" in client.prompts[0][1]
+    assert "ASTRA_RESULT_JSON" not in client.prompts[0][1]
 
 
 async def test_server_executor_blocks_on_native_question_and_replies_in_same_session(
