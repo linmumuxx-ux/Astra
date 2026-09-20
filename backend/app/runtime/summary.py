@@ -131,6 +131,17 @@ class TaskSummaryService:
         existing = await self.session.scalar(
             select(TaskSummary).where(TaskSummary.task_id == task.id)
         )
+        if (
+            existing
+            and not existing.stale
+            and existing.summary == result_text
+            and existing.content_md == content_md
+            and existing.key_changes == key_changes
+            and existing.source_status == source_status
+            and existing.primary_session_id == primary_session_id
+            and existing.referenced_session_ids == list(referenced)
+        ):
+            return existing
         if existing:
             existing.generation += 1
             existing.stale = False
