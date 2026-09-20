@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy import or_, select
 
 from app.database import SessionLocal
+from app.executors.errors import OpenCodeSessionNotFound
 from app.executors.opencode_server import server_event_session_id
 from app.models import Task
 from app.runtime.lifecycle import RuntimeService
@@ -31,6 +32,9 @@ async def refresh_sessions():
         async with SessionLocal() as session:
             try:
                 await RuntimeService(session).refresh(task_id)
+            except OpenCodeSessionNotFound:
+                # refresh() already persisted SESSION_MISSING.
+                pass
             except Exception as exc:
                 await session.rollback()
                 await RuntimeService(session).disconnected(task_id, exc)
@@ -92,6 +96,9 @@ async def watch_session(task_id):
                 raise ConnectionError("OpenCode Event SSE 已断开")
         except asyncio.CancelledError:
             raise
+        except OpenCodeSessionNotFound as exc:
+            logger.warning("Session missing for %s: %s", task_id, exc)
+            return
         except Exception as exc:
             logger.warning("Session connection lost for %s: %s", task_id, exc)
             async with SessionLocal() as session:
