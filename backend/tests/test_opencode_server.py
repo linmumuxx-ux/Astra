@@ -6,6 +6,7 @@ from app.config.settings import Settings
 from app.executors.opencode_remote_server import (
     RemoteOpenCodeServerConnection,
     RemoteOpenCodeServerExecutor,
+    close_remote_mcp_tunnels,
 )
 from app.executors.opencode_server import OpenCodeServerExecutor, OpenCodeServerUnavailable
 from app.models import OpenCodeExecutionEnvironment, Task
@@ -320,6 +321,9 @@ class FakeSSHSession:
         self.commands: list[str] = []
         self.closed = False
 
+    def is_active(self):
+        return not self.closed
+
     async def open_tunnel(self, *, remote_host: str, remote_port: int):
         self.tunnel_target = (remote_host, remote_port)
         return self.tunnel
@@ -339,9 +343,18 @@ class FakeSSHSession:
 class FakeRemoteRuntime:
     def __init__(self, session: FakeSSHSession):
         self.session = session
+        self.sessions = [session]
 
     async def open_session(self, _environment):
-        return self.session
+        if len(self.sessions) == 1:
+            # First call belongs to the short-lived OpenCode tunnel.
+            self.sessions.append(FakeSSHSession())
+            return self.session
+        return self.sessions[1]
+
+    @property
+    def mcp_session(self):
+        return self.sessions[1]
 
 
 def remote_environment() -> OpenCodeExecutionEnvironment:
@@ -361,6 +374,7 @@ def remote_environment() -> OpenCodeExecutionEnvironment:
 
 
 async def test_remote_server_connection_starts_private_loopback_server():
+    await close_remote_mcp_tunnels()
     ssh = FakeSSHSession()
 
     class StartingClient:
@@ -374,10 +388,11 @@ async def test_remote_server_connection_starts_private_loopback_server():
             return {"healthy": True, "version": "1.18.25"}
 
     client = StartingClient()
+    runtime = FakeRemoteRuntime(ssh)
     connection = RemoteOpenCodeServerConnection(
         remote_environment(),
         settings(),
-        FakeRemoteRuntime(ssh),
+        runtime,
         client_factory=lambda base_url: client,
     )
 
@@ -390,13 +405,17 @@ async def test_remote_server_connection_starts_private_loopback_server():
     assert "serve --hostname 127.0.0.1 --port 4196" in ssh.commands[1]
     assert "OPENCODE_CONFIG=" in ssh.commands[1]
     assert "cd '/srv/projects/NEXUS 工作区'" in ssh.commands[1]
-    assert ssh.reverse is not None
-    assert ssh.reverse_tunnel.closed is True
+    assert runtime.mcp_session.reverse is not None
+    assert runtime.mcp_session.reverse_tunnel.closed is False
     assert ssh.tunnel.closed is True
     assert ssh.closed is True
+    await close_remote_mcp_tunnels()
+    assert runtime.mcp_session.reverse_tunnel.closed is True
+    assert runtime.mcp_session.closed is True
 
 
 async def test_remote_executor_uses_remote_posix_workspace_and_structured_events(tmp_path: Path):
+    await close_remote_mcp_tunnels()
     client = FakeServerClient(
         [
             raw_event("server.connected"),
@@ -414,10 +433,11 @@ async def test_remote_executor_uses_remote_posix_workspace_and_structured_events
         session_id="ses_remote",
     )
     ssh = FakeSSHSession()
+    runtime = FakeRemoteRuntime(ssh)
     executor = RemoteOpenCodeServerExecutor(
         remote_environment(),
         settings(),
-        FakeRemoteRuntime(ssh),
+        runtime,
         client_factory=lambda base_url: client,
     )
 
@@ -431,6 +451,8 @@ async def test_remote_executor_uses_remote_posix_workspace_and_structured_events
     assert ssh.tunnel_target == ("127.0.0.1", 4196)
     assert ssh.tunnel.closed is True
     assert ssh.closed is True
+    assert runtime.mcp_session.reverse_tunnel.closed is False
+    await close_remote_mcp_tunnels()
 
 
 async def _append(items: list[Any], value: Any) -> None:
