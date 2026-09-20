@@ -195,6 +195,10 @@ def validate_start(mode: str, settings: Any) -> None:
         raise RuntimeError("root .env not found")
     if not (FRONTEND / "node_modules").is_dir():
         raise RuntimeError("frontend dependencies missing; run: cd frontend && npm ci")
+    if not (ROOT / "workspace-ui" / "node_modules").is_dir():
+        raise RuntimeError(
+            "workspace-ui dependencies missing; run: node scripts/workspace_ui.mjs install"
+        )
 
     if mode == "pro":
         database_url = (settings.database_url or "").lower()
