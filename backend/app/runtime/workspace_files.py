@@ -1,9 +1,10 @@
-"""Task-scoped filesystem access for uploads and validating native file API requests."""
+"""Task-scoped filesystem access for uploads and native file API requests."""
 
 import asyncio
 import base64
 import os
-from pathlib import Path, PurePosixPath
+import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
 from app.domain import ExecutionMode
@@ -11,26 +12,60 @@ from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.ssh_client import _run_blocking
 
 MAX_UPLOAD = 20 * 1024 * 1024
+_WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
-def relative_path(value: str, workspace: str) -> str:
-    path = PurePosixPath(value or ".")
+def _windows_style(value: str) -> bool:
+    return bool(_WINDOWS_ABSOLUTE.match(value or "")) or "\\" in (value or "")
+
+
+def same_workspace_path(environment, workspace: str, value: str) -> bool:
+    """Compare task-bound paths using the target environment's path semantics."""
+
+    if environment.mode == ExecutionMode.LOCAL:
+        if _windows_style(workspace) or _windows_style(value):
+            return PureWindowsPath(workspace) == PureWindowsPath(value)
+        try:
+            return Path(workspace).resolve(strict=False) == Path(value).resolve(strict=False)
+        except OSError:
+            return False
+    return PurePosixPath(workspace) == PurePosixPath(value)
+
+
+def relative_path(value: str, workspace: str, *, local: bool = False) -> str:
+    value = value or "."
+    if "\x00" in value:
+        raise PermissionError("不允许访问此路径")
+    if local:
+        root = Path(workspace).resolve(strict=True)
+        candidate = Path(value)
+        target = candidate.resolve(strict=False) if candidate.is_absolute() else (root / candidate).resolve(strict=False)
+        try:
+            relative = target.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("路径不属于此任务 Workspace") from exc
+        if ".git" in relative.parts:
+            raise PermissionError("不允许访问此路径")
+        return relative.as_posix()
+
+    path = PurePosixPath(value)
     root = PurePosixPath(workspace)
     if path.is_absolute():
         try:
             path = path.relative_to(root)
         except ValueError as exc:
             raise PermissionError("路径不属于此任务 Workspace") from exc
-    if ".." in path.parts or ".git" in path.parts or "\\" in value or "\x00" in value:
+    if ".." in path.parts or ".git" in path.parts or "\\" in value:
         raise PermissionError("不允许访问此路径")
     return str(path)
 
 
 async def validate_path(environment, workspace: str, value: str) -> str:
-    relative = relative_path(value, workspace)
-    if environment.mode == ExecutionMode.LOCAL:
+    local = environment.mode == ExecutionMode.LOCAL
+    relative = relative_path(value, workspace, local=local)
+    if local:
         root = Path(workspace).resolve(strict=True)
-        target = (root / relative).resolve()
+        target = (root / relative).resolve(strict=False)
         if not target.is_relative_to(root):
             raise PermissionError("符号链接指向任务 Workspace 之外")
     else:
@@ -51,7 +86,12 @@ async def validate_path(environment, workspace: str, value: str) -> str:
 
 
 async def upload(environment, workspace: str, filename: str, content: bytes) -> str:
-    if not filename or filename != PurePosixPath(filename).name or "\\" in filename:
+    if (
+        not filename
+        or filename != PurePosixPath(filename).name
+        or "\\" in filename
+        or "\x00" in filename
+    ):
         raise ValueError("文件名无效")
     if len(content) > MAX_UPLOAD:
         raise ValueError("文件不能超过 20 MB")
@@ -62,13 +102,22 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
         folder.mkdir(exist_ok=True)
         if folder.is_symlink() or not folder.resolve().is_relative_to(root):
             raise PermissionError("上传目录越界")
+        target = folder / Path(relative).name
 
         def write():
-            # O_NOFOLLOW blocks a swapped target symlink; dir_fd anchors the opened upload directory.
+            if os.name == "nt":
+                # Windows has no O_DIRECTORY/O_NOFOLLOW/dir_fd equivalent.
+                # The target name is random and the parent was checked above;
+                # exclusive creation prevents overwrite/race with an existing file.
+                with target.open("xb") as stream:
+                    stream.write(content)
+                return
+
+            # Unix keeps the stronger no-follow + directory-fd boundary.
             directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
                 fd = os.open(
-                    Path(relative).name,
+                    target.name,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                     0o600,
                     dir_fd=directory,
@@ -99,16 +148,11 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
             await _run_blocking(write)
         finally:
             await ssh.close()
-    return f"{workspace}/{relative}"
+    return str(Path(workspace) / relative) if environment.mode == ExecutionMode.LOCAL else f"{workspace}/{relative}"
 
 
 async def materialize_task_attachments(environment, workspace: str, attachments: list[dict]) -> list[dict]:
-    """Write Task creation attachments into the task Workspace once.
-
-    The browser-side data URL is discarded after a successful write; later
-    Session restarts reuse the recorded Workspace path instead of duplicating
-    files or keeping large base64 payloads in task metadata.
-    """
+    """Write Task creation attachments into the task Workspace once."""
 
     materialized: list[dict] = []
     for attachment in attachments or []:
