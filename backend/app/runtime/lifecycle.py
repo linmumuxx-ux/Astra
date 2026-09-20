@@ -355,11 +355,13 @@ class RuntimeService:
                     await client.abort(Path(workspace), old_session_id)
                     await self._wait_for_session_stop(client, Path(workspace), old_session_id)
                 runtime_token = generate_runtime_context()
+                settings = get_settings()
+                effective_model = environment.model_name or settings.opencode_model
                 created = await client.create_session(
                     Path(workspace),
                     title=task.title,
-                    model_name=environment.model_name,
-                    agent=get_settings().opencode_agent or "build",
+                    model_name=effective_model,
+                    agent=settings.opencode_agent or "build",
                 )
                 task = await self.lock_task(task_id)
                 if task.pending_message_id != initial_id:
@@ -379,7 +381,7 @@ class RuntimeService:
                         status=RuntimeSessionStatus.RUNNING.value,
                         started_at=now,
                         last_activity_at=now,
-                        model_name=environment.model_name,
+                        model_name=effective_model,
                         runtime_context_hash=context_digest,
                         runtime_context_id=runtime_context_id(context_digest),
                     )
