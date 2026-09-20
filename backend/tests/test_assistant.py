@@ -395,23 +395,51 @@ async def test_cancel_running_task_is_high_risk_and_confirm_cancels():
         assert result["status"] == "CANCELED"
 
 
-async def test_retry_without_session_requires_explicit_start():
+async def test_retry_starts_a_new_opencode_session(monkeypatch):
     await init_database()
     await seed_employee_and_category()
-    task = await create_task_directly(title="失败任务待重试")
+    task = await create_task_directly(title="失败任务待重新执行")
     async with SessionLocal() as session:
         live = await session.get(Task, task.id)
+        live.current_session_id = "ses_old"
         await TaskService(session).transition(live, TaskStatus.RUNNING)
         await TaskService(session).transition(live, TaskStatus.FAILED)
+
+    async def fake_restart(runtime, task_id, *, restart=False):
+        assert restart is True
+        live = await runtime.session.get(Task, task_id)
+        assert live.current_session_id == "ses_old"
+        live.current_session_id = "ses_new"
+        live.status = TaskStatus.RUNNING
+        await runtime.session.commit()
+        return live
+
+    monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", fake_restart)
 
     async with SessionLocal() as session:
         operation = await OperationService(session).prepare_task_action(
             user_id="console-admin", action="retry", task_id=task.id
         )
         operation_id = operation.operation_id
+
     async with SessionLocal() as session:
-        with pytest.raises(OperationError, match="Session 不存在"):
-            await OperationService(session).confirm(operation_id, "console-admin")
+        result = await OperationService(session).confirm(operation_id, "console-admin")
+        assert result["status"] == "RUNNING"
+        live = await session.get(Task, task.id)
+        assert live.current_session_id == "ses_new"
+
+
+async def test_waiting_task_cannot_use_legacy_resume_operation():
+    await init_database()
+    await seed_employee_and_category()
+    task = await create_task_directly(title="等待原生 Question 回答")
+    async with SessionLocal() as session:
+        live = await session.get(Task, task.id)
+        await TaskService(session).transition(live, TaskStatus.WAITING)
+        with pytest.raises(OperationError, match="不支持的操作"):
+            await OperationService(session).prepare_task_action(
+                user_id="console-admin", action="resume", task_id=task.id
+            )
 
 
 async def test_reassign_ready_task_requires_confirmation_and_revalidates_status():
