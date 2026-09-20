@@ -20,10 +20,19 @@ class CheckResult:
     current: str
     reason: str
     suggestion: str
+    blocking: bool = True
 
 
-def result(item: str, passed: bool, current: object, reason: str, suggestion: str) -> CheckResult:
-    return CheckResult(item, passed, str(current), reason, suggestion)
+def result(
+    item: str,
+    passed: bool,
+    current: object,
+    reason: str,
+    suggestion: str,
+    *,
+    blocking: bool = True,
+) -> CheckResult:
+    return CheckResult(item, passed, str(current), reason, suggestion, blocking)
 
 
 def check_python() -> CheckResult:
@@ -157,6 +166,25 @@ async def check_database(settings) -> list[CheckResult]:
             }
             missing_tables = sorted(required_tables - tables)
             migration_ok = not missing_tables and current_revision == head_revision
+            from app.models import Base
+
+            astra_tables = set(Base.metadata.tables)
+            foreign_tables = sorted(tables - astra_tables - {"alembic_version"})
+            checks.append(
+                result(
+                    "数据库隔离",
+                    not foreign_tables,
+                    f"非 Astra 表={len(foreign_tables)}",
+                    "当前数据库仅包含 Astra 表"
+                    if not foreign_tables
+                    else f"检测到共享数据库表，例如：{', '.join(foreign_tables[:5])}",
+                    "无需处理"
+                    if not foreign_tables
+                    else "建议为 Astra 使用独立 Database；共享库外部长事务可能阻塞 Astra 写操作",
+                    blocking=False,
+                )
+            )
+
             checks.append(
                 result(
                     "数据库表与迁移",
@@ -366,7 +394,7 @@ async def check_assistant_runtime(settings) -> CheckResult:
 
 def print_results(checks: list[CheckResult]) -> None:
     for check in checks:
-        marker = "PASS" if check.passed else "FAIL"
+        marker = "PASS" if check.passed else "FAIL" if check.blocking else "WARN"
         print(f"[{marker}] {check.item}")
         print(f"  当前值: {check.current}")
         print(f"  原因: {check.reason}")
@@ -418,7 +446,7 @@ async def main() -> int:
     )
     checks.extend(await check_database(settings))
     print_results(checks)
-    failures = sum(not check.passed for check in checks)
+    failures = sum(not check.passed and check.blocking for check in checks)
     print(f"\n自检完成：{len(checks) - failures} 项通过，{failures} 项失败。")
     return 1 if failures else 0
 
