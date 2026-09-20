@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.main import app
 from app.models import (
     Base,
     DigitalEmployee,
+    KnowledgeItem,
     OpenCodeExecutionEnvironment,
     RuntimeSession,
     Task,
@@ -22,7 +24,13 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.workspace_files import materialize_task_attachments, same_workspace_path, upload, validate_path
+from app.runtime.workspace_changes import collect_workspace_changes
+from app.runtime.workspace_files import (
+    materialize_task_attachments,
+    same_workspace_path,
+    upload,
+    validate_path,
+)
 
 
 class NativeServer:
@@ -752,7 +760,8 @@ async def test_task_summary_is_one_row_with_generation_and_stale(runtime):
     assert summary.primary_session_id == "ses_current"
     assert summary.summary == "DONE"
     assert summary.source_status == "SUCCEEDED"
-    assert summary.source_ref_snapshot["final_message_id"] == r.native.sessions["ses_current"][-1]["info"]["id"]
+    final_message_id = r.native.sessions["ses_current"][-1]["info"]["id"]
+    assert summary.source_ref_snapshot["final_message_id"] == final_message_id
     assert [item["status"] for item in summary.acceptance_results] == []
 
     await r.service.send("T1", {"parts": [{"type": "text", "text": "again"}]})
@@ -990,3 +999,183 @@ async def test_stop_can_force_cancel_local_session_when_no_runtime_listener(runt
     session = await runtime.session.get(RuntimeSession, "ses_current")
     assert session.status == "INTERRUPTED"
     assert session.terminal_reason == "aborted"
+
+
+async def test_manual_confirm_blocks_plain_prompt_until_confirmed(runtime):
+    r = runtime
+    r.task.completion_policy = "MANUAL_CONFIRM"
+    await r.session.commit()
+
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    assert r.task.status == "WAITING"
+
+    with pytest.raises(RuntimeStateError, match="人工确认"):
+        await r.service.send("T1", {"parts": [{"type": "text", "text": "another"}]})
+
+    await r.api.post("/api/tasks/T1/confirm")
+    await r.service.refresh("T1")
+    assert r.task.status == "SUCCEEDED"
+
+
+async def test_new_turn_after_confirmation_requires_renewed_confirmation(runtime):
+    r = runtime
+    r.task.completion_policy = "MANUAL_CONFIRM"
+    await r.session.commit()
+
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    await r.api.post("/api/tasks/T1/confirm")
+    await r.session.refresh(r.task)
+    assert r.task.status == "SUCCEEDED"
+    assert r.task.confirmed_at is not None
+
+    # Periodic refresh must not revert a confirmed terminal task to WAITING.
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    assert r.task.status == "SUCCEEDED"
+    assert r.task.confirmed_at is not None
+
+    # A new turn invalidates the previous confirmation and must be confirmed again.
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "new turn"}]})
+    await r.session.refresh(r.task)
+    assert r.task.status == "RUNNING"
+    assert r.task.confirmed_at is None
+
+    await _complete_current_turn(r)
+    await r.session.refresh(r.task)
+    assert r.task.status == "WAITING"
+    assert r.task.confirmed_at is None
+
+
+async def test_child_question_answer_resumes_parent_session(runtime):
+    r = runtime
+    r.native.sessions["ses_child"] = []
+    r.native.children_by_session["ses_current"] = [{"id": "ses_child"}]
+    r.native.state = "busy"
+    r.native.pending = [{"id": "q_child", "sessionID": "ses_child"}]
+
+    await r.service.refresh("T1")
+    assert r.task.status == "WAITING"
+
+    # Answering the child question clears the native wait; the same parent Session
+    # must resume RUNNING without creating a replacement Session.
+    r.native.pending = []
+    await r.service.refresh("T1")
+    assert r.task.status == "RUNNING"
+    assert r.task.current_session_id == "ses_current"
+    assert await r.session.scalar(select(func.count()).select_from(RuntimeSession)) == 1
+
+
+async def test_child_session_usage_counts_toward_runtime_session(runtime):
+    r = runtime
+    r.task.status = "RUNNING"
+    await r.session.commit()
+    r.native.sessions["ses_child"] = [
+        {
+            "info": {"id": "c1", "role": "assistant", "tokens": {"input": 7, "output": 3}},
+            "parts": [],
+        },
+        {
+            "info": {"id": "c2", "role": "assistant"},
+            "parts": [{"type": "tool", "tool": "read", "state": {"status": "completed"}}],
+        },
+    ]
+    r.native.children_by_session["ses_current"] = [{"id": "ses_child"}]
+    r.native.state = "idle"
+
+    await r.service.refresh("T1")
+
+    session = await r.session.get(RuntimeSession, "ses_current")
+    assert session.input_tokens == 7
+    assert session.output_tokens == 3
+    assert session.total_tokens == 10
+    assert session.tool_call_count == 1
+    assert session.tool_usage[0]["tool_name"] == "read"
+
+
+async def test_task_summary_records_committed_changes_with_clean_tree(runtime, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init")
+    git("config", "user.email", "e2e@example.com")
+    git("config", "user.name", "e2e")
+    (repo / "a.py").write_text("a\n")
+    git("add", ".")
+    git("commit", "-m", "base")
+    baseline = git("rev-parse", "HEAD")
+    (repo / "b.py").write_text("b\n")
+    git("add", ".")
+    git("commit", "-m", "add b")
+    assert git("status", "--porcelain") == ""  # committed work, clean tree
+
+    r = runtime
+    r.task.workspace = str(repo)
+    r.task.execution_environment_snapshot = {
+        **r.task.execution_environment_snapshot,
+        "workspace_root": str(repo),
+    }
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    binding.workspace = str(repo)
+    binding.workspace_base_commit = baseline
+    await r.session.commit()
+
+    changes = await collect_workspace_changes(r.session, r.task)
+
+    assert changes["baseline_commit"] == baseline
+    assert "b.py" in changes["files"]
+    assert len(changes["commits"]) == 1
+
+
+async def test_terminal_artifact_failure_is_compensated_on_retry(runtime, monkeypatch):
+    r = runtime
+    r.task.status = "SUCCEEDED"
+    await r.session.commit()
+    summary = TaskSummary(
+        id="TS-COMP",
+        task_id="T1",
+        primary_session_id="ses_current",
+        referenced_session_ids=["ses_current"],
+        summary="已定位缓存刷新遗漏并补充刷新逻辑，pytest 回归通过。",
+        content_md="缓存刷新",
+        acceptance_results=[],
+        key_changes={},
+        source_status="SUCCEEDED",
+        generation=1,
+        stale=False,
+        artifacts_processed_generation=0,
+    )
+    r.session.add(summary)
+    await r.session.commit()
+
+    toggle = {"fail": True}
+    original = RuntimeService._extract_experience
+
+    async def flaky(self, task):
+        if toggle["fail"]:
+            raise RuntimeError("experience extraction down")
+        return await original(self, task)
+
+    monkeypatch.setattr("app.runtime.lifecycle.RuntimeService._extract_experience", flaky)
+    await r.service.process_terminal_artifacts(r.task, summary)
+    pending = await r.session.get(TaskSummary, "TS-COMP")
+    await r.session.refresh(pending)
+    assert pending.artifacts_processed_generation == 0
+    assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
+
+    toggle["fail"] = False
+    await r.session.refresh(r.task)
+    await r.service.process_terminal_artifacts(r.task, pending)
+    done = await r.session.get(TaskSummary, "TS-COMP")
+    await r.session.refresh(done)
+    assert done.artifacts_processed_generation == 1
+    assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1

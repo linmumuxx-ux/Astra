@@ -299,6 +299,40 @@ async def test_terminal_task_auto_extracts_reusable_candidate():
         assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
 
 
+async def test_success_without_code_changes_still_extracts_experience():
+    async with experience_session() as (session, _token):
+        task = await session.get(Task, "T1")
+        task.status = "SUCCEEDED"
+        runtime_session = await session.get(RuntimeSession, "ses_a")
+        runtime_session.status = "SUCCEEDED"
+        runtime_session.last_message_id = "a-final"
+        session.add(
+            TaskSummary(
+                id="TS-NOCODE",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="定位到环境变量未加载导致启动失败；通过显式加载配置并在启动前校验解决。",
+                content_md="环境变量排查结论",
+                acceptance_results=[],
+                key_changes={},
+                source_status="SUCCEEDED",
+                generation=1,
+                stale=False,
+            )
+        )
+        await session.commit()
+
+        items = await ExperienceExtractionService(session).extract("T1")
+
+        assert len(items) == 1
+        item = items[0]
+        assert item.origin == "auto"
+        assert item.verification_status == "verified"
+        assert item.experience_data["key_changes"] == {}
+        assert "涉及文件" not in item.content_md
+
+
 async def test_generic_failed_task_does_not_create_noise_experience():
     async with experience_session() as (session, _token):
         task = await session.get(Task, "T1")
