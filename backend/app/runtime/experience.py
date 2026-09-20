@@ -127,6 +127,15 @@ class ExperienceExtractionService:
             )
         )
 
+        if (
+            existing
+            and existing.status == "candidate"
+            and existing.fingerprint == fingerprint
+            and existing.verification_status == verification
+            and (existing.experience_data or {}).get("summary_generation") == summary.generation
+        ):
+            return []
+
         knowledge_ids = (
             await self.session.scalars(
                 select(KnowledgeUsage.knowledge_id)
