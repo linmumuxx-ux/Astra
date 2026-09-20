@@ -201,7 +201,10 @@ async def test_previous_completed_turn_cannot_complete_new_submission(runtime):
     await r.service.refresh("T1")
     assert r.task.status == "RUNNING"
     r.native.sessions["ses_current"].append(
-        {"info": {"role": "assistant", "time": {"completed": 2}, "finish": "stop"}}
+        {
+            "info": {"role": "assistant", "time": {"completed": 2}, "finish": "stop"},
+            "parts": [{"type": "text", "text": "new turn completed"}],
+        }
     )
     await r.service.refresh("T1")
     assert r.task.status == "SUCCEEDED"
