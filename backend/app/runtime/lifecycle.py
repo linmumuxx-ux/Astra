@@ -743,20 +743,17 @@ class RuntimeService:
                 .where(DigitalEmployee.enabled.is_(True))
             )
         ).all()
-        healthy = []
+        # The initial SELECT starts a transaction. Close it before any network
+        # probe so no autoflushed employee UPDATE can remain locked while a later
+        # OpenCode health check stalls.
+        await self.session.commit()
+
+        healthy: list[str] = []
         for employee in employees:
             environment = employee.execution_environment
             if not environment:
                 continue
-            try:
-                async with connect(environment) as client:
-                    await client.health()
-            except Exception:
-                if employee.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
-                    employee.status = EmployeeStatus.OFFLINE
-                continue
-            employee.last_heartbeat = datetime.now(UTC)
-            healthy.append(employee.id)
+
             active = await self.session.scalar(
                 select(Task)
                 .where(
@@ -768,16 +765,64 @@ class RuntimeService:
                 )
                 .limit(1)
             )
-            employee.current_task_count = int(active is not None)
-            if employee.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
-                employee.status = (
-                    (
-                        EmployeeStatus.WAIT_HUMAN
-                        if active.status == TaskStatus.WAITING
-                        else EmployeeStatus.WORKING
-                    )
-                    if active
+            await self.session.commit()
+
+            # Employee Serve is intentionally on-demand. No active task means an
+            # absent OpenCode listener is normal; rely on the last explicit
+            # environment check instead of marking the employee OFFLINE.
+            if active is None:
+                fresh = await self.session.get(DigitalEmployee, employee.id)
+                if fresh and fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
+                    fresh.current_task_count = 0
+                    if environment.status == "AVAILABLE":
+                        fresh.status = EmployeeStatus.IDLE
+                        fresh.last_heartbeat = datetime.now(UTC)
+                        healthy.append(fresh.id)
+                    else:
+                        fresh.status = EmployeeStatus.OFFLINE
+                await self.session.commit()
+                continue
+
+            try:
+                # Active work expects a Serve. Start/recover it if necessary,
+                # then verify health without holding any database transaction.
+                async with connect(environment, start=True) as client:
+                    await client.health()
+                probe_error = None
+            except Exception as exc:
+                probe_error = exc
+
+            fresh = await self.session.get(DigitalEmployee, employee.id)
+            current = await self.session.scalar(
+                select(Task)
+                .where(
+                    Task.employee_id == employee.id,
+                    or_(
+                        Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                        Task.pending_message_id.is_not(None),
+                    ),
+                )
+                .limit(1)
+            )
+            if not fresh:
+                await self.session.rollback()
+                continue
+            fresh.current_task_count = int(current is not None)
+            if probe_error is not None:
+                if fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
+                    fresh.status = EmployeeStatus.OFFLINE
+                await self.session.commit()
+                continue
+
+            fresh.last_heartbeat = datetime.now(UTC)
+            healthy.append(fresh.id)
+            if fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
+                fresh.status = (
+                    EmployeeStatus.WAIT_HUMAN
+                    if current and current.status == TaskStatus.WAITING
+                    else EmployeeStatus.WORKING
+                    if current
                     else EmployeeStatus.IDLE
                 )
-        await self.session.commit()
+            await self.session.commit()
         return healthy
