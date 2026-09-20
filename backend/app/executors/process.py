@@ -40,40 +40,14 @@ def local_command(executable: str, arguments: list[str]) -> list[str]:
 
 
 def windows_batch_command(executable: str, arguments: list[str], comspec: str = "cmd.exe") -> list[str]:
-    quoted = " ".join(_quote_for_cmd(argument) for argument in [executable, *arguments])
-    return [comspec, "/d", "/s", "/c", quoted]
+    """Let subprocess.list2cmdline quote the argv consumed by cmd.exe.
 
+    /s changes cmd.exe quote stripping rules and breaks quoted batch paths on
+    some Windows installations. Passing the batch path and every argument as a
+    separate argv item keeps spaces and non-ASCII paths intact.
+    """
 
-def _quote_for_cmd(argument: str) -> str:
-    """Quote one cmd.exe argument, including real newlines and shell metacharacters."""
-
-    if not argument:
-        return '""'
-    needs_quotes = any(
-        character in argument for character in (" ", "\t", "\n", "\r", '"', "^", "&", "|", "<", ">", "(", ")")
-    )
-    if not needs_quotes:
-        return argument
-
-    # Follow the Windows C runtime quoting rules, but quote more characters
-    # than subprocess.list2cmdline so cmd.exe cannot split multiline prompts.
-    chunks = ['"']
-    backslashes = 0
-    for character in argument:
-        if character == "\\":
-            backslashes += 1
-            continue
-        if character == '"':
-            chunks.append("\\" * (backslashes * 2 + 1))
-            chunks.append('"')
-            backslashes = 0
-            continue
-        chunks.append("\\" * backslashes)
-        chunks.append(character)
-        backslashes = 0
-    chunks.append("\\" * (backslashes * 2))
-    chunks.append('"')
-    return "".join(chunks)
+    return [comspec, "/d", "/c", executable, *arguments]
 
 
 def process_group_options() -> dict:
