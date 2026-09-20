@@ -122,37 +122,6 @@ def build_assistant_mcp_server() -> MCPServer:
             )
         )
 
-    @server.tool(name="nexus_task_prepare_resume", structured_output=True)
-    async def nexus_task_prepare_resume(task_id: str, reason: str | None = None) -> dict[str, Any]:
-        """准备恢复挂起或待人工的任务，需用户确认。"""
-        return await _run(
-            lambda session: tool_gateway.task_prepare_action(
-                session,
-                acting_user_id=acting_user,
-                conversation_id=None,
-                action="resume",
-                task_id=task_id,
-                reason=reason,
-            )
-        )
-
-    @server.tool(name="nexus_task_prepare_reassign", structured_output=True)
-    async def nexus_task_prepare_reassign(
-        task_id: str,
-        employee_id: str,
-        reason: str | None = None,
-    ) -> dict[str, Any]:
-        """准备把待领取或已挂起任务重新分配给指定员工，需用户确认。"""
-        return await _run(
-            lambda session: tool_gateway.task_prepare_reassign(
-                session,
-                acting_user_id=acting_user,
-                conversation_id=None,
-                task_id=task_id,
-                employee_id=employee_id,
-                reason=reason,
-            )
-        )
 
     # ── Employee Tools ────────────────────────────────────────
 
