@@ -7,6 +7,7 @@ touched.
 
 from alembic import op
 import sqlalchemy as sa
+from uuid import uuid4
 
 revision = "0022_task_summary_experience"
 down_revision = "0021_runtime_session_state"
@@ -84,6 +85,144 @@ def upgrade():
             ["session_id"],
             ["id"],
             ondelete="SET NULL",
+        )
+
+
+    db = op.get_bind()
+    metadata = sa.MetaData()
+    tasks = sa.Table("tasks", metadata, autoload_with=db)
+    runs = sa.Table("runs", metadata, autoload_with=db)
+    runtime_sessions = sa.Table("runtime_sessions", metadata, autoload_with=db)
+    summaries = sa.Table("task_summaries", metadata, autoload_with=db)
+    evidence = sa.Table("evidence", metadata, autoload_with=db)
+    knowledge_items = sa.Table("knowledge_items", metadata, autoload_with=db)
+    experience_evidence = sa.Table("experience_evidence", metadata, autoload_with=db)
+    knowledge_usage = sa.Table("knowledge_usage", metadata, autoload_with=db)
+
+    run_rows = db.execute(
+        sa.select(runs).order_by(runs.c.task_id, runs.c.run_number)
+    ).mappings().all()
+    runs_by_task = {}
+    run_to_session = {}
+    for row in run_rows:
+        runs_by_task.setdefault(row["task_id"], []).append(row)
+        if row["opencode_session_id"]:
+            run_to_session[row["id"]] = row["opencode_session_id"]
+
+    # Preserve old source lineage on the new Session source fields.
+    for run_id, session_id in run_to_session.items():
+        db.execute(
+            knowledge_items.update()
+            .where(knowledge_items.c.source_run_id == run_id)
+            .values(source_session_id=session_id)
+        )
+        db.execute(
+            experience_evidence.update()
+            .where(experience_evidence.c.run_id == run_id)
+            .values(source_session_id=session_id)
+        )
+        db.execute(
+            knowledge_usage.update()
+            .where(knowledge_usage.c.run_id == run_id)
+            .values(session_id=session_id)
+        )
+
+    evidence_rows = db.execute(sa.select(evidence)).mappings().all()
+    evidence_by_task = {}
+    for row in evidence_rows:
+        evidence_by_task.setdefault(row["task_id"], []).append(
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "path": row["path"],
+                "size": row["size"],
+                "content_type": row["content_type"],
+                "metadata": row["metadata"],
+            }
+        )
+
+    for task in db.execute(sa.select(tasks)).mappings():
+        task_runs = runs_by_task.get(task["id"], [])
+        latest_run = task_runs[-1] if task_runs else None
+        legacy_result = task["result"] or (latest_run["result"] if latest_run else None)
+        referenced_sessions = [
+            row[0]
+            for row in db.execute(
+                sa.select(runtime_sessions.c.id)
+                .where(runtime_sessions.c.task_id == task["id"])
+                .order_by(runtime_sessions.c.created_at, runtime_sessions.c.id)
+            ).all()
+        ]
+        primary_session = (
+            task["current_session_id"]
+            if task["current_session_id"] in referenced_sessions
+            else referenced_sessions[-1] if referenced_sessions else None
+        )
+
+        terminal = task["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}
+        if not legacy_result and not terminal:
+            continue
+
+        result = legacy_result if isinstance(legacy_result, dict) else {}
+        summary_text = str(
+            result.get("summary")
+            or task["failure_reason"]
+            or task["current_progress"]
+            or f"历史任务状态：{task['status']}"
+        ).strip()
+        acceptance_results = (
+            result.get("acceptance_results")
+            if isinstance(result.get("acceptance_results"), list)
+            else []
+        )
+        files = result.get("files") if isinstance(result.get("files"), list) else []
+        commits = result.get("commits") if isinstance(result.get("commits"), list) else []
+        changes = result.get("changes") if isinstance(result.get("changes"), list) else []
+        key_changes = {
+            "files": files,
+            "commits": commits,
+            "legacy_changes": changes,
+        }
+        snapshot = {
+            "task_id": task["id"],
+            "title": task["title"],
+            "task_type": task["task_type"],
+            "employee_id": task["employee_id"],
+            "source": task["source"],
+            "legacy_run_ids": [row["id"] for row in task_runs],
+            "legacy_result": legacy_result,
+            "legacy_evidence": evidence_by_task.get(task["id"], []),
+        }
+        content_md = (
+            f"# {task['title']}\n\n"
+            f"- 任务：{task['id']}\n"
+            f"- 历史结果：{task['status']}\n"
+            f"- 完成 Session：{primary_session or '-'}\n\n"
+            f"## 结果摘要\n\n{summary_text}"
+        )
+        generated_at = (
+            task["finished_at"]
+            or task["updated_at"]
+            or task["created_at"]
+        )
+        db.execute(
+            summaries.insert().values(
+                id=f"TS-{uuid4().hex[:12]}",
+                task_id=task["id"],
+                primary_session_id=primary_session,
+                referenced_session_ids=referenced_sessions,
+                summary=summary_text,
+                content_md=content_md,
+                acceptance_results=acceptance_results,
+                key_changes=key_changes,
+                source_status=task["status"],
+                generation=1,
+                stale=False,
+                generated_by="migration:legacy-result",
+                source_ref_snapshot=snapshot,
+                generated_at=generated_at,
+                updated_at=generated_at,
+            )
         )
 
 
