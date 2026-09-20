@@ -19,7 +19,14 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.domain import CompletionPolicy, EmployeeStatus, ExecutionMode, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
+from app.domain import (
+    CompletionPolicy,
+    EmployeeStatus,
+    ExecutionMode,
+    RuntimeSessionStatus,
+    SessionTerminalReason,
+    TaskStatus,
+)
 from app.event_bus import event_bus
 from app.executors.errors import OpenCodeExecutionError, OpenCodeSessionNotFound
 from app.executors.opencode_prompt import (
@@ -250,6 +257,9 @@ class RuntimeService:
         if state.status == RuntimeSessionStatus.RUNNING.value:
             task.failure_reason = None
             task.execution_error = None
+            # A running turn invalidates any earlier MANUAL_CONFIRM decision.
+            task.submitted_at = None
+            task.confirmed_at = None
             await self.project(task, TaskStatus.RUNNING)
         elif state.status == RuntimeSessionStatus.WAITING.value:
             await self.project(task, TaskStatus.WAITING)
@@ -257,6 +267,11 @@ class RuntimeService:
             task.failure_reason = None
             task.execution_error = None
             if task.completion_policy == CompletionPolicy.MANUAL_CONFIRM.value:
+                if task.confirmed_at is not None:
+                    # A human already confirmed this Session result. Refresh must
+                    # keep the confirmed terminal state instead of reverting to WAITING.
+                    await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")
+                    return
                 now = datetime.now(UTC)
                 task.submitted_at = task.submitted_at or now
                 task.confirmed_at = None
@@ -279,7 +294,9 @@ class RuntimeService:
         elif state.status == RuntimeSessionStatus.FAILED.value:
             message = task.failure_reason or {
                 SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode Assistant 返回原生执行错误",
-                SessionTerminalReason.NO_REPLY.value: "OpenCode Session 已空闲且超过等待窗口，当前 Turn 无 Assistant 回复",
+                SessionTerminalReason.NO_REPLY.value: (
+                    "OpenCode Session 已空闲且超过等待窗口，当前 Turn 无 Assistant 回复"
+                ),
             }.get(state.terminal_reason, "OpenCode Session 执行失败")
             task.failure_reason = message
             task.execution_error = {
@@ -430,6 +447,10 @@ class RuntimeService:
                         stale.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
                         stale.finished_at = datetime.now(UTC)
                         await self.session.commit()
+                except RuntimeStateError:
+                    # The old Session accepted the connection but is still writing the
+                    # workspace. Never start a second writer, even for a LOCAL server.
+                    raise
                 except Exception:
                     if (
                         old_environment.mode != ExecutionMode.LOCAL
@@ -881,7 +902,12 @@ class RuntimeService:
         await self.session.commit()
 
         timed_out = False
-        if status in {"busy", "retry"} and not has_pending and task_status == TaskStatus.RUNNING and turn_started:
+        if (
+            status in {"busy", "retry"}
+            and not has_pending
+            and task_status == TaskStatus.RUNNING
+            and turn_started
+        ):
             started = turn_started if turn_started.tzinfo else turn_started.replace(tzinfo=UTC)
             if (datetime.now(UTC) - started).total_seconds() >= get_settings().opencode_timeout_seconds:
                 await client.abort(directory, session_id)
