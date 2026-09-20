@@ -102,12 +102,23 @@ def test_new_user_turn_after_completion_is_not_succeeded():
     assert state.status == "RUNNING"
 
 
-def test_previous_completed_turn_does_not_complete_new_submission():
+def test_previous_completed_turn_does_not_complete_fresh_new_submission():
     state = derive(
         [assistant("old"), user("new"), assistant("placeholder", completed=False, finish=None)],
         turn_anchor_id="new",
+        turn_started_at=NOW - timedelta(seconds=2),
     )
     assert state.status == "RUNNING"
+
+
+def test_aged_idle_incomplete_assistant_requires_recovery():
+    state = derive(
+        [user("new"), assistant("placeholder", completed=False, finish=None)],
+        turn_anchor_id="new",
+        turn_started_at=NOW - timedelta(minutes=5),
+    )
+    assert state.status == "INTERRUPTED"
+    assert state.terminal_reason == "incomplete"
 
 
 def test_just_submitted_without_reply_stays_running():
