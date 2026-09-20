@@ -7,6 +7,7 @@ The only retained outbound content is an unacknowledged submission, cleared on A
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,8 @@ from app.runtime.session_connection import connect, prepare_workspace, resolve_e
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
 from app.services import TaskService
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_SESSION_STATUSES = {
     RuntimeSessionStatus.SUCCEEDED.value,
@@ -187,6 +190,7 @@ class RuntimeService:
             )
             if state.status == RuntimeSessionStatus.SUCCEEDED.value:
                 await self._reconcile_experience(task)
+            await self._extract_experience(task)
 
     async def _reconcile_experience(self, task: Task) -> None:
         """Only a successful source Session verifies its submitted candidates."""
@@ -196,20 +200,51 @@ class RuntimeService:
             task.current_session_id
         )
 
+    async def _extract_experience(self, task: Task) -> None:
+        """Terminal experience extraction is best-effort and never changes Task outcome."""
+        from app.runtime.experience import ExperienceExtractionService
+
+        try:
+            await ExperienceExtractionService(self.session).extract(task.id)
+        except Exception:
+            logger.exception("Experience extraction failed for task %s", task.id)
+            await self.session.rollback()
+
     async def _project_session_state(self, task: Task, state: SessionState) -> None:
         """The single Session -> Task mapping. Never changes status on UNKNOWN."""
         if state.status == RuntimeSessionStatus.RUNNING.value:
+            task.failure_reason = None
+            task.execution_error = None
             await self.project(task, TaskStatus.RUNNING)
         elif state.status == RuntimeSessionStatus.WAITING.value:
             await self.project(task, TaskStatus.WAITING)
         elif state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            task.failure_reason = None
+            task.execution_error = None
             await self.project(task, TaskStatus.SUCCEEDED)
         elif state.status == RuntimeSessionStatus.FAILED.value:
-            task.failure_reason = task.failure_reason or "Session 执行结束但未产生有效回复"
+            message = {
+                SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode Assistant 返回原生执行错误",
+                SessionTerminalReason.NO_REPLY.value: "OpenCode Session 已空闲且超过等待窗口，当前 Turn 无 Assistant 回复",
+            }.get(state.terminal_reason, "OpenCode Session 执行失败")
+            task.failure_reason = message
+            task.execution_error = {
+                "code": state.terminal_reason or "session_failed",
+                "message": message,
+                "source": "opencode_session",
+                "session_id": task.current_session_id,
+            }
             await self.project(task, TaskStatus.FAILED)
         elif state.status == RuntimeSessionStatus.INTERRUPTED.value:
             if state.terminal_reason == SessionTerminalReason.TIMEOUT.value:
-                task.failure_reason = "执行达到配置的时间上限，已停止当前 Session；可继续同一 Session"
+                message = "执行达到配置的时间上限，已停止当前 OpenCode Session"
+                task.failure_reason = message
+                task.execution_error = {
+                    "code": SessionTerminalReason.TIMEOUT.value,
+                    "message": message,
+                    "source": "opencode_session",
+                    "session_id": task.current_session_id,
+                }
                 await self.project(task, TaskStatus.FAILED)
             else:
                 await self.session.commit()
@@ -501,7 +536,7 @@ class RuntimeService:
             task,
             source_status=TaskStatus.CANCELED.value,
             primary_session_id=task.current_session_id,
-            summary_text=task.current_progress or "",
+            summary_text="用户或平台明确取消了任务，当前执行（如有）已停止。",
         )
         return task
 
