@@ -72,6 +72,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 - API：`http://localhost:8100/api/health`
 - API 文档：`http://localhost:8100/docs`
 
+## 旧版本数据库升级
+
+从旧 Run 架构升级且需要保留历史数据时，先做一次原始归档，再执行迁移：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\archive_legacy_history.py
+cd backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+迁移会把可可靠映射的历史 Run 状态、时间、模型、Token/Tool 用量、Task 结果、Evidence 元数据和知识来源关系回填到 `RuntimeSession` / `TaskSummary`；原始归档用于审计，不作为运行时兼容层。新安装无需执行归档。
+
 ## 正式环境
 
 根目录 `.env` 至少应满足：
