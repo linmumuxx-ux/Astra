@@ -1,21 +1,33 @@
-"""Reconnect to native Sessions. Never manufacture a new execution on transport loss."""
+"""Reconnect and reconcile native Sessions without inventing a second execution model."""
 
 import asyncio
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
+from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.executors.errors import OpenCodeSessionNotFound
 from app.executors.opencode_server import server_event_session_id
-from app.models import Task
+from app.models import Task, TaskSummary
 from app.runtime.lifecycle import RuntimeService
-from app.runtime.session_connection import connect, resolve_environment
+from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.session_state import SessionState
+from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
 
 logger = logging.getLogger(__name__)
+
+
+def _active_task_filter():
+    # WAITING after MANUAL_CONFIRM submission is a business review state, not
+    # an executing Session that needs an SSE watcher.
+    return or_(
+        Task.status == "RUNNING",
+        and_(Task.status == "WAITING", Task.submitted_at.is_(None)),
+        Task.pending_prompt.is_not(None),
+    )
 
 
 async def refresh_sessions():
@@ -24,7 +36,7 @@ async def refresh_sessions():
             await session.scalars(
                 select(Task.id).where(
                     Task.current_session_id.is_not(None),
-                    or_(Task.status.in_(["RUNNING", "WAITING"]), Task.pending_prompt.is_not(None)),
+                    _active_task_filter(),
                 )
             )
         ).all()
@@ -41,27 +53,81 @@ async def refresh_sessions():
     return list(ids)
 
 
+async def _refresh_with_client(task_id: str, client) -> Task | None:
+    async with SessionLocal() as session:
+        task = await RuntimeService(session).refresh(task_id, client=client)
+        return task
+
+
 async def watch_session(task_id):
+    """Use native SSE for immediacy and bounded refresh for eventual convergence."""
+
     delay = 1
+    settings = get_settings()
     while True:
+        next_event: asyncio.Task | None = None
         try:
             async with SessionLocal() as session:
                 task = await session.get(Task, task_id)
                 if (
                     not task
                     or not task.current_session_id
-                    or (task.status not in {"RUNNING", "WAITING"} and not task.pending_prompt)
+                    or not (
+                        task.status == "RUNNING"
+                        or (task.status == "WAITING" and task.submitted_at is None)
+                        or task.pending_prompt
+                    )
                 ):
                     return
                 environment = await resolve_environment(session, task)
                 session_id, workspace = task.current_session_id, task.workspace
+                await session.commit()
+
             async with connect(environment, start=True) as client:
-                async with SessionLocal() as session:
-                    await RuntimeService(session).refresh(task_id, client=client)
-                async for event in client.events(Path(workspace)):
-                    if server_event_session_id(event) != session_id:
+                directory = Path(workspace)
+                events = client.events(directory).__aiter__()
+                # Start the subscription first, then reconcile. A bounded refresh
+                # below closes any remaining read-before-subscribe race.
+                next_event = asyncio.create_task(anext(events))
+                current = await _refresh_with_client(task_id, client)
+                if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                    return
+                if current.status == "WAITING" and current.submitted_at is not None:
+                    return
+                allowed = await session_tree(client, directory, session_id)
+
+                while True:
+                    done, _ = await asyncio.wait(
+                        {next_event},
+                        timeout=settings.opencode_reconcile_interval_seconds,
+                    )
+                    if not done:
+                        current = await _refresh_with_client(task_id, client)
+                        if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                            return
+                        if current.status == "WAITING" and current.submitted_at is not None:
+                            return
+                        allowed = await session_tree(client, directory, session_id)
+                        delay = 1
+                        continue
+
+                    try:
+                        event = next_event.result()
+                    except StopAsyncIteration as exc:
+                        raise ConnectionError("OpenCode Event SSE 已断开") from exc
+                    next_event = asyncio.create_task(anext(events))
+
+                    props = event.get("properties", {})
+                    info = props.get("info", {}) if isinstance(props.get("info"), dict) else {}
+                    if event.get("type") == "session.created" and info.get("parentID") in allowed:
+                        child_id = info.get("id")
+                        if child_id:
+                            allowed.add(child_id)
+                    event_session_id = server_event_session_id(event)
+                    if event_session_id and event_session_id not in allowed:
                         continue
                     if event.get("type") not in {
+                        "session.created",
                         "session.status",
                         "session.idle",
                         "session.error",
@@ -71,16 +137,14 @@ async def watch_session(task_id):
                         "permission.replied",
                     }:
                         continue
-                    async with SessionLocal() as session:
-                        current = await session.get(Task, task_id)
-                        if current.current_session_id != session_id or current.status == "CANCELED":
-                            return
-                        runtime = RuntimeService(session)
-                        if event["type"] == "session.error":
-                            current.failure_reason = str(
-                                event.get("properties", {}).get("error", "Session error")
-                            )
-                            await runtime.apply_session_state(
+
+                    if event["type"] == "session.error" and event_session_id == session_id:
+                        async with SessionLocal() as session:
+                            current = await session.get(Task, task_id)
+                            if not current or current.current_session_id != session_id:
+                                return
+                            current.failure_reason = str(props.get("error", "Session error"))
+                            await RuntimeService(session).apply_session_state(
                                 current,
                                 SessionState(
                                     status="FAILED",
@@ -88,12 +152,15 @@ async def watch_session(task_id):
                                     finished_at=datetime.now(UTC),
                                 ),
                             )
-                        else:
-                            await runtime.refresh(task_id, client=client)
-                        if current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                            return
+                    else:
+                        current = await _refresh_with_client(task_id, client)
+
+                    if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                        return
+                    if current.status == "WAITING" and current.submitted_at is not None:
+                        return
+                    allowed = await session_tree(client, directory, session_id)
                     delay = 1
-                raise ConnectionError("OpenCode Event SSE 已断开")
         except asyncio.CancelledError:
             raise
         except OpenCodeSessionNotFound as exc:
@@ -105,14 +172,97 @@ async def watch_session(task_id):
                 await RuntimeService(session).disconnected(task_id, exc)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
+        finally:
+            if next_event and not next_event.done():
+                next_event.cancel()
+                await asyncio.gather(next_event, return_exceptions=True)
+
+
+async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
+    """Repair summaries/experience after a crash between Task terminal commit and artifact commit."""
+
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Task.id, Task.status, Task.submitted_at, TaskSummary.id)
+                .outerjoin(TaskSummary, TaskSummary.task_id == Task.id)
+                .where(
+                    or_(
+                        Task.status.in_(["SUCCEEDED", "FAILED", "CANCELED"]),
+                        and_(Task.status == "WAITING", Task.submitted_at.is_not(None)),
+                    )
+                )
+                .order_by(Task.updated_at.desc())
+                .limit(limit)
+            )
+        ).all()
+
+    repaired: list[str] = []
+    for task_id, _, _, _ in rows:
+        async with SessionLocal() as session:
+            task = await session.get(Task, task_id)
+            if not task:
+                continue
+            summary = await session.scalar(
+                select(TaskSummary).where(TaskSummary.task_id == task.id)
+            )
+            needs_summary = (
+                summary is None
+                or summary.stale
+                or summary.source_status != task.status
+            )
+            needs_artifacts = bool(
+                summary
+                and task.status in {"SUCCEEDED", "FAILED"}
+                and summary.artifacts_processed_generation < summary.generation
+            )
+            if not needs_summary and not needs_artifacts:
+                continue
+
+            final_text = summary.summary if summary and not summary.stale else ""
+            if needs_summary and task.current_session_id and task.workspace:
+                try:
+                    environment = await resolve_environment(session, task)
+                    anchor_id = task.last_message_id
+                    session_id = task.current_session_id
+                    workspace = task.workspace
+                    await session.commit()
+                    async with connect(environment, start=True) as client:
+                        messages = await client.messages(Path(workspace), session_id)
+                    final_text, _ = extract_final_assistant_text(
+                        messages, turn_anchor_id=anchor_id
+                    )
+                    task = await session.get(Task, task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Unable to reload terminal Session for artifact repair %s: %s",
+                        task_id,
+                        exc,
+                    )
+                    await session.rollback()
+                    task = await session.get(Task, task_id)
+
+            summary = await TaskSummaryService(session).upsert(
+                task,
+                source_status=task.status,
+                primary_session_id=task.current_session_id,
+                summary_text=final_text or task.failure_reason or task.current_progress,
+            )
+            if task.status in {"SUCCEEDED", "FAILED"}:
+                await RuntimeService(session).process_terminal_artifacts(task, summary)
+            repaired.append(task_id)
+    return repaired
 
 
 async def supervise_sessions():
-    """Reconcile once at startup, then let native SSE/reconnect drive Session state."""
-    listeners = {}
-    # Startup-only reconciliation covers process restarts without introducing a
-    # second periodic state owner beside the native OpenCode event stream.
+    """Own native Session watching and idempotent terminal artifact repair."""
+
+    listeners: dict[str, asyncio.Task] = {}
     await refresh_sessions()
+    await reconcile_terminal_artifacts()
+    settings = get_settings()
+    loop = asyncio.get_running_loop()
+    next_artifact_reconcile = loop.time() + settings.terminal_artifact_reconcile_interval_seconds
     try:
         while True:
             async with SessionLocal() as session:
@@ -121,9 +271,7 @@ async def supervise_sessions():
                         await session.scalars(
                             select(Task.id).where(
                                 Task.current_session_id.is_not(None),
-                                or_(
-                                    Task.status.in_(["RUNNING", "WAITING"]), Task.pending_prompt.is_not(None)
-                                ),
+                                _active_task_filter(),
                             )
                         )
                     ).all()
@@ -136,6 +284,12 @@ async def supervise_sessions():
                     listener = listeners.pop(task_id)
                     listener.cancel()
                     await asyncio.gather(listener, return_exceptions=True)
+
+            if loop.time() >= next_artifact_reconcile:
+                await reconcile_terminal_artifacts()
+                next_artifact_reconcile = (
+                    loop.time() + settings.terminal_artifact_reconcile_interval_seconds
+                )
             await asyncio.sleep(2)
     finally:
         for listener in listeners.values():
