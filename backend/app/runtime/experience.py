@@ -45,12 +45,14 @@ def _experience_type(text: str) -> str:
 
 
 def _is_reusable(task: Task, summary: TaskSummary) -> bool:
+    # Only user-visible outcome/diagnostic text participates in quality
+    # gating. Summary markdown contains fixed headings such as "验收标准" and
+    # must not make an otherwise empty result look reusable.
     text = " ".join(
         value
         for value in (
             summary.summary,
             task.failure_reason or "",
-            summary.content_md,
         )
         if value
     ).strip()
