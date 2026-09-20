@@ -48,7 +48,6 @@
               <div><dt>工作环境</dt><dd>{{ employee.execution_environment?.name || '未配置' }}</dd></div>
               <div><dt>自动领取</dt><dd>{{ employee.auto_claim ? '已开启' : '已关闭' }}</dd></div>
               <div><dt>自动执行</dt><dd>{{ employee.auto_execute ? '已开启' : '已关闭' }}</dd></div>
-              <div><dt>最大重试次数</dt><dd>{{ employee.max_auto_retries }}</dd></div>
             </dl>
           </section>
 
