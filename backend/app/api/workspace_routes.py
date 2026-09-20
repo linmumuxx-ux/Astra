@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -184,6 +184,7 @@ async def upload_file(task_id: str, filename: str, request: Request, session=Dep
             raise HTTPException(413, "文件不能超过 20 MB")
     try:
         environment = await resolve_environment(session, task)
+        await session.commit()
         path = await upload(environment, task.workspace, filename, bytes(content))
     except Exception as exc:
         raise error_response(exc) from exc
@@ -252,7 +253,11 @@ async def persist_attachments(body, environment, workspace):
                 part.get("filename") or "attachment",
                 base64.b64decode(encoded, validate=True),
             )
-            part["url"] = Path(path).as_uri()
+            part["url"] = (
+                Path(path).as_uri()
+                if environment.mode == ExecutionMode.LOCAL
+                else PurePosixPath(path).as_uri()
+            )
         elif url.startswith("file:"):
             parsed = urlparse(url)
             if parsed.netloc:
@@ -283,6 +288,9 @@ async def native_proxy(
     if stored:
         environment.ssh_password = stored.ssh_password
     workspace = binding.workspace
+    # Release the read transaction before path validation, SSH/OpenCode startup,
+    # SSE or upstream HTTP. Native Workspace requests can be long-lived.
+    await session.commit()
     if "workspace" in request.query_params or "x-opencode-workspace" in request.headers:
         raise HTTPException(403, "不允许覆盖任务绑定")
     for key, value in request.query_params.multi_items():
@@ -450,6 +458,7 @@ async def task_repo(task_id: str, session=Depends(get_session)):
     if not task.workspace:
         raise HTTPException(409, "Workspace 尚未准备")
     environment = await resolve_environment(session, task)
+    await session.commit()
     await validate_path(environment, task.workspace, ".")
 
     async def git(*args):
