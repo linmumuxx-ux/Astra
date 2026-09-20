@@ -46,6 +46,17 @@ def _last_with_role(messages: list[dict], role: str) -> tuple[int, dict] | None:
     return None
 
 
+def _has_visible_reply(message: dict) -> bool:
+    return any(
+        isinstance(part, dict)
+        and part.get("type") == "text"
+        and str(part.get("text") or "").strip()
+        and not part.get("synthetic")
+        and not part.get("ignored")
+        for part in message.get("parts", [])
+    )
+
+
 def derive_session_state(
     *,
     messages: list[dict],
@@ -116,6 +127,14 @@ def derive_session_state(
             if has_new_turn:
                 return SessionState(
                     status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id
+                )
+            if not _has_visible_reply(assistant_message):
+                return SessionState(
+                    status=RuntimeSessionStatus.FAILED.value,
+                    terminal_reason=SessionTerminalReason.NO_REPLY.value,
+                    finish_reason=str(finish),
+                    last_message_id=last_message_id or assistant_info.get("id"),
+                    finished_at=now,
                 )
             return SessionState(
                 status=RuntimeSessionStatus.SUCCEEDED.value,
