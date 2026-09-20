@@ -148,7 +148,6 @@ class EmployeeCreate(BaseModel):
     enabled: bool = True
     auto_claim: bool = True
     auto_execute: bool = True
-    max_auto_retries: int = Field(default=3, ge=0, le=20)
     execution_environment: ExecutionEnvironmentWrite = Field(default_factory=ExecutionEnvironmentWrite)
 
 
@@ -164,7 +163,6 @@ class EmployeePatch(BaseModel):
     enabled: bool | None = None
     auto_claim: bool | None = None
     auto_execute: bool | None = None
-    max_auto_retries: int | None = Field(default=None, ge=0, le=20)
 
 
 class EmployeeRead(RuntimeRead):
@@ -179,7 +177,6 @@ class EmployeeRead(RuntimeRead):
     enabled: bool
     auto_claim: bool
     auto_execute: bool
-    max_auto_retries: int
     current_task_count: int
     last_heartbeat: datetime | None
     online_since: datetime | None
