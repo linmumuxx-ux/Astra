@@ -44,7 +44,7 @@ def relative_path(value: str, workspace: str, *, local: bool = False) -> str:
             relative = target.relative_to(root)
         except ValueError as exc:
             raise PermissionError("路径不属于此任务 Workspace") from exc
-        if ".git" in relative.parts:
+        if any(part.casefold() == ".git" for part in relative.parts):
             raise PermissionError("不允许访问此路径")
         return relative.as_posix()
 
