@@ -600,6 +600,8 @@ class RuntimeService:
             raise RuntimeStateError("当前 Session 已切换，请刷新 Workspace")
         if task.pending_message_id:
             raise RuntimeStateError("上次输入尚未确认，请重连核对 Session 后再发送")
+        if task.submitted_at and not task.confirmed_at:
+            raise RuntimeStateError("任务结果正在等待人工确认；请确认完成或显式重新执行")
         submitted_session = task.current_session_id
         workspace = task.workspace
         employee_id = task.employee_id
@@ -612,9 +614,10 @@ class RuntimeService:
         body = {**body, "messageID": outbound_id}
 
         async with connect(environment, start=True) as client:
+            allowed_sessions = await session_tree(client, Path(workspace), submitted_session)
             pending = await client.questions(Path(workspace)) + await client.permissions(Path(workspace))
-            if any(item.get("sessionID") == submitted_session for item in pending):
-                raise RuntimeStateError("请先在 Workspace 回答当前 Session 的问题或权限请求")
+            if any(item.get("sessionID") in allowed_sessions for item in pending):
+                raise RuntimeStateError("请先在 Workspace 回答当前 Session 树中的问题或权限请求")
 
         # Short transaction: revalidate the binding and reserve this submission.
         task = await self.lock_task(task_id)
