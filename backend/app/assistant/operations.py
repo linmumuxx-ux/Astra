@@ -196,7 +196,7 @@ class OperationService:
         if not task:
             raise OperationError(f"任务不存在：{task_id}", status_code=404)
         action = str(action or "").lower()
-        if action not in {"cancel", "retry", "resume"}:
+        if action not in {"cancel", "retry"}:
             raise OperationError(f"不支持的操作：{action}", status_code=400)
 
         status = TaskStatus(task.status)
@@ -208,16 +208,10 @@ class OperationService:
             note = reason or "平台助手取消任务"
         elif action == "retry":
             if status not in {TaskStatus.FAILED}:
-                raise OperationError(f"只有失败或执行异常的任务可以重试，当前状态 {status.value}")
+                raise OperationError(f"只有失败任务可以重新执行，当前状态 {status.value}")
             risk = "L2"
             operation_type = "task_retry"
-            note = reason or "平台助手重试任务"
-        else:
-            if status not in {TaskStatus.WAITING}:
-                raise OperationError(f"只有挂起或待人工的任务可以恢复，当前状态 {status.value}")
-            risk = "L2"
-            operation_type = "task_resume"
-            note = reason or "平台助手恢复任务"
+            note = reason or "平台助手重新执行任务（新 OpenCode Session）"
 
         request = {"task_id": task.id, "action": action, "reason": note}
         preview = {
@@ -390,10 +384,8 @@ class OperationService:
             raise OperationError(f"任务不存在：{task_id}", status_code=404)
         if operation.operation_type == "task_cancel":
             result = await RuntimeService(self.session).stop(task_id)
-        elif operation.operation_type in {"task_resume", "task_retry"}:
-            result = await RuntimeService(self.session).send(task_id, {
-                "parts": [{"type": "text", "text": request.get("reason") or "请继续处理当前任务"}],
-            })
+        elif operation.operation_type == "task_retry":
+            result = await RuntimeService(self.session).start(task_id, restart=True)
         elif operation.operation_type == "task_reassign":
             status = TaskStatus(task.status)
             if status not in {TaskStatus.PENDING}:
