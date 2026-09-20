@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -15,6 +16,7 @@ from sqlalchemy import select
 
 from app.api.routes import require_task
 from app.database import get_session
+from app.domain import ExecutionMode
 from app.executors.errors import OpenCodeSessionNotFound
 from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
@@ -251,7 +253,10 @@ async def persist_attachments(body, environment, workspace):
             parsed = urlparse(url)
             if parsed.netloc:
                 raise PermissionError("不允许外部文件地址")
-            await validate_path(environment, workspace, unquote(parsed.path))
+            value = unquote(parsed.path)
+            if environment.mode == ExecutionMode.LOCAL:
+                value = url2pathname(value)
+            await validate_path(environment, workspace, value)
         else:
             raise PermissionError("附件必须写入任务 Workspace")
     return body
