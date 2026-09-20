@@ -16,9 +16,26 @@ from app.models import RuntimeSession, Task, TaskSummary
 from app.runtime.workspace_changes import collect_workspace_changes
 
 
-def extract_final_assistant_text(messages: list[dict]) -> tuple[str, str | None]:
-    """Visible final assistant text from native messages, ignoring synthetic parts."""
-    for message in reversed(messages):
+def extract_final_assistant_text(
+    messages: list[dict], *, turn_anchor_id: str | None = None
+) -> tuple[str, str | None]:
+    """Visible assistant result from the current turn only.
+
+    Task status derivation and TaskSummary must use the same turn boundary; an
+    old successful reply must never become the result of a later failed turn.
+    """
+
+    turn = messages
+    if turn_anchor_id:
+        positions = [
+            index
+            for index, message in enumerate(messages)
+            if isinstance(message.get("info"), dict)
+            and message["info"].get("id") == turn_anchor_id
+        ]
+        turn = messages[positions[-1] :] if positions else []
+
+    for message in reversed(turn):
         info = message.get("info") if isinstance(message.get("info"), dict) else {}
         if info.get("role") != "assistant":
             continue
