@@ -333,7 +333,8 @@ class RuntimeService:
                 Task.employee_id == employee.id,
                 Task.id != task.id,
                 or_(
-                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                    Task.status == TaskStatus.RUNNING,
+                    and_(Task.status == TaskStatus.WAITING, Task.submitted_at.is_(None)),
                     Task.pending_message_id.is_not(None),
                 ),
             )
@@ -499,7 +500,8 @@ class RuntimeService:
                 Task.employee_id == employee_id,
                 Task.id != task.id,
                 or_(
-                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                    Task.status == TaskStatus.RUNNING,
+                    and_(Task.status == TaskStatus.WAITING, Task.submitted_at.is_(None)),
                     Task.pending_message_id.is_not(None),
                 ),
             )
@@ -582,6 +584,7 @@ class RuntimeService:
         async with connect(environment, start=True) as client:
             messages = await client.messages(Path(workspace), session_id)
             acknowledged = any(item["info"]["id"] == pending_id for item in messages)
+            sent_now = False
             if not acknowledged:
                 await client.request(
                     "POST",
@@ -589,16 +592,34 @@ class RuntimeService:
                     directory=Path(workspace),
                     body=pending_prompt["body"],
                 )
+                sent_now = True
 
-        task = await self.lock_task(task_id)
-        if task.current_session_id != session_id or task.pending_message_id != pending_id:
-            await self.session.rollback()
-            raise RuntimeStateError("Session 或待确认输入已变化，请刷新后重试")
-        task.pending_message_id = None
-        task.pending_prompt = None
-        task.runtime_error = None
-        await self._mark_session_running(task)
-        return task
+            # Revalidate after the network write. stop/delete/restart may have
+            # invalidated this reservation while the request was in flight.
+            task = await self.lock_task(task_id)
+            stale = (
+                task.current_session_id != session_id
+                or task.pending_message_id != pending_id
+                or task.status == TaskStatus.CANCELED
+            )
+            if stale:
+                await self.session.rollback()
+                if sent_now or acknowledged:
+                    try:
+                        await client.abort(Path(workspace), session_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to abort stale submission for task %s session %s",
+                            task_id,
+                            session_id,
+                        )
+                raise RuntimeStateError("待确认输入已被控制操作失效，当前 Session 已停止")
+
+            task.pending_message_id = None
+            task.pending_prompt = None
+            task.runtime_error = None
+            await self._mark_session_running(task)
+            return task
 
     @staticmethod
     def _local_port_in_use(port: int) -> bool:
@@ -838,7 +859,8 @@ class RuntimeService:
                 .where(
                     Task.employee_id == employee.id,
                     or_(
-                        Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                        Task.status == TaskStatus.RUNNING,
+                        and_(Task.status == TaskStatus.WAITING, Task.submitted_at.is_(None)),
                         Task.pending_message_id.is_not(None),
                     ),
                 )
@@ -877,7 +899,8 @@ class RuntimeService:
                 .where(
                     Task.employee_id == employee.id,
                     or_(
-                        Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
+                        Task.status == TaskStatus.RUNNING,
+                        and_(Task.status == TaskStatus.WAITING, Task.submitted_at.is_(None)),
                         Task.pending_message_id.is_not(None),
                     ),
                 )
