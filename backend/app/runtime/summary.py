@@ -98,7 +98,9 @@ class TaskSummaryService:
     ) -> TaskSummary:
         referenced = (
             await self.session.scalars(
-                select(RuntimeSession.id).where(RuntimeSession.task_id == task.id)
+                select(RuntimeSession.id)
+                .where(RuntimeSession.task_id == task.id)
+                .order_by(RuntimeSession.created_at, RuntimeSession.id)
             )
         ).all()
         now = datetime.now(UTC)
