@@ -111,7 +111,12 @@ async def runtime(tmp_path, monkeypatch):
     async with factory() as session:
         employee = DigitalEmployee(id="E1", name="Engineer", role="build", status="IDLE")
         environment = OpenCodeExecutionEnvironment(
-            employee_id="E1", mode="LOCAL", name="test", workspace_root=str(workspace), status="AVAILABLE"
+            employee_id="E1",
+            mode="LOCAL",
+            name="test",
+            workspace_root=str(workspace),
+            opencode_server_port=54197,
+            status="AVAILABLE",
         )
         session.add_all([employee, environment])
         await session.flush()
