@@ -215,6 +215,10 @@ class SSHSession:
         if transport is not None:
             transport.set_keepalive(30)
 
+    def is_active(self) -> bool:
+        transport = self._client.get_transport()
+        return bool(transport is not None and transport.is_active())
+
     async def open_tunnel(
         self,
         *,
