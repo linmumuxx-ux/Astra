@@ -102,14 +102,17 @@ def upgrade():
     run_rows = db.execute(
         sa.select(runs).order_by(runs.c.task_id, runs.c.run_number)
     ).mappings().all()
+    existing_session_ids = set(
+        db.execute(sa.select(runtime_sessions.c.id)).scalars().all()
+    )
     runs_by_task = {}
     run_to_session = {}
     for row in run_rows:
         runs_by_task.setdefault(row["task_id"], []).append(row)
-        if row["opencode_session_id"]:
+        if row["opencode_session_id"] in existing_session_ids:
             run_to_session[row["id"]] = row["opencode_session_id"]
 
-    # Preserve old source lineage on the new Session source fields.
+    # Preserve old source lineage only when 0020 could create a valid binding.
     for run_id, session_id in run_to_session.items():
         db.execute(
             knowledge_items.update()
