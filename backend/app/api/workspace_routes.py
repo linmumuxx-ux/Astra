@@ -122,6 +122,10 @@ async def reconnect_task(task_id: str, session=Depends(get_session)):
     await require_task(task_id, session)
     try:
         return await RuntimeService(session).refresh(task_id)
+    except OpenCodeSessionNotFound as exc:
+        # refresh() already records SESSION_MISSING; do not overwrite it with a
+        # transport-unknown marker.
+        raise error_response(exc) from exc
     except Exception as exc:
         await session.rollback()
         await RuntimeService(session).disconnected(task_id, exc)
