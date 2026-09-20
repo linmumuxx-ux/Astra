@@ -166,6 +166,7 @@ async def check_database(settings) -> list[CheckResult]:
             }
             missing_tables = sorted(required_tables - tables)
             migration_ok = not missing_tables and current_revision == head_revision
+            import app.assistant.models  # noqa: F401 - register assistant tables on shared metadata
             from app.models import Base
 
             astra_tables = set(Base.metadata.tables)
