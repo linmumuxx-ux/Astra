@@ -21,7 +21,7 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.workspace_files import upload, validate_path
+from app.runtime.workspace_files import materialize_task_attachments, upload, validate_path
 
 
 class NativeServer:
@@ -294,6 +294,29 @@ async def test_upload_lands_in_workspace_and_returns_actual_path(runtime):
     path = Path(response.json()["path"])
     assert path.parent == runtime.workspace / "uploads"
     assert path.read_bytes() == b"hello"
+
+async def test_task_creation_attachment_materializes_once(runtime):
+    attachments = [
+        {
+            "name": "requirements.md",
+            "size": 5,
+            "content_type": "text/markdown",
+            "content": "data:text/markdown;base64,aGVsbG8=",
+        }
+    ]
+    first = await materialize_task_attachments(
+        runtime.environment, str(runtime.workspace), attachments
+    )
+    assert "content" not in first[0]
+    path = Path(first[0]["workspace_path"])
+    assert path.read_bytes() == b"hello"
+
+    second = await materialize_task_attachments(
+        runtime.environment, str(runtime.workspace), first
+    )
+    assert second[0]["workspace_path"] == first[0]["workspace_path"]
+    assert len(list((runtime.workspace / "uploads").iterdir())) == 1
+
 
 
 @pytest.mark.parametrize("path", ["session/ses_other/message", "global/dispose", "config", "pty"])
