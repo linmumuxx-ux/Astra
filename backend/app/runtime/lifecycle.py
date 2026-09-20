@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import socket
 from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_hex
@@ -18,7 +19,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
+from app.domain import EmployeeStatus, ExecutionMode, RuntimeSessionStatus, SessionTerminalReason, TaskStatus
 from app.event_bus import event_bus
 from app.executors.errors import OpenCodeExecutionError, OpenCodeSessionNotFound
 from app.executors.opencode_prompt import (
@@ -408,26 +409,51 @@ class RuntimeService:
     async def send(self, task_id, body, *, native_action="prompt_async", expected_session_id=None):
         if native_action not in {"prompt_async", "command"}:
             raise RuntimeStateError("不支持的 Session 输入")
-        task = await self.lock_task(task_id)
+
+        # Read the binding first, then release the DB transaction before touching
+        # OpenCode. Runtime/network latency must never extend a row lock lifetime.
+        task = await self.session.get(Task, task_id)
+        if not task:
+            raise RuntimeStateError("任务不存在")
         if not task.current_session_id:
             raise RuntimeStateError("Session 不存在；请显式启动任务")
         if expected_session_id and task.current_session_id != expected_session_id:
             raise RuntimeStateError("当前 Session 已切换，请刷新 Workspace")
-        submitted_session = task.current_session_id
         if task.pending_message_id:
             raise RuntimeStateError("上次输入尚未确认，请重连核对 Session 后再发送")
+        submitted_session = task.current_session_id
+        workspace = task.workspace
+        employee_id = task.employee_id
         environment = await resolve_environment(self.session, task)
+        await self.session.commit()
+
+        outbound_id = body.get("messageID") or message_id()
+        if not re.fullmatch(r"msg_[a-zA-Z0-9]{8,100}", outbound_id):
+            raise RuntimeStateError("消息 ID 无效")
+        body = {**body, "messageID": outbound_id}
+
+        async with connect(environment, start=True) as client:
+            pending = await client.questions(Path(workspace)) + await client.permissions(Path(workspace))
+            if any(item.get("sessionID") == submitted_session for item in pending):
+                raise RuntimeStateError("请先在 Workspace 回答当前 Session 的问题或权限请求")
+
+        # Short transaction: revalidate the binding and reserve this submission.
+        task = await self.lock_task(task_id)
+        if task.current_session_id != submitted_session:
+            await self.session.rollback()
+            raise RuntimeStateError("当前 Session 已切换，请刷新 Workspace")
+        if task.pending_message_id:
+            await self.session.rollback()
+            raise RuntimeStateError("已有待确认输入")
         employee = await self.session.scalar(
             select(DigitalEmployee)
-            .where(
-                DigitalEmployee.id == task.employee_id,
-            )
+            .where(DigitalEmployee.id == employee_id)
             .with_for_update()
         )
         occupied = await self.session.scalar(
             select(Task.id)
             .where(
-                Task.employee_id == task.employee_id,
+                Task.employee_id == employee_id,
                 Task.id != task.id,
                 or_(
                     Task.status.in_([TaskStatus.RUNNING, TaskStatus.WAITING]),
@@ -437,44 +463,38 @@ class RuntimeService:
             .limit(1)
         )
         if occupied:
+            await self.session.rollback()
             raise RuntimeStateError("员工正在处理其他任务")
-        outbound_id = body.get("messageID") or message_id()
-        if not re.fullmatch(r"msg_[a-zA-Z0-9]{8,100}", outbound_id):
-            raise RuntimeStateError("消息 ID 无效")
-        async with connect(environment) as client:
-            pending = await client.questions(Path(task.workspace)) + await client.permissions(
-                Path(task.workspace)
-            )
-            if any(item.get("sessionID") == task.current_session_id for item in pending):
-                raise RuntimeStateError("请先在 Workspace 回答当前 Session 的问题或权限请求")
-        employee.current_task_count = 1
-        employee.status = EmployeeStatus.WORKING
-        body = {**body, "messageID": outbound_id}
+        if employee:
+            employee.current_task_count = 1
+            employee.status = EmployeeStatus.WORKING
         task.last_message_id = outbound_id
-        # Reserve before network I/O. A second sender cannot silently overwrite a pending submission.
         reserved = await self.session.execute(
             update(Task)
-            .where(
-                Task.id == task.id,
-                Task.pending_message_id.is_(None),
+            .where(Task.id == task.id, Task.pending_message_id.is_(None))
+            .values(
+                pending_message_id=outbound_id,
+                pending_prompt={"action": native_action, "body": body},
             )
-            .values(pending_message_id=outbound_id, pending_prompt={"action": native_action, "body": body})
         )
         if reserved.rowcount != 1:
+            await self.session.rollback()
             raise RuntimeStateError("已有待确认输入")
         await self.session.commit()
+
         try:
-            async with connect(environment) as client:
-                await client.session(Path(task.workspace), task.current_session_id)
+            async with connect(environment, start=True) as client:
+                await client.session(Path(workspace), submitted_session)
                 await client.request(
                     "POST",
-                    f"/session/{task.current_session_id}/{native_action}",
-                    directory=Path(task.workspace),
+                    f"/session/{submitted_session}/{native_action}",
+                    directory=Path(workspace),
                     body=body,
                 )
         except Exception as exc:
             task = await self.lock_task(task_id)
             if task.pending_message_id != outbound_id:
+                await self.session.rollback()
                 raise
             if type(exc) is OpenCodeExecutionError or isinstance(exc, OpenCodeSessionNotFound):
                 task.pending_message_id = None
@@ -483,11 +503,13 @@ class RuntimeService:
             task.runtime_error = str(exc)
             await self.session.commit()
             raise
+
         task = await self.lock_task(task_id)
         if task.pending_message_id != outbound_id or task.current_session_id != submitted_session:
-            async with connect(environment) as client:
-                await client.abort(Path(task.workspace), submitted_session)
-            return task
+            await self.session.commit()
+            async with connect(environment, start=True) as client:
+                await client.abort(Path(workspace), submitted_session)
+            return await self.session.get(Task, task_id)
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_connection = "CONNECTED"
@@ -502,37 +524,96 @@ class RuntimeService:
         )
 
     async def retry_submission(self, task_id):
-        task = await self.lock_task(task_id)
+        task = await self.session.get(Task, task_id)
+        if not task:
+            raise RuntimeStateError("任务不存在")
         if not task.pending_message_id or not task.pending_prompt:
             raise RuntimeStateError("没有待确认输入")
+        pending_id = task.pending_message_id
+        pending_prompt = dict(task.pending_prompt)
+        session_id = task.current_session_id
+        workspace = task.workspace
         environment = await resolve_environment(self.session, task)
-        async with connect(environment) as client:
-            messages = await client.messages(Path(task.workspace), task.current_session_id)
-            acknowledged = any(item["info"]["id"] == task.pending_message_id for item in messages)
+        await self.session.commit()
+
+        async with connect(environment, start=True) as client:
+            messages = await client.messages(Path(workspace), session_id)
+            acknowledged = any(item["info"]["id"] == pending_id for item in messages)
             if not acknowledged:
                 await client.request(
                     "POST",
-                    f"/session/{task.current_session_id}/{task.pending_prompt['action']}",
-                    directory=Path(task.workspace),
-                    body=task.pending_prompt["body"],
+                    f"/session/{session_id}/{pending_prompt['action']}",
+                    directory=Path(workspace),
+                    body=pending_prompt["body"],
                 )
-            task.pending_message_id = None
-            task.pending_prompt = None
-            task.runtime_error = None
-            await self._mark_session_running(task)
+
+        task = await self.lock_task(task_id)
+        if task.current_session_id != session_id or task.pending_message_id != pending_id:
+            await self.session.rollback()
+            raise RuntimeStateError("Session 或待确认输入已变化，请刷新后重试")
+        task.pending_message_id = None
+        task.pending_prompt = None
+        task.runtime_error = None
+        await self._mark_session_running(task)
         return task
 
+    @staticmethod
+    def _local_port_in_use(port: int) -> bool:
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            return probe.connect_ex(("127.0.0.1", port)) == 0
+
     async def stop(self, task_id):
+        task = await self.session.get(Task, task_id)
+        if not task:
+            raise RuntimeStateError("任务不存在")
+        session_id = task.current_session_id
+        workspace = task.workspace
+        environment = await resolve_environment(self.session, task) if session_id else None
+        await self.session.commit()
+
+        forced_offline_cancel = False
+        stop_error = None
+        if session_id and environment:
+            try:
+                async with connect(environment, start=True) as client:
+                    await client.abort(Path(workspace), session_id)
+            except OpenCodeSessionNotFound:
+                # A restarted Serve that cannot find the Session proves there is
+                # no live execution attached to this binding.
+                forced_offline_cancel = True
+            except Exception as exc:
+                stop_error = exc
+                # Only LOCAL + no listener is safe to force-cancel. For remote
+                # transport loss or an occupied-but-unhealthy local port we cannot
+                # prove the Agent has stopped writing the Workspace.
+                if (
+                    environment.mode == ExecutionMode.LOCAL
+                    and not self._local_port_in_use(environment.opencode_server_port)
+                ):
+                    forced_offline_cancel = True
+                else:
+                    await self.disconnected(task_id, exc)
+                    raise
+
         task = await self.lock_task(task_id)
-        if task.current_session_id:
-            environment = await resolve_environment(self.session, task)
-            async with connect(environment) as client:
-                await client.abort(Path(task.workspace), task.current_session_id)
-            runtime_session = await self._runtime_session(task)
-            if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
-                runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
-                runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
-                runtime_session.finished_at = datetime.now(UTC)
+        if session_id and task.current_session_id != session_id:
+            await self.session.rollback()
+            raise RuntimeStateError("取消期间 Session 已切换，请刷新后重试")
+        runtime_session = await self._runtime_session(task)
+        if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+            runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
+            runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
+            runtime_session.finished_at = datetime.now(UTC)
+        if forced_offline_cancel:
+            await TaskService(self.session).add_event(
+                task,
+                "RUNTIME_OFFLINE_CANCELED",
+                "runtime",
+                "Runtime 已不可执行，按明确取消意图收敛任务",
+                {"error": str(stop_error) if stop_error else "session missing"},
+                commit=False,
+            )
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_error = None
@@ -546,28 +627,62 @@ class RuntimeService:
         return task
 
     async def refresh(self, task_id, *, client=None):
-        task = await self.lock_task(task_id)
+        task = await self.session.get(Task, task_id)
+        if not task:
+            raise RuntimeStateError("任务不存在")
         if not task.current_session_id:
             return task
         if task.pending_message_id and not task.pending_prompt:
             task.runtime_error = "Session 启动尚未确认；请先停止，再显式重新开始"
             await self.session.commit()
             return task
+
+        session_id = task.current_session_id
+        workspace = task.workspace
         if client is None:
             environment = await resolve_environment(self.session, task)
-            async with connect(environment) as connection:
+            await self.session.commit()
+            async with connect(environment, start=True) as connection:
                 return await self.refresh(task_id, client=connection)
-        directory = Path(task.workspace)
+
+        # Do not keep even a read transaction open while waiting on Runtime I/O.
+        await self.session.commit()
+        directory = Path(workspace)
         try:
-            await client.session(directory, task.current_session_id)
+            await client.session(directory, session_id)
+            status = await client.status(directory, session_id)
+            questions = await client.questions(directory)
+            permissions = await client.permissions(directory)
         except OpenCodeSessionNotFound:
-            runtime_session = await self._runtime_session(task)
-            if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
-                runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
-                runtime_session.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
+            task = await self.lock_task(task_id)
+            if task.current_session_id == session_id:
+                runtime_session = await self._runtime_session(task)
+                if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+                    runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
+                    runtime_session.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
                 await self.session.commit()
+            else:
+                await self.session.rollback()
             raise
-        status = await client.status(directory, task.current_session_id)
+
+        has_pending = any(item.get("sessionID") == session_id for item in questions + permissions)
+        task_snapshot = await self.session.get(Task, task_id)
+        turn_started = task_snapshot.turn_started_at
+        task_status = task_snapshot.status
+        await self.session.commit()
+
+        timed_out = False
+        if status in {"busy", "retry"} and not has_pending and task_status == TaskStatus.RUNNING and turn_started:
+            started = turn_started if turn_started.tzinfo else turn_started.replace(tzinfo=UTC)
+            if (datetime.now(UTC) - started).total_seconds() >= get_settings().opencode_timeout_seconds:
+                await client.abort(directory, session_id)
+                timed_out = True
+        messages = await client.messages(directory, session_id)
+
+        task = await self.lock_task(task_id)
+        if task.current_session_id != session_id:
+            await self.session.rollback()
+            return task
         if task.runtime_connection != "CONNECTED":
             await TaskService(self.session).add_event(
                 task, "RUNTIME_CONNECTED", "runtime", "OpenCode Runtime 已连接", commit=False
@@ -577,23 +692,7 @@ class RuntimeService:
         if task.status == TaskStatus.CANCELED:
             await self.session.commit()
             return task
-        questions = await client.questions(directory)
-        permissions = await client.permissions(directory)
-        has_pending = any(
-            item.get("sessionID") == task.current_session_id for item in questions + permissions
-        )
-        timed_out = False
-        if status in {"busy", "retry"} and not has_pending:
-            started = task.turn_started_at
-            if (
-                task.status == TaskStatus.RUNNING
-                and started
-                and (datetime.now(UTC) - started.replace(tzinfo=UTC)).total_seconds()
-                >= get_settings().opencode_timeout_seconds
-            ):
-                await client.abort(directory, task.current_session_id)
-                timed_out = True
-        messages = await client.messages(directory, task.current_session_id)
+
         await self._update_session_usage(task, messages)
         if task.pending_message_id:
             if any(item["info"]["id"] == task.pending_message_id for item in messages):
