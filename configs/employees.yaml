@@ -19,4 +19,3 @@ employees:
     policy:
       auto_claim: true
       auto_execute: true
-      max_auto_retries: 3
