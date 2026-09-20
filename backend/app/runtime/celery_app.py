@@ -7,7 +7,6 @@ from app.database import SessionLocal, init_database
 from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
 from app.runtime.lifecycle import RuntimeService
-from app.runtime.recovery import refresh_sessions
 from app.runtime.scout import TaskScout
 from app.sources.nr_test_system import NrTestSystemSource
 
@@ -24,7 +23,6 @@ celery.conf.update(
         "astra.dispatch": {"queue": "control"},
         "astra.heartbeat-check": {"queue": "control"},
         "astra.employee-heartbeat": {"queue": "control"},
-        "astra.recovery": {"queue": "control"},
     },
     beat_schedule={
         "astra-library-sync": {"task": "astra.library-sync", "schedule": 5},
@@ -38,7 +36,6 @@ celery.conf.update(
             "task": "astra.employee-heartbeat",
             "schedule": settings.heartbeat_interval,
         },
-        "astra-recovery": {"task": "astra.recovery", "schedule": settings.recovery_interval},
     },
 )
 
@@ -105,10 +102,6 @@ def employee_heartbeat() -> list[str]:
 
     return run_async(execute())
 
-
-@celery.task(name="astra.recovery")
-def recovery():
-    return run_async(refresh_sessions())
 
 
 @celery.task(name="astra.library-sync")
