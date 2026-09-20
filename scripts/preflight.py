@@ -448,7 +448,9 @@ async def main() -> int:
     checks.extend(await check_database(settings))
     print_results(checks)
     failures = sum(not check.passed and check.blocking for check in checks)
-    print(f"\n自检完成：{len(checks) - failures} 项通过，{failures} 项失败。")
+    warnings = sum(not check.passed and not check.blocking for check in checks)
+    passed = len(checks) - failures - warnings
+    print(f"\n自检完成：{passed} 项通过，{warnings} 项警告，{failures} 项失败。")
     return 1 if failures else 0
 
 
