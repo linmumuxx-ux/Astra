@@ -19,7 +19,7 @@ from app.dashboard import (
     dashboard_tasks,
 )
 from app.database import SessionLocal, get_session
-from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
+from app.domain import EmployeeStatus, EnvironmentStatus, RuntimeSessionStatus, TaskStatus
 from app.library_service import KnowledgeService, LibraryPrincipal
 from app.models import (
     DigitalEmployee,
@@ -497,6 +497,17 @@ DELETABLE_TASK_STATUSES = frozenset(
 )
 
 
+@router.post("/tasks/{task_id}/confirm", response_model=TaskRead)
+async def confirm_task_completion(task_id: str, session: AsyncSession = Depends(get_session)):
+    from app.runtime.lifecycle import RuntimeService
+
+    await require_task(task_id, session)
+    try:
+        return await RuntimeService(session).confirm_completion(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)):
     task = await session.scalar(
@@ -506,6 +517,16 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=404, detail="任务不存在")
     if TaskStatus(task.status) not in DELETABLE_TASK_STATUSES:
         raise HTTPException(status_code=409, detail="任务正在执行或等待人工，不能删除")
+    if task.pending_message_id:
+        raise HTTPException(status_code=409, detail="任务仍有待确认提交，必须先停止并收敛 Session")
+    if task.current_session_id:
+        runtime_session = await session.get(RuntimeSession, task.current_session_id)
+        if runtime_session and runtime_session.status in {
+            RuntimeSessionStatus.RUNNING.value,
+            RuntimeSessionStatus.WAITING.value,
+            RuntimeSessionStatus.UNKNOWN.value,
+        }:
+            raise HTTPException(status_code=409, detail="当前 Session 尚未终止，不能删除任务")
     # 数字图书馆引用属于历史审计信息，任务删除后置空引用而不是级联删除知识条目。
     await session.execute(
         update(KnowledgeItem)
