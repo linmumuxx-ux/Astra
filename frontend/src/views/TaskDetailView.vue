@@ -9,7 +9,8 @@
         <option v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id">Session #{{ binding.sessions.length - index }}{{ item.current ? ' · 当前' : ' · 历史只读' }}</option>
       </select>
       <button v-if="!task.current_session_id && !task.pending_message_id" class="button button--primary" :disabled="busy" @click="action('start')">启动任务</button>
-      <button v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" class="button" :disabled="busy" @click="action('stop')">停止</button>
+      <button v-if="awaitingConfirmation" class="button button--primary" :disabled="busy" @click="action('confirm')">确认完成</button>
+      <button v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" class="button" :disabled="busy" @click="action('stop')">{{ awaitingConfirmation ? '取消任务' : '停止' }}</button>
       <button v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" class="button" :disabled="busy" @click="action('restart')">重新开始（新 Session）</button>
       <button class="button" @click="showInfo = !showInfo">任务信息</button>
     </header>
@@ -48,6 +49,12 @@ const busy = ref(false)
 const showInfo = ref(false)
 const frameKey = ref(0)
 const employeeName = computed(() => store.employees.find(item => item.id === task.value?.employee_id)?.name || '未分配员工')
+const awaitingConfirmation = computed(() =>
+  task.value?.completion_policy === 'MANUAL_CONFIRM' &&
+  task.value?.status === 'WAITING' &&
+  Boolean(task.value?.submitted_at) &&
+  !task.value?.confirmed_at,
+)
 const frameUrl = computed(() => selectedSession.value ? `/opencode-workspace/index.html?task=${encodeURIComponent(String(route.params.id))}&session=${encodeURIComponent(selectedSession.value)}` : '')
 const now = ref(Date.now())
 const duration = computed(() => {
