@@ -138,6 +138,28 @@ FLUSH PRIVILEGES;
 - 主机统一校时
 - 升级前备份
 
+## 5.1 旧版本数据库升级
+
+已有旧 Run 数据且需要保留历史结果/统计时，**不要直接跳过历史归档**：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\archive_legacy_history.py --output D:\AstraBackup\legacy-history.json
+cd backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+升级迁移会自动完成可确定的事实转换：
+
+- Run / Task 状态与时间 → RuntimeSession；
+- 模型、Token、Tool 用量 → RuntimeSession 用量字段；
+- Task.result / 最新 Run.result → TaskSummary；
+- Evidence 元数据 → TaskSummary 来源快照；
+- 旧 Run 来源引用 → RuntimeSession Session 引用。
+
+`archive_legacy_history.py` 同时保存旧 Run、ToolUsage、Evidence 等原始行及 SHA256 manifest，用于迁移核对和审计。旧 Run 表不会作为长期兼容模型保留。
+
+新安装或明确不需要历史数据的实例可直接执行 Alembic 升级。
+
 ## 6. 环境自检
 
 可独立执行：
