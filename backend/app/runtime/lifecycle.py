@@ -330,13 +330,25 @@ class RuntimeService:
             workspace = await prepare_workspace(task, environment)
             task = await self.lock_task(task_id)
             if task.pending_message_id != initial_id:
+                await self.session.rollback()
                 return task
+            attachments = list(task.attachments or [])
             task.workspace = workspace
-            if task.attachments:
-                task.attachments = await materialize_task_attachments(
-                    environment, workspace, task.attachments
-                )
             await self.session.commit()
+
+            materialized_attachments = (
+                await materialize_task_attachments(environment, workspace, attachments)
+                if attachments
+                else []
+            )
+            if attachments:
+                task = await self.lock_task(task_id)
+                if task.pending_message_id != initial_id:
+                    await self.session.rollback()
+                    return task
+                task.attachments = materialized_attachments
+                await self.session.commit()
+
             async with connect(environment, start=True) as client:
                 old_session_id = task.current_session_id if restart else None
                 if old_session_id:
@@ -351,8 +363,9 @@ class RuntimeService:
                 )
                 task = await self.lock_task(task_id)
                 if task.pending_message_id != initial_id:
+                    await self.session.rollback()
                     await client.abort(Path(workspace), created["id"])
-                    return task
+                    return await self.session.get(Task, task_id)
                 task.current_session_id = created["id"]
                 now = datetime.now(UTC)
                 context_digest = hash_runtime_context(runtime_token)
