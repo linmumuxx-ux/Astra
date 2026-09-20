@@ -1,6 +1,7 @@
 """Task-scoped filesystem access for uploads and validating native file API requests."""
 
 import asyncio
+import base64
 import os
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
@@ -99,3 +100,44 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
         finally:
             await ssh.close()
     return f"{workspace}/{relative}"
+
+
+async def materialize_task_attachments(environment, workspace: str, attachments: list[dict]) -> list[dict]:
+    """Write Task creation attachments into the task Workspace once.
+
+    The browser-side data URL is discarded after a successful write; later
+    Session restarts reuse the recorded Workspace path instead of duplicating
+    files or keeping large base64 payloads in task metadata.
+    """
+
+    materialized: list[dict] = []
+    for attachment in attachments or []:
+        item = dict(attachment)
+        if item.get("workspace_path"):
+            item.pop("content", None)
+            materialized.append(item)
+            continue
+        raw = item.get("content")
+        if not raw:
+            materialized.append(item)
+            continue
+        if not isinstance(raw, str) or not raw.startswith("data:") or "," not in raw:
+            raise ValueError(f"附件格式无效：{item.get('name') or 'attachment'}")
+        header, encoded = raw.split(",", 1)
+        if ";base64" not in header:
+            raise ValueError(f"附件必须使用 base64：{item.get('name') or 'attachment'}")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except ValueError as exc:
+            raise ValueError(f"附件内容无效：{item.get('name') or 'attachment'}") from exc
+        path = await upload(
+            environment,
+            workspace,
+            str(item.get("name") or "attachment"),
+            content,
+        )
+        item["workspace_path"] = path
+        item["size"] = len(content)
+        item.pop("content", None)
+        materialized.append(item)
+    return materialized
