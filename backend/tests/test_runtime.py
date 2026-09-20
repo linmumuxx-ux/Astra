@@ -371,25 +371,31 @@ async def test_ssh_tunnel_forwards_local_loopback_traffic():
         await tunnel.close()
 
 
-def test_windows_batch_command_quotes_paths_and_arguments():
+def test_windows_batch_command_keeps_batch_path_and_arguments_separate():
     command = windows_batch_command(
         r"C:\Program Files\OpenCode\opencode.cmd",
         ["run", "--dir", r"D:\中文项目\workspace with spaces"],
         r"C:\Windows\System32\cmd.exe",
     )
 
-    assert command[:4] == [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c"]
-    assert '"C:\\Program Files\\OpenCode\\opencode.cmd"' in command[4]
-    assert '"D:\\中文项目\\workspace with spaces"' in command[4]
+    assert command == [
+        r"C:\Windows\System32\cmd.exe",
+        "/d",
+        "/c",
+        r"C:\Program Files\OpenCode\opencode.cmd",
+        "run",
+        "--dir",
+        r"D:\中文项目\workspace with spaces",
+    ]
 
 
-def test_windows_batch_command_quotes_multiline_prompt_and_shell_characters():
+def test_windows_batch_command_does_not_prequote_multiline_arguments():
     command = windows_batch_command(
         r"C:\OpenCode\opencode.cmd",
-        ["run", "第一行\n第二行 & 不应被 cmd 拆分"],
+        ["run", "第一行\n第二行 & 由 subprocess 负责转义"],
     )
 
-    assert command[4].endswith('"第一行\n第二行 & 不应被 cmd 拆分"')
+    assert command[-1] == "第一行\n第二行 & 由 subprocess 负责转义"
 
 
 async def test_opencode_permission_rejection_is_blocked_even_with_zero_exit(tmp_path: Path):
