@@ -1129,12 +1129,21 @@ class KnowledgeService:
             raise LibraryValidationError("Task 与 Employee 不匹配")
         return employee, task
 
-    async def mcp_search(self, payload: LibrarySearchInput) -> list[LibrarySearchResult]:
+    async def mcp_search(
+        self,
+        payload: LibrarySearchInput,
+        *,
+        runtime_context: str,
+    ) -> list[LibrarySearchResult]:
+        context = await _resolve_runtime_context(self.session, runtime_context)
         results = await LlmWikiClient().search(payload.query, payload.limit)
         for result in results:
             self.session.add(
                 KnowledgeUsage(
                     resource_id=result.resource_id,
+                    employee_id=context.employee_id,
+                    task_id=context.task_id,
+                    session_id=context.session_id,
                     tool_name="library_search",
                     action="search_hit",
                     query=payload.query,
@@ -1144,11 +1153,32 @@ class KnowledgeService:
         await self.session.commit()
         return results
 
-    async def mcp_get(self, resource_id: str) -> LibraryResource:
+    async def mcp_get(
+        self,
+        resource_id: str,
+        *,
+        runtime_context: str,
+    ) -> LibraryResource:
+        context = await _resolve_runtime_context(self.session, runtime_context)
         resource = await LlmWikiClient().read(resource_id)
+
+        knowledge_id = None
+        match = re.search(
+            r"(?m)^astra_knowledge_id:\s*['\"]?([A-Za-z0-9_-]{1,64})['\"]?\s*$",
+            resource.content_md,
+        )
+        if match:
+            candidate = match.group(1)
+            if await self.session.get(KnowledgeItem, candidate):
+                knowledge_id = candidate
+
         self.session.add(
             KnowledgeUsage(
                 resource_id=resource.resource_id,
+                knowledge_id=knowledge_id,
+                employee_id=context.employee_id,
+                task_id=context.task_id,
+                session_id=context.session_id,
                 tool_name="library_get",
                 action="read",
             )
