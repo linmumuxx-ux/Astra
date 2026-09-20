@@ -82,3 +82,18 @@ def test_blank_category_prompt_degrades_to_generic_runtime_prompt():
     assert "分类执行要求：" not in prompt
     assert "ASTRA_RESULT_JSON:" not in prompt
     assert "ASTRA_INTERVENTION_JSON:" not in prompt
+
+
+def test_runtime_prompt_lists_materialized_task_attachments():
+    task = make_task(TaskType.ISSUE)
+    task.attachments = [
+        {
+            "name": "requirements.md",
+            "workspace_path": "/workspace/uploads/abc-requirements.md",
+        }
+    ]
+
+    prompt = build_task_prompt(task, PurePath("/workspace"))
+
+    assert "任务附件（已写入当前 Workspace，可直接读取）" in prompt
+    assert "requirements.md：/workspace/uploads/abc-requirements.md" in prompt
