@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-TASK_STATUS = json.loads(Path(__file__).with_name("task_status.json").read_text())
+TASK_STATUS = json.loads(Path(__file__).with_name("task_status.json").read_text(encoding="utf-8"))
 EMPLOYEE_LABELS = {
     "WORKING": "工作中", "WAIT_HUMAN": "等待人工", "IDLE": "空闲", "OFFLINE": "离线",
     "PAUSED": "已暂停", "ERROR": "异常",
