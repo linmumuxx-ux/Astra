@@ -19,7 +19,7 @@ from app.executors.errors import OpenCodeSessionNotFound
 from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment
-from app.runtime.workspace_files import MAX_UPLOAD, upload, validate_path
+from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
 from app.schemas import TaskRead
 
 router = APIRouter(prefix="/api/tasks/{task_id}")
@@ -207,7 +207,7 @@ def event_session(event):
 
 
 async def native_events(environment, workspace, root, global_stream):
-    async with connect(environment) as client:
+    async with connect(environment, start=True) as client:
         allowed = await session_tree(client, Path(workspace), root)
         async for event in client.events(Path(workspace)):
             props = event.get("properties", {})
@@ -277,19 +277,23 @@ async def native_proxy(
     if "workspace" in request.query_params or "x-opencode-workspace" in request.headers:
         raise HTTPException(403, "不允许覆盖任务绑定")
     for key, value in request.query_params.multi_items():
-        if key.startswith("location") and (key != "location[directory]" or value != workspace):
+        if key.startswith("location") and (
+            key != "location[directory]"
+            or not same_workspace_path(environment, workspace, unquote(value))
+        ):
             raise HTTPException(403, "不允许覆盖任务绑定")
     requested = request.query_params.get("directory") or request.headers.get("x-opencode-directory")
+    requested_path = unquote(requested) if requested else None
     native_path = "/" + path
     directory = workspace
-    if requested and unquote(requested) != workspace:
+    if requested_path and not same_workspace_path(environment, workspace, requested_path):
         if request.method != "GET" or native_path not in {"/vcs/diff", "/vcs/diff/raw"}:
             raise HTTPException(403, "Workspace 不属于此任务")
         try:
-            await validate_path(environment, workspace, unquote(requested))
+            await validate_path(environment, workspace, requested_path)
         except Exception as exc:
             raise error_response(exc) from exc
-        directory = unquote(requested)
+        directory = requested_path
     method = request.method
     match = SESSION_READ.fullmatch(native_path) if method == "GET" else SESSION_WRITE.fullmatch(native_path)
     reply = REPLY.fullmatch(native_path) if method == "POST" else None
@@ -306,7 +310,7 @@ async def native_proxy(
         raise HTTPException(403, "此接口不属于 Task Workspace 的权限范围")
     try:
         await validate_path(environment, workspace, request.query_params.get("path", "."))
-        async with connect(environment) as client:
+        async with connect(environment, start=True) as client:
             allowed = await session_tree(client, Path(workspace), session_id)
             # Global reads such as /session/status are not per-session resources;
             # their payloads are filtered to `allowed` below instead of rejected here.
@@ -337,6 +341,8 @@ async def native_proxy(
                 return []  # Arbitrary terminals are outside the task-scoped API boundary.
             params = dict(request.query_params)
             params["directory"] = directory
+            if "location[directory]" in params:
+                params["location[directory]"] = workspace
             for key in ("sessionID", "sessionId", "session_id"):
                 if key in params and params[key] not in allowed:
                     raise PermissionError("Session 不属于此任务")
