@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import shlex
+from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
@@ -24,6 +25,61 @@ from app.runtime.ssh_client import SSHReverseTunnel, SSHSession, SSHTunnel
 ClientFactory = Callable[[str], OpenCodeServerClient]
 
 
+@dataclass
+class _PersistentMcpTunnel:
+    session: SSHSession
+    tunnel: SSHReverseTunnel
+
+
+_mcp_tunnels: dict[tuple[str, int, str, int], _PersistentMcpTunnel] = {}
+_mcp_tunnel_locks: dict[tuple[str, int, str, int], asyncio.Lock] = {}
+
+
+def _mcp_tunnel_key(environment: OpenCodeExecutionEnvironment, settings: Settings) -> tuple[str, int, str, int]:
+    return (
+        str(environment.host),
+        int(environment.port),
+        str(environment.username),
+        int(settings.mcp_port),
+    )
+
+
+async def ensure_remote_mcp_tunnel(
+    environment: OpenCodeExecutionEnvironment,
+    settings: Settings,
+    runtime: ExecutionEnvironmentRuntime,
+) -> str:
+    """Keep the reverse MCP tunnel alive beyond any one OpenCode request."""
+
+    if settings.mcp_public_url:
+        return settings.mcp_public_url
+
+    key = _mcp_tunnel_key(environment, settings)
+    lock = _mcp_tunnel_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        existing = _mcp_tunnels.get(key)
+        if existing and existing.session.is_active():
+            return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
+        if existing:
+            try:
+                await existing.tunnel.close()
+            finally:
+                await existing.session.close()
+            _mcp_tunnels.pop(key, None)
+
+        session = await runtime.open_session(environment)
+        try:
+            tunnel = await session.open_reverse_tunnel(
+                remote_port=settings.mcp_port,
+                local_port=settings.mcp_port,
+            )
+        except Exception:
+            await session.close()
+            raise
+        _mcp_tunnels[key] = _PersistentMcpTunnel(session=session, tunnel=tunnel)
+        return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
+
+
 class RemoteOpenCodeServerConnection:
     """Own one SSH connection and a loopback tunnel to a Linux OpenCode Server."""
 
@@ -43,7 +99,6 @@ class RemoteOpenCodeServerConnection:
         )
         self.session: SSHSession | None = None
         self.tunnel: SSHTunnel | None = None
-        self.reverse_tunnel: SSHReverseTunnel | None = None
         self.client: OpenCodeServerClient | None = None
 
     async def __aenter__(self) -> OpenCodeServerClient:
@@ -54,10 +109,15 @@ class RemoteOpenCodeServerConnection:
                 remote_port=self.environment.opencode_server_port,
             )
             self.client = self.client_factory(self.tunnel.base_url)
+            mcp_url = await ensure_remote_mcp_tunnel(
+                self.environment,
+                self.settings,
+                self.runtime,
+            )
             try:
                 await self.client.health()
             except (OpenCodeServerUnavailable, OpenCodeServerCapabilityError):
-                await self._start_server(self.session)
+                await self._start_server(self.session, mcp_url)
                 await self._wait_until_ready(self.client)
             return self.client
         except Exception as exc:
@@ -75,27 +135,18 @@ class RemoteOpenCodeServerConnection:
         try:
             if self.tunnel:
                 await self.tunnel.close()
-            if self.reverse_tunnel:
-                await self.reverse_tunnel.close()
         finally:
             self.tunnel = None
-            self.reverse_tunnel = None
             if self.session:
                 await self.session.close()
                 self.session = None
 
-    async def _library_mcp_url(self, session: SSHSession) -> str:
-        """Reach Astra's Streamable HTTP MCP without installing Astra on the host."""
-        if self.settings.mcp_public_url:
-            return self.settings.mcp_public_url
-        reverse_port = self.settings.mcp_port
-        self.reverse_tunnel = await session.open_reverse_tunnel(
-            remote_port=reverse_port, local_port=self.settings.mcp_port
-        )
-        return f"http://127.0.0.1:{reverse_port}{self.settings.mcp_streamable_http_path}"
-
-    async def _write_runtime_config(self, session: SSHSession, runtime_dir: str) -> None:
-        mcp_url = await self._library_mcp_url(session)
+    async def _write_runtime_config(
+        self,
+        session: SSHSession,
+        runtime_dir: str,
+        mcp_url: str,
+    ) -> None:
         content = remote_runtime_config_content(self.settings, mcp_url)
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
         exit_code, stdout, stderr = await session.run_command(
@@ -106,12 +157,12 @@ class RemoteOpenCodeServerConnection:
             detail = stderr.strip() or stdout.strip() or f"退出码 {exit_code}"
             raise RuntimeError(f"远程 OpenCode MCP 配置写入失败: {detail}")
 
-    async def _start_server(self, session: SSHSession) -> None:
+    async def _start_server(self, session: SSHSession, mcp_url: str) -> None:
         port = self.environment.opencode_server_port
         binary = shlex.quote(self.environment.opencode_path)
         workspace = shlex.quote(self.environment.workspace_root)
         runtime_dir = f"/tmp/astra-opencode-server-$(id -u)-{port}"
-        await self._write_runtime_config(session, runtime_dir)
+        await self._write_runtime_config(session, runtime_dir, mcp_url)
         command = (
             "set -eu; umask 077; "
             f"runtime_dir={runtime_dir}; "
