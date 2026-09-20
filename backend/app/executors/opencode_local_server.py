@@ -90,7 +90,7 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                 except Exception:
                     pass
                 if healthy:
-                    if owner_path.exists() and json.loads(owner_path.read_text()) != owner:
+                    if owner_path.exists() and json.loads(owner_path.read_text(encoding="utf-8")) != owner:
                         raise RuntimeError("端口冲突：该 Serve 属于另一员工或工作空间")
                     paths = await self.client.request("GET", "/path")
                     if Path(paths.get("directory", "")).resolve() != self.workspace:
@@ -102,7 +102,7 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                     process
                     and process.poll() is None
                     and owner_path.exists()
-                    and json.loads(owner_path.read_text()) == owner
+                    and json.loads(owner_path.read_text(encoding="utf-8")) == owner
                 ):
                     process.terminate()
                     await asyncio.to_thread(process.wait, timeout=5)
