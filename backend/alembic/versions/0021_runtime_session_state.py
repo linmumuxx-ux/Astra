@@ -62,7 +62,7 @@ def upgrade():
 
     status_mapping = {
         "COMPLETED": ("SUCCEEDED", "completed"),
-        "FAILED": ("FAILED", "assistant_error"),
+        "FAILED": ("FAILED", None),
         "CANCELLED": ("INTERRUPTED", "aborted"),
         "TIMEOUT": ("INTERRUPTED", "timeout"),
         "WAITING_INPUT": ("WAITING", None),
