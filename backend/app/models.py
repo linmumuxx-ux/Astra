@@ -67,7 +67,6 @@ class DigitalEmployee(RuntimeProjection, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_claim: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_execute: Mapped[bool] = mapped_column(Boolean, default=True)
-    max_auto_retries: Mapped[int] = mapped_column(Integer, default=3)
     current_task_count: Mapped[int] = mapped_column(Integer, default=0)
     last_heartbeat: Mapped[datetime | None] = mapped_column(UTCDateTime())
     online_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
