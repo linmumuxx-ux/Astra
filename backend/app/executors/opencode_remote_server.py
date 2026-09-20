@@ -92,6 +92,19 @@ async def ensure_remote_mcp_tunnel(
         return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
 
 
+async def close_remote_mcp_tunnels() -> None:
+    """Close process-owned reverse tunnels during a graceful service shutdown."""
+
+    entries = list(_mcp_tunnels.values())
+    _mcp_tunnels.clear()
+    _mcp_tunnel_locks.clear()
+    for entry in entries:
+        try:
+            await entry.tunnel.close()
+        finally:
+            await entry.session.close()
+
+
 class RemoteOpenCodeServerConnection:
     """Own one SSH connection and a loopback tunnel to a Linux OpenCode Server."""
 
