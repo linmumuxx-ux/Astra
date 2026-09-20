@@ -74,7 +74,19 @@ async def ensure_remote_mcp_tunnel(
                 local_port=settings.mcp_port,
             )
         except Exception:
+            # Backend and Celery are separate processes. If another Astra process
+            # already owns the same reverse forward, do not fail Runtime access;
+            # verify that the expected remote loopback port is actually listening.
+            code, _, _ = await session.run_command(
+                "command -v ss >/dev/null 2>&1 && "
+                f"ss -ltnH 'sport = :{settings.mcp_port}' | grep -q ."
+            )
             await session.close()
+            if code == 0:
+                return (
+                    f"http://127.0.0.1:{settings.mcp_port}"
+                    f"{settings.mcp_streamable_http_path}"
+                )
             raise
         _mcp_tunnels[key] = _PersistentMcpTunnel(session=session, tunnel=tunnel)
         return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
