@@ -143,6 +143,21 @@ def derive_session_state(
                 last_message_id=last_message_id or assistant_info.get("id"),
                 finished_at=now,
             )
+        if server_status == "idle" and turn:
+            started = turn_started_at
+            if started is not None:
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                aged = (now - started).total_seconds() >= grace_seconds
+            else:
+                aged = True
+            if aged:
+                return SessionState(
+                    status=RuntimeSessionStatus.INTERRUPTED.value,
+                    terminal_reason=SessionTerminalReason.INCOMPLETE.value,
+                    last_message_id=last_message_id or assistant_info.get("id"),
+                    finished_at=now,
+                )
         return SessionState(
             status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id
         )
