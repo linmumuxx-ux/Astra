@@ -76,7 +76,10 @@ class OpenCodeServerClient:
         self.manager = OpenCodeServerManager(self.settings)
         self.base_url = (base_url or self.manager.base_url).rstrip("/")
         self._auth = auth if base_url else self.manager.auth
-        self._timeout_seconds = timeout_seconds or self.settings.opencode_timeout_seconds
+        # HTTP requests are control-plane calls. The long execution budget is a
+        # separate deadline, so a stalled request fails fast instead of holding a
+        # worker for opencode_timeout_seconds.
+        self._timeout_seconds = timeout_seconds or self.settings.opencode_control_timeout_seconds
 
     @property
     def auth(self) -> httpx.BasicAuth | None:

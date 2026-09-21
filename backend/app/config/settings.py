@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     opencode_agent: str | None = None
     opencode_model: str | None = None
     opencode_timeout_seconds: int = 3600
+    # Control-plane requests (status/messages/session/abort/prompt) must never
+    # inherit the long execution budget; a stalled control call has to fail fast
+    # so one slow Session cannot block supervision.
+    opencode_control_timeout_seconds: int = Field(default=60, ge=5, le=600)
     opencode_server_url: str | None = None
     opencode_server_hostname: str = "127.0.0.1"
     opencode_server_port: int = Field(default=4096, ge=1, le=65535)
@@ -72,6 +76,9 @@ class Settings(BaseSettings):
     opencode_no_reply_grace_seconds: int = Field(default=15, ge=1, le=3600)
     opencode_reconcile_interval_seconds: int = Field(default=10, ge=2, le=300)
     terminal_artifact_reconcile_interval_seconds: int = Field(default=30, ge=5, le=3600)
+    # Upper bound on background recovery/repair coroutines so a backlog cannot
+    # spawn unlimited concurrent OpenCode requests.
+    supervisor_max_concurrency: int = Field(default=4, ge=1, le=32)
     # restart must never start a second Session while the old one can still
     # write to the shared task workspace.
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)

@@ -67,16 +67,23 @@ async def refresh_sessions():
                 )
             )
         ).all()
-    for task_id in ids:
-        async with SessionLocal() as session:
-            try:
-                await RuntimeService(session).refresh(task_id)
-            except OpenCodeSessionNotFound:
-                # refresh() already persisted SESSION_MISSING.
-                pass
-            except Exception as exc:
-                await session.rollback()
-                await RuntimeService(session).disconnected(task_id, exc)
+    # Each bound Session is refreshed concurrently behind a bound so one slow or
+    # unreachable Session cannot serialize the others.
+    semaphore = asyncio.Semaphore(get_settings().supervisor_max_concurrency)
+
+    async def refresh_one(task_id: str) -> None:
+        async with semaphore:
+            async with SessionLocal() as session:
+                try:
+                    await RuntimeService(session).refresh(task_id)
+                except OpenCodeSessionNotFound:
+                    # refresh() already persisted SESSION_MISSING.
+                    pass
+                except Exception as exc:
+                    await session.rollback()
+                    await RuntimeService(session).disconnected(task_id, exc)
+
+    await asyncio.gather(*(refresh_one(task_id) for task_id in ids), return_exceptions=True)
     return list(ids)
 
 
@@ -323,23 +330,63 @@ async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
     return repaired
 
 
+class _BackgroundWork:
+    """Bounded, single-flight background jobs owned by the Supervisor.
+
+    Jobs run off the supervision loop so a slow summary repair or history
+    recovery can never delay Session discovery or listener management.
+    """
+
+    def __init__(self, limit: int):
+        self._semaphore = asyncio.Semaphore(limit)
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    def running(self, name: str) -> bool:
+        task = self._tasks.get(name)
+        return bool(task and not task.done())
+
+    def spawn(self, name: str, factory) -> None:
+        if self.running(name):
+            return
+
+        async def runner() -> None:
+            async with self._semaphore:
+                await factory()
+
+        task = asyncio.create_task(runner())
+        self._tasks[name] = task
+
+        def _discard(done: asyncio.Task, key: str = name) -> None:
+            if self._tasks.get(key) is done:
+                self._tasks.pop(key, None)
+            if not done.cancelled() and done.exception() is not None:
+                logger.error("后台任务 %s 失败", key, exc_info=done.exception())
+
+        task.add_done_callback(_discard)
+
+    async def shutdown(self) -> None:
+        tasks = list(self._tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
+
 async def supervise_sessions():
     """Own native Session watching and idempotent terminal artifact repair."""
 
     listeners: dict[str, asyncio.Task] = {}
-    try:
-        await refresh_sessions()
-    except Exception:
-        logger.exception("Session Supervisor 初始 refresh 失败，继续运行")
-    try:
-        await reconcile_terminal_artifacts()
-    except Exception:
-        logger.exception("Session Supervisor 初始终态产物对账失败，继续运行")
     settings = get_settings()
     loop = asyncio.get_running_loop()
+    work = _BackgroundWork(settings.supervisor_max_concurrency)
     next_artifact_reconcile = loop.time() + settings.terminal_artifact_reconcile_interval_seconds
     delay = SUPERVISOR_INTERVAL_SECONDS
     try:
+        # Startup recovery/repair is scheduled off-loop: discovery and listener
+        # creation must never wait on a slow OpenCode request.
+        work.spawn("startup_refresh", refresh_sessions)
+        work.spawn("startup_artifacts", reconcile_terminal_artifacts)
         while True:
             try:
                 async with SessionLocal() as session:
@@ -363,7 +410,8 @@ async def supervise_sessions():
                         await asyncio.gather(listener, return_exceptions=True)
 
                 if loop.time() >= next_artifact_reconcile:
-                    await reconcile_terminal_artifacts()
+                    # Never await repair inline; keep supervising while it runs.
+                    work.spawn("artifacts", reconcile_terminal_artifacts)
                     next_artifact_reconcile = (
                         loop.time() + settings.terminal_artifact_reconcile_interval_seconds
                     )
@@ -378,3 +426,4 @@ async def supervise_sessions():
         for listener in listeners.values():
             listener.cancel()
         await asyncio.gather(*listeners.values(), return_exceptions=True)
+        await work.shutdown()

@@ -8,8 +8,20 @@ from app.executors.opencode_remote_server import (
     RemoteOpenCodeServerExecutor,
     close_remote_mcp_tunnels,
 )
-from app.executors.opencode_server import OpenCodeServerExecutor, OpenCodeServerUnavailable
+from app.executors.opencode_server import (
+    OpenCodeServerClient,
+    OpenCodeServerExecutor,
+    OpenCodeServerUnavailable,
+)
 from app.models import OpenCodeExecutionEnvironment, Task
+
+
+def test_control_client_timeout_is_bounded_and_separate_from_execution():
+    settings = Settings()
+    client = OpenCodeServerClient(settings)
+
+    assert client._timeout_seconds == settings.opencode_control_timeout_seconds
+    assert client._timeout_seconds < settings.opencode_timeout_seconds
 
 
 class FakeServerClient:

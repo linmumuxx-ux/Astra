@@ -150,6 +150,79 @@ async def test_old_session_error_event_does_not_fail_new_running_round(
     assert task.failure_reason == "old round failed"
 
 
+async def test_slow_artifact_repair_does_not_block_session_discovery(
+    monkeypatch, session_factory
+):
+    async with session_factory() as session:
+        session.add(
+            Task(
+                id="T1",
+                task_type="ISSUE",
+                title="t",
+                status="RUNNING",
+                current_session_id="ses_1",
+                workspace="/tmp/ws",
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
+    monkeypatch.setattr(recovery, "SUPERVISOR_INTERVAL_SECONDS", 0.05)
+
+    async def noop_refresh(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(recovery, "refresh_sessions", noop_refresh)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_reconcile(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(recovery, "reconcile_terminal_artifacts", slow_reconcile)
+
+    discovered: list[str] = []
+    watcher_started = asyncio.Event()
+
+    async def fake_watch(task_id):
+        discovered.append(task_id)
+        if task_id == "T2":
+            watcher_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(recovery, "watch_session", fake_watch)
+
+    supervisor = asyncio.create_task(recovery.supervise_sessions())
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    # A new Task must still be discovered while the repair stays blocked.
+    async with session_factory() as session:
+        session.add(
+            Task(
+                id="T2",
+                task_type="ISSUE",
+                title="t2",
+                status="RUNNING",
+                current_session_id="ses_2",
+                workspace="/tmp/ws",
+            )
+        )
+        await session.commit()
+
+    await asyncio.wait_for(watcher_started.wait(), timeout=2)
+    assert "T1" in discovered
+    assert "T2" in discovered
+    assert not release.is_set()
+
+    release.set()
+    supervisor.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor
+
+
 async def test_supervisor_survives_transient_db_failure(monkeypatch, session_factory):
     async def noop(*args, **kwargs):
         return []
@@ -174,6 +247,7 @@ async def test_supervisor_survives_transient_db_failure(monkeypatch, session_fac
             gather=real_asyncio.gather,
             CancelledError=real_asyncio.CancelledError,
             wait=real_asyncio.wait,
+            Semaphore=real_asyncio.Semaphore,
         ),
     )
 
