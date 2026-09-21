@@ -195,9 +195,9 @@ def validate_start(mode: str, settings: Any) -> None:
         raise RuntimeError("root .env not found")
     if not (FRONTEND / "node_modules").is_dir():
         raise RuntimeError("frontend dependencies missing; run: cd frontend && npm ci")
-    if not (ROOT / "workspace-ui" / "node_modules").is_dir():
+    if not (FRONTEND / "public" / "opencode-workspace" / "index.html").is_file():
         raise RuntimeError(
-            "workspace-ui dependencies missing; run: node scripts/workspace_ui.mjs install"
+            "workspace-ui bundle missing; rebuild with: node scripts/workspace_ui.mjs build"
         )
 
     if mode == "pro":

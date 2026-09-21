@@ -21,7 +21,6 @@ backend/celerybeat-schedule*
 
 workspace-ui/node_modules/
 workspace-ui/upstream/**/node_modules/
-frontend/public/opencode-workspace/
 wiki/
 backend/.astra-tasks/
 backend/～/

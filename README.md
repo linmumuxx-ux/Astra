@@ -42,7 +42,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 
 `setup-windows.ps1` 仅负责首次安装；平台启停统一使用 `scripts/astra_service.py`。
 
-`workspace-ui` 在公司 Windows 环境优先使用 pnpm 安装和构建；未安装 pnpm 时可通过 Corepack，其他环境仍可回退 bun。统一入口为 `node scripts/workspace_ui.mjs <install|build|type-check>`。
+`workspace-ui` 的公司 Windows 环境优先使用 pnpm 安装和构建；未安装 pnpm 时可通过 Corepack，其他环境仍可回退 bun。统一入口为 `node scripts/workspace_ui.mjs <install|build|type-check>`。
+
+仓库已提交 `workspace-ui` 的生产构建产物（`frontend/public/opencode-workspace`）。未安装 workspace-ui 依赖时，`npm run build` 会直接复用该产物，因此公司环境无需联网安装 workspace-ui 依赖即可构建和运行工作台。只有修改 `workspace-ui` 源码时才需要先 `node scripts/workspace_ui.mjs install` 再重新构建。
 
 ## 开发环境
 

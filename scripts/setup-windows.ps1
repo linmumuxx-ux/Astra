@@ -47,9 +47,14 @@ if (-not $Node) {
     throw "未找到 node.exe。请安装 Node.js 20+ 并加入 PATH。"
 }
 
-& $Node.Source (Join-Path $ProjectRoot "scripts\workspace_ui.mjs") install
-if ($LASTEXITCODE -ne 0) {
-    throw "workspace-ui 依赖安装失败。公司网络优先使用 pnpm；没有 pnpm 时会尝试 bun。"
+$WorkspaceBundle = Join-Path $ProjectRoot "frontend\public\opencode-workspace\index.html"
+if (Test-Path $WorkspaceBundle) {
+    Write-Host "检测到已提交的 workspace-ui 构建产物，跳过 workspace-ui 依赖安装。"
+} else {
+    & $Node.Source (Join-Path $ProjectRoot "scripts\workspace_ui.mjs") install
+    if ($LASTEXITCODE -ne 0) {
+        throw "workspace-ui 依赖安装失败。公司网络优先使用 pnpm；没有 pnpm 时会尝试 bun。"
+    }
 }
 
 Push-Location (Join-Path $ProjectRoot "frontend")

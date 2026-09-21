@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
@@ -9,6 +10,22 @@ const action = process.argv[2]
 if (!["install", "build", "type-check"].includes(action)) {
   console.error("Usage: node scripts/workspace_ui.mjs <install|build|type-check>")
   process.exit(2)
+}
+
+const bundle = path.join(root, "frontend", "public", "opencode-workspace", "index.html")
+const dependenciesInstalled = existsSync(path.join(workspace, "node_modules"))
+
+if (action === "build" && !dependenciesInstalled) {
+  if (existsSync(bundle)) {
+    console.log(
+      "[workspace-ui] workspace-ui dependencies are not installed; reusing committed production bundle at frontend/public/opencode-workspace",
+    )
+    process.exit(0)
+  }
+  console.error(
+    "[workspace-ui] dependencies missing and no committed bundle; run: node scripts/workspace_ui.mjs install",
+  )
+  process.exit(1)
 }
 
 const windows = process.platform === "win32"

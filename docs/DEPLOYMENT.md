@@ -55,10 +55,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 1. 定位 Python 3.11+
 2. 创建根目录 `.venv`
 3. 安装 Backend 依赖
-4. 使用 pnpm（优先）/ Corepack pnpm / bun 安装 `workspace-ui` 依赖
+4. 检查 `frontend/public/opencode-workspace` 是否已有提交的 workspace-ui 构建产物；有则跳过 workspace-ui 依赖安装，没有才使用 pnpm（优先）/ Corepack pnpm / bun 安装
 5. 执行前端 `npm ci`
-6. 执行一次完整前端生产构建（包含 workspace-ui）
+6. 执行一次完整前端生产构建（workspace-ui 依赖缺失时复用已提交产物）
 7. 首次运行时生成根目录 `.env`
+
+仓库已提交 workspace-ui 生产产物，公司环境拉取分支后无需联网安装 workspace-ui 依赖或重新打包即可直接构建和运行工作台。只有修改 `workspace-ui` 源码时才需要 `node scripts/workspace_ui.mjs install` 后重新构建。
 
 安装脚本只负责环境准备，不负责平台启停。
 
