@@ -14,6 +14,7 @@ import {
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useNavigate, useParams } from "@solidjs/router"
 import { useLayout, LocalProject } from "@/context/layout"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { useServerSync } from "@/context/server-sync"
 import { Persist, persisted } from "@/utils/persist"
 import { base64Encode } from "@opencode-ai/core/util/encode"
@@ -1486,17 +1487,21 @@ export default function LegacyLayout(props: ParentProps) {
       title: language.t("workspace.reset.success.title"),
       description: language.t("workspace.reset.success.description"),
       actions: [
-        {
-          label: language.t("command.session.new"),
-          onClick: () => {
-            const href = `/${base64Encode(directory)}/session`
-            navigate(href)
-            layout.mobileSidebar.hide()
-          },
-        },
+        ...(workspaceCapabilities.sessionManagementEnabled
+          ? [
+              {
+                label: language.t("command.session.new"),
+                onClick: () => {
+                  const href = `/${base64Encode(directory)}/session`
+                  navigate(href)
+                  layout.mobileSidebar.hide()
+                },
+              },
+            ]
+          : []),
         {
           label: language.t("common.dismiss"),
-          onClick: "dismiss",
+          onClick: "dismiss" as const,
         },
       ],
     })
@@ -2082,20 +2087,22 @@ export default function LegacyLayout(props: ParentProps) {
               </div>
 
               <div class="flex-1 min-h-0 flex flex-col">
-                <div class="shrink-0 py-4">
-                  <Button
-                    size="large"
-                    class="w-full"
-                    onClick={() => {
-                      const dir = worktree()
-                      if (!dir) return
-                      navigateWithSidebarReset(`/${base64Encode(dir)}/session`)
-                    }}
-                  >
-                    <IconV2 name="edit" size="small" />
-                    {language.t("command.session.new")}
-                  </Button>
-                </div>
+                <Show when={workspaceCapabilities.sessionManagementEnabled}>
+                  <div class="shrink-0 py-4">
+                    <Button
+                      size="large"
+                      class="w-full"
+                      onClick={() => {
+                        const dir = worktree()
+                        if (!dir) return
+                        navigateWithSidebarReset(`/${base64Encode(dir)}/session`)
+                      }}
+                    >
+                      <IconV2 name="edit" size="small" />
+                      {language.t("command.session.new")}
+                    </Button>
+                  </div>
+                </Show>
                 <div class="flex-1 min-h-0">
                   <LocalWorkspace
                     ctx={workspaceSidebarCtx}

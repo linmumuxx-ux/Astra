@@ -1,4 +1,9 @@
 export { AppBaseProviders, AppInterface } from "./app"
+export {
+  configureWorkspaceCapabilities,
+  workspaceCapabilities,
+  type WorkspaceCapabilities,
+} from "./config/workspace-capabilities"
 export { useLayout } from "./context/layout"
 export { useServerSDK } from "./context/server-sdk"
 export { useServerSync } from "./context/server-sync"

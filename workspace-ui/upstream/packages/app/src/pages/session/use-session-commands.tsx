@@ -1,5 +1,6 @@
 import { useNavigate } from "@solidjs/router"
 import { useCommand, type CommandOption } from "@/context/command"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { previewSelectedLines } from "@opencode-ai/session-ui/pierre/selection-bridge"
 import { useFile, selectionFromLines, type FileSelection, type SelectedLineRange } from "@/context/file"
@@ -446,19 +447,22 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const sessionCmds = () => [
-    sessionCommand({
-      id: "session.new",
-      title: language.t("command.session.new"),
-      keybind: "mod+shift+s",
-      slash: "new",
-      onSelect: (source) => {
-        if (settings.general.newLayoutDesigns()) {
-          command.trigger("tab.new", source)
-          return
-        }
-        navigate(`/${params.dir}/session`)
-      },
-    }),
+    workspaceCapabilities.sessionManagementEnabled
+      ? sessionCommand({
+          id: "session.new",
+          title: language.t("command.session.new"),
+          keybind: "mod+shift+s",
+          slash: "new",
+          onSelect: (source) => {
+            if (!workspaceCapabilities.sessionManagementEnabled) return
+            if (settings.general.newLayoutDesigns()) {
+              command.trigger("tab.new", source)
+              return
+            }
+            navigate(`/${params.dir}/session`)
+          },
+        })
+      : undefined,
     sessionCommand({
       id: "session.undo",
       title: language.t("command.session.undo"),
@@ -483,14 +487,16 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       disabled: !params.id || visibleUserMessages().length === 0,
       onSelect: compact,
     }),
-    sessionCommand({
-      id: "session.fork",
-      title: language.t("command.session.fork"),
-      description: language.t("command.session.fork.description"),
-      slash: "fork",
-      disabled: !params.id || visibleUserMessages().length === 0,
-      onSelect: fork,
-    }),
+    workspaceCapabilities.sessionManagementEnabled
+      ? sessionCommand({
+          id: "session.fork",
+          title: language.t("command.session.fork"),
+          description: language.t("command.session.fork.description"),
+          slash: "fork",
+          disabled: !params.id || visibleUserMessages().length === 0,
+          onSelect: fork,
+        })
+      : undefined,
     sessionCommand({
       id: "session.export",
       title: language.t("command.session.export"),
@@ -499,17 +505,19 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       disabled: !params.id,
       onSelect: exportSession,
     }),
-    sessionCommand({
-      id: "session.archive",
-      title: language.t("command.session.archive"),
-      keybind: "mod+shift+backspace",
-      disabled: !params.id,
-      onSelect: () => {
-        const id = params.id
-        if (id) void sessionArchive.archive(id)
-      },
-    }),
-  ]
+    workspaceCapabilities.sessionManagementEnabled
+      ? sessionCommand({
+          id: "session.archive",
+          title: language.t("command.session.archive"),
+          keybind: "mod+shift+backspace",
+          disabled: !params.id,
+          onSelect: () => {
+            const id = params.id
+            if (id) void sessionArchive.archive(id)
+          },
+        })
+      : undefined,
+  ].filter((v) => !!v)
 
   const fileCmds = () => {
     const tab = closableTab()

@@ -33,6 +33,7 @@ import { makeEventListener } from "@solid-primitives/event-listener"
 import { createMediaQuery } from "@solid-primitives/media"
 import { readSessionTabsRemovedDetail, SESSION_TABS_REMOVED_EVENT } from "@/components/titlebar-session-events"
 import { useGlobal } from "@/context/global"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { ServerConnection, useServer } from "@/context/server"
 import { tabKey, useTabs } from "@/context/tabs"
 import type { PromptSession } from "@/context/prompt"
@@ -262,6 +263,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
             })
 
             const openNewTab = () => {
+              if (!workspaceCapabilities.sessionManagementEnabled) return
               const route = layout.route()
               const activeSession = session()
               if (route.type === "session" && activeSession) {
@@ -328,31 +330,37 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
               const current = currentTab()
 
               return [
-                {
-                  id: "tab.new",
-                  category: "tab",
-                  title: language.t("command.session.new"),
-                  keybind: "mod+t,mod+n",
-                  hidden: true,
-                  onSelect: openNewTab,
-                },
-                current && {
-                  id: "tab.close",
-                  category: "tab",
-                  title: language.t("command.tab.close"),
-                  keybind: "mod+w",
-                  hidden: true,
-                  onSelect: () => {
-                    tabsStoreActions.closeTab(tabsStore.findIndex((tab) => current === tab))
-                  },
-                },
-                {
-                  id: "tab.reopenClosed",
-                  category: language.t("command.category.file"),
-                  title: language.t("command.tab.reopenClosed"),
-                  keybind: "mod+shift+t",
-                  onSelect: () => tabsStoreActions.reopenClosedTab(),
-                },
+                workspaceCapabilities.sessionManagementEnabled
+                  ? {
+                      id: "tab.new",
+                      category: "tab",
+                      title: language.t("command.session.new"),
+                      keybind: "mod+t,mod+n",
+                      hidden: true,
+                      onSelect: openNewTab,
+                    }
+                  : undefined,
+                workspaceCapabilities.sessionManagementEnabled && current
+                  ? {
+                      id: "tab.close",
+                      category: "tab",
+                      title: language.t("command.tab.close"),
+                      keybind: "mod+w",
+                      hidden: true,
+                      onSelect: () => {
+                        tabsStoreActions.closeTab(tabsStore.findIndex((tab) => current === tab))
+                      },
+                    }
+                  : undefined,
+                workspaceCapabilities.sessionManagementEnabled
+                  ? {
+                      id: "tab.reopenClosed",
+                      category: language.t("command.category.file"),
+                      title: language.t("command.tab.reopenClosed"),
+                      keybind: "mod+shift+t",
+                      onSelect: () => tabsStoreActions.reopenClosedTab(),
+                    }
+                  : undefined,
               ].filter((v) => v !== undefined)
             })
 
@@ -410,25 +418,27 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                   }}
                   onReorder={(keys) => tabsStoreActions.reorder(keys)}
                 />
-                <TooltipV2
-                  placement="bottom"
-                  value={
-                    <>
-                      {language.t("command.session.new")}
-                      <KeybindV2 keys={newTabTooltipKeybind(command)} variant="neutral" />
-                    </>
-                  }
-                >
-                  <IconButtonV2
-                    type="button"
-                    variant="ghost-muted"
-                    size="large"
-                    class="shrink-0"
-                    icon={<IconV2 name="plus" />}
-                    onClick={openNewTab}
-                    aria-label={language.t("command.session.new")}
-                  />
-                </TooltipV2>
+                <Show when={workspaceCapabilities.sessionManagementEnabled}>
+                  <TooltipV2
+                    placement="bottom"
+                    value={
+                      <>
+                        {language.t("command.session.new")}
+                        <KeybindV2 keys={newTabTooltipKeybind(command)} variant="neutral" />
+                      </>
+                    }
+                  >
+                    <IconButtonV2
+                      type="button"
+                      variant="ghost-muted"
+                      size="large"
+                      class="shrink-0"
+                      icon={<IconV2 name="plus" />}
+                      onClick={openNewTab}
+                      aria-label={language.t("command.session.new")}
+                    />
+                  </TooltipV2>
+                </Show>
                 <div class="flex-1" />
                 <TitlebarV2Right state={v2RightState()} />
               </div>
@@ -491,7 +501,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                   </Button>
                 </TooltipKeybind>
                 <div class="hidden xl:flex items-center shrink-0">
-                  <Show when={params.dir}>
+                  <Show when={params.dir && workspaceCapabilities.sessionManagementEnabled}>
                     <div
                       class="flex items-center shrink-0 w-8 mr-1"
                       aria-hidden={layout.sidebar.opened() ? "true" : undefined}

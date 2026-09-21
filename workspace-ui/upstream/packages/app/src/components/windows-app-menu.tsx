@@ -6,6 +6,7 @@ import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 
 import { useCommand } from "@/context/command"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { DESKTOP_MENU, desktopMenuVisible, type DesktopMenuAction, type DesktopMenuEntry } from "@/desktop-menu"
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
@@ -84,6 +85,14 @@ export function WindowsAppMenu(props: {
               <DesktopMenuSubmenu label={language.t(menu.labelKey)}>
                 {menu.items
                   ?.filter((entry) => desktopMenuVisible(entry, "windows"))
+                  ?.filter(
+                    (entry) =>
+                      !(
+                        !workspaceCapabilities.sessionManagementEnabled &&
+                        "command" in entry &&
+                        entry.command === "session.new"
+                      ),
+                  )
                   .map((entry) =>
                     entry.type === "separator" ? (
                       <DropdownMenu.Separator />

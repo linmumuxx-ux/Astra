@@ -143,12 +143,10 @@ test.describe('真实 Task / Session Workspace', () => {
     a = await outcome(request, a.id, 'SUCCEEDED')
     await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 10_000 })
     await expect(frame(page).locator('[data-component="text-part"]').filter({ hasText: 'CONTINUE_COMPLETE' }).last()).toBeVisible()
-    // ASTRA 主题在原生 Workspace 内生效：用户消息右对齐，OpenCode 消息带明确身份标识。
-    await expect(frame(page).locator('#astra-workspace-theme')).toHaveCount(1)
+    // OpenCode 原生样式：Astra 不注入主题覆盖，也不添加自定义身份标签。
+    await expect(frame(page).locator('#astra-workspace-theme')).toHaveCount(0)
     const assistantIdentity = await frame(page).locator('[data-slot="session-turn-assistant-content"]').first().evaluate(el => getComputedStyle(el, '::before').content)
-    const userMarginLeft = await frame(page).locator('[data-component="user-message"]').first().evaluate(el => getComputedStyle(el).marginLeft)
-    expect(assistantIdentity).toContain('OpenCode')
-    expect(userMarginLeft).not.toBe('0px')
+    expect(assistantIdentity === 'none' || assistantIdentity === 'normal').toBe(true)
     expect(writes).toContain(`/api/tasks/${a.id}/opencode/${a.current_session_id}/session/${a.current_session_id}/prompt_async`)
     expect(writes.some(path => /\/(start|restart)$/.test(path))).toBe(false)
     // Continuing must reuse the same Session; status/finished_at legitimately change.

@@ -1,21 +1,21 @@
 import { render } from 'solid-js/web'
 import { HashRouter } from '@solidjs/router'
-import { AppBaseProviders, AppInterface, PlatformProvider, ServerConnection, type Platform } from '@opencode-ai/app'
+import {
+  AppBaseProviders,
+  AppInterface,
+  configureWorkspaceCapabilities,
+  PlatformProvider,
+  ServerConnection,
+  type Platform,
+} from '@opencode-ai/app'
 import { base64Encode } from '@opencode-ai/core/util/encode'
-import { ASTRA_THEME_CSS } from './astra-theme'
 
-// Only binding and theme belong here. Conversation, tools, files, diff and composer are upstream.
+// Only binding belongs here. Conversation, tools, files, diff, composer and theme are upstream;
+// Astra must not restyle the OpenCode surface.
 const taskID = new URLSearchParams(location.search).get('task')
 const selected = new URLSearchParams(location.search).get('session')
 const root = document.getElementById('root')!
 
-function applyAstraTheme() {
-  if (document.getElementById('astra-workspace-theme')) return
-  const style = document.createElement('style')
-  style.id = 'astra-workspace-theme'
-  style.textContent = ASTRA_THEME_CSS
-  document.head.appendChild(style)
-}
 async function boot() {
   if (!taskID) throw new Error('缺少 Task ID')
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
@@ -47,7 +47,8 @@ async function boot() {
       removeItem: key => localStorage.removeItem(`${taskID}:${name}:${key}`),
     }),
   }
-  applyAstraTheme()
+  // Astra owns session creation and lifecycle: the embedded workspace only shows the bound session.
+  configureWorkspaceCapabilities({ sessionManagementEnabled: false })
   render(() => <PlatformProvider value={platform}><AppBaseProviders><AppInterface
     defaultServer={ServerConnection.Key.make(endpoint)} servers={[server]} router={HashRouter}
   ></AppInterface></AppBaseProviders></PlatformProvider>, root)

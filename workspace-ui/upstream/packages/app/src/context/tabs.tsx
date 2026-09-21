@@ -13,6 +13,7 @@ import { createTabMemory } from "./tab-memory"
 import { nextTabAfterClose, pushClosedTab, removeClosedTabs, takeClosedTab, type ClosedTab } from "./closed-tabs"
 import { createDraftPromptSession, type PromptModel } from "./prompt-state"
 import { migrateTabs } from "./tab-migration"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 
 export type SessionTab = {
   type: "session"
@@ -207,6 +208,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         return tab
       },
       async newDraft(draft: Omit<DraftTab, "type" | "draftID">, prompt?: string, model?: PromptModel) {
+        if (!workspaceCapabilities.sessionManagementEnabled) return
         const draftID = uuid()
         const tab = { type: "draft" as const, draftID, ...draft }
         memory.ensure(tabKey(tab), "prompt", () => createDraftPromptSession(draftID, { prompt, model }))
@@ -251,12 +253,14 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       // Cleanup paths (missing sessions, archive, server removal) go through
       // removeTab and friends directly and are not recorded.
       closeTab(index: number) {
+        if (!workspaceCapabilities.sessionManagementEnabled) return
         const tab = store[index]
         if (!tab) return
         if (tab.type === "session") updateClosed((stack) => pushClosedTab(stack, tab, index))
         removeTab(index)
       },
       reopenClosedTab() {
+        if (!workspaceCapabilities.sessionManagementEnabled) return
         if (!closedReady()) {
           void closedReady.promise?.then(() => actions.reopenClosedTab())
           return
