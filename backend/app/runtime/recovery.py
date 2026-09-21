@@ -49,6 +49,9 @@ def _summary_needs_repair_filter():
         TaskSummary.id.is_(None),
         TaskSummary.stale.is_(True),
         TaskSummary.source_status != Task.status,
+        # A summary whose source Session is no longer the Task's current round
+        # is stale by definition and must be rebuilt from the live Session.
+        TaskSummary.primary_session_id.is_distinct_from(Task.current_session_id),
         and_(
             Task.status.in_(["SUCCEEDED", "FAILED"]),
             TaskSummary.artifacts_processed_generation < TaskSummary.generation,
@@ -228,6 +231,16 @@ async def _read_final_text(session, task: Task) -> str:
     return final_text
 
 
+async def _read_summary(session, task_id: str) -> TaskSummary | None:
+    """Read the summary from the database, bypassing any stale identity-map copy."""
+
+    return await session.scalar(
+        select(TaskSummary)
+        .where(TaskSummary.task_id == task_id)
+        .execution_options(populate_existing=True)
+    )
+
+
 async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
     """Repair summaries/experience after a crash between Task terminal commit and artifact commit."""
 
@@ -261,6 +274,15 @@ async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
             if not needs_summary and not needs_artifacts:
                 continue
 
+            # The round this compensation is based on. Reading the final reply is
+            # network I/O, so the round may advance (new Session, new summary)
+            # while we wait. The compensation may only write when the round is
+            # still exactly this one.
+            expected_session_id = task.current_session_id
+            expected_last_message_id = task.last_message_id
+            expected_status = task.status
+            expected_generation = summary.generation if summary else 0
+
             final_text = summary.summary if summary and not summary.stale else ""
             if needs_summary and task.current_session_id and task.workspace:
                 try:
@@ -278,7 +300,19 @@ async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
                     )
                     await session.rollback()
                     continue
-                task = await session.get(Task, task_id)
+
+                task = await RuntimeService(session).lock_task(task_id)
+                summary = await _read_summary(session, task_id)
+                if (
+                    task.current_session_id != expected_session_id
+                    or task.last_message_id != expected_last_message_id
+                    or task.status != expected_status
+                    or (summary.generation if summary else 0) != expected_generation
+                ):
+                    # A newer execution round (or another writer) already produced
+                    # a result. The old Session's compensation must not overwrite it.
+                    await session.rollback()
+                    continue
 
             summary = await TaskSummaryService(session).upsert(
                 task,

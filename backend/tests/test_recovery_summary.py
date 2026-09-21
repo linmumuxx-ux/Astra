@@ -37,6 +37,14 @@ class _FakeClient:
         return self._state["messages"]
 
 
+class _HookedClient:
+    def __init__(self, on_messages):
+        self._on_messages = on_messages
+
+    async def messages(self, directory, sid):
+        return await self._on_messages(directory, sid)
+
+
 def _install_connect(monkeypatch, state):
     @asynccontextmanager
     async def fake_connect(*args, **kwargs):
@@ -146,6 +154,90 @@ async def test_missing_session_uses_recorded_facts(monkeypatch, session_factory)
     assert summary.source_status == "FAILED"
 
 
+async def test_old_summary_compensation_cannot_overwrite_new_session(
+    monkeypatch, session_factory
+):
+    async with session_factory() as session:
+        session.add(DigitalEmployee(id="E1", name="Eng", role="build", status="IDLE"))
+        session.add(
+            Task(
+                id="T1",
+                task_type="ISSUE",
+                title="t",
+                status="SUCCEEDED",
+                employee_id="E1",
+                current_session_id="ses_old",
+                workspace="/tmp/ws",
+                last_message_id="msg_anchor",
+                current_progress="旧进度",
+            )
+        )
+        session.add(
+            RuntimeSession(
+                id="ses_old",
+                task_id="T1",
+                employee_id="E1",
+                workspace="/tmp/ws",
+                environment={},
+                status="SUCCEEDED",
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
+    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
+    _noop_artifacts(monkeypatch)
+
+    async def on_messages(directory, sid):
+        # While the old compensation waits on the network read, a new Session
+        # completes and writes the authoritative summary.
+        async with session_factory() as other:
+            task = await other.get(Task, "T1")
+            task.current_session_id = "ses_new"
+            task.last_message_id = "msg_new_anchor"
+            other.add(
+                RuntimeSession(
+                    id="ses_new",
+                    task_id="T1",
+                    employee_id="E1",
+                    workspace="/tmp/ws",
+                    environment={},
+                    status="SUCCEEDED",
+                )
+            )
+            other.add(
+                TaskSummary(
+                    id="TS-new",
+                    task_id="T1",
+                    primary_session_id="ses_new",
+                    summary="新 Session 正确结果",
+                    source_status="SUCCEEDED",
+                    generation=1,
+                    stale=False,
+                    artifacts_processed_generation=1,
+                )
+            )
+            await other.commit()
+        return _reply_messages("旧 Session 过期结果")
+
+    @asynccontextmanager
+    async def fake_connect(*args, **kwargs):
+        yield _HookedClient(on_messages)
+
+    monkeypatch.setattr(recovery, "connect", fake_connect)
+
+    repaired = await recovery.reconcile_terminal_artifacts()
+
+    async with session_factory() as session:
+        summary = await session.scalar(
+            select(TaskSummary).where(TaskSummary.task_id == "T1")
+        )
+    assert repaired == []
+    assert summary.summary == "新 Session 正确结果"
+    assert summary.primary_session_id == "ses_new"
+    assert summary.generation == 1
+
+
 async def test_artifacts_only_repair_does_not_reread_messages(monkeypatch, session_factory):
     await _seed_terminal_task(session_factory)
     async with session_factory() as session:
@@ -226,6 +318,7 @@ async def test_limit_filters_pending_before_scan_window(monkeypatch, session_fac
                 TaskSummary(
                     id=f"TS-NEW-{index}",
                     task_id=f"T-NEW-{index}",
+                    primary_session_id=f"ses_{index}",
                     summary="done",
                     source_status="SUCCEEDED",
                     generation=1,

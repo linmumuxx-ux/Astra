@@ -54,9 +54,19 @@ def extract_final_assistant_text(
 
 
 def summary_is_complete(summary: TaskSummary | None, task: Task) -> bool:
-    """A summary only counts as the completed result when it is current."""
+    """A summary only counts as the completed result when it is current.
 
-    return bool(summary and not summary.stale and summary.source_status == task.status)
+    Currency is more than ``not stale``: the summary must belong to the Task's
+    current execution round. An older Session's compensation must never be
+    accepted as the result of a later round.
+    """
+
+    return bool(
+        summary
+        and not summary.stale
+        and summary.source_status == task.status
+        and summary.primary_session_id == task.current_session_id
+    )
 
 
 def _snapshot(task: Task, *, final_message_id: str | None = None) -> dict:
