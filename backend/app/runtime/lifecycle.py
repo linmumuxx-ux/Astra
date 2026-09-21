@@ -899,12 +899,16 @@ class RuntimeService:
         await self.session.commit()
 
         forced_offline_cancel = False
+        was_active = False
         stop_error = None
         usage_messages: list[dict] | None = None
         native_session_count: int | None = None
         if session_id and environment:
             try:
                 async with connect(environment, start=True) as client:
+                    was_active = (
+                        await client.status(Path(workspace), session_id)
+                    ) in {"busy", "retry"}
                     await client.abort(Path(workspace), session_id)
                     usage_messages, native_session_count = await self._collect_final_usage(
                         client, Path(workspace), session_id
@@ -931,11 +935,26 @@ class RuntimeService:
         if session_id and task.current_session_id != session_id:
             await self.session.rollback()
             raise RuntimeStateError("取消期间 Session 已切换，请刷新后重试")
+        runtime_session = await self._runtime_session(task)
+        # Cancellation targets the current execution round, not the previous
+        # Task terminal. A SUCCEEDED Task that already received new input (lost
+        # ACK) or is busy again must still be cancelable.
+        active_round = bool(
+            task.pending_message_id
+            or task.pending_prompt
+            or was_active
+            or task.status in {TaskStatus.RUNNING, TaskStatus.WAITING}
+            or (runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES)
+        )
+        if task.status == TaskStatus.SUCCEEDED and not active_round:
+            # Nothing is executing or unconfirmed; a completed round is not a
+            # cancel target. Refuse instead of silently reopening it.
+            await self.session.rollback()
+            raise RuntimeStateError("任务已完成，没有正在执行或未确认的输入可取消")
         if usage_messages is not None:
             await self._update_session_usage(
                 task, usage_messages, native_session_count=native_session_count
             )
-        runtime_session = await self._runtime_session(task)
         if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
             runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
             runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
@@ -952,6 +971,10 @@ class RuntimeService:
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_error = None
+        if task.status == TaskStatus.SUCCEEDED:
+            # Reopen the in-flight round so the business cancel transition is
+            # valid; a previous round's SUCCEEDED must not block cancellation.
+            await self.project(task, TaskStatus.RUNNING)
         await self.project(task, TaskStatus.CANCELED)
         await TaskSummaryService(self.session).upsert(
             task,

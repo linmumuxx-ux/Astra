@@ -441,6 +441,42 @@ async def test_delayed_ack_does_not_clear_manual_confirmation(runtime):
     assert r.task.confirmed_at is not None
 
 
+async def test_stop_cancels_continued_round_after_lost_ack_on_succeeded_task(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
+    await _complete_current_turn(r)
+    assert r.task.status == "SUCCEEDED"
+
+    # The user continues on the same Session, but the ACK is lost.
+    r.native.fail_after_accept = True
+    with pytest.raises(ConnectionError):
+        await r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
+    assert r.task.status == "SUCCEEDED"
+    assert r.task.pending_message_id is not None
+    assert r.native.state == "busy"
+
+    stopped = await r.service.stop("T1")
+
+    assert stopped.status == "CANCELED"
+    assert r.task.status == "CANCELED"
+    assert r.task.pending_message_id is None
+    assert r.task.pending_prompt is None
+    assert r.native.state == "idle"
+
+
+async def test_stop_refuses_completed_task_without_active_round(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
+    await _complete_current_turn(r)
+    assert r.task.status == "SUCCEEDED"
+
+    with pytest.raises(RuntimeStateError, match="已完成"):
+        await r.service.stop("T1")
+
+    await r.session.refresh(r.task)
+    assert r.task.status == "SUCCEEDED"
+
+
 async def test_retry_submission_converges_when_background_refresh_acks_first(runtime):
     r = runtime
     pending_id = "msg_retryack0001"
