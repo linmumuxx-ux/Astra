@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.library_routes import library_principal
+from app.config.settings import get_settings
 from app.dashboard import (
     dashboard_activity,
     dashboard_attention,
@@ -59,9 +61,13 @@ from app.services import (
     dashboard_metrics,
 )
 from app.usage import (
+    aggregate_usage_by_day,
+    apply_day_tokens,
+    count_completed_tasks,
     day_bounds,
     employee_usage,
     load_sessions,
+    session_local_date,
     summarize_sessions,
     task_usage,
 )
@@ -89,14 +95,22 @@ async def require_employee(employee_id: str, session: AsyncSession) -> DigitalEm
 
 async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> EmployeeRead:
     start, end = day_bounds()
-    sessions = await load_sessions(session, employee_id=employee.id, start=start, end=end)
-    usage = await summarize_sessions(session, sessions)
+    sessions = await load_sessions(
+        session, employee_id=employee.id, start=start, end=end, overlap=True
+    )
+    today = datetime.now(ZoneInfo(get_settings().timezone)).date()
+    day_sessions = [item for item in sessions if session_local_date(item) == today]
+    usage = await summarize_sessions(session, day_sessions)
+    apply_day_tokens(usage, aggregate_usage_by_day(sessions).get(today.isoformat()))
+    completed = await count_completed_tasks(
+        session, employee_id=employee.id, start=start, end=end
+    )
     base = EmployeeRead.model_validate(employee)
     return EmployeeRead.model_validate(
         {
             **base.model_dump(),
             "today_usage": usage,
-            "today_completed": usage["completed_tasks"],
+            "today_completed": completed,
         }
     )
 

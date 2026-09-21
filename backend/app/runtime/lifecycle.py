@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_hex
 from time import time_ns
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import selectinload
@@ -34,7 +35,11 @@ from app.executors.opencode_prompt import (
     build_task_prompt,
     resolve_task_prompt_context,
 )
-from app.executors.usage import parse_execution_seconds, parse_opencode_usage
+from app.executors.usage import (
+    parse_execution_seconds,
+    parse_opencode_usage,
+    parse_usage_breakdowns,
+)
 from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory, TaskSummary
 from app.runtime.environment import environment_snapshot
 from app.runtime.runtime_context import (
@@ -225,6 +230,18 @@ class RuntimeService:
             runtime_session.tool_call_count = sum(item.call_count for item in tools)
         if model_name:
             runtime_session.model_name = model_name
+        # Attribute consumption to the real message day and the real message
+        # model so daily trend and per-model totals never reuse Session counters.
+        timezone = ZoneInfo(get_settings().timezone)
+        fallback_date = datetime.now(UTC).astimezone(timezone).date().isoformat()
+        usage_by_day, model_usage = parse_usage_breakdowns(
+            messages,
+            timezone=timezone,
+            fallback_date=fallback_date,
+            fallback_model=runtime_session.model_name or model_name,
+        )
+        runtime_session.usage_by_day = usage_by_day
+        runtime_session.model_usage = model_usage
 
     async def apply_session_state(
         self, task: Task, state: SessionState, *, final_text: str | None = None
@@ -299,6 +316,7 @@ class RuntimeService:
                 if task.confirmed_at is not None:
                     # A human already confirmed this Session result. Refresh must
                     # keep the confirmed terminal state instead of reverting to WAITING.
+                    task.completed_at = task.completed_at or task.confirmed_at
                     await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")
                     return
                 now = datetime.now(UTC)
@@ -319,6 +337,9 @@ class RuntimeService:
                 )
             else:
                 task.confirmed_at = datetime.now(UTC)
+                # Business completion is recorded once and never rewritten by a
+                # later restart or re-execution.
+                task.completed_at = task.completed_at or task.confirmed_at
                 await self.project(task, TaskStatus.SUCCEEDED)
         elif state.status == RuntimeSessionStatus.FAILED.value:
             message = task.failure_reason or {
@@ -1119,6 +1140,7 @@ class RuntimeService:
         summary_text = summary.summary
 
         task.confirmed_at = datetime.now(UTC)
+        task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None
         task.human_intervention = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")

@@ -9,11 +9,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, RuntimeSessionStatus, TaskStatus
-from app.models import DigitalEmployee, Event, RuntimeSession, Task
+from app.domain import EmployeeStatus, TaskStatus
+from app.models import DigitalEmployee, Event, Task
 from app.runtime.presentation import TASK_STATUS
 from app.services import dashboard_metrics
-from app.usage import day_bounds, session_local_date
+from app.usage import day_bounds
 
 ATTENTION_STATUSES = {key for key, value in TASK_STATUS.items() if value["group"] == "attention"}
 ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING}
@@ -188,14 +188,10 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
             )
         )
     ).all()
-    attributed = func.coalesce(
-        RuntimeSession.finished_at, RuntimeSession.started_at, RuntimeSession.created_at
-    )
-    completed_sessions = (
+    completed_at_values = (
         await session.execute(
-            select(RuntimeSession).where(
-                RuntimeSession.status == RuntimeSessionStatus.SUCCEEDED.value,
-                attributed >= start,
+            select(Task.completed_at).where(
+                Task.completed_at.is_not(None), Task.completed_at >= start
             )
         )
     ).scalars().all()
@@ -214,8 +210,9 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
         created_key = _local_date(created_at)
         if created_key in points:
             points[created_key]["total"] += 1
-    for runtime_session in completed_sessions:
-        completed_key = session_local_date(runtime_session).isoformat()
+    for completed_at in completed_at_values:
+        # Business completion follows the immutable completed_at day.
+        completed_key = _local_date(completed_at)
         if completed_key in points:
             points[completed_key]["completed"] += 1
     recent_rows = (

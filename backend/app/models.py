@@ -147,6 +147,9 @@ class Task(RuntimeProjection, Base):
     last_activity_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
     submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # Immutable business completion fact: set once when the Task first reaches
+    # SUCCEEDED and never cleared by a later restart.
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
     current_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -194,6 +197,10 @@ class RuntimeSession(Base):
     )
     execution_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_usage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    # Token/model consumption bucketed by the real message day and the real
+    # message model, computed when native messages are read.
+    usage_by_day: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    model_usage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     superseded_by: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id"), nullable=True, index=True
     )

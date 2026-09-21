@@ -719,6 +719,29 @@ async def test_explicit_restart_supersedes_each_running_session(runtime):
     assert first.superseded_by == second_new
 
 
+async def test_restart_does_not_rewrite_business_completion_time(runtime):
+    from app.runtime.session_state import SessionState
+
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
+    await _complete_current_turn(r)
+    first_completed_at = r.task.completed_at
+    assert first_completed_at is not None
+
+    await r.service.start("T1", restart=True)
+    await r.session.refresh(r.task)
+    assert r.task.completed_at == first_completed_at
+
+    # A second successful execution keeps the original completion fact.
+    await r.service.apply_session_state(
+        r.task,
+        SessionState(status="SUCCEEDED", terminal_reason="completed", finish_reason="stop"),
+    )
+    await r.session.refresh(r.task)
+    assert r.task.status == "SUCCEEDED"
+    assert r.task.completed_at == first_completed_at
+
+
 async def test_restart_after_cancel_starts_new_session_without_abort(runtime):
     r = runtime
     aborted = []

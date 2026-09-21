@@ -1,7 +1,12 @@
 from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.executors.base import TokenUsage, ToolUsageResult
+
+_TOKEN_COMPONENTS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+_BREAKDOWN_FIELDS = (*_TOKEN_COMPONENTS, "total_tokens", "llm_call_count", "tool_call_count")
 
 
 def _integer(value: Any) -> int | None:
@@ -104,6 +109,11 @@ def _model_name(event: dict[str, Any]) -> str | None:
     structured = _normalize_model(_find_value(event, ("model",)))
     if structured:
         return structured
+    # Flat provider/model ids (native assistant message info) must be joined.
+    provider = _find_value(event, ("providerID", "provider_id"))
+    model_id = _find_value(event, ("modelID", "model_id"))
+    if isinstance(provider, str) and provider and isinstance(model_id, str) and model_id:
+        return f"{provider}/{model_id}"
     direct = _find_value(event, ("modelID", "model_id", "modelName", "model_name"))
     if isinstance(direct, str) and direct:
         return direct
@@ -178,6 +188,72 @@ def parse_opencode_usage(
     )
     tools = [ToolUsageResult(name=name, **values) for name, values in sorted(grouped.items())]
     return token_usage, tools, model_name
+
+
+def _message_local_date(created_ms: int | None, timezone: ZoneInfo) -> str | None:
+    if created_ms is None:
+        return None
+    return datetime.fromtimestamp(created_ms / 1000, tz=UTC).astimezone(timezone).date().isoformat()
+
+
+def _breakdown_entry(key_label: str, key: str) -> dict[str, Any]:
+    return {key_label: key, **{field: 0 for field in _BREAKDOWN_FIELDS}}
+
+
+def parse_usage_breakdowns(
+    messages: list[dict[str, Any]],
+    *,
+    timezone: ZoneInfo,
+    fallback_date: str,
+    fallback_model: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Bucket native token/tool usage by the real message day and real model.
+
+    Tokens live on assistant message ``info``; the message timestamp and model are
+    read from the same record, so no aggregate is attributed to the Session day.
+    """
+
+    days: dict[str, dict[str, Any]] = {}
+    models: dict[str, dict[str, Any]] = {}
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        info = message.get("info") if isinstance(message.get("info"), dict) else {}
+        if str(info.get("role", "")).lower() != "assistant":
+            continue
+        values = _find_tokens(message)
+        has_tokens = any(value is not None for value in values)
+        parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+        tool_count = sum(
+            1
+            for part in parts
+            if isinstance(part, dict) and "tool" in str(part.get("type", "")).lower()
+        )
+        if not has_tokens and not tool_count:
+            continue
+        timing = info.get("time") if isinstance(info.get("time"), dict) else {}
+        day = _message_local_date(_timestamp_ms(timing.get("created")), timezone) or fallback_date
+        model = _model_name(message) or fallback_model or "未知"
+
+        for target, key, label in ((days, day, "date"), (models, model, "model_name")):
+            entry = target.get(key)
+            if entry is None:
+                entry = _breakdown_entry(label, key)
+                target[key] = entry
+            for position, field in enumerate(_TOKEN_COMPONENTS):
+                value = values[position]
+                if value is not None:
+                    entry[field] += value
+            if has_tokens:
+                entry["llm_call_count"] += 1
+                entry["total_tokens"] += sum(value for value in values if value is not None)
+            entry["tool_call_count"] += tool_count
+
+    return (
+        [days[key] for key in sorted(days)],
+        sorted(models.values(), key=lambda item: item["total_tokens"], reverse=True),
+    )
 
 
 def parse_execution_seconds(messages: list[dict[str, Any]]) -> int:

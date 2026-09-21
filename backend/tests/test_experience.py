@@ -566,6 +566,7 @@ async def test_usage_completed_tasks_share_experience_completion_definition():
     async with experience_session() as (session, _token):
         task = await session.get(Task, "T1")
         task.status = "SUCCEEDED"
+        task.completed_at = datetime.now(UTC)
         runtime_session = await session.get(RuntimeSession, "ses_a")
         runtime_session.status = "SUCCEEDED"
         await session.commit()

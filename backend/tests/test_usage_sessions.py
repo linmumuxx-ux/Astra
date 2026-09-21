@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config.settings import get_settings
 from app.models import Base, DigitalEmployee, RuntimeSession, Task
 from app.services import dashboard_metrics
 from app.usage import employee_usage, task_usage
@@ -15,6 +17,7 @@ async def usage_session():
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.now(UTC)
+    today = datetime.now(ZoneInfo(get_settings().timezone)).date().isoformat()
     async with factory() as session:
         session.add(DigitalEmployee(id="E1", name="Engineer", role="build", status="IDLE"))
         session.add_all(
@@ -26,6 +29,7 @@ async def usage_session():
                     status="SUCCEEDED",
                     employee_id="E1",
                     finished_at=now,
+                    completed_at=now,
                 ),
                 Task(
                     id="T2",
@@ -70,6 +74,17 @@ async def usage_session():
                             "duration_ms": 5,
                         },
                     ],
+                    usage_by_day=[
+                        {"date": today, "total_tokens": 640, "tool_call_count": 4}
+                    ],
+                    model_usage=[
+                        {
+                            "model_name": "provider/model-a",
+                            "total_tokens": 640,
+                            "llm_call_count": 3,
+                            "tool_call_count": 4,
+                        }
+                    ],
                 ),
                 RuntimeSession(
                     id="ses_2",
@@ -89,6 +104,17 @@ async def usage_session():
                             "success_count": 0,
                             "failure_count": 1,
                             "duration_ms": 9,
+                        }
+                    ],
+                    usage_by_day=[
+                        {"date": today, "total_tokens": 60, "tool_call_count": 1}
+                    ],
+                    model_usage=[
+                        {
+                            "model_name": "provider/model-b",
+                            "total_tokens": 60,
+                            "llm_call_count": 0,
+                            "tool_call_count": 1,
                         }
                     ],
                 ),
@@ -125,4 +151,7 @@ async def test_dashboard_metrics_use_session_usage(usage_session):
     metrics = await dashboard_metrics(usage_session)
     assert metrics["today_tokens"] == 700
     assert metrics["today_tool_calls"] == 5
+    # Business completion (immutable completed_at) vs Session completion.
     assert metrics["completed_today"] == 1
+    assert metrics["completed_sessions_today"] == 1
+    assert metrics["failed_sessions_today"] == 1

@@ -58,8 +58,16 @@ export interface UsageSummary {
   tool_success_count: number
   tool_failure_count: number
   duration_seconds: number
+  execution_seconds: number | null
+  idle_seconds: number | null
+  waiting_seconds: number
   completed_tasks: number
   task_count: number
+  session_count: number
+  native_session_count: number
+  completed_sessions: number
+  failed_sessions: number
+  interrupted_sessions: number
 }
 
 export interface ToolUsage {
@@ -70,11 +78,21 @@ export interface ToolUsage {
   duration_ms: number
 }
 
+export interface ModelUsage {
+  model_name: string
+  session_count: number
+  total_tokens: number
+  llm_call_count: number
+  tool_call_count: number
+}
+
 export interface EmployeeUsage {
   period_days: number
   summary: UsageSummary
   trend: Array<{ date: string } & UsageSummary>
   tools: ToolUsage[]
+  models?: ModelUsage[]
+  token_by_day?: Array<{ date: string } & UsageSummary>
 }
 
 export interface TaskUsage { summary: UsageSummary; tools: ToolUsage[]; sessions: number }
@@ -320,7 +338,10 @@ export interface Metrics {
   waiting_tasks: number
   failed_tasks: number
   completed_today: number
+  completed_sessions_today?: number
   failed_today: number
+  failed_sessions_today?: number
+  interrupted_sessions_today?: number
   today_tokens: number | null
   today_tool_calls: number | null
   task_status_distribution: Record<string, number>

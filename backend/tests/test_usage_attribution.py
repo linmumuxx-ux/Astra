@@ -36,7 +36,16 @@ async def usage_db():
 
 async def test_finished_session_is_attributed_to_finished_day(usage_db):
     session = usage_db
-    session.add(Task(id="T1", title="ok", task_type="ISSUE", status="SUCCEEDED", employee_id="E1"))
+    session.add(
+        Task(
+            id="T1",
+            title="ok",
+            task_type="ISSUE",
+            status="SUCCEEDED",
+            employee_id="E1",
+            completed_at=_local_datetime(0, hour=1),
+        )
+    )
     session.add(
         RuntimeSession(
             id="ses_1",
@@ -48,26 +57,37 @@ async def test_finished_session_is_attributed_to_finished_day(usage_db):
             started_at=_local_datetime(1, hour=22),
             finished_at=_local_datetime(0, hour=1),
             total_tokens=100,
+            usage_by_day=[{"date": _local_date(0), "total_tokens": 100}],
         )
     )
     await session.commit()
 
     result = await employee_usage(session, "E1", 3)
     trend = {point["date"]: point for point in result["trend"]}
+    # Token totals follow the real message day, not the Session day.
     assert trend[_local_date(0)]["total_tokens"] == 100
     assert trend[_local_date(0)]["session_count"] == 1
-    assert not trend[_local_date(1)]["total_tokens"]
+    assert trend[_local_date(1)]["total_tokens"] is None
     assert trend[_local_date(1)]["session_count"] == 0
 
     metrics = await dashboard_metrics(session)
     assert metrics["completed_today"] == 1
 
 
-async def test_restart_keeps_terminal_history_but_task_count_follows_status(usage_db):
+async def test_restart_keeps_terminal_and_business_completion_history(usage_db):
     session = usage_db
     # Yesterday's Session succeeded; today the Task was explicitly restarted so it
     # is RUNNING again while the immutable old Session stays terminal.
-    session.add(Task(id="T1", title="ok", task_type="ISSUE", status="RUNNING", employee_id="E1"))
+    session.add(
+        Task(
+            id="T1",
+            title="ok",
+            task_type="ISSUE",
+            status="RUNNING",
+            employee_id="E1",
+            completed_at=_local_datetime(1, hour=10),
+        )
+    )
     session.add_all(
         [
             RuntimeSession(
@@ -101,12 +121,16 @@ async def test_restart_keeps_terminal_history_but_task_count_follows_status(usag
     trend = {point["date"]: point for point in result["trend"]}
     assert trend[_local_date(1)]["completed_sessions"] == 1
     assert trend[_local_date(0)]["completed_sessions"] == 0
-    # History is immutable, but business completion follows the current Task.status.
+    # Restart does not rewrite either the Session terminal history or the
+    # immutable business completion fact.
     assert result["summary"]["completed_sessions"] == 1
-    assert result["summary"]["completed_tasks"] == 0
+    assert result["summary"]["completed_tasks"] == 1
+    assert trend[_local_date(1)]["completed_tasks"] == 1
+    assert trend[_local_date(0)]["completed_tasks"] == 0
 
     metrics = await dashboard_metrics(session)
     assert metrics["completed_today"] == 0
+    assert metrics["completed_sessions_today"] == 0
 
 
 async def test_task_usage_counts_root_and_native_sessions(usage_db):
@@ -170,6 +194,14 @@ async def test_model_breakdown_groups_distinct_models(usage_db):
                 total_tokens=100,
                 llm_call_count=2,
                 tool_call_count=3,
+                model_usage=[
+                    {
+                        "model_name": "provider/model-a",
+                        "total_tokens": 100,
+                        "llm_call_count": 2,
+                        "tool_call_count": 3,
+                    }
+                ],
             ),
             RuntimeSession(
                 id="ses_b",
@@ -184,6 +216,14 @@ async def test_model_breakdown_groups_distinct_models(usage_db):
                 total_tokens=40,
                 llm_call_count=1,
                 tool_call_count=1,
+                model_usage=[
+                    {
+                        "model_name": "provider/model-b",
+                        "total_tokens": 40,
+                        "llm_call_count": 1,
+                        "tool_call_count": 1,
+                    }
+                ],
             ),
         ]
     )
@@ -199,9 +239,18 @@ async def test_model_breakdown_groups_distinct_models(usage_db):
     assert models["provider/model-b"]["total_tokens"] == 40
 
 
-async def test_dashboard_completed_today_matches_session_attribution(usage_db):
+async def test_dashboard_separates_business_and_session_completion(usage_db):
     session = usage_db
-    session.add(Task(id="T1", title="ok", task_type="ISSUE", status="SUCCEEDED", employee_id="E1"))
+    session.add(
+        Task(
+            id="T1",
+            title="ok",
+            task_type="ISSUE",
+            status="SUCCEEDED",
+            employee_id="E1",
+            completed_at=_local_datetime(0, hour=9),
+        )
+    )
     session.add_all(
         [
             RuntimeSession(
@@ -232,5 +281,8 @@ async def test_dashboard_completed_today_matches_session_attribution(usage_db):
     today_sessions = await load_sessions(session, start=start, end=end)
     summary = await summarize_sessions(session, today_sessions)
     metrics = await dashboard_metrics(session)
+    # Execution completion is the Session terminal; business completion is the
+    # immutable Task.completed_at. They are reported separately.
     assert summary["completed_sessions"] == 1
-    assert metrics["completed_today"] == summary["completed_sessions"]
+    assert metrics["completed_sessions_today"] == summary["completed_sessions"]
+    assert metrics["completed_today"] == 1

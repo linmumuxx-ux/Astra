@@ -12,7 +12,12 @@ from app.event_bus import event_bus
 from app.models import DigitalEmployee, Event, Task
 from app.schemas import TaskCreate
 from app.state_machine import TaskStateMachine
-from app.usage import load_sessions, summarize_sessions
+from app.usage import (
+    count_completed_tasks,
+    load_sessions,
+    summarize_sessions,
+    today_token_bucket,
+)
 
 STATUS_EVENT = {status: f"TASK_{status.value}" for status in TaskStatus}
 
@@ -234,12 +239,14 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
     today = datetime.now(timezone).date()
     day_start = datetime.combine(today, time.min, tzinfo=timezone).astimezone(UTC)
     day_end = day_start + timedelta(days=1)
-    # Terminal count follows the immutable RuntimeSession outcome attributed to
-    # its local day, not the mutable Task.status (business completion).
+    # Business completion is the immutable Task.completed_at, never a successful
+    # RuntimeSession count. Session terminal counts stay separate.
+    completed_today = await count_completed_tasks(session, start=day_start, end=day_end)
     usage_sessions = await load_sessions(session, start=day_start, end=day_end)
     usage = await summarize_sessions(session, usage_sessions)
-    completed_today = usage["completed_sessions"]
-    failed_today = usage["failed_sessions"]
+    today_bucket = await today_token_bucket(session)
+    today_tokens = today_bucket.get("total_tokens") if today_bucket else None
+    today_tool_calls = today_bucket.get("tool_call_count") if today_bucket else None
     return {
         "online_employees": sum(
             count
@@ -253,9 +260,12 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
         "waiting_tasks": task_counts.get(TaskStatus.WAITING, 0),
         "failed_tasks": task_counts.get(TaskStatus.FAILED, 0),
         "completed_today": completed_today,
-        "failed_today": failed_today,
-        "today_tokens": usage["total_tokens"],
-        "today_tool_calls": usage["tool_call_count"],
+        "completed_sessions_today": usage["completed_sessions"],
+        "failed_today": usage["failed_sessions"],
+        "failed_sessions_today": usage["failed_sessions"],
+        "interrupted_sessions_today": usage["interrupted_sessions"],
+        "today_tokens": today_tokens,
+        "today_tool_calls": today_tool_calls,
         "task_status_distribution": task_counts,
         "employee_status_distribution": employee_counts,
     }
