@@ -84,6 +84,72 @@ async def test_watch_session_reconciles_on_absolute_deadline(
     assert refreshes["count"] > 1
 
 
+async def test_old_session_error_event_does_not_fail_new_running_round(
+    monkeypatch, session_factory, tmp_path
+):
+    async with session_factory() as session:
+        session.add(
+            Task(
+                id="T1",
+                task_type="ISSUE",
+                title="t",
+                status="RUNNING",
+                current_session_id="ses_current",
+                workspace=str(tmp_path),
+                last_message_id="msg_new_round",
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
+    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
+    monkeypatch.setattr(recovery, "session_tree", _fake_session_tree)
+
+    class FakeClient:
+        def __init__(self):
+            self._sent = False
+
+        async def _events(self):
+            while True:
+                if not self._sent:
+                    self._sent = True
+                    yield {
+                        "type": "session.error",
+                        "properties": {
+                            "sessionID": "ses_current",
+                            "error": "old round failed",
+                        },
+                    }
+                await asyncio.sleep(0.01)
+
+        def events(self, directory):
+            return self._events()
+
+    @asynccontextmanager
+    async def fake_connect(*args, **kwargs):
+        yield FakeClient()
+
+    monkeypatch.setattr(recovery, "connect", fake_connect)
+
+    # The live re-read proves the new round is still running.
+    async def fake_refresh(task_id, client):
+        return SimpleNamespace(
+            status="RUNNING", current_session_id="ses_current", submitted_at=None
+        )
+
+    monkeypatch.setattr(recovery, "_refresh_with_client", fake_refresh)
+
+    watcher = asyncio.create_task(recovery.watch_session("T1"))
+    await asyncio.sleep(0.15)
+    watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
+
+    async with session_factory() as session:
+        task = await session.get(Task, "T1")
+    assert task.status == "RUNNING"
+    assert task.failure_reason == "old round failed"
+
+
 async def test_supervisor_survives_transient_db_failure(monkeypatch, session_factory):
     async def noop(*args, **kwargs):
         return []

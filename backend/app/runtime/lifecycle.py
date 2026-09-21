@@ -68,6 +68,25 @@ _TERMINAL_SESSION_STATUSES = {
     RuntimeSessionStatus.INTERRUPTED.value,
 }
 
+_TERMINAL_TASK_STATUSES = {
+    TaskStatus.SUCCEEDED.value,
+    TaskStatus.FAILED.value,
+    TaskStatus.CANCELED.value,
+}
+
+
+def _task_result_concluded(task: Task) -> bool:
+    """Whether the Task already holds a business outcome for the current round.
+
+    A terminal status, or a MANUAL_CONFIRM result awaiting human sign-off, is a
+    concluded round. A late ACK for a submission already accounted for by that
+    round must never reopen it.
+    """
+
+    return task.status in _TERMINAL_TASK_STATUSES or (
+        task.status == TaskStatus.WAITING and task.submitted_at is not None
+    )
+
 
 def message_id():
     # Native OpenCode messages are ordered lexically by their 48-bit time prefix.
@@ -746,6 +765,7 @@ class RuntimeService:
         # A background refresh may have already confirmed this exact message and
         # cleared pending. Only an actual control operation (session switch or
         # cancel) or a different reservation invalidates the submission.
+        background_acked = task.pending_message_id is None
         pending_replaced = (
             task.pending_message_id is not None and task.pending_message_id != outbound_id
         )
@@ -758,6 +778,14 @@ class RuntimeService:
             async with connect(environment, start=True) as client:
                 await client.abort(Path(workspace), submitted_session)
             return await self.session.get(Task, task_id)
+        if background_acked and _task_result_concluded(task):
+            # An ACK only confirms the submission was accepted. This round already
+            # reached a result (possibly through MANUAL_CONFIRM) before the ACK
+            # returned, so the late ACK must not reopen it.
+            task.runtime_connection = "CONNECTED"
+            task.runtime_error = None
+            await self.session.commit()
+            return task
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_connection = "CONNECTED"
@@ -803,6 +831,7 @@ class RuntimeService:
             # A background refresh ACK clears pending without invalidating the
             # submission. Only a session switch, cancel, or a different
             # reservation is a real control-operation failure.
+            background_acked = task.pending_message_id is None
             pending_replaced = (
                 task.pending_message_id is not None and task.pending_message_id != pending_id
             )
@@ -823,6 +852,13 @@ class RuntimeService:
                             session_id,
                         )
                 raise RuntimeStateError("待确认输入已被控制操作失效，当前 Session 已停止")
+
+            if background_acked and _task_result_concluded(task):
+                # The submission was already accepted and the round already
+                # concluded. A late ACK must not reopen it.
+                task.runtime_error = None
+                await self.session.commit()
+                return task
 
             task.pending_message_id = None
             task.pending_prompt = None

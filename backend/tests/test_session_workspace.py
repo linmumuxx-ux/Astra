@@ -374,6 +374,73 @@ async def test_send_does_not_abort_when_background_refresh_acks_first(runtime):
     assert r.native.state == "busy"
 
 
+async def test_delayed_ack_does_not_reopen_succeeded_task(runtime):
+    r = runtime
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_request = r.native.request
+
+    async def delayed_request(method, path, **kwargs):
+        result = await original_request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed_request
+    send_task = asyncio.create_task(
+        r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
+    )
+    await started.wait()
+
+    # The background refresh concludes the round and ACKs the submission while
+    # the send request is still in flight.
+    await _complete_current_turn(r)
+    assert r.task.status == "SUCCEEDED"
+
+    release.set()
+    result = await send_task
+
+    assert result.status == "SUCCEEDED"
+    assert r.task.status == "SUCCEEDED"
+
+
+async def test_delayed_ack_does_not_clear_manual_confirmation(runtime):
+    r = runtime
+    r.task.completion_policy = "MANUAL_CONFIRM"
+    await r.session.commit()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_request = r.native.request
+
+    async def delayed_request(method, path, **kwargs):
+        result = await original_request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed_request
+    send_task = asyncio.create_task(
+        r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    )
+    await started.wait()
+
+    await _complete_current_turn(r)
+    assert r.task.status == "WAITING"
+    response = await r.api.post("/api/tasks/T1/confirm")
+    assert response.status_code == 200
+    assert r.task.confirmed_at is not None
+
+    release.set()
+    result = await send_task
+
+    assert result.status == "SUCCEEDED"
+    assert r.task.status == "SUCCEEDED"
+    assert r.task.confirmed_at is not None
+
+
 async def test_retry_submission_converges_when_background_refresh_acks_first(runtime):
     r = runtime
     pending_id = "msg_retryack0001"

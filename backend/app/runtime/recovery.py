@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import and_, or_, select
@@ -14,7 +13,6 @@ from app.executors.opencode_server import server_event_session_id
 from app.models import Task, TaskSummary
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.session_connection import connect, resolve_environment, session_tree
-from app.runtime.session_state import SessionState
 from app.runtime.summary import (
     TaskSummaryService,
     extract_final_assistant_text,
@@ -178,21 +176,20 @@ async def watch_session(task_id):
                         continue
 
                     if event["type"] == "session.error" and event_session_id == session_id:
+                        # An error event only proves the Session had an error at some
+                        # point; it does not prove the current round failed. Record the
+                        # native reason, then let a live re-read decide the round.
                         async with SessionLocal() as session:
                             current = await session.get(Task, task_id)
                             if not current or current.current_session_id != session_id:
                                 return
-                            current.failure_reason = str(props.get("error", "Session error"))
-                            await RuntimeService(session).apply_session_state(
-                                current,
-                                SessionState(
-                                    status="FAILED",
-                                    terminal_reason="assistant_error",
-                                    finished_at=datetime.now(UTC),
-                                ),
-                            )
-                    else:
-                        current = await _refresh_with_client(task_id, client)
+                            if current.status not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                                current.failure_reason = str(
+                                    props.get("error", "Session error")
+                                )
+                            await session.commit()
+
+                    current = await _refresh_with_client(task_id, client)
 
                     if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
                         return
