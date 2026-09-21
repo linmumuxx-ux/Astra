@@ -53,6 +53,12 @@ def extract_final_assistant_text(
     return "", None
 
 
+def summary_is_complete(summary: TaskSummary | None, task: Task) -> bool:
+    """A summary only counts as the completed result when it is current."""
+
+    return bool(summary and not summary.stale and summary.source_status == task.status)
+
+
 def _snapshot(task: Task, *, final_message_id: str | None = None) -> dict:
     return {
         "task_id": task.id,

@@ -267,6 +267,44 @@ async def test_child_session_question_projects_task_waiting(runtime):
         await r.service.send("T1", {"parts": [{"type": "text", "text": "should block"}]})
 
 
+async def test_auto_final_text_claim_does_not_decide_task_status(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    assistant = r.native.sessions["ses_current"][-1]
+    assistant["parts"] = [{"type": "text", "text": "任务未完成，无法继续，需要后续处理"}]
+    assistant["info"].update({"time": {"completed": 1}, "finish": "stop"})
+    r.native.state = "idle"
+
+    await r.service.refresh("T1")
+
+    # A plain statement in the final reply never decides the Task status.
+    assert r.task.status == "SUCCEEDED"
+
+
+async def test_auto_unverifiable_result_requires_native_question(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    assistant = r.native.sessions["ses_current"][-1]
+    assistant["parts"] = [{"type": "text", "text": "修改完成但无法验证"}]
+    assistant["info"].update({"time": {"completed": 1}, "finish": "stop"})
+    r.native.state = "busy"
+    r.native.pending = [{"id": "q_verify", "sessionID": "ses_current"}]
+
+    await r.service.refresh("T1")
+
+    # Only a native question/permission can express a blocked result.
+    assert r.task.status == "WAITING"
+
+
+async def test_auto_completed_turn_projects_succeeded(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    session = await r.session.get(RuntimeSession, "ses_current")
+    assert r.task.status == "SUCCEEDED"
+    assert session.status == "SUCCEEDED"
+
+
 async def test_retry_submission_aborts_if_stop_invalidates_inflight_send(runtime):
     r = runtime
     pending_id = "msg_retryrace01"
@@ -304,6 +342,138 @@ async def test_retry_submission_aborts_if_stop_invalidates_inflight_send(runtime
     assert r.task.status == "CANCELED"
     assert r.native.state == "idle"
     assert r.native.abort_count >= 2
+
+
+async def test_send_does_not_abort_when_background_refresh_acks_first(runtime):
+    r = runtime
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_request = r.native.request
+
+    async def delayed_request(method, path, **kwargs):
+        result = await original_request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed_request
+    send_task = asyncio.create_task(
+        r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
+    )
+    await started.wait()
+
+    await r.service.refresh("T1")
+    assert r.task.pending_message_id is None
+
+    release.set()
+    result = await send_task
+
+    assert result.status == "RUNNING"
+    assert r.native.abort_count == 0
+    assert r.native.state == "busy"
+
+
+async def test_retry_submission_converges_when_background_refresh_acks_first(runtime):
+    r = runtime
+    pending_id = "msg_retryack0001"
+    r.task.pending_message_id = pending_id
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    r.task.status = "FAILED"
+    await r.session.commit()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original_request = r.native.request
+
+    async def delayed_request(method, path, **kwargs):
+        result = await original_request(method, path, **kwargs)
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed_request
+    retry_task = asyncio.create_task(r.service.retry_submission("T1"))
+    await started.wait()
+
+    await r.service.refresh("T1")
+    assert r.task.pending_message_id is None
+
+    release.set()
+    result = await retry_task
+
+    assert result.status == "RUNNING"
+    assert r.native.abort_count == 0
+    assert len(r.native.sent) == 1
+
+
+async def test_start_lost_ack_preserves_recovery_and_refresh_converges(runtime):
+    r = runtime
+    aborted = []
+    original_abort = r.native.abort
+
+    async def tracking_abort(directory, sid):
+        aborted.append(sid)
+        return await original_abort(directory, sid)
+
+    r.native.abort = tracking_abort
+    r.native.fail_after_accept = True
+
+    with pytest.raises(ConnectionError):
+        await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    created = r.task.current_session_id
+    assert created != "ses_current"
+    assert r.task.pending_message_id is not None
+    assert r.task.pending_prompt is not None
+    assert r.task.runtime_connection == "UNAVAILABLE"
+    assert created not in aborted
+    assert r.native.sessions[created]
+    assert r.native.state == "busy"
+
+    r.native.fail_after_accept = False
+    await r.service.refresh("T1")
+
+    await r.session.refresh(r.task)
+    assert r.task.status == "RUNNING"
+    assert r.task.pending_message_id is None
+    assert r.native.abort_count == len(aborted)
+
+
+async def test_start_definitive_failure_clears_pending_and_aborts_created_session(runtime):
+    from app.executors.errors import OpenCodeExecutionError
+
+    r = runtime
+    aborted = []
+    original_abort = r.native.abort
+
+    async def tracking_abort(directory, sid):
+        aborted.append(sid)
+        return await original_abort(directory, sid)
+
+    r.native.abort = tracking_abort
+    original_request = r.native.request
+
+    async def failing_request(method, path, **kwargs):
+        if method == "POST" and path.endswith("/prompt_async"):
+            raise OpenCodeExecutionError("provider rejected input")
+        return await original_request(method, path, **kwargs)
+
+    r.native.request = failing_request
+    with pytest.raises(OpenCodeExecutionError):
+        await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    created = r.task.current_session_id
+    assert created != "ses_current"
+    assert r.task.pending_message_id is None
+    assert r.task.pending_prompt is None
+    assert created in aborted
 
 
 async def test_failed_current_turn_summary_never_reuses_previous_success(runtime):
@@ -382,6 +552,34 @@ async def test_disconnect_preserves_running_and_cancel_is_explicit(runtime):
     assert r.task.status == "CANCELED"
 
 
+async def test_cancel_captures_final_session_usage(runtime):
+    r = runtime
+    await r.service.project(r.task, "RUNNING")
+    r.native.sessions["ses_current"] = [
+        {
+            "info": {
+                "id": "m_final",
+                "role": "assistant",
+                "modelID": "local-proxy/GLM-5.2-Tester",
+                "time": {"created": 1_700_000_000_000, "completed": 1_700_000_003_000},
+                "tokens": {"input": 11, "output": 7},
+            },
+            "parts": [],
+        }
+    ]
+    await r.session.commit()
+
+    await r.service.stop("T1")
+
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "INTERRUPTED"
+    assert binding.input_tokens == 11
+    assert binding.output_tokens == 7
+    assert binding.model_name == "local-proxy/GLM-5.2-Tester"
+    assert binding.native_session_count == 1
+    assert binding.execution_seconds == 3
+
+
 async def test_employee_without_model_inherits_global_runtime_model(runtime, monkeypatch):
     from app.config.settings import get_settings
 
@@ -416,6 +614,109 @@ async def test_explicit_restart_supersedes_each_running_session(runtime):
     first = await r.session.get(RuntimeSession, first_new)
     assert first.status == "INTERRUPTED"
     assert first.superseded_by == second_new
+
+
+async def test_restart_after_cancel_starts_new_session_without_abort(runtime):
+    r = runtime
+    aborted = []
+    original_abort = r.native.abort
+
+    async def tracking_abort(directory, sid):
+        aborted.append(sid)
+        return await original_abort(directory, sid)
+
+    r.native.abort = tracking_abort
+    await r.service.stop("T1")
+    assert r.task.status == "CANCELED"
+    old = await r.session.get(RuntimeSession, "ses_current")
+    assert old.status == "INTERRUPTED"
+
+    await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    new_id = r.task.current_session_id
+    assert new_id != "ses_current"
+    assert r.task.status == "RUNNING"
+    assert r.task.turn_started_at is not None
+    assert r.task.execution_error is None
+    assert new_id not in aborted
+    assert r.native.state == "busy"
+
+
+async def test_restart_resets_turn_started_at_for_new_running_round(runtime):
+    r = runtime
+    await r.service.project(r.task, "RUNNING")
+    stale_start = datetime.now(UTC) - timedelta(days=1)
+    r.task.turn_started_at = stale_start
+    await r.session.commit()
+
+    await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    assert r.task.status == "RUNNING"
+    assert r.task.turn_started_at is not None
+    assert r.task.turn_started_at > stale_start + timedelta(hours=1)
+
+    # A fresh round must not inherit the previous round's timeout window.
+    r.native.state = "busy"
+    await r.service.refresh("T1")
+    assert r.task.status == "RUNNING"
+    assert r.native.state == "busy"
+
+
+async def test_restart_from_failed_initializes_new_round_fields(runtime):
+    r = runtime
+    r.task.turn_started_at = datetime.now(UTC) - timedelta(days=1)
+    r.task.execution_error = {"code": "old", "message": "old"}
+    r.task.failure_reason = "old failure"
+    r.task.finished_at = datetime.now(UTC) - timedelta(days=1)
+    await r.session.commit()
+
+    await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    assert r.task.status == "RUNNING"
+    assert r.task.execution_error is None
+    assert r.task.failure_reason is None
+    assert r.task.finished_at is None
+    assert r.task.turn_started_at > datetime.now(UTC) - timedelta(minutes=1)
+
+    old = await r.session.get(RuntimeSession, "ses_current")
+    assert old.superseded_by == r.task.current_session_id
+
+
+async def test_restart_from_succeeded_stales_summary_and_advances_generation(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
+    assert summary.generation == 1 and summary.stale is False
+
+    await r.service.start("T1", restart=True)
+    await r.session.refresh(r.task)
+    new_id = r.task.current_session_id
+    assert new_id != "ses_current"
+    assert r.task.status == "RUNNING"
+    await r.session.refresh(summary)
+    assert summary.stale is True and summary.generation == 1
+
+    r.native.sessions[new_id] = [
+        {"info": {"id": "u2", "role": "user"}, "parts": []},
+        {
+            "info": {"id": "a2", "role": "assistant", "time": {"completed": 2}, "finish": "stop"},
+            "parts": [{"type": "text", "text": "RESTART_DONE"}],
+        },
+    ]
+    r.task.last_message_id = "u2"
+    await r.session.commit()
+    r.native.state = "idle"
+    await r.service.refresh("T1")
+
+    await r.session.refresh(summary)
+    assert summary.generation == 2 and summary.stale is False
+    assert summary.primary_session_id == new_id
+    assert summary.summary == "RESTART_DONE"
+    assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 1
 
 
 def test_windows_workspace_path_comparison_accepts_slash_and_case_variants(runtime):

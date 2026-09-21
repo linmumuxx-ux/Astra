@@ -189,6 +189,10 @@ class RuntimeSession(Base):
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     llm_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    native_session_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    execution_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_usage: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     superseded_by: Mapped[str | None] = mapped_column(
         ForeignKey("runtime_sessions.id"), nullable=True, index=True

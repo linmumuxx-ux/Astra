@@ -62,6 +62,62 @@ def _deep_value(value: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
+def _find_value(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return candidate
+        for child in value.values():
+            found = _find_value(child, keys)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _find_value(child, keys)
+            if found is not None:
+                return found
+    return None
+
+
+def _normalize_model(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        model_id = (
+            value.get("modelID")
+            or value.get("model_id")
+            or value.get("id")
+            or value.get("name")
+        )
+        provider_id = value.get("providerID") or value.get("provider_id")
+        if isinstance(model_id, str) and model_id:
+            if isinstance(provider_id, str) and provider_id:
+                return f"{provider_id}/{model_id}"
+            return model_id
+    return None
+
+
+def _model_name(event: dict[str, Any]) -> str | None:
+    # A structured `model` object can carry provider + id; prefer it so
+    # "provider/model" survives instead of a bare modelID.
+    structured = _normalize_model(_find_value(event, ("model",)))
+    if structured:
+        return structured
+    direct = _find_value(event, ("modelID", "model_id", "modelName", "model_name"))
+    if isinstance(direct, str) and direct:
+        return direct
+    return None
+
+
+def _timestamp_ms(value: Any) -> int | None:
+    number = _integer(value)
+    if number is None or number <= 0:
+        return None
+    # Native OpenCode timestamps are epoch milliseconds; tolerate epoch seconds.
+    return number if number > 100_000_000_000 else number * 1000
+
+
 def parse_opencode_usage(
     events: list[dict[str, Any]],
 ) -> tuple[TokenUsage, list[ToolUsageResult], str | None]:
@@ -77,9 +133,7 @@ def parse_opencode_usage(
             for position, value in enumerate(values):
                 if value is not None:
                     token_totals[position] = (token_totals[position] or 0) + value
-        model_name = model_name or _deep_value(
-            event, ("modelID", "model_id", "modelName", "model_name", "model")
-        )
+        model_name = model_name or _model_name(event)
 
         part = event.get("part") if isinstance(event.get("part"), dict) else event
         event_type = str(event.get("type", "")).lower()
@@ -124,3 +178,17 @@ def parse_opencode_usage(
     )
     tools = [ToolUsageResult(name=name, **values) for name, values in sorted(grouped.items())]
     return token_usage, tools, model_name
+
+
+def parse_execution_seconds(messages: list[dict[str, Any]]) -> int:
+    total_ms = 0
+    for message in messages:
+        info = message.get("info") if isinstance(message, dict) else None
+        if not isinstance(info, dict) or str(info.get("role", "")).lower() != "assistant":
+            continue
+        timing = info.get("time") if isinstance(info.get("time"), dict) else {}
+        start = _timestamp_ms(timing.get("created"))
+        end = _timestamp_ms(timing.get("completed"))
+        if start is not None and end is not None:
+            total_ms += max(0, end - start)
+    return max(0, int(total_ms / 1000))

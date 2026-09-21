@@ -101,8 +101,15 @@ class UsageSummary(BaseModel):
     tool_success_count: int = 0
     tool_failure_count: int = 0
     duration_seconds: int = 0
+    execution_seconds: int = 0
+    idle_seconds: int = 0
     completed_tasks: int = 0
     task_count: int = 0
+    session_count: int = 0
+    native_session_count: int = 0
+    completed_sessions: int = 0
+    failed_sessions: int = 0
+    interrupted_sessions: int = 0
 
 
 class TaskCategoryCreate(BaseModel):

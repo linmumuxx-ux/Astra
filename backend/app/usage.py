@@ -1,13 +1,17 @@
 from collections import defaultdict
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.domain import TaskStatus
+from app.domain import RuntimeSessionStatus, TaskStatus
 from app.models import RuntimeSession, Task
+
+# "任务成功率" 的已完成口径与 Experience 自动验证同源：Task.status == SUCCEEDED
+# 表示业务签收完成（执行事实仍在 RuntimeSession），两处必须保持一致。
+COMPLETED_TASK_STATUS = TaskStatus.SUCCEEDED
 
 TOKEN_FIELDS = (
     "input_tokens",
@@ -33,6 +37,28 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def _attributed_column():
+    # Terminal Sessions belong to finished_at; live Sessions still use started_at.
+    return func.coalesce(
+        RuntimeSession.finished_at,
+        RuntimeSession.started_at,
+        RuntimeSession.created_at,
+    )
+
+
+def session_attributed_at(runtime_session: RuntimeSession) -> datetime:
+    return _aware(
+        runtime_session.finished_at
+        or runtime_session.started_at
+        or runtime_session.created_at
+    )
+
+
+def session_local_date(runtime_session: RuntimeSession) -> date:
+    timezone = ZoneInfo(get_settings().timezone)
+    return session_attributed_at(runtime_session).astimezone(timezone).date()
+
+
 async def load_sessions(
     session: AsyncSession,
     *,
@@ -46,11 +72,12 @@ async def load_sessions(
         query = query.where(RuntimeSession.employee_id == employee_id)
     if task_id:
         query = query.where(RuntimeSession.task_id == task_id)
+    attributed = _attributed_column()
     if start:
-        query = query.where(RuntimeSession.started_at >= start)
+        query = query.where(attributed >= start)
     if end:
-        query = query.where(RuntimeSession.started_at < end)
-    return (await session.execute(query.order_by(RuntimeSession.started_at))).scalars().all()
+        query = query.where(attributed < end)
+    return (await session.execute(query.order_by(attributed))).scalars().all()
 
 
 async def summarize_sessions(session: AsyncSession, sessions: list[RuntimeSession]) -> dict:
@@ -82,21 +109,52 @@ async def summarize_sessions(session: AsyncSession, sessions: list[RuntimeSessio
             (
                 await session.execute(
                     select(Task.id).where(
-                        Task.id.in_(task_ids), Task.status == TaskStatus.SUCCEEDED
+                        Task.id.in_(task_ids), Task.status == COMPLETED_TASK_STATUS
                     )
                 )
             )
             .scalars()
             .all()
         )
+
+    execution_seconds = sum(item.execution_seconds or 0 for item in sessions)
+    session_statuses = [item.status for item in sessions]
     return {
         **summary,
         "tool_success_count": tool_success,
         "tool_failure_count": tool_failure,
         "duration_seconds": duration_seconds,
+        "execution_seconds": execution_seconds,
+        "idle_seconds": max(0, duration_seconds - execution_seconds),
         "completed_tasks": completed_tasks,
         "task_count": len(task_ids),
+        "session_count": len(sessions),
+        "native_session_count": sum(item.native_session_count or 1 for item in sessions),
+        "completed_sessions": session_statuses.count(RuntimeSessionStatus.SUCCEEDED.value),
+        "failed_sessions": session_statuses.count(RuntimeSessionStatus.FAILED.value),
+        "interrupted_sessions": session_statuses.count(RuntimeSessionStatus.INTERRUPTED.value),
     }
+
+
+def model_breakdown(sessions: list[RuntimeSession]) -> list[dict]:
+    grouped: dict[str, dict[str, int | str]] = {}
+    for item in sessions:
+        name = item.model_name or "未知"
+        entry = grouped.setdefault(
+            name,
+            {
+                "model_name": name,
+                "session_count": 0,
+                "total_tokens": 0,
+                "llm_call_count": 0,
+                "tool_call_count": 0,
+            },
+        )
+        entry["session_count"] += 1
+        entry["total_tokens"] += item.total_tokens or 0
+        entry["llm_call_count"] += item.llm_call_count or 0
+        entry["tool_call_count"] += item.tool_call_count or 0
+    return sorted(grouped.values(), key=lambda item: item["total_tokens"], reverse=True)
 
 
 async def tool_breakdown(session: AsyncSession, sessions: list[RuntimeSession]) -> list[dict]:
@@ -126,17 +184,14 @@ async def employee_usage(session: AsyncSession, employee_id: str, days: int) -> 
     trend: list[dict] = []
     for offset in range(days):
         day = (start + timedelta(days=offset)).astimezone(timezone).date()
-        day_sessions = [
-            item
-            for item in sessions
-            if item.started_at and _aware(item.started_at).astimezone(timezone).date() == day
-        ]
+        day_sessions = [item for item in sessions if session_local_date(item) == day]
         trend.append({"date": day.isoformat(), **await summarize_sessions(session, day_sessions)})
     return {
         "period_days": days,
         "summary": summary,
         "trend": trend,
         "tools": tools,
+        "models": model_breakdown(sessions),
     }
 
 
@@ -146,4 +201,6 @@ async def task_usage(session: AsyncSession, task_id: str) -> dict:
         "summary": await summarize_sessions(session, sessions),
         "tools": await tool_breakdown(session, sessions),
         "sessions": len(sessions),
+        "root_session_count": len(sessions),
+        "native_session_count": sum(item.native_session_count or 1 for item in sessions),
     }

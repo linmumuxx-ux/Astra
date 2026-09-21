@@ -12,6 +12,7 @@ import {
   type HomeSessionEvents,
 } from "@/context/global-sync/home-session-index"
 import type { LocalProject } from "@/context/layout"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { sessionHasOpenTab, useTabs } from "@/context/tabs"
@@ -176,8 +177,11 @@ export function createHomeSessionsController(home: HomeController) {
     session: {
       showProjectName: () => !home.project.selected(),
       server: () => home.selection.value().server,
-      canCreate: () => !!home.project.newSession(),
-      create: home.project.openNewSession,
+      canCreate: () => workspaceCapabilities.sessionManagementEnabled && !!home.project.newSession(),
+      create: () => {
+        if (!workspaceCapabilities.sessionManagementEnabled) return
+        home.project.openNewSession()
+      },
       open: (session: Session, options?: OpenSessionOptions) => {
         const directoryKey = pathKey(session.directory)
         const project =
@@ -205,6 +209,7 @@ export function createHomeSessionsController(home: HomeController) {
         })
       },
       archive: async (session: Session) => {
+        if (!workspaceCapabilities.sessionManagementEnabled) return
         const conn = home.server.focused()
         const ctx = home.server.focusedContext()
         if (!conn || !ctx) return

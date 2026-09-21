@@ -9,11 +9,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, TaskStatus
-from app.models import DigitalEmployee, Event, Task
+from app.domain import EmployeeStatus, RuntimeSessionStatus, TaskStatus
+from app.models import DigitalEmployee, Event, RuntimeSession, Task
 from app.runtime.presentation import TASK_STATUS
 from app.services import dashboard_metrics
-from app.usage import day_bounds
+from app.usage import day_bounds, session_local_date
 
 ATTENTION_STATUSES = {key for key, value in TASK_STATUS.items() if value["group"] == "attention"}
 ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING}
@@ -183,11 +183,22 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
     start, end = day_bounds(7)
     rows = (
         await session.execute(
-            select(Task.created_at, Task.finished_at, Task.status).where(
+            select(Task.created_at).where(
                 or_(Task.created_at >= start, Task.finished_at >= start)
             )
         )
     ).all()
+    attributed = func.coalesce(
+        RuntimeSession.finished_at, RuntimeSession.started_at, RuntimeSession.created_at
+    )
+    completed_sessions = (
+        await session.execute(
+            select(RuntimeSession).where(
+                RuntimeSession.status == RuntimeSessionStatus.SUCCEEDED.value,
+                attributed >= start,
+            )
+        )
+    ).scalars().all()
     timezone = ZoneInfo(get_settings().timezone)
     first_day = start.astimezone(timezone).date()
     today = (end - timedelta(microseconds=1)).astimezone(timezone).date()
@@ -199,14 +210,14 @@ async def dashboard_tasks(session: AsyncSession) -> dict:
         points[key] = {"date": key, "total": 0, "completed": 0}
         trend.append(points[key])
         current += timedelta(days=1)
-    for created_at, finished_at, status in rows:
+    for (created_at,) in rows:
         created_key = _local_date(created_at)
         if created_key in points:
             points[created_key]["total"] += 1
-        if status == TaskStatus.SUCCEEDED and finished_at:
-            finished_key = _local_date(finished_at)
-            if finished_key in points:
-                points[finished_key]["completed"] += 1
+    for runtime_session in completed_sessions:
+        completed_key = session_local_date(runtime_session).isoformat()
+        if completed_key in points:
+            points[completed_key]["completed"] += 1
     recent_rows = (
         await session.execute(
             select(Task, DigitalEmployee.name)

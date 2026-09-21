@@ -16,6 +16,7 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { type Session } from "@opencode-ai/sdk/v2/client"
 import { type LocalProject } from "@/context/layout"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { useServerSync, useQueryOptions } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
@@ -214,7 +215,7 @@ const WorkspaceActions = (props: {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu>
-    <Show when={!props.touch()}>
+    <Show when={!props.touch() && workspaceCapabilities.sessionManagementEnabled}>
       <Tooltip value={props.language.t("command.session.new")} placement="top">
         <IconButtonV2
           icon={<IconV2 name="edit" size="small" />}

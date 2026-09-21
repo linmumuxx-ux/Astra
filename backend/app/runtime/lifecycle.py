@@ -34,7 +34,7 @@ from app.executors.opencode_prompt import (
     build_task_prompt,
     resolve_task_prompt_context,
 )
-from app.executors.usage import parse_opencode_usage
+from app.executors.usage import parse_execution_seconds, parse_opencode_usage
 from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory, TaskSummary
 from app.runtime.environment import environment_snapshot
 from app.runtime.runtime_context import (
@@ -51,7 +51,11 @@ from app.runtime.session_connection import (
     session_tree,
 )
 from app.runtime.session_state import SessionState, derive_session_state
-from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
+from app.runtime.summary import (
+    TaskSummaryService,
+    extract_final_assistant_text,
+    summary_is_complete,
+)
 from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
@@ -157,11 +161,17 @@ class RuntimeService:
             runtime_session.finished_at = None
         return runtime_session
 
-    async def _update_session_usage(self, task: Task, messages: list[dict]) -> None:
+    async def _update_session_usage(
+        self, task: Task, messages: list[dict], *, native_session_count: int | None = None
+    ) -> None:
         """Store aggregate token/tool counters derived from native messages."""
         runtime_session = await self._runtime_session(task)
         if not runtime_session:
             return
+        runtime_session.native_session_count = max(
+            1, native_session_count or runtime_session.native_session_count or 1
+        )
+        runtime_session.execution_seconds = parse_execution_seconds(messages)
         # Native message info is the single token/model source. Step-finish
         # parts may repeat the same usage and must not be counted a second time.
         # Tool parts are still consumed for call/status/duration aggregation.
@@ -577,29 +587,49 @@ class RuntimeService:
                 task.runtime_connection = "CONNECTED"
                 task.runtime_error = None
                 task.failure_reason = None
+                task.execution_error = None
                 task.finished_at = None
-                await self.session.commit()
+                if restart:
+                    # An explicit restart is a new execution round: the new Session
+                    # must not inherit the previous round's status or timeout window.
+                    task.turn_started_at = now
+                    await self.project(task, TaskStatus.RUNNING, detail="重新开始执行")
+                else:
+                    await self.session.commit()
             return await self.retry_submission(task.id)
         except Exception as exc:
             await self.session.rollback()
+            definitive_failure = (
+                isinstance(exc, OpenCodeSessionNotFound) or type(exc) is OpenCodeExecutionError
+            )
             task = await self.lock_task(task_id)
+            abort_unbound_session = False
             if task.pending_message_id == initial_id:
-                task.pending_message_id = None
-                task.pending_prompt = None
-                task.runtime_error = str(exc)
-                active = (
-                    task.status == TaskStatus.RUNNING
-                    or (task.status == TaskStatus.WAITING and task.submitted_at is None)
-                )
-                employee = await self.session.get(DigitalEmployee, task.employee_id)
-                if employee and not active:
-                    employee.current_task_count = 0
-                    if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
-                        employee.status = EmployeeStatus.IDLE
-                await self.session.commit()
+                if definitive_failure or not task.pending_prompt:
+                    task.pending_message_id = None
+                    task.pending_prompt = None
+                    task.runtime_error = str(exc)
+                    active = (
+                        task.status == TaskStatus.RUNNING
+                        or (task.status == TaskStatus.WAITING and task.submitted_at is None)
+                    )
+                    employee = await self.session.get(DigitalEmployee, task.employee_id)
+                    if employee and not active:
+                        employee.current_task_count = 0
+                        if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
+                            employee.status = EmployeeStatus.IDLE
+                    await self.session.commit()
+                    abort_unbound_session = True
+                else:
+                    # OpenCode may already hold the submitted prompt and only the ACK
+                    # was lost. Keep pending + created Session as recovery evidence so
+                    # background refresh can reconcile; never abort a live Session.
+                    task.runtime_connection = "UNAVAILABLE"
+                    task.runtime_error = str(exc)
+                    await self.session.commit()
             else:
                 await self.session.rollback()
-            if created_session_id and new_workspace:
+            if abort_unbound_session and created_session_id and new_workspace:
                 try:
                     async with connect(environment, start=True) as client:
                         await client.abort(Path(new_workspace), created_session_id)
@@ -713,7 +743,17 @@ class RuntimeService:
             raise
 
         task = await self.lock_task(task_id)
-        if task.pending_message_id != outbound_id or task.current_session_id != submitted_session:
+        # A background refresh may have already confirmed this exact message and
+        # cleared pending. Only an actual control operation (session switch or
+        # cancel) or a different reservation invalidates the submission.
+        pending_replaced = (
+            task.pending_message_id is not None and task.pending_message_id != outbound_id
+        )
+        if (
+            task.current_session_id != submitted_session
+            or task.status == TaskStatus.CANCELED
+            or pending_replaced
+        ):
             await self.session.commit()
             async with connect(environment, start=True) as client:
                 await client.abort(Path(workspace), submitted_session)
@@ -760,10 +800,16 @@ class RuntimeService:
             # Revalidate after the network write. stop/delete/restart may have
             # invalidated this reservation while the request was in flight.
             task = await self.lock_task(task_id)
+            # A background refresh ACK clears pending without invalidating the
+            # submission. Only a session switch, cancel, or a different
+            # reservation is a real control-operation failure.
+            pending_replaced = (
+                task.pending_message_id is not None and task.pending_message_id != pending_id
+            )
             stale = (
                 task.current_session_id != session_id
-                or task.pending_message_id != pending_id
                 or task.status == TaskStatus.CANCELED
+                or pending_replaced
             )
             if stale:
                 await self.session.rollback()
@@ -790,6 +836,23 @@ class RuntimeService:
             probe.settimeout(0.3)
             return probe.connect_ex(("127.0.0.1", port)) == 0
 
+    async def _collect_final_usage(
+        self, client, directory: Path, session_id: str
+    ) -> tuple[list[dict] | None, int | None]:
+        """Best-effort final usage capture; cancellation semantics never depend on it."""
+        try:
+            allowed_sessions = await session_tree(client, directory, session_id)
+            messages = list(await client.messages(directory, session_id))
+            for child_session_id in sorted(allowed_sessions - {session_id}):
+                try:
+                    messages.extend(await client.messages(directory, child_session_id))
+                except OpenCodeSessionNotFound:
+                    continue
+            return messages, len(allowed_sessions)
+        except Exception:
+            logger.exception("Failed to collect final usage for Session %s", session_id)
+            return None, None
+
     async def stop(self, task_id):
         task = await self.session.get(Task, task_id)
         if not task:
@@ -801,10 +864,15 @@ class RuntimeService:
 
         forced_offline_cancel = False
         stop_error = None
+        usage_messages: list[dict] | None = None
+        native_session_count: int | None = None
         if session_id and environment:
             try:
                 async with connect(environment, start=True) as client:
                     await client.abort(Path(workspace), session_id)
+                    usage_messages, native_session_count = await self._collect_final_usage(
+                        client, Path(workspace), session_id
+                    )
             except OpenCodeSessionNotFound:
                 # A restarted Serve that cannot find the Session proves there is
                 # no live execution attached to this binding.
@@ -827,6 +895,10 @@ class RuntimeService:
         if session_id and task.current_session_id != session_id:
             await self.session.rollback()
             raise RuntimeStateError("取消期间 Session 已切换，请刷新后重试")
+        if usage_messages is not None:
+            await self._update_session_usage(
+                task, usage_messages, native_session_count=native_session_count
+            )
         runtime_session = await self._runtime_session(task)
         if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
             runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
@@ -936,7 +1008,9 @@ class RuntimeService:
             await self.session.commit()
             return task
 
-        await self._update_session_usage(task, usage_messages)
+        await self._update_session_usage(
+            task, usage_messages, native_session_count=len(allowed_sessions)
+        )
         if task.pending_message_id:
             if any(item["info"]["id"] == task.pending_message_id for item in messages):
                 task.pending_message_id = None
@@ -977,20 +1051,24 @@ class RuntimeService:
         if not runtime_session or runtime_session.status != RuntimeSessionStatus.SUCCEEDED.value:
             await self.session.rollback()
             raise RuntimeStateError("当前 Session 尚未正常完成")
+        summary = await self.session.scalar(
+            select(TaskSummary).where(TaskSummary.task_id == task.id)
+        )
+        if not summary_is_complete(summary, task):
+            await self.session.rollback()
+            raise RuntimeStateError("任务结果摘要尚未补齐，暂不能确认完成")
+        summary_text = summary.summary
 
         task.confirmed_at = datetime.now(UTC)
         task.human_required_reason = None
         task.human_intervention = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")
 
-        summary = await self.session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == task.id)
-        )
         summary = await TaskSummaryService(self.session).upsert(
             task,
             source_status=TaskStatus.SUCCEEDED.value,
             primary_session_id=task.current_session_id,
-            summary_text=summary.summary if summary else task.current_progress,
+            summary_text=summary_text,
         )
         await self.process_terminal_artifacts(task, summary)
         return task

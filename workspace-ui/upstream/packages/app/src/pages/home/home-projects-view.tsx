@@ -12,6 +12,7 @@ import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
 import { getProjectAvatarVariant, type HomeProjectSelection, type LocalProject } from "@/context/layout"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { ServerConnection } from "@/context/server"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
@@ -507,9 +508,11 @@ function HomeProjectRow(
           />
           <MenuV2.Portal>
             <MenuV2.Content>
-              <MenuV2.Item onSelect={() => props.onOpenProjectNewSession(props.server, props.project.worktree)}>
-                {props.language.t("command.session.new")}
-              </MenuV2.Item>
+              <Show when={workspaceCapabilities.sessionManagementEnabled}>
+                <MenuV2.Item onSelect={() => props.onOpenProjectNewSession(props.server, props.project.worktree)}>
+                  {props.language.t("command.session.new")}
+                </MenuV2.Item>
+              </Show>
               <MenuV2.Item onSelect={() => props.onEditProject(props.server, props.project)}>
                 {props.language.t("dialog.project.edit.title")}
               </MenuV2.Item>
@@ -534,14 +537,16 @@ function HomeProjectRow(
             </MenuV2.Content>
           </MenuV2.Portal>
         </MenuV2>
-        <IconButtonV2
-          data-action="home-project-new-session"
-          variant="ghost-muted"
-          size="small"
-          icon={<IconV2 name="edit" />}
-          aria-label={props.language.t("command.session.new")}
-          onClick={() => props.onOpenProjectNewSession(props.server, props.project.worktree)}
-        />
+        <Show when={workspaceCapabilities.sessionManagementEnabled}>
+          <IconButtonV2
+            data-action="home-project-new-session"
+            variant="ghost-muted"
+            size="small"
+            icon={<IconV2 name="edit" />}
+            aria-label={props.language.t("command.session.new")}
+            onClick={() => props.onOpenProjectNewSession(props.server, props.project.worktree)}
+          />
+        </Show>
       </div>
     </div>
   )

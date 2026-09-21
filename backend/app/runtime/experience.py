@@ -22,6 +22,7 @@ from app.models import (
     Task,
     TaskSummary,
 )
+from app.runtime.summary import summary_is_complete
 
 _REUSABLE_HINTS = re.compile(
     r"根因|原因|定位|修复|解决|规避|配置|环境|命令|工具|步骤|方法|规则|约束|"
@@ -100,7 +101,11 @@ class ExperienceExtractionService:
         summary = await self.session.scalar(
             select(TaskSummary).where(TaskSummary.task_id == task.id)
         )
-        if not summary or summary.stale or not _is_reusable(task, summary):
+        if (
+            summary is None
+            or not summary_is_complete(summary, task)
+            or not _is_reusable(task, summary)
+        ):
             return []
 
         runtime_session = (
@@ -115,7 +120,15 @@ class ExperienceExtractionService:
             title=task.title,
             content_md=content,
         )
-        verification = "verified" if task.status == "SUCCEEDED" else "unverified"
+        # Auto verification mirrors the business completion definition: the Task
+        # is signed off, its summary is current, and the source Session succeeded.
+        verification = (
+            "verified"
+            if task.status == "SUCCEEDED"
+            and runtime_session is not None
+            and runtime_session.status == "SUCCEEDED"
+            else "unverified"
+        )
         now = datetime.now(UTC)
 
         existing = await self.session.scalar(

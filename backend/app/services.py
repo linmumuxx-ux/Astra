@@ -234,28 +234,12 @@ async def dashboard_metrics(session: AsyncSession) -> dict:
     today = datetime.now(timezone).date()
     day_start = datetime.combine(today, time.min, tzinfo=timezone).astimezone(UTC)
     day_end = day_start + timedelta(days=1)
-    completed_today = (
-        await session.scalar(
-            select(func.count(Task.id)).where(
-                Task.status == TaskStatus.SUCCEEDED,
-                Task.finished_at >= day_start,
-                Task.finished_at < day_end,
-            )
-        )
-        or 0
-    )
-    failed_today = (
-        await session.scalar(
-            select(func.count(Task.id)).where(
-                Task.status == TaskStatus.FAILED,
-                Task.finished_at >= day_start,
-                Task.finished_at < day_end,
-            )
-        )
-        or 0
-    )
+    # Terminal count follows the immutable RuntimeSession outcome attributed to
+    # its local day, not the mutable Task.status (business completion).
     usage_sessions = await load_sessions(session, start=day_start, end=day_end)
     usage = await summarize_sessions(session, usage_sessions)
+    completed_today = usage["completed_sessions"]
+    failed_today = usage["failed_sessions"]
     return {
         "online_employees": sum(
             count

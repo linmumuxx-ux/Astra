@@ -14,7 +14,7 @@ from app.domain import EmployeeStatus, EnvironmentStatus, Priority, TaskStatus, 
 from app.executors.base import ToolUsageResult
 from app.executors.opencode_cli import OpenCodeCLIExecutor
 from app.executors.process import windows_batch_command
-from app.executors.usage import parse_opencode_usage
+from app.executors.usage import parse_execution_seconds, parse_opencode_usage
 from app.models import (
     Base,
     DigitalEmployee,
@@ -197,6 +197,52 @@ async def test_scout_is_idempotent(session):
     assert len(first) == 1
     assert second == []
     assert await session.scalar(select(func.count(Task.id))) == 1
+
+
+def test_opencode_usage_parser_normalizes_model_object():
+    _tokens, _tools, model = parse_opencode_usage(
+        [
+            {
+                "info": {
+                    "role": "assistant",
+                    "tokens": {"input": 1},
+                    "model": {"providerID": "deepseek", "modelID": "deepseek-v4-flash"},
+                }
+            }
+        ]
+    )
+
+    assert model == "deepseek/deepseek-v4-flash"
+
+
+def test_parse_execution_seconds_accepts_milliseconds_and_seconds():
+    assert (
+        parse_execution_seconds(
+            [
+                {
+                    "info": {
+                        "role": "assistant",
+                        "time": {"created": 1_700_000_000_000, "completed": 1_700_000_004_000},
+                    }
+                }
+            ]
+        )
+        == 4
+    )
+    assert (
+        parse_execution_seconds(
+            [
+                {
+                    "info": {
+                        "role": "assistant",
+                        "time": {"created": 1_700_000_000, "completed": 1_700_000_002},
+                    }
+                }
+            ]
+        )
+        == 2
+    )
+    assert parse_execution_seconds([{"info": {"role": "user"}}]) == 0
 
 
 def test_opencode_usage_parser_uses_actual_json_events():

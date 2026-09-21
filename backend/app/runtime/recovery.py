@@ -15,9 +15,16 @@ from app.models import Task, TaskSummary
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.session_state import SessionState
-from app.runtime.summary import TaskSummaryService, extract_final_assistant_text
+from app.runtime.summary import (
+    TaskSummaryService,
+    extract_final_assistant_text,
+    summary_is_complete,
+)
 
 logger = logging.getLogger(__name__)
+
+SUPERVISOR_INTERVAL_SECONDS = 2
+SUPERVISOR_RETRY_MAX_SECONDS = 30
 
 
 def _active_task_filter():
@@ -27,6 +34,25 @@ def _active_task_filter():
         Task.status == "RUNNING",
         and_(Task.status == "WAITING", Task.submitted_at.is_(None)),
         Task.pending_prompt.is_not(None),
+    )
+
+
+def _terminal_task_filter():
+    return or_(
+        Task.status.in_(["SUCCEEDED", "FAILED", "CANCELED"]),
+        and_(Task.status == "WAITING", Task.submitted_at.is_not(None)),
+    )
+
+
+def _summary_needs_repair_filter():
+    return or_(
+        TaskSummary.id.is_(None),
+        TaskSummary.stale.is_(True),
+        TaskSummary.source_status != Task.status,
+        and_(
+            Task.status.in_(["SUCCEEDED", "FAILED"]),
+            TaskSummary.artifacts_processed_generation < TaskSummary.generation,
+        ),
     )
 
 
@@ -64,6 +90,7 @@ async def watch_session(task_id):
 
     delay = 1
     settings = get_settings()
+    loop = asyncio.get_running_loop()
     while True:
         next_event: asyncio.Task | None = None
         try:
@@ -95,13 +122,12 @@ async def watch_session(task_id):
                 if current.status == "WAITING" and current.submitted_at is not None:
                     return
                 allowed = await session_tree(client, directory, session_id)
+                deadline = loop.time() + settings.opencode_reconcile_interval_seconds
 
                 while True:
-                    done, _ = await asyncio.wait(
-                        {next_event},
-                        timeout=settings.opencode_reconcile_interval_seconds,
-                    )
-                    if not done:
+                    # The reconcile deadline is absolute: unrelated SSE events must
+                    # never push convergence past it.
+                    if loop.time() >= deadline:
                         current = await _refresh_with_client(task_id, client)
                         if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
                             return
@@ -109,6 +135,16 @@ async def watch_session(task_id):
                             return
                         allowed = await session_tree(client, directory, session_id)
                         delay = 1
+                        deadline = (
+                            loop.time() + settings.opencode_reconcile_interval_seconds
+                        )
+                        continue
+
+                    done, _ = await asyncio.wait(
+                        {next_event},
+                        timeout=max(0, deadline - loop.time()),
+                    )
+                    if not done:
                         continue
 
                     try:
@@ -178,27 +214,37 @@ async def watch_session(task_id):
                 await asyncio.gather(next_event, return_exceptions=True)
 
 
+async def _read_final_text(session, task: Task) -> str:
+    """Read the current turn's real final assistant reply from the bound Session."""
+
+    environment = await resolve_environment(session, task)
+    anchor_id = task.last_message_id
+    session_id = task.current_session_id
+    workspace = task.workspace
+    await session.commit()
+    async with connect(environment, start=True) as client:
+        messages = await client.messages(Path(workspace), session_id)
+    final_text, _ = extract_final_assistant_text(messages, turn_anchor_id=anchor_id)
+    return final_text
+
+
 async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
     """Repair summaries/experience after a crash between Task terminal commit and artifact commit."""
 
     async with SessionLocal() as session:
         rows = (
             await session.execute(
-                select(Task.id, Task.status, Task.submitted_at, TaskSummary.id)
+                select(Task.id)
                 .outerjoin(TaskSummary, TaskSummary.task_id == Task.id)
-                .where(
-                    or_(
-                        Task.status.in_(["SUCCEEDED", "FAILED", "CANCELED"]),
-                        and_(Task.status == "WAITING", Task.submitted_at.is_not(None)),
-                    )
-                )
+                .where(_terminal_task_filter(), _summary_needs_repair_filter())
                 .order_by(Task.updated_at.desc())
                 .limit(limit)
             )
         ).all()
+    task_ids = [row[0] for row in rows]
 
     repaired: list[str] = []
-    for task_id, _, _, _ in rows:
+    for task_id in task_ids:
         async with SessionLocal() as session:
             task = await session.get(Task, task_id)
             if not task:
@@ -206,11 +252,7 @@ async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
             summary = await session.scalar(
                 select(TaskSummary).where(TaskSummary.task_id == task.id)
             )
-            needs_summary = (
-                summary is None
-                or summary.stale
-                or summary.source_status != task.status
-            )
+            needs_summary = not summary_is_complete(summary, task)
             needs_artifacts = bool(
                 summary
                 and task.status in {"SUCCEEDED", "FAILED"}
@@ -222,31 +264,27 @@ async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
             final_text = summary.summary if summary and not summary.stale else ""
             if needs_summary and task.current_session_id and task.workspace:
                 try:
-                    environment = await resolve_environment(session, task)
-                    anchor_id = task.last_message_id
-                    session_id = task.current_session_id
-                    workspace = task.workspace
-                    await session.commit()
-                    async with connect(environment, start=True) as client:
-                        messages = await client.messages(Path(workspace), session_id)
-                    final_text, _ = extract_final_assistant_text(
-                        messages, turn_anchor_id=anchor_id
-                    )
-                    task = await session.get(Task, task_id)
+                    final_text = await _read_final_text(session, task)
+                except OpenCodeSessionNotFound:
+                    # The Session is proven absent; recorded Task facts are definitive.
+                    final_text = ""
                 except Exception as exc:
+                    # Temporary transport failure: keep the Task pending so the next
+                    # reconcile round can still read the real result.
                     logger.warning(
                         "Unable to reload terminal Session for artifact repair %s: %s",
                         task_id,
                         exc,
                     )
                     await session.rollback()
-                    task = await session.get(Task, task_id)
+                    continue
+                task = await session.get(Task, task_id)
 
             summary = await TaskSummaryService(session).upsert(
                 task,
                 source_status=task.status,
                 primary_session_id=task.current_session_id,
-                summary_text=final_text or task.failure_reason or task.current_progress,
+                summary_text=final_text,
             )
             if task.status in {"SUCCEEDED", "FAILED"}:
                 await RuntimeService(session).process_terminal_artifacts(task, summary)
@@ -258,39 +296,53 @@ async def supervise_sessions():
     """Own native Session watching and idempotent terminal artifact repair."""
 
     listeners: dict[str, asyncio.Task] = {}
-    await refresh_sessions()
-    await reconcile_terminal_artifacts()
+    try:
+        await refresh_sessions()
+    except Exception:
+        logger.exception("Session Supervisor 初始 refresh 失败，继续运行")
+    try:
+        await reconcile_terminal_artifacts()
+    except Exception:
+        logger.exception("Session Supervisor 初始终态产物对账失败，继续运行")
     settings = get_settings()
     loop = asyncio.get_running_loop()
     next_artifact_reconcile = loop.time() + settings.terminal_artifact_reconcile_interval_seconds
+    delay = SUPERVISOR_INTERVAL_SECONDS
     try:
         while True:
-            async with SessionLocal() as session:
-                ids = set(
-                    (
-                        await session.scalars(
-                            select(Task.id).where(
-                                Task.current_session_id.is_not(None),
-                                _active_task_filter(),
+            try:
+                async with SessionLocal() as session:
+                    ids = set(
+                        (
+                            await session.scalars(
+                                select(Task.id).where(
+                                    Task.current_session_id.is_not(None),
+                                    _active_task_filter(),
+                                )
                             )
-                        )
-                    ).all()
-                )
-            for task_id in ids:
-                if task_id not in listeners or listeners[task_id].done():
-                    listeners[task_id] = asyncio.create_task(watch_session(task_id))
-            for task_id in list(listeners):
-                if task_id not in ids:
-                    listener = listeners.pop(task_id)
-                    listener.cancel()
-                    await asyncio.gather(listener, return_exceptions=True)
+                        ).all()
+                    )
+                for task_id in ids:
+                    if task_id not in listeners or listeners[task_id].done():
+                        listeners[task_id] = asyncio.create_task(watch_session(task_id))
+                for task_id in list(listeners):
+                    if task_id not in ids:
+                        listener = listeners.pop(task_id)
+                        listener.cancel()
+                        await asyncio.gather(listener, return_exceptions=True)
 
-            if loop.time() >= next_artifact_reconcile:
-                await reconcile_terminal_artifacts()
-                next_artifact_reconcile = (
-                    loop.time() + settings.terminal_artifact_reconcile_interval_seconds
-                )
-            await asyncio.sleep(2)
+                if loop.time() >= next_artifact_reconcile:
+                    await reconcile_terminal_artifacts()
+                    next_artifact_reconcile = (
+                        loop.time() + settings.terminal_artifact_reconcile_interval_seconds
+                    )
+                delay = SUPERVISOR_INTERVAL_SECONDS
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Session Supervisor 周期失败，退避后重试")
+                delay = min(delay * 2, SUPERVISOR_RETRY_MAX_SECONDS)
+            await asyncio.sleep(delay)
     finally:
         for listener in listeners.values():
             listener.cancel()

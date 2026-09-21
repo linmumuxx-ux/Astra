@@ -103,8 +103,10 @@ def build_task_prompt(
     )
 
     intervention_instructions = """
-当任务必须询问使用者或等待业务答案时，必须使用 OpenCode 原生 question Tool；
-需要操作授权时使用 OpenCode 原生 Permission。收到回答或授权后继续当前 Session。
+当任务必须询问使用者、等待业务答案或需要操作授权时，必须使用 OpenCode 原生 question Tool
+或 Permission；收到回答或授权后继续当前 Session。
+当任务目标无法达成、无法验证或需要用户后续处理时，同样必须使用 OpenCode 原生 question Tool
+请求人工介入，不得只在最终文本中声明“未完成 / 无法验证 / 需要后续处理”。
 不要用文本标记、自定义 JSON 或约定字符串伪装成人工阻塞状态。
 """
 
@@ -137,7 +139,8 @@ def build_task_prompt(
 完成任务后，请在最终回复中简洁说明：
 1. 完成了什么；
 2. 关键修改是什么；
-3. 已完成哪些验证；
-4. 如有未完成事项，明确说明原因。
+3. 已完成哪些验证。
+若任务无法完成、无法验证或需要后续处理，必须先使用上面的 OpenCode 原生 question Tool
+请求人工介入，不要只用最终文本说明。
 {context_text}{retry_text}
 """
