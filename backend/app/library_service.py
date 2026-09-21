@@ -56,8 +56,10 @@ from app.models import (
     KnowledgeUsage,
     RuntimeSession,
     Task,
+    TaskSummary,
     utcnow,
 )
+from app.runtime.experience_verification import experience_item_is_verified
 from app.runtime.runtime_context import RuntimeContext
 from app.runtime.runtime_context import resolve_runtime_context as _resolve_runtime_context
 from app.usage import day_bounds
@@ -1243,6 +1245,10 @@ class KnowledgeService:
             "session_id": source_session_id,
             "submitted_at": utcnow().isoformat(),
         }
+        if runtime_session:
+            # Bind the submission to the turn it was produced in so a later
+            # round's success can never validate an earlier round's candidate.
+            snapshot["turn_anchor_id"] = task.last_message_id if task else None
 
         existing = await self.session.scalar(
             select(KnowledgeItem).where(
@@ -1260,7 +1266,11 @@ class KnowledgeService:
             existing.updated_by = created_by
             existing.updated_at = utcnow()
             if runtime_session:
-                self._apply_runtime_verification(existing, runtime_session)
+                existing.source_ref_snapshot = {
+                    **(existing.source_ref_snapshot or {}),
+                    "turn_anchor_id": task.last_message_id if task else None,
+                }
+                await self._apply_runtime_verification(existing, runtime_session, task)
             await self.session.commit()
             return await self.get_detail(
                 existing.id, LibraryPrincipal(user_id="mcp-review", role="reviewer")
@@ -1292,7 +1302,7 @@ class KnowledgeService:
             updated_by=created_by,
         )
         if runtime_session:
-            self._apply_runtime_verification(item, runtime_session)
+            await self._apply_runtime_verification(item, runtime_session, task)
         self.session.add(item)
         await self.session.flush()
         for evidence in payload.evidence:
@@ -1339,10 +1349,18 @@ class KnowledgeService:
         await self.session.commit()
         return await self.get_detail(item.id, LibraryPrincipal(user_id="mcp-review", role="reviewer"))
 
-    @staticmethod
-    def _apply_runtime_verification(item: KnowledgeItem, runtime_session: RuntimeSession) -> None:
+    async def _apply_runtime_verification(
+        self, item: KnowledgeItem, runtime_session: RuntimeSession, task: Task | None
+    ) -> None:
         item.session_status_at_submission = runtime_session.status
-        if runtime_session.status == "SUCCEEDED":
+        summary = (
+            await self.session.scalar(
+                select(TaskSummary).where(TaskSummary.task_id == item.source_task_id)
+            )
+            if item.source_task_id
+            else None
+        )
+        if experience_item_is_verified(item, task, summary, runtime_session):
             item.verification_status = "verified"
             item.verification_session_status = "SUCCEEDED"
             item.verification_message_id = runtime_session.last_message_id
@@ -1350,7 +1368,13 @@ class KnowledgeService:
             item.verified_at = utcnow()
 
     async def reconcile_session_verification(self, session_id: str | None) -> int:
-        """Verify candidates once their source Session reaches SUCCEEDED."""
+        """Verify candidates only when their own round is the accepted result.
+
+        A successful Session is necessary but not sufficient: the source Task must
+        be business-accepted with a current summary, and the candidate's round
+        must be the accepted round. This never batch-verifies older candidates.
+        """
+
         if not session_id:
             return 0
         runtime_session = await self.session.get(RuntimeSession, session_id)
@@ -1365,16 +1389,34 @@ class KnowledgeService:
                 )
             )
         ).all()
+        if not items:
+            return 0
         now = utcnow()
+        verified = 0
+        task_cache: dict[str, tuple[Task | None, TaskSummary | None]] = {}
         for item in items:
+            task_id = item.source_task_id
+            if not task_id:
+                continue
+            if task_id not in task_cache:
+                task_cache[task_id] = (
+                    await self.session.get(Task, task_id),
+                    await self.session.scalar(
+                        select(TaskSummary).where(TaskSummary.task_id == task_id)
+                    ),
+                )
+            task, summary = task_cache[task_id]
+            if not experience_item_is_verified(item, task, summary, runtime_session):
+                continue
             item.verification_status = "verified"
             item.verification_session_status = "SUCCEEDED"
             item.verification_message_id = runtime_session.last_message_id
             item.session_last_message_id_at_verification = runtime_session.last_message_id
             item.verified_at = now
-        if items:
+            verified += 1
+        if verified:
             await self.session.commit()
-        return len(items)
+        return verified
 
     async def mcp_feedback(self, payload: LibraryFeedbackInput) -> LibraryResourceFeedbackResult:
         resource_id = wiki_resource_path(payload.resource_id)

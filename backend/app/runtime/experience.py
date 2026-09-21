@@ -22,6 +22,7 @@ from app.models import (
     Task,
     TaskSummary,
 )
+from app.runtime.experience_verification import experience_verification_is_current
 from app.runtime.summary import summary_is_complete
 
 _REUSABLE_HINTS = re.compile(
@@ -120,13 +121,19 @@ class ExperienceExtractionService:
             title=task.title,
             content_md=content,
         )
-        # Auto verification mirrors the business completion definition: the Task
-        # is signed off, its summary is current, and the source Session succeeded.
+        # Auto verification uses the same single rule as runtime-submitted
+        # experience: current accepted round, matching Session, Session SUCCEEDED.
         verification = (
             "verified"
-            if task.status == "SUCCEEDED"
-            and runtime_session is not None
-            and runtime_session.status == "SUCCEEDED"
+            if experience_verification_is_current(
+                origin="auto",
+                source_task_id=task.id,
+                source_session_id=summary.primary_session_id,
+                round_marker=summary.generation,
+                task=task,
+                summary=summary,
+                runtime_session=runtime_session,
+            )
             else "unverified"
         )
         now = datetime.now(UTC)

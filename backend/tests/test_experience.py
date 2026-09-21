@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -48,6 +49,7 @@ async def experience_session():
             employee_id="E1",
             current_session_id="ses_a",
             workspace="/tmp/ws",
+            last_message_id="a1",
             execution_environment_snapshot=environment_snapshot(environment),
         )
         token_a = generate_runtime_context()
@@ -85,22 +87,43 @@ async def submit(service, token, *, title="缓存未刷新", content="清理缓�
     )
 
 
-async def test_running_submission_is_unverified_until_session_succeeds():
+async def test_running_submission_is_unverified_until_round_is_accepted():
     async with experience_session() as (session, token):
         service = KnowledgeService(session)
         detail = await submit(service, token)
         item = await session.get(KnowledgeItem, detail.id)
         assert item.origin == "runtime"
         assert item.source_session_id == "ses_a"
+        assert item.source_ref_snapshot["turn_anchor_id"] == "a1"
         assert item.dedupe_key == "session:ses_a"
         assert item.fingerprint
         assert item.verification_status == "unverified"
         assert item.session_status_at_submission == "RUNNING"
         assert item.verified_at is None
 
+        # A successful Session alone is not enough: the business round must be
+        # accepted with a current summary.
         runtime_session = await session.get(RuntimeSession, "ses_a")
         runtime_session.status = "SUCCEEDED"
         runtime_session.last_message_id = "a-final"
+        await session.commit()
+        assert await service.reconcile_session_verification("ses_a") == 0
+
+        task = await session.get(Task, "T1")
+        task.status = "SUCCEEDED"
+        session.add(
+            TaskSummary(
+                id="TS-R",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="缓存刷新问题处理结果",
+                content_md="缓存刷新问题处理结果",
+                source_status="SUCCEEDED",
+                generation=1,
+                stale=False,
+            )
+        )
         await session.commit()
 
         assert await service.reconcile_session_verification("ses_a") == 1
@@ -129,11 +152,27 @@ async def test_failed_source_session_never_verifies():
 async def test_verified_experience_is_not_downgraded_after_continue_failure():
     async with experience_session() as (session, token):
         service = KnowledgeService(session)
+        detail = await submit(service, token)
         runtime_session = await session.get(RuntimeSession, "ses_a")
         runtime_session.status = "SUCCEEDED"
         runtime_session.last_message_id = "a1"
+        task = await session.get(Task, "T1")
+        task.status = "SUCCEEDED"
+        session.add(
+            TaskSummary(
+                id="TS-DOWN",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="缓存刷新问题处理结果",
+                content_md="缓存刷新问题处理结果",
+                source_status="SUCCEEDED",
+                generation=1,
+                stale=False,
+            )
+        )
         await session.commit()
-        detail = await submit(service, token)
+        assert await service.reconcile_session_verification("ses_a") == 1
         item = await session.get(KnowledgeItem, detail.id)
         assert item.verification_status == "verified"
 
@@ -143,6 +182,72 @@ async def test_verified_experience_is_not_downgraded_after_continue_failure():
         item = await session.get(KnowledgeItem, detail.id)
         assert item.verification_status == "verified"
         assert item.verification_session_status == "SUCCEEDED"
+
+
+async def test_unconfirmed_manual_confirm_round_is_not_verified():
+    async with experience_session() as (session, token):
+        service = KnowledgeService(session)
+        detail = await submit(service, token)
+        runtime_session = await session.get(RuntimeSession, "ses_a")
+        runtime_session.status = "SUCCEEDED"
+        runtime_session.last_message_id = "a-final"
+        task = await session.get(Task, "T1")
+        task.completion_policy = "MANUAL_CONFIRM"
+        task.status = "WAITING"
+        task.submitted_at = datetime.now(UTC)
+        task.confirmed_at = None
+        session.add(
+            TaskSummary(
+                id="TS-WAIT",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="执行已完成，等待人工确认",
+                content_md="执行已完成，等待人工确认",
+                source_status="WAITING",
+                generation=1,
+                stale=False,
+            )
+        )
+        await session.commit()
+
+        assert await service.reconcile_session_verification("ses_a") == 0
+        item = await session.get(KnowledgeItem, detail.id)
+        assert item.verification_status == "unverified"
+        assert item.verified_at is None
+
+
+async def test_later_round_success_does_not_verify_earlier_submission():
+    async with experience_session() as (session, token):
+        service = KnowledgeService(session)
+        detail = await submit(service, token)  # submitted in round "a1"
+
+        # A later round ("a2") becomes the accepted result.
+        task = await session.get(Task, "T1")
+        task.last_message_id = "a2"
+        task.status = "SUCCEEDED"
+        runtime_session = await session.get(RuntimeSession, "ses_a")
+        runtime_session.status = "SUCCEEDED"
+        runtime_session.last_message_id = "a-final"
+        session.add(
+            TaskSummary(
+                id="TS-ROUND2",
+                task_id="T1",
+                primary_session_id="ses_a",
+                referenced_session_ids=["ses_a"],
+                summary="第二轮处理成功",
+                content_md="第二轮处理成功",
+                source_status="SUCCEEDED",
+                generation=2,
+                stale=False,
+            )
+        )
+        await session.commit()
+
+        assert await service.reconcile_session_verification("ses_a") == 0
+        item = await session.get(KnowledgeItem, detail.id)
+        assert item.verification_status == "unverified"
+        assert item.verified_at is None
 
 
 async def test_fingerprint_dedupes_same_experience_in_one_session():
