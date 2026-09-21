@@ -778,3 +778,225 @@ Task 1 → 验证 → Task 2 → 验证 → ...
 
 - YES
 - 原因：7 项均有“复现→最小修复→隔离回归→相关既有测试”闭环，后端全量、前端与 Workspace UI 类型检查/构建、真实 OpenCode Phase 1A/1B 全部通过；隔离 E2E 唯一失败经定位为与本次无关的测试/环境问题。合入前建议随前端产物一并提交 `frontend/public/opencode-workspace` 构建产物，并在部署时执行 `alembic upgrade head`。
+
+---
+
+# 第二轮稳定性复审修复
+
+基线：8692a7b（feat/session-workspace-phase1a）
+
+原则：一次只处理一个问题；先复现再修复再补测试；上一项未通过不进入下一项；OpenCode Session 仍是执行事实源。
+
+## 第二轮 Task 1：旧摘要覆盖新 Session 结果
+
+优先级：P1
+
+状态：已复现 → 已修复 → 已验证
+
+问题根因：
+
+- `reconcile_terminal_artifacts()` 读取真实最终回复（网络 I/O）后仅 `session.get(Task)` 重取，未确认执行轮次是否推进；旧 Session 文本可能被 upsert 覆盖新 Session 已生成的正确摘要，并触发错误经验验证。
+- `summary_is_complete()` 只判断 `stale/source_status`，不校验摘要来源 Session；`_summary_needs_repair_filter()` 同样不校验。
+
+修改文件：
+
+- backend/app/runtime/summary.py
+- backend/app/runtime/recovery.py
+- backend/tests/test_recovery_summary.py
+
+核心修复逻辑：
+
+- `summary_is_complete` 增加 `summary.primary_session_id == task.current_session_id`。
+- 待修复筛选增加 `TaskSummary.primary_session_id.is_distinct_from(Task.current_session_id)`。
+- 补偿读取后 `lock_task` + `_read_summary(populate_existing=True)`，比对 `session/last_message_id/status/generation`，任一变化即 rollback 跳过，旧轮次不落库。
+
+新增测试：`test_old_summary_compensation_cannot_overwrite_new_session`（基线 1 failed）。
+
+测试结果：`tests/test_recovery_summary.py` 9 passed；相关组合 124 passed；后端全量 257 passed, 2 skipped；ruff 通过。
+
+残留风险：无。
+
+## 第二轮 Task 2：延迟 SSE Error / ACK 污染新轮次
+
+优先级：P1
+
+状态：已复现 → 已修复 → 已验证
+
+问题根因：
+
+- `watch_session()` 收到 `session.error` 直接落 FAILED，只比对 Session ID，可把已进入新一轮的当前执行误判失败。
+- `send()`/`retry_submission()` 延迟 ACK 无条件 `_mark_session_running`，会把已 SUCCEEDED / 已人工确认的任务重新打开并清 `confirmed_at`。
+
+修改文件：
+
+- backend/app/runtime/recovery.py
+- backend/app/runtime/lifecycle.py
+- backend/tests/test_recovery_supervisor.py
+- backend/tests/test_session_workspace.py
+
+核心修复逻辑：
+
+- `session.error` 仅记录原生失败原因，随后统一走实时重读；只有实时事实才决定当前轮次结果。
+- 新增 `_task_result_concluded`；当 `background_acked` 且当前轮已终结（含 MANUAL_CONFIRM WAITING）时，旧 ACK 只收敛连接状态，不重开任务、不清除 `confirmed_at`。
+
+新增测试：`test_old_session_error_event_does_not_fail_new_running_round`、`test_delayed_ack_does_not_reopen_succeeded_task`、`test_delayed_ack_does_not_clear_manual_confirmation`（基线 3 failed）。
+
+测试结果：定向 6 passed；相关组合 134 passed；后端全量通过；ruff 通过。
+
+残留风险：`session.error` 不再即时判失败，依赖实时重读与 assistant error 落库。
+
+## 第二轮 Task 3：成功任务继续执行后取消无法收敛
+
+优先级：P1
+
+状态：已复现 → 已修复 → 已验证
+
+问题根因：
+
+- `SUCCEEDED → CANCELED` 非法；`stop()` 在 OpenCode abort 之后 `project(CANCELED)` 抛 `InvalidTransition`，pending 未提交清理，出现“OpenCode 已停止但 Task 仍 SUCCEEDED 且 pending 未清理”。
+
+修改文件：
+
+- backend/app/runtime/lifecycle.py
+- backend/tests/test_session_workspace.py
+
+核心修复逻辑：
+
+- `stop()` 基于当前是否存在活跃轮次（`pending_message_id`/`pending_prompt`/Session busy/非终态 RuntimeSession/`RUNNING|WAITING`）判断取消；存在活跃轮次且 Task 为 SUCCEEDED 时先 `RUNNING` 再 `CANCELED`。
+- 无活跃轮次的已完成任务拒绝取消（409），不再静默重开。
+
+新增测试：`test_stop_cancels_continued_round_after_lost_ack_on_succeeded_task`、`test_stop_refuses_completed_task_without_active_round`（基线 2 failed）。
+
+测试结果：`test_session_workspace.py` stop/cancel 8 passed；相关组合通过；ruff 通过。
+
+残留风险：无活跃轮次的已完成任务 Stop 返回 409，前端应禁用该入口。
+
+## 第二轮 Task 4：Supervisor 被慢请求阻塞
+
+优先级：P1
+
+状态：已复现 → 已修复 → 已验证
+
+问题根因：
+
+- `supervise_sessions()` 内联 `await reconcile_terminal_artifacts()`，慢请求阻塞 Session 发现与 listener 建立；`refresh_sessions()` 串行；HTTP 控制请求复用 3600s 执行超时。
+
+修改文件：
+
+- backend/app/runtime/recovery.py
+- backend/app/config/settings.py
+- backend/app/executors/opencode_server.py
+- backend/tests/test_recovery_supervisor.py
+- backend/tests/test_opencode_server.py
+
+核心修复逻辑：
+
+- 新增 `_BackgroundWork`（单飞 + `supervisor_max_concurrency` 信号量），启动恢复/摘要补齐移出监护循环。
+- `refresh_sessions()` 有界并发，单个 Session 阻塞不影响其他。
+- 新增 `opencode_control_timeout_seconds`（默认 60s），HTTP 控制请求改用控制超时，执行预算仍由独立 deadline 控制。
+
+新增测试：`test_slow_artifact_repair_does_not_block_session_discovery`、`test_control_client_timeout_is_bounded_and_separate_from_execution`（前者基线 failed）。
+
+测试结果：`test_recovery_supervisor.py`、`test_opencode_server.py` 12 passed；相关组合 125 passed；ruff 通过。
+
+残留风险：控制超时作用于所有 HTTP 控制调用（含超大 Session 的 messages 拉取），可按需调大。
+
+## 第二轮 Task 5：统一 Experience 验证规则
+
+优先级：P1
+
+状态：已复现 → 已修复 → 已验证
+
+问题根因：
+
+- 自动提炼依据 Task+TaskSummary+Session；`library_submit_experience` 的 `_apply_runtime_verification` 与 `reconcile_session_verification` 只依据 Session SUCCEEDED，会跨轮次/批量验证历史候选，且 MANUAL_CONFIRM 未确认也可能被验证。
+
+修改文件：
+
+- backend/app/runtime/experience_verification.py（新增）
+- backend/app/library_service.py
+- backend/app/runtime/experience.py
+- backend/tests/test_experience.py
+
+核心修复逻辑：
+
+- 统一规则：`verified = 来源 task/session 明确 + summary 当前完整（非 stale、状态一致、来源 Session 为当前轮）+ 来源 Session SUCCEEDED + 来源轮次仍为当前轮`。
+- auto 轮次用 `summary.generation`；运行时提交轮次用提交时记录的 `turn_anchor_id`。
+- MANUAL_CONFIRM 未确认（WAITING）、后续轮次成功都不会验证旧候选；不再批量验证。
+
+新增测试：`test_running_submission_is_unverified_until_round_is_accepted`、`test_unconfirmed_manual_confirm_round_is_not_verified`、`test_later_round_success_does_not_verify_earlier_submission`（基线 3 failed）。
+
+测试结果：`test_experience.py` 17 passed；相关组合 137 passed；ruff 通过。
+
+残留风险：无。
+
+## 第二轮 Task 6：统一统计口径
+
+优先级：P2
+
+状态：口径确认（不可变完成事实 + 真实消息时间/模型归属 + 最小字段/迁移）→ 已修复 → 已验证
+
+问题根因：
+
+- 每日 Token 按 Session 日期归属；模型维度按 Session 单字段；`completed_today` 用成功 RuntimeSession 数代替业务完成任务数；未知执行时长被折算进空闲时间；restart 可改写历史完成统计。
+
+修改文件：
+
+- backend/app/models.py（`Task.completed_at`、`RuntimeSession.usage_by_day`、`RuntimeSession.model_usage`）
+- backend/alembic/versions/0028_usage_breakdowns_and_task_completion.py（新增，含回填）
+- backend/app/executors/usage.py（`parse_usage_breakdowns`、`provider/model` 拼接）
+- backend/app/runtime/lifecycle.py（写入 breakdown、`completed_at`）
+- backend/app/usage.py（重写统计口径）
+- backend/app/services.py、backend/app/dashboard.py、backend/app/api/routes.py、backend/app/schemas.py
+- frontend/src/api/types.ts
+- backend/tests/test_usage_breakdowns.py（新增）、test_usage_attribution.py、test_usage_sessions.py、test_experience.py、test_session_workspace.py
+
+核心修复逻辑：
+
+- 业务完成：`Task.completed_at` 只写一次，restart 不改写；`completed_today` 改用 `completed_at`；成功 Session 数拆为独立字段。
+- 每日 Token 与模型维度：由真实消息时间/真实消息模型聚合到 `usage_by_day`/`model_usage`，趋势与模型维度不再复用 Session 计数。
+- 未知执行时长保持 `None`，空闲时长随之 `None`；新增 `waiting_seconds`；区分 Task 数/根 Session/原生 Session/存续/执行/等待。
+- 迁移回填历史：`completed_at = finished_at`；历史 Session 按终态日/单模型回填 breakdown。
+
+新增测试：`test_usage_breakdowns.py`（真实消息日/多模型、未知时长保持未知）、`test_restart_does_not_rewrite_business_completion_time`；更新既有归属/模型/看板测试。
+
+测试结果：usage 相关 10 passed；后端全量 269 passed, 2 skipped；`alembic upgrade head`/`downgrade -1`/再 upgrade 成功；ruff 通过。
+
+残留风险：历史消息时间不可还原（回填按 Session 终态日/单模型近似）；历史 `execution_seconds` 为 NULL → 聚合显示未知；`waiting_seconds` 依赖当前 `submitted_at/confirmed_at`；`dashboard_tasks.trend.completed` 语义已改，前端文案需产品确认。
+
+## 第二轮最终结果
+
+完成项：
+
+- 第二轮 Task 1 旧摘要覆盖新 Session 结果（已验证）
+- 第二轮 Task 2 延迟 SSE Error / ACK 污染新轮次（已验证）
+- 第二轮 Task 3 成功任务继续执行后取消无法收敛（已验证）
+- 第二轮 Task 4 Supervisor 被慢请求阻塞（已验证）
+- 第二轮 Task 5 统一 Experience 验证规则（已验证）
+- 第二轮 Task 6 统一统计口径（含迁移+回填，已验证）
+
+测试：
+
+- 后端完整：`pytest -q` → 269 passed, 2 skipped
+- Runtime/Recovery/Summary/Experience 专项：169 passed, 2 skipped
+- `ruff check app tests` → All checks passed
+- 前端：`npm run type-check` 通过（含 workspace-ui）；`npm run build` 通过；Workspace UI 构建通过且产物无 diff
+- 迁移：0028 upgrade / downgrade -1 / 再 upgrade head 成功
+
+真实 OpenCode 验证：
+
+- 使用 `ASTRA_REAL_OPENCODE=1 ASTRA_REAL_OPENCODE_MODEL=deepseek/deepseek-v4-flash`。
+- Phase 1A：1 passed（24.22s）——覆盖 RuntimeSession、runtime_context、终态推导、MCP 连接与长写重启中断旧 Session。
+- Phase 1B：1 passed（15.45s）——覆盖 Experience 提交与验证链路（本轮 Task 5 统一规则）。
+- 过程说明：先以 `opencode/deepseek-v4-flash` 运行，Phase 1A/1B 均因模型未执行长命令/未调用 MCP 而失败；在基线 `8692a7b` 复跑 Phase 1B 得到相同失败，确认属该模型的工具调用能力问题，非本轮回归。改用 `deepseek/deepseek-v4-flash` 后全部通过。
+
+尚未解决：
+
+- 真实 OpenCode E2E 仍只覆盖 Phase 1A/1B 主链路，未覆盖本轮新增的延迟 ACK、取消收敛、跨轮经验、跨日 Token 等边界路径。
+- 历史消息时间不可还原、历史执行时长未知，详见各残留风险。
+- 部署需执行 `alembic upgrade head`（0027→0028）。
+
+是否建议合入：
+
+- YES
+- 原因：6 项均有“复现→最小修复→隔离回归→相关既有测试”闭环；后端全量、前端与 Workspace UI 类型检查/构建、迁移升降级、真实 OpenCode Phase 1A/1B（deepseek）全部通过。合入时随部署执行 `alembic upgrade head`。
