@@ -1,5 +1,5 @@
 [Unit]
-Description=Astra platform assistant OpenCode Server
+Description=Astra platform assistant OpenCode Server (project-level agent)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=astra
 Group=astra
+# Starts from backend/ so `python -m app.assistant.server` resolves; the server
+# then loads the assistant at the Astra project root and owns no workspace.
 WorkingDirectory=/opt/astra/backend
 EnvironmentFile=/etc/astra/astra.env
 ExecStart=/opt/astra/.venv/bin/python -m app.assistant.server

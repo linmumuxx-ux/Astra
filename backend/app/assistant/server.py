@@ -1,8 +1,9 @@
 """平台助手专用 OpenCode Server 生命周期。
 
-该进程始终在 ``nexus-assistant`` 工作区内启动，并把当前 Python
-虚拟环境的可执行目录注入 PATH，使 OpenCode 在 macOS、Linux 和
-Windows 上都能找到 ``astra-assistant-mcp`` 入口。
+该进程以 Astra 项目根目录作为能力加载上下文启动，直接使用项目根的
+``opencode.json`` 与 ``.opencode/``；不创建、不初始化任何助手专属
+Workspace。它把当前 Python 虚拟环境的可执行目录注入 PATH，使 OpenCode
+在 macOS、Linux 和 Windows 上都能找到 ``astra-assistant-mcp`` 入口。
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from app.config.settings import Settings, get_settings
+from app.config.settings import PROJECT_ROOT, Settings, get_settings
 from app.executors.process import local_command
 from app.runtime.opencode_server import OpenCodeServerManager
 
@@ -31,7 +32,13 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
 
     @property
     def workspace(self) -> Path:
-        return self.settings.resolved_assistant_workspace
+        """Astra project root: the assistant's capability-loading context only.
+
+        The assistant never owns a workspace and never mutates this tree; write
+        capabilities stay denied at the agent level.
+        """
+
+        return PROJECT_ROOT
 
     @property
     def executable_directory(self) -> Path:
@@ -65,6 +72,10 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
         executable_dir = str(self.executable_directory)
         current_path = environment.get("PATH", "")
         environment["PATH"] = os.pathsep.join(item for item in (executable_dir, current_path) if item)
+        # Marks this server as the assistant runtime so project-level plugins can
+        # keep developer-only behaviour (e.g. the Superpowers bootstrap) out of
+        # user-facing assistant sessions.
+        environment["ASTRA_RUNTIME_ROLE"] = "platform-assistant"
         environment["OPENCODE_SERVER_USERNAME"] = self.settings.assistant_opencode_username
         if self.settings.assistant_opencode_password:
             environment["OPENCODE_SERVER_PASSWORD"] = self.settings.assistant_opencode_password
@@ -93,9 +104,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 0
-    if not manager.workspace.is_dir():
-        print(f"助手工作区不存在：{manager.workspace}", file=sys.stderr)
-        return 1
 
     command = manager.command()
     environment = manager.process_environment()

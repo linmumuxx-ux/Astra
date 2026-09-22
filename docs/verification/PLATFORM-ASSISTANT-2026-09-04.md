@@ -5,7 +5,7 @@
 验收环境：
 
 - OpenCode 初验 1.18.25、复核 1.18.29（`opencode serve` 独立实例，
-  `127.0.0.1:4097`，工作区 `nexus-assistant/`）；
+  `127.0.0.1:4097`；初验使用当时的工作区 `nexus-assistant/`，已改为以 Astra 项目根目录加载，无独立工作区）；
 - 模型：`deepseek/deepseek-v4-flash-vision-exp`（本机 OpenCode 全局配置）；
 - 后端：FastAPI + SQLite（隔离实例），前端：Vite Dev + Chromium（Playwright）。
 

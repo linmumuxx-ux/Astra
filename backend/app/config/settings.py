@@ -69,13 +69,17 @@ class Settings(BaseSettings):
     opencode_server_port: int = Field(default=4096, ge=1, le=65535)
     opencode_server_username: str = "opencode"
     opencode_server_password: str | None = None
+    # Version compatibility is enforced by default. Company environments that
+    # intentionally run a custom build while keeping the same API surface can
+    # disable it explicitly; never encode "off" as a magic minimum such as 0.0.0.
+    opencode_server_version_check_enabled: bool = True
     opencode_server_min_version: str = "1.18.25"
     opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
     # A turn with no assistant reply is only a failure after this window; a
     # freshly submitted prompt must never be classified as failed.
     opencode_no_reply_grace_seconds: int = Field(default=15, ge=1, le=3600)
     opencode_reconcile_interval_seconds: int = Field(default=10, ge=2, le=300)
-    terminal_artifact_reconcile_interval_seconds: int = Field(default=30, ge=5, le=3600)
+    task_review_reconcile_interval_seconds: int = Field(default=30, ge=5, le=3600)
     # Upper bound on background recovery/repair coroutines so a backlog cannot
     # spawn unlimited concurrent OpenCode requests.
     supervisor_max_concurrency: int = Field(default=4, ge=1, le=32)
@@ -117,16 +121,17 @@ class Settings(BaseSettings):
             raise ValueError("知识服务地址必须为 http://127.0.0.1:<port>/api/v1")
         return value.rstrip("/")
 
-    # Platform assistant (NEXUS 平台助手). The assistant talks to its own
-    # OpenCode Server so conversational sessions never share runtime state
-    # with digital-employee task execution.
+    # Platform assistant (NEXUS 平台助手). The assistant is an Astra
+    # project-level agent: it loads the project root's OpenCode config, skills
+    # and MCP, but keeps its own OpenCode Server/port/credentials so
+    # conversational sessions never share runtime state with digital-employee
+    # task execution. It owns no workspace.
     assistant_enabled: bool = True
     assistant_opencode_url: str | None = None
     assistant_opencode_hostname: str = "127.0.0.1"
     assistant_opencode_port: int = Field(default=4097, ge=1, le=65535)
     assistant_opencode_username: str = "opencode"
     assistant_opencode_password: str | None = None
-    assistant_workspace_dir: Path = PROJECT_ROOT / "nexus-assistant"
     assistant_agent: str = "platform-assistant"
     assistant_model: str | None = None
     assistant_user_id: str = "console-admin"
@@ -161,6 +166,19 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {"opencode_server", "opencode_cli_fallback"}:
             raise ValueError("ASTRA_EXECUTOR_TYPE 只支持 opencode_server 或 opencode_cli_fallback")
+        return normalized
+
+    @field_validator("opencode_server_min_version")
+    @classmethod
+    def validate_opencode_server_min_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("ASTRA_OPENCODE_SERVER_MIN_VERSION 不能为空")
+        if normalized == "0.0.0":
+            raise ValueError(
+                "不能用 0.0.0 关闭版本校验；如需关闭请设置 "
+                "ASTRA_OPENCODE_SERVER_VERSION_CHECK_ENABLED=false"
+            )
         return normalized
 
     @model_validator(mode="after")
@@ -239,10 +257,6 @@ class Settings(BaseSettings):
             else self.opencode_server_hostname
         )
         return f"http://{host}:{self.opencode_server_port}"
-
-    @property
-    def resolved_assistant_workspace(self) -> Path:
-        return self.absolute_path(self.assistant_workspace_dir)
 
     @property
     def resolved_assistant_opencode_url(self) -> str:

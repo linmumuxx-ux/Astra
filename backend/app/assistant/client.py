@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from app.config.settings import Settings, get_settings
+from app.config.settings import PROJECT_ROOT, Settings, get_settings
 from app.executors.opencode_server import OpenCodeServerClient, split_model
 
 
@@ -42,7 +42,7 @@ class AssistantOpenCodeClient:
 
     @property
     def workspace(self) -> str:
-        return str(self.settings.resolved_assistant_workspace)
+        return str(PROJECT_ROOT)
 
     async def health(self) -> dict[str, Any]:
         try:

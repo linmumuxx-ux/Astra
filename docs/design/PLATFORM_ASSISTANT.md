@@ -1,7 +1,10 @@
 # NEXUS · 数字空间——平台助手方案设计文档
 
 > 状态：已按本方案落地第一版（后端 `backend/app/assistant/`、MCP Server `astra-assistant-mcp`、
-> 独立工作区 `nexus-assistant/`、前端 `frontend/src/features/assistant/`）。
+> 项目级 Agent 与 Skill（`.opencode/`）、前端 `frontend/src/features/assistant/`）。
+>
+> 更新：平台助手已不再拥有独立 Workspace；它以 Astra 项目根目录作为能力加载上下文，
+> 使用项目级 `opencode.json` 与 `.opencode/`，但仍保留独立 OpenCode Runtime 与 Session。
 
 ## 1. 总体方案
 
@@ -148,23 +151,25 @@ Browser 不接触 OpenCode 密码。
 
 # 5. OpenCode 项目
 
-平台助手使用独立 OpenCode Workspace：
+平台助手是 Astra 项目内置 Agent，不拥有独立 Workspace。它以 Astra 项目根目录作为
+OpenCode 的能力加载上下文，直接使用项目级配置：
 
 ```text
-nexus-assistant/
-├── opencode.json
-├── AGENTS.md
-├── .opencode/
-│   ├── agents/
-│   │   └── platform-assistant.md
-│   ├── commands/
-│   └── skills/
-└── assistant-context/
+Astra/
+├── opencode.json          # providers / models / MCP / permissions
+└── .opencode/
+    ├── agents/
+    │   └── platform-assistant.md
+    ├── commands/
+    └── skills/
+        └── nexus-task-experience-review/
 ```
 
-不要让平台助手运行在 NEXUS 源代码目录。
+启动助手 OpenCode Server 时以其项目根为工作目录，加载上述项目配置；不创建、不复制、
+不运行时拼装任何助手专属 `opencode.json`。
 
-避免 Agent 获得不必要的代码修改能力。
+以项目根为加载上下文不代表允许修改源码：助手通过 Agent 权限与 `nexus-assistant` MCP
+约束能力，见第 7 节。
 
 ---
 
@@ -192,7 +197,7 @@ platform-assistant
 
 平台助手禁止默认 Coding 工具。
 
-`nexus-assistant/opencode.json`：
+`.opencode/agents/platform-assistant.md` frontmatter：
 
 ```json
 {

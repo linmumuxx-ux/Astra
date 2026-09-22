@@ -27,7 +27,7 @@ from app.assistant.orchestrator import AssistantOrchestrator, set_orchestrator
 from app.assistant.rate_limit import assistant_rate_limiter
 from app.assistant.server import AssistantOpenCodeServerManager
 from app.assistant.service import ConversationService
-from app.config.settings import get_settings
+from app.config.settings import PROJECT_ROOT, get_settings
 from app.database import SessionLocal, init_database
 from app.domain import Priority, TaskStatus, TaskType
 from app.main import app
@@ -101,9 +101,25 @@ def test_assistant_server_manager_configures_isolated_runtime(monkeypatch):
     assert manager.executable_directory == Path(sys.executable).parent
     assert manager.mcp_entrypoint.parent == Path(sys.executable).parent
     assert environment["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
+    assert manager.workspace == PROJECT_ROOT
+    assert environment["ASTRA_RUNTIME_ROLE"] == "platform-assistant"
 
     monkeypatch.setattr(settings, "assistant_opencode_password", None)
     assert "OPENCODE_SERVER_PASSWORD" not in manager.process_environment()
+
+
+def test_assistant_uses_project_level_capabilities_without_workspace():
+    """助手以项目根为能力加载上下文，不拥有独立 Workspace。"""
+
+    settings = get_settings()
+    assert not hasattr(settings, "assistant_workspace_dir")
+    assert AssistantOpenCodeServerManager(settings).workspace == PROJECT_ROOT
+    assert (PROJECT_ROOT / ".opencode" / "agents" / "platform-assistant.md").is_file()
+    assert (
+        PROJECT_ROOT / ".opencode" / "skills" / "nexus-task-experience-review" / "SKILL.md"
+    ).is_file()
+    config = json.loads((PROJECT_ROOT / "opencode.json").read_text(encoding="utf-8"))
+    assert "nexus-assistant" in config.get("mcp", {})
 
 
 @pytest.mark.asyncio

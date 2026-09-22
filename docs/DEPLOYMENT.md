@@ -107,7 +107,6 @@ ASTRA_OPENCODE_MODEL=
 ASTRA_ASSISTANT_ENABLED=true
 ASTRA_ASSISTANT_OPENCODE_HOSTNAME=127.0.0.1
 ASTRA_ASSISTANT_OPENCODE_PORT=4097
-ASTRA_ASSISTANT_WORKSPACE_DIR=nexus-assistant
 ```
 
 机器相关路径和秘密配置只放 `.env`，不要散落修改源码，也不要提交真实密码、令牌或 SSH 密码。
@@ -183,7 +182,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 - Alembic 状态
 - Redis
 - OpenCode 配置和健康状态
-- 平台助手工作区
+- 平台助手项目级 Agent 与 MCP 配置
 - Workspace / 日志 / Runtime 目录
 - MCP 配置
 

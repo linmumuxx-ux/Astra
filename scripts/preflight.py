@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import importlib
+import json
 import platform
 import sys
 import tempfile
@@ -349,13 +350,23 @@ async def check_assistant_runtime(settings) -> CheckResult:
     from app.assistant.server import AssistantOpenCodeServerManager
 
     manager = AssistantOpenCodeServerManager(settings)
-    if not manager.workspace.is_dir() or not (manager.workspace / "opencode.json").is_file():
+    project_root = manager.workspace
+    agent_path = project_root / ".opencode" / "agents" / "platform-assistant.md"
+    mcp_configured = False
+    config_path = project_root / "opencode.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            mcp_configured = "nexus-assistant" in (config.get("mcp") or {})
+        except (OSError, ValueError):
+            mcp_configured = False
+    if not agent_path.is_file() or not mcp_configured:
         return result(
             "平台助手 Runtime",
             False,
-            manager.workspace,
-            "助手工作区或 opencode.json 不存在",
-            "确认 ASTRA_ASSISTANT_WORKSPACE_DIR 指向完整的 nexus-assistant 目录",
+            project_root,
+            "项目级助手 Agent 或 nexus-assistant MCP 未配置",
+            "确认 .opencode/agents/platform-assistant.md 存在，且 opencode.json 配置了 nexus-assistant MCP",
         )
     entrypoint = manager.mcp_entrypoint
     if not entrypoint.is_file():
