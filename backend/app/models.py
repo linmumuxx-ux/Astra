@@ -290,6 +290,14 @@ class KnowledgeItem(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     content_md: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    # Sync state is independent from the business lifecycle above: a PUBLISHED
+    # knowledge can be FAILED to synchronize and must never roll back.
+    sync_status: Mapped[str] = mapped_column(
+        String(16), default="not_synced", server_default="not_synced", index=True
+    )
+    sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synced_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    source_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     verification_status: Mapped[str] = mapped_column(String(32), default="unverified", index=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -371,19 +379,6 @@ class KnowledgeRelation(Base):
     )
     relation_type: Mapped[str] = mapped_column(String(32), default="related")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-
-
-class KnowledgeSync(Base):
-    """Durable per-source work; deliberately survives deletion of the original."""
-
-    __tablename__ = "knowledge_sync"
-
-    knowledge_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    revision: Mapped[str] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
-    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
-    synced_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class KnowledgeUsage(Base):

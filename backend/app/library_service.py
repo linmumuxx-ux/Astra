@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import String, cast, desc, func, or_, select, update
+import yaml
+from sqlalchemy import String, and_, cast, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -42,8 +44,7 @@ from app.library_schemas import (
     UsageTopKnowledge,
     UsageTrendPoint,
 )
-from app.library_sync import mark_for_sync
-from app.llm_wiki import LlmWikiClient, LlmWikiError, wiki_resource_path
+from app.llm_wiki import LlmWikiClient, LlmWikiError, knowledge_source_path, wiki_resource_path
 from app.models import (
     DigitalEmployee,
     ExperienceEvidence,
@@ -52,7 +53,6 @@ from app.models import (
     KnowledgeFeedback,
     KnowledgeItem,
     KnowledgeSpace,
-    KnowledgeSync,
     KnowledgeUsage,
     RuntimeSession,
     Task,
@@ -67,6 +67,25 @@ from app.usage import day_bounds
 KNOWLEDGE_TYPES = {"document", "rule", "guide", "experience", "faq", "tool", "example"}
 EXPERIENCE_TYPES = {"root_cause", "fix", "environment", "test_rule", "tool_usage", "other"}
 _WHITESPACE = re.compile(r"\s+")
+logger = logging.getLogger(__name__)
+
+
+def _source_markdown(item: KnowledgeItem) -> str:
+    """Serialize one knowledge record into the llm_wiki source Markdown."""
+    metadata = dict(
+        astra_knowledge_id=item.id,
+        title=item.title,
+        type=item.type,
+        space_id=item.space_id,
+        tags=item.tags or [],
+        updated_at=item.updated_at.isoformat(),
+    )
+    return (
+        "---\n"
+        + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)
+        + "---\n\n"
+        + f"# {item.title}\n\n{item.summary}\n\n{item.content_md}\n"
+    )
 
 
 def _normalized(value: str | None) -> str:
@@ -198,6 +217,7 @@ def _item_summary(item: KnowledgeItem, space_name: str | None = None) -> Knowled
         type=item.type,
         summary=item.summary,
         status=item.status,
+        sync_status=item.sync_status,
         verification_status=item.verification_status,
         tags=item.tags or [],
         source_type=item.source_type,
@@ -278,8 +298,6 @@ class KnowledgeService:
         principal: LibraryPrincipal,
         detail: dict | None = None,
     ) -> None:
-        if action in {"published", "updated", "moved", "archived"}:
-            await self._queue_sync(item)
         self.session.add(
             KnowledgeAudit(
                 knowledge_id=item.id,
@@ -290,9 +308,62 @@ class KnowledgeService:
             )
         )
 
-    async def _queue_sync(self, item: KnowledgeItem) -> None:
-        if item.status == "published" or await self.session.get(KnowledgeSync, item.id):
-            await mark_for_sync(self.session, item.id)
+    async def _prepare_sync(self, item: KnowledgeItem) -> None:
+        """Mark a business change as pending; the LLM Wiki attempt follows."""
+        item.source_path = knowledge_source_path(item.id)
+        item.sync_status = "pending"
+        item.sync_error = None
+        await self.session.commit()
+        await self._perform_sync(item)
+
+    async def _perform_sync(self, item: KnowledgeItem) -> None:
+        """Push the current target state. Never touches ``status``."""
+        source_path = item.source_path
+        if source_path is None or item.status not in {"published", "archived", "rejected"}:
+            item.sync_status = "not_synced"
+            item.sync_error = None
+            await self.session.commit()
+            return
+        client = LlmWikiClient()
+        error: str | None = None
+        try:
+            # Knowledge a Library viewer may not read is removed from the wiki,
+            # so tightening a space scope still withdraws the derived source.
+            if item.status == "published" and await self._visible_to_viewer(item):
+                await client.upsert_source(source_path, _source_markdown(item))
+            else:
+                await client.delete_source(source_path)
+        except LlmWikiError as exc:
+            error = str(exc)
+        if error:
+            item.sync_status = "failed"
+            item.sync_error = error
+        else:
+            item.sync_status = "synced"
+            item.sync_error = None
+            item.synced_at = utcnow()
+        await self.session.commit()
+
+    async def _visible_to_viewer(self, item: KnowledgeItem) -> bool:
+        if item.space_id is None:
+            return True
+        visible = await self._visible_space_ids(LibraryPrincipal(user_id="mcp", role="viewer"))
+        return item.space_id in visible
+
+    async def sync_knowledge(self, knowledge_id: str) -> KnowledgeItem:
+        """Retry the LLM Wiki synchronization for one knowledge record."""
+        item = await self.session.get(KnowledgeItem, knowledge_id)
+        if item is None:
+            raise LibraryNotFound("知识不存在")
+        await self._prepare_sync(item)
+        return item
+
+    async def resync_knowledge(
+        self, knowledge_id: str, principal: LibraryPrincipal
+    ) -> KnowledgeDetail:
+        _require_manage(principal)
+        await self.sync_knowledge(knowledge_id)
+        return await self.get_detail(knowledge_id, principal)
 
     async def _space(self, space_id: str | None, principal: LibraryPrincipal) -> KnowledgeSpace | None:
         if not space_id:
@@ -503,13 +574,20 @@ class KnowledgeService:
             await self._validate_space_move(space, values["parent_id"], principal)
         for key, value in values.items():
             setattr(space, key, value)
-        if {"access_scope", "status", "parent_id"}.intersection(values):
-            descendant_ids = {space.id, *(await _space_descendant_ids(self.session, space.id))}
-            items = (await self.session.scalars(select(KnowledgeItem).where(
-                KnowledgeItem.space_id.in_(descendant_ids)))).all()
-            for item in items:
-                await self._queue_sync(item)
         await self.session.commit()
+        if {"access_scope", "status", "parent_id"}.intersection(values):
+            # Scope/placement changes alter which knowledge a viewer may read.
+            descendant_ids = {space.id, *(await _space_descendant_ids(self.session, space.id))}
+            items = (
+                await self.session.scalars(
+                    select(KnowledgeItem).where(
+                        KnowledgeItem.space_id.in_(descendant_ids),
+                        KnowledgeItem.status == "published",
+                    )
+                )
+            ).all()
+            for item in items:
+                await self._prepare_sync(item)
         await self.session.refresh(space)
         return KnowledgeSpaceRead.model_validate(space)
 
@@ -660,6 +738,9 @@ class KnowledgeService:
             **summary.model_dump(),
             content_md=item.content_md,
             source_ref=item.source_ref,
+            source_path=item.source_path,
+            sync_error=item.sync_error,
+            synced_at=item.synced_at,
             source_employee_id=item.source_employee_id,
             source_employee_name=employee_name,
             source_task_title=task_title,
@@ -713,6 +794,9 @@ class KnowledgeService:
         item.updated_by = principal.user_id
         await self._audit(item, "updated", principal, {"fields": sorted(values)})
         await self.session.commit()
+        if item.status == "published":
+            # A published edit re-exports the same stable source path.
+            await self._prepare_sync(item)
         return await self.get_detail(item.id, principal)
 
     async def move_knowledge(
@@ -726,6 +810,8 @@ class KnowledgeService:
         item.updated_by = principal.user_id
         await self._audit(item, "moved", principal, {"from_space_id": previous, "to_space_id": space_id})
         await self.session.commit()
+        if item.status == "published" or item.source_path:
+            await self._prepare_sync(item)
         return await self.get_detail(item.id, principal)
 
     async def batch_move(
@@ -734,17 +820,22 @@ class KnowledgeService:
         _require_manage(principal)
         await self._space(space_id, principal)
         moved = 0
+        changed: list[KnowledgeItem] = []
         for knowledge_id in knowledge_ids:
             item = await self._item(knowledge_id, principal)
             previous = item.space_id
             item.space_id = space_id
             item.updated_by = principal.user_id
             await self._audit(item, "moved", principal, {"from_space_id": previous, "to_space_id": space_id})
+            changed.append(item)
             moved += 1
         await self.session.commit()
+        for item in changed:
+            if item.status == "published" or item.source_path:
+                await self._prepare_sync(item)
         return {"moved": moved}
 
-    async def archive(self, knowledge_id: str, principal: LibraryPrincipal) -> KnowledgeDetail:
+    async def archive_knowledge(self, knowledge_id: str, principal: LibraryPrincipal) -> KnowledgeDetail:
         _require_manage(principal)
         item = await self._item(knowledge_id, principal)
         if item.status == "archived":
@@ -753,11 +844,13 @@ class KnowledgeService:
         item.updated_by = principal.user_id
         await self._audit(item, "archived", principal)
         await self.session.commit()
+        await self._prepare_sync(item)
         return await self.get_detail(item.id, principal)
 
     async def batch_archive(self, knowledge_ids: list[str], principal: LibraryPrincipal) -> dict[str, int]:
         _require_manage(principal)
         archived = 0
+        changed: list[KnowledgeItem] = []
         for knowledge_id in knowledge_ids:
             item = await self._item(knowledge_id, principal)
             if item.status == "archived":
@@ -765,8 +858,11 @@ class KnowledgeService:
             item.status = "archived"
             item.updated_by = principal.user_id
             await self._audit(item, "archived", principal)
+            changed.append(item)
             archived += 1
         await self.session.commit()
+        for item in changed:
+            await self._prepare_sync(item)
         return {"archived": archived}
 
     async def batch_publish(
@@ -779,6 +875,7 @@ class KnowledgeService:
         _require_review(principal)
         await self._space(space_id, principal)
         published = 0
+        changed: list[KnowledgeItem] = []
         for knowledge_id in knowledge_ids:
             item = await self._item(knowledge_id, principal)
             if item.status not in {"candidate", "draft"}:
@@ -791,14 +888,22 @@ class KnowledgeService:
             item.published_at = utcnow()
             item.updated_by = principal.user_id
             await self._audit(item, "published", principal, {"from_status": previous_status})
+            changed.append(item)
             published += 1
         await self.session.commit()
+        for item in changed:
+            await self._prepare_sync(item)
         return {"published": published}
 
     async def delete_knowledge(self, knowledge_id: str, principal: LibraryPrincipal) -> dict[str, str]:
         _require_manage(principal)
         item = await self._item(knowledge_id, principal)
-        await self._queue_sync(item)
+        # The row disappears, so a failed cleanup cannot be recorded on it; log it.
+        if item.source_path:
+            try:
+                await LlmWikiClient().delete_source(item.source_path)
+            except LlmWikiError as exc:
+                logger.warning("删除知识 %s 的 llm_wiki 源文件失败：%s", knowledge_id, exc)
         await self.session.execute(update(KnowledgeUsage).where(
             KnowledgeUsage.knowledge_id == knowledge_id).values(knowledge_id=None))
         await self.session.execute(update(KnowledgeFeedback).where(
@@ -841,7 +946,7 @@ class KnowledgeService:
             for usage, employee_name, task_title in rows
         ]
 
-    async def publish(
+    async def publish_knowledge(
         self,
         knowledge_id: str,
         payload: KnowledgePublishWrite,
@@ -868,6 +973,7 @@ class KnowledgeService:
             {"from_status": previous_status, "space_id": payload.space_id},
         )
         await self.session.commit()
+        await self._prepare_sync(item)
         return await self.get_detail(item.id, principal)
 
     async def reject(
@@ -1447,24 +1553,26 @@ class KnowledgeService:
         counts = dict(
             (
                 await self.session.execute(
-                    select(KnowledgeSync.status, func.count()).group_by(KnowledgeSync.status)
+                    select(KnowledgeItem.sync_status, func.count()).group_by(
+                        KnowledgeItem.sync_status
+                    )
                 )
             ).all()
         )
-        last_synced = await self.session.scalar(select(func.max(KnowledgeSync.synced_at)))
+        last_synced = await self.session.scalar(select(func.max(KnowledgeItem.synced_at)))
         healthy = False
         try:
-            await LlmWikiClient(settings).verify_project()
+            await LlmWikiClient(settings).health()
             healthy = True
-            message = "源文件扫描已接受不代表知识加工完成"
+            message = "源文件已同步；扫描接受不代表知识加工完成"
         except LlmWikiError as exc:
             message = str(exc)
         if counts.get("failed", 0):
             healthy = False
             error = await self.session.scalar(
-                select(KnowledgeSync.error)
-                .where(KnowledgeSync.status == "failed")
-                .order_by(KnowledgeSync.requested_at.desc())
+                select(KnowledgeItem.sync_error)
+                .where(KnowledgeItem.sync_status == "failed")
+                .order_by(KnowledgeItem.updated_at.desc())
                 .limit(1)
             )
             message = error or message
@@ -1479,16 +1587,20 @@ class KnowledgeService:
 
     async def resync(self, principal: LibraryPrincipal) -> dict[str, int]:
         _require_manage(principal)
-        # Re-export the current published set and retry all retained deletion records.
-        ids = set(
-            (
-                await self.session.scalars(
-                    select(KnowledgeItem.id).where(KnowledgeItem.status == "published")
+        # Re-push the current published set and retry failed/missing deletions.
+        items = (
+            await self.session.scalars(
+                select(KnowledgeItem).where(
+                    or_(
+                        KnowledgeItem.status == "published",
+                        and_(
+                            KnowledgeItem.source_path.is_not(None),
+                            KnowledgeItem.sync_status != "synced",
+                        ),
+                    )
                 )
-            ).all()
-        )
-        ids.update((await self.session.scalars(select(KnowledgeSync.knowledge_id))).all())
-        for knowledge_id in ids:
-            await mark_for_sync(self.session, knowledge_id)
-        await self.session.commit()
-        return {"pending_count": len(ids)}
+            )
+        ).all()
+        for item in items:
+            await self._prepare_sync(item)
+        return {"pending_count": len(items)}

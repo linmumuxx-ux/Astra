@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -17,7 +18,7 @@ from app.models import (
     Task,
 )
 from app.runtime.environment import environment_snapshot
-from app.runtime.opencode_config import write_local_runtime_config
+from app.runtime.opencode_config import remote_runtime_config_content, write_local_runtime_config
 from app.runtime.runtime_context import (
     RuntimeContextError,
     generate_runtime_context,
@@ -213,6 +214,16 @@ def test_local_runtime_config_is_written_outside_the_worktree(tmp_path):
     assert not str(path).startswith(str((tmp_path / "worktree").resolve()))
     payload = path.read_text(encoding="utf-8")
     assert '"astra_library"' in payload
+
+
+def test_remote_runtime_config_reaches_knowledge_over_http_mcp():
+    settings = Settings(_env_file=None, mcp_api_key="secret")
+    payload = json.loads(remote_runtime_config_content(settings, "http://127.0.0.1:8201/mcp"))
+    server = payload["mcp"]["astra_library"]
+    assert server["type"] == "remote"
+    assert server["url"] == "http://127.0.0.1:8201/mcp"
+    assert server["headers"]["Authorization"] == "Bearer secret"
+    assert payload["permission"]["astra_library_*"] == "allow"
 
 
 async def test_runtime_session_context_hash_is_unique():

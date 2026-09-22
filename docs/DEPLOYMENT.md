@@ -400,6 +400,7 @@ CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 Astra 管理原始知识，原版 llm_wiki 管理派生 Wiki 和索引；Agent 统一使用 Astra Library MCP。
 同机 Linux ARM64 部署时，按 llm_wiki 官方方式安装并运行完整桌面应用，保持指定项目打开；
 仅启动 HTTP 监听并不能代替桌面应用中的知识加工流程。本次不修改 llm_wiki 源码。
+Astra 只通过 llm_wiki 的 Source REST API 写入和删除来源，不再直接操作项目文件目录。
 
 在 Astra `.env` 配置（Token 仅从环境读取，不入库）：
 
@@ -408,28 +409,30 @@ ASTRA_LLM_WIKI_ENABLED=true
 ASTRA_LLM_WIKI_API_BASE_URL=http://127.0.0.1:19828/api/v1
 ASTRA_LLM_WIKI_API_TOKEN=<本地 API Token>
 ASTRA_LLM_WIKI_PROJECT_ID=<固定项目 UUID>
-ASTRA_LLM_WIKI_PROJECT_PATH=/srv/llm-wiki/astra-wiki
 ASTRA_LLM_WIKI_TIMEOUT=10
 ```
 
 使用专属项目，启用 Source Watch 和自动 Ingest，确保 Markdown 在允许的扩展名中，
 并配置可用的 LLM。需要向量/Hybrid 检索时，还须在 llm_wiki 中配置并启用 Embedding；
 未启用时，原版同一个搜索 API 可以返回 `mode=keyword`，这不是 Astra 的回退搜索。
-Astra 会验证项目 UUID、API 返回路径及当前打开项目的一致性，拒绝向不匹配的目录写入。
+`ASTRA_LLM_WIKI_PROJECT_PATH` 已废弃：REST Source API 由 llm_wiki 校验路径与当前打开项目，
+目标项目不是当前活动项目时返回 409，Astra 不需要本地目录权限。
 
 部署代码后执行 `python -m alembic upgrade head`（在 `backend/` 的虚拟环境中），
-重启 Astra API、Library MCP、Celery control worker 和 beat。
-迁移会将现有 published 知识加入待同步；已有使用记录一次性迁移为资源级历史记录，
+重启 Astra API 和 Library MCP。
+迁移把同步状态收敛到知识记录本身（`sync_status`、`sync_error`、`synced_at`、`source_path`），
+并为现有 published 知识标记为待同步；已有使用记录一次性迁移为资源级历史记录，
 `astra:<knowledge_id>` 表示历史原始知识，不假装成可读取的 Wiki 路径。
 保留原有可选来源字段供管理端审计使用，MCP 查询和反馈不再依赖 employee/task/run。
 
-Celery 每 5 秒取最多 100 条待同步任务，将当前可供 Library viewer 访问的 published 知识
-原子写入 `<PROJECT_PATH>/raw/sources/astra/<knowledge_id>.md`，随后调用一次 rescan。
-目录、标签、正文和发布状态变化都会入队；删除记录保留清理任务。
-同机 OS 文件锁防止重复 worker 并发写入，任务被中断后仍可重试；新版本请求不会被旧任务完成覆盖。
-数据库提交与外部 HTTP 不构成分布式事务。失败显示在数字图书馆的“知识服务状态”，
-点击“重新同步”会重新排队当前正式知识和保留的清理记录，由 worker 执行。
-运行 worker 的账户需要项目源文件目录和 Astra runtime 目录的读写权限。
+知识发布、修改和归档由 `KnowledgeService` 同步调用 Source API：
+`PUT /api/v1/projects/{projectId}/sources/file` 写入或更新
+`raw/sources/astra/knowledge/<knowledge_id>.md`（稳定 ID，改标题仍更新同一份），
+归档用 `DELETE .../sources/file?path=...` 删除；llm_wiki 每次操作后自行触发 rescan。
+`Knowledge.status`（draft/published/archived）与 `sync_status`（not_synced/pending/synced/failed）
+是两个独立维度，同步失败不会回滚发布、Task 或 Experience 状态。
+失败记录在数字图书馆的“知识服务状态”，点击“重新同步”会重试当前正式知识及失败的删除。
+不再需要 Celery 周期性同步任务，运行账户也不需要项目源文件目录权限。
 
 ### 已知限制（本阶段接受）
 

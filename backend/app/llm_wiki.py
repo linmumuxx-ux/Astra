@@ -1,5 +1,11 @@
-"""The original llm_wiki local HTTP API contract; no local retrieval engine."""
+"""HTTP client for the original llm_wiki REST API; no local filesystem access.
 
+Writes go through the Source API (``PUT/DELETE .../sources/file``); reads
+(``search``/``read``) back the Agent-facing MCP tools. Astra never writes to the
+llm_wiki project directory itself.
+"""
+
+import re
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
@@ -9,9 +15,23 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from app.config.settings import Settings, get_settings
 from app.library_schemas import LibraryResource, LibrarySearchResult
 
+# The Source API is scoped to ``raw/sources/**``; callers pass the full
+# project-relative path and the client strips this prefix for the API request.
+SOURCE_ROOT = "raw/sources/"
+# Stable identifier path: renaming the title keeps updating the same source.
+KNOWLEDGE_SOURCE_ROOT = "raw/sources/astra/knowledge"
+_KNOWLEDGE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
 
 class LlmWikiError(Exception):
     pass
+
+
+def knowledge_source_path(knowledge_id: str) -> str:
+    """Full project-relative source path for one Astra knowledge record."""
+    if not _KNOWLEDGE_ID.fullmatch(knowledge_id):
+        raise LlmWikiError("知识同步失败：knowledge_id 不是安全的稳定文件名")
+    return f"{KNOWLEDGE_SOURCE_ROOT}/{knowledge_id}.md"
 
 
 def wiki_resource_path(value: str) -> str:
@@ -54,12 +74,10 @@ class LlmWikiClient:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
-    async def request(self, method: str, path: str, **kwargs) -> dict:
+    async def _http(
+        self, method: str, path: str, *, allow_not_found: bool = False, **kwargs
+    ) -> dict | None:
         settings = self.settings
-        if not settings.llm_wiki_enabled:
-            raise LlmWikiError("知识服务暂不可用：未启用 llm_wiki")
-        if not settings.llm_wiki_project_id:
-            raise LlmWikiError("知识服务暂不可用：未配置 project_id")
         headers = {"Accept": "application/json"}
         if settings.llm_wiki_api_token:
             headers["Authorization"] = f"Bearer {settings.llm_wiki_api_token}"
@@ -75,6 +93,8 @@ class LlmWikiClient:
         if response.status_code in {401, 403}:
             raise LlmWikiError("知识服务暂不可用：API Token 错误或权限不足")
         if response.status_code == 404:
+            if allow_not_found:
+                return None
             raise LlmWikiError("知识服务暂不可用：项目或资源不存在")
         if not response.is_success:
             raise LlmWikiError(f"知识服务暂不可用：HTTP {response.status_code}")
@@ -86,33 +106,69 @@ class LlmWikiClient:
             raise LlmWikiError("知识服务暂不可用：API 返回失败结果")
         return data
 
+    def _require_enabled(self) -> None:
+        if not self.settings.llm_wiki_enabled:
+            raise LlmWikiError("知识服务暂不可用：未启用 llm_wiki")
+
+    async def request(self, method: str, path: str, **kwargs) -> dict | None:
+        self._require_enabled()
+        if not self.settings.llm_wiki_project_id:
+            raise LlmWikiError("知识服务暂不可用：未配置 project_id")
+        return await self._http(method, path, **kwargs)
+
     @property
     def project_route(self) -> str:
         return f"/projects/{quote(self.settings.llm_wiki_project_id, safe='')}"
 
-    async def verify_project(self) -> None:
-        """Check the write target against the authenticated service before touching files."""
-        from pathlib import Path
+    async def health(self) -> dict:
+        """Confirm the HTTP API is reachable and running before touching sources."""
+        self._require_enabled()
+        data = await self._http("GET", "/health")
+        if data is None or data.get("ok") is not True or data.get("status") != "running":
+            raise LlmWikiError("知识服务暂不可用：健康检查失败")
+        return data
 
-        data = await self.request("GET", "/projects")
-        projects = data.get("projects")
-        if not isinstance(projects, list):
-            raise LlmWikiError("知识服务暂不可用：项目响应格式错误")
-        project = next(
-            (p for p in projects if isinstance(p, dict) and p.get("id") == self.settings.llm_wiki_project_id),
-            None,
-        )
-        if project is None:
-            raise LlmWikiError("知识服务暂不可用：project_id 不存在")
-        configured_path = self.settings.llm_wiki_project_path
+    def _source_api_path(self, source_path: str) -> str:
         if (
-            configured_path is None
-            or not isinstance(project.get("path"), str)
-            or self.settings.absolute_path(configured_path) != Path(project["path"]).resolve()
+            not source_path
+            or not source_path.startswith(SOURCE_ROOT)
+            or "\\" in source_path
+            or "\x00" in source_path
+            or ".." in PurePosixPath(source_path).parts
         ):
-            raise LlmWikiError("知识服务暂不可用：PROJECT_PATH 与 API 项目目录不一致")
-        if not project.get("current"):
-            raise LlmWikiError("知识服务暂不可用：请在 llm_wiki 桌面应用打开配置的项目")
+            raise LlmWikiError("知识同步失败：source_path 必须是 raw/sources/ 下的相对路径")
+        return source_path[len(SOURCE_ROOT) :]
+
+    @staticmethod
+    def _validate_source_response(data: dict, source_path: str) -> None:
+        if data.get("ok") is not True or data.get("path") != source_path:
+            raise LlmWikiError("知识服务暂不可用：源文件操作响应不匹配")
+
+    async def upsert_source(self, source_path: str, content: str) -> dict:
+        """Create or update one source; llm_wiki triggers its own rescan."""
+        api_path = self._source_api_path(source_path)
+        data = await self.request(
+            "PUT",
+            self.project_route + "/sources/file",
+            json={"path": api_path, "content": content},
+        )
+        assert data is not None
+        self._validate_source_response(data, source_path)
+        return data
+
+    async def delete_source(self, source_path: str) -> bool:
+        """Delete one source. A missing source already matches the target state."""
+        api_path = self._source_api_path(source_path)
+        data = await self.request(
+            "DELETE",
+            self.project_route + "/sources/file",
+            params={"path": api_path},
+            allow_not_found=True,
+        )
+        if data is None:
+            return False
+        self._validate_source_response(data, source_path)
+        return True
 
     async def search(self, query: str, limit: int) -> list[LibrarySearchResult]:
         data = await self.request(
@@ -124,6 +180,7 @@ class LlmWikiClient:
                 "includeContent": False,
             },
         )
+        assert data is not None
         try:
             hits = _SearchResponse.model_validate(data).results
         except ValidationError:
@@ -142,6 +199,7 @@ class LlmWikiClient:
     async def read(self, resource_id: str) -> LibraryResource:
         path = wiki_resource_path(resource_id)
         data = await self.request("GET", self.project_route + "/files/content", params={"path": path})
+        assert data is not None
         try:
             resource = _FileResponse.model_validate(data)
         except ValidationError:
@@ -149,15 +207,3 @@ class LlmWikiClient:
         if resource.path != path:
             raise LlmWikiError("知识服务暂不可用：返回资源路径不匹配")
         return LibraryResource(resource_id=path, path=path, content_md=resource.content)
-
-    async def rescan(self) -> None:
-        data = await self.request("POST", self.project_route + "/sources/rescan")
-        if data.get("ok") is not True or not isinstance(data.get("result"), dict):
-            raise LlmWikiError("知识服务暂不可用：rescan 响应格式错误")
-        queue = data["result"].get("queue")
-        if not isinstance(queue, dict) or not isinstance(queue.get("tasks"), list):
-            raise LlmWikiError("知识服务暂不可用：rescan 队列响应格式错误")
-        if any(not isinstance(task, dict) for task in queue["tasks"]):
-            raise LlmWikiError("知识服务暂不可用：rescan 任务响应格式错误")
-        if any(task.get("status") == "failed" for task in queue["tasks"]):
-            raise LlmWikiError("知识服务暂不可用：源文件扫描任务失败")

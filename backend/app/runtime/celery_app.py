@@ -25,7 +25,6 @@ celery.conf.update(
         "astra.employee-heartbeat": {"queue": "control"},
     },
     beat_schedule={
-        "astra-library-sync": {"task": "astra.library-sync", "schedule": 5},
         "astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval},
         "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
         "astra-heartbeat-check": {
@@ -99,18 +98,5 @@ def employee_heartbeat() -> list[str]:
     async def execute():
         async with worker_session() as session:
             return await heartbeat_active_employees(session)
-
-    return run_async(execute())
-
-
-
-@celery.task(name="astra.library-sync")
-def library_sync() -> int:
-    from app.library_sync import sync_pending
-
-    async def execute():
-        await init_database()
-        async with worker_session() as session:
-            return await sync_pending(session, settings)
 
     return run_async(execute())

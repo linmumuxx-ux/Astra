@@ -182,6 +182,7 @@ class KnowledgeListItem(LibraryORMModel):
     type: KnowledgeType
     summary: str
     status: KnowledgeStatus
+    sync_status: str = "not_synced"
     verification_status: VerificationStatus
     tags: list[str]
     source_type: str | None = None
@@ -196,6 +197,9 @@ class KnowledgeDetail(KnowledgeListItem):
     content_md: str
     source_type: str | None
     source_ref: str | None
+    source_path: str | None = None
+    sync_error: str | None = None
+    synced_at: datetime | None = None
     source_employee_id: str | None
     source_employee_name: str | None = None
     source_task_title: str | None = None

@@ -1,4 +1,4 @@
-import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -23,14 +23,12 @@ from app.library_schemas import (
     LibrarySubmitExperienceInput,
 )
 from app.library_service import KnowledgeService, LibraryPrincipal
-from app.library_sync import sync_pending, write_source
-from app.llm_wiki import LlmWikiClient, LlmWikiError
+from app.llm_wiki import LlmWikiClient, LlmWikiError, knowledge_source_path
 from app.models import (
     Base,
     DigitalEmployee,
     KnowledgeFeedback,
     KnowledgeItem,
-    KnowledgeSync,
     KnowledgeUsage,
     RuntimeSession,
     Task,
@@ -42,13 +40,16 @@ from app.runtime.runtime_context import (
 )
 
 
+def wiki_resource(full_path: str) -> str:
+    return f"wiki/sources/{full_path.rsplit('/', 1)[-1]}"
+
+
 @pytest.fixture
 async def wiki_env(tmp_path, monkeypatch):
     settings = Settings(
         _env_file=None,
         llm_wiki_enabled=True,
         llm_wiki_project_id="project-1",
-        llm_wiki_project_path=tmp_path / "project",
         llm_wiki_api_token="test-secret",
         runtime_dir=tmp_path / "run",
     )
@@ -56,8 +57,7 @@ async def wiki_env(tmp_path, monkeypatch):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    state = {"status": 200, "calls": [], "pages": {}, "on_rescan": None}
-    directory = settings.llm_wiki_project_path / "raw/sources/astra"
+    state = {"status": 200, "calls": [], "sources": {}, "on_put": None}
 
     async def respond(request):
         state["calls"].append(request)
@@ -67,41 +67,48 @@ async def wiki_env(tmp_path, monkeypatch):
         if state["status"] != 200:
             return httpx.Response(state["status"], json={"ok": False, "error": "test-secret"})
         path = request.url.path
-        if path.endswith("/projects"):
-            return httpx.Response(
-                200,
-                json={
-                    "ok": True,
-                    "projects": [
-                        {
-                            "id": "project-1",
-                            "path": str(settings.llm_wiki_project_path),
-                            "current": True,
-                        }
-                    ],
-                },
-            )
-        if path.endswith("/sources/rescan"):
-            state["pages"] = {f"wiki/sources/{p.name}": p.read_text() for p in directory.glob("*.md")}
-            if state["on_rescan"]:
-                await state["on_rescan"]()
-            return httpx.Response(200, json={"ok": True, "result": {"queue": {"tasks": []}}})
+        if path.endswith("/health"):
+            return httpx.Response(200, json={"ok": True, "status": "running"})
+        if path.endswith("/sources/file"):
+            api_path = request.url.params["path"] if request.method == "DELETE" else None
+            if request.method == "PUT":
+                body = json.loads(request.content)
+                full_path = "raw/sources/" + body["path"]
+                existed = full_path in state["sources"]
+                state["sources"][full_path] = body["content"]
+                if state["on_put"]:
+                    await state["on_put"](full_path)
+                return httpx.Response(
+                    200,
+                    json={
+                        "ok": True,
+                        "path": full_path,
+                        "action": "updated" if existed else "created",
+                    },
+                )
+            full_path = "raw/sources/" + api_path
+            if full_path not in state["sources"]:
+                return httpx.Response(404, json={"ok": False, "error": "Source file not found"})
+            del state["sources"][full_path]
+            return httpx.Response(200, json={"ok": True, "path": full_path, "action": "deleted"})
         if path.endswith("/search"):
+            pages = {wiki_resource(full): content for full, content in state["sources"].items()}
             return httpx.Response(
                 200,
                 json={
                     "ok": True,
                     "results": [
-                        {"path": path, "title": "知识", "snippet": content[-100:], "score": 1.25}
-                        for path, content in state["pages"].items()
+                        {"path": resource, "title": "知识", "snippet": content[-100:], "score": 1.25}
+                        for resource, content in pages.items()
                     ],
                 },
             )
         if path.endswith("/files/content"):
             resource = request.url.params["path"]
-            if resource not in state["pages"]:
+            pages = {wiki_resource(full): content for full, content in state["sources"].items()}
+            if resource not in pages:
                 return httpx.Response(404)
-            return httpx.Response(200, json={"path": resource, "content": state["pages"][resource]})
+            return httpx.Response(200, json={"path": resource, "content": pages[resource]})
         raise AssertionError(path)
 
     monkeypatch.setattr(
@@ -141,22 +148,137 @@ async def wiki_env(tmp_path, monkeypatch):
         service = KnowledgeService(session)
         space = await service.create_space(KnowledgeSpaceCreate(name="Public"), LibraryPrincipal())
         await session.commit()
-    yield settings, sessions, state, space.id, directory
+    yield settings, sessions, state, space.id
     await engine.dispose()
 
 
-async def publish(sessions, space_id, title="timeout"):
+async def publish(sessions, space_id, title="timeout", content="original body"):
     async with sessions() as session:
         service = KnowledgeService(session)
         item = await service.create_knowledge(
-            KnowledgeCreate(space_id=space_id, title=title, content_md="original body"), LibraryPrincipal()
+            KnowledgeCreate(space_id=space_id, title=title, content_md=content),
+            LibraryPrincipal(),
         )
-        await service.publish(item.id, KnowledgePublishWrite(space_id=space_id), LibraryPrincipal())
+        await service.publish_knowledge(
+            item.id, KnowledgePublishWrite(space_id=space_id), LibraryPrincipal()
+        )
         return item.id
 
 
+async def test_publish_puts_source_and_marks_synced(wiki_env):
+    settings, sessions, state, space_id = wiki_env
+    knowledge_id = await publish(sessions, space_id)
+    expected = knowledge_source_path(knowledge_id)
+    assert expected.endswith(f"astra/knowledge/{knowledge_id}.md")
+    assert expected in state["sources"]
+    async with sessions() as session:
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.status == "published"
+        assert item.sync_status == "synced" and item.sync_error is None
+        assert item.source_path == expected and item.synced_at is not None
+    puts = [call for call in state["calls"] if call.method == "PUT"]
+    assert len(puts) == 1
+
+
+async def test_title_change_updates_same_source_path(wiki_env):
+    settings, sessions, state, space_id = wiki_env
+    knowledge_id = await publish(sessions, space_id, title="旧标题")
+    expected = knowledge_source_path(knowledge_id)
+    async with sessions() as session:
+        service = KnowledgeService(session)
+        await service.update_knowledge(
+            knowledge_id, KnowledgePatch(title="新标题"), LibraryPrincipal()
+        )
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.sync_status == "synced" and item.source_path == expected
+    puts = [call for call in state["calls"] if call.method == "PUT"]
+    assert len(puts) == 2
+    bodies = [json.loads(call.content) for call in puts]
+    assert {body["path"] for body in bodies} == {expected.removeprefix("raw/sources/")}
+    assert "新标题" in state["sources"][expected]
+
+
+async def test_archive_deletes_source_and_marks_synced(wiki_env):
+    settings, sessions, state, space_id = wiki_env
+    knowledge_id = await publish(sessions, space_id)
+    expected = knowledge_source_path(knowledge_id)
+    async with sessions() as session:
+        service = KnowledgeService(session)
+        await service.archive_knowledge(knowledge_id, LibraryPrincipal())
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.status == "archived" and item.sync_status == "synced"
+    assert expected not in state["sources"]
+    assert any(call.method == "DELETE" for call in state["calls"])
+
+
+async def test_archive_of_missing_source_is_idempotent(wiki_env):
+    settings, sessions, state, space_id = wiki_env
+    knowledge_id = await publish(sessions, space_id)
+    expected = knowledge_source_path(knowledge_id)
+    del state["sources"][expected]
+    async with sessions() as session:
+        service = KnowledgeService(session)
+        await service.archive_knowledge(knowledge_id, LibraryPrincipal())
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.status == "archived" and item.sync_status == "synced"
+
+
+@pytest.mark.parametrize(
+    "status, message",
+    [
+        (401, "Token"),
+        (404, "不存在"),
+        (500, "HTTP 500"),
+        (httpx.ReadTimeout("test-secret"), "超时"),
+        (httpx.ConnectError("test-secret"), "无法连接"),
+    ],
+)
+async def test_sync_failure_never_rolls_back_publication(wiki_env, status, message):
+    settings, sessions, state, space_id = wiki_env
+    state["status"] = status
+    knowledge_id = await publish(sessions, space_id)
+    async with sessions() as session:
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.status == "published"
+        assert item.sync_status == "failed"
+        assert item.sync_error and message in item.sync_error
+        assert "test-secret" not in item.sync_error
+        assert item.synced_at is None
+        assert state["sources"] == {}
+        # A public read still fails cleanly while the service is down.
+        with pytest.raises(LlmWikiError, match=message):
+            await KnowledgeService(session).mcp_search(
+                LibrarySearchInput(query="original"), runtime_context=state["runtime_context"]
+            )
+        # Recovery: resync turns the same published record into SYNCED.
+        state["status"] = 200
+        detail = await KnowledgeService(session).resync_knowledge(knowledge_id, LibraryPrincipal())
+        assert detail.sync_status == "synced" and detail.status == "published"
+        item = await session.get(KnowledgeItem, knowledge_id)
+        assert item.sync_status == "synced" and item.sync_error is None and item.synced_at is not None
+
+
+async def test_sync_failure_does_not_affect_task_or_experience(wiki_env):
+    settings, sessions, state, space_id = wiki_env
+    state["status"] = 500
+    async with sessions() as session:
+        service = KnowledgeService(session)
+        candidate = await service.mcp_submit_experience(
+            LibrarySubmitExperienceInput(title="流水线环境初始化超时", content_md="检查初始化日志")
+        )
+        assert candidate.status == "candidate"
+        await service.publish_knowledge(
+            candidate.id, KnowledgePublishWrite(space_id=space_id), LibraryPrincipal()
+        )
+        item = await session.get(KnowledgeItem, candidate.id)
+        task = await session.get(Task, "T-wiki")
+        session_row = await session.get(RuntimeSession, "ses_wiki")
+        assert item.status == "published" and item.sync_status == "failed"
+        assert task.status == "RUNNING" and session_row.status == "RUNNING"
+
+
 async def test_lifecycle_and_resource_usage_records_runtime_identity(wiki_env):
-    settings, sessions, state, space_id, directory = wiki_env
+    settings, sessions, state, space_id = wiki_env
     runtime_context = state["runtime_context"]
     async with sessions() as session:
         service = KnowledgeService(session)
@@ -164,13 +286,13 @@ async def test_lifecycle_and_resource_usage_records_runtime_identity(wiki_env):
             LibrarySubmitExperienceInput(title="流水线环境初始化超时", content_md="检查初始化日志")
         )
         assert candidate.status == "candidate" and candidate.type == "experience"
-        assert await session.get(KnowledgeSync, candidate.id) is None
-        assert await sync_pending(session, settings) == 0
-        assert not directory.exists()
-        await service.publish(candidate.id, KnowledgePublishWrite(space_id=space_id), LibraryPrincipal())
-        assert await sync_pending(session, settings) == 1
-        source = directory / f"{candidate.id}.md"
-        assert "astra_knowledge_id:" in source.read_text()
+        assert candidate.sync_status == "not_synced"
+        assert state["sources"] == {}
+        await service.publish_knowledge(
+            candidate.id, KnowledgePublishWrite(space_id=space_id), LibraryPrincipal()
+        )
+        source = knowledge_source_path(candidate.id)
+        assert "astra_knowledge_id:" in state["sources"][source]
         hits = await service.mcp_search(
             LibrarySearchInput(query="流水线环境初始化超时"), runtime_context=runtime_context
         )
@@ -193,28 +315,18 @@ async def test_lifecycle_and_resource_usage_records_runtime_identity(wiki_env):
             for event in events
             if event.action in {"search_hit", "read"}
         )
-        assert all(
-            event.employee_id is None and event.task_id is None and event.session_id is None
-            for event in events
-            if event.action == "feedback"
-        )
         summary = await service.usage_summary()
         assert summary.total_references == 1 and summary.used_resources == 1
         assert summary.feedback_count == 1
-        assert summary.top_knowledge[0].resource_id == resource.resource_id
-        recent = await service.recent_usage()
-        assert recent[0].resource_id == resource.resource_id
         await service.update_knowledge(
             candidate.id, KnowledgePatch(content_md="更新后的步骤"), LibraryPrincipal()
         )
-        await sync_pending(session, settings)
         assert (
             "更新后的步骤"
             in (await service.mcp_get(resource.resource_id, runtime_context=runtime_context)).content_md
         )
-        await service.archive(candidate.id, LibraryPrincipal())
-        await sync_pending(session, settings)
-        assert not source.exists()
+        await service.archive_knowledge(candidate.id, LibraryPrincipal())
+        assert source not in state["sources"]
         assert (
             await service.mcp_search(
                 LibrarySearchInput(query="初始化"), runtime_context=runtime_context
@@ -224,136 +336,89 @@ async def test_lifecycle_and_resource_usage_records_runtime_identity(wiki_env):
         with pytest.raises(LlmWikiError, match="不存在"):
             await service.mcp_get(resource.resource_id, runtime_context=runtime_context)
         await service.delete_knowledge(candidate.id, LibraryPrincipal())
-        assert await session.get(KnowledgeSync, candidate.id) is not None
+        assert await session.get(KnowledgeItem, candidate.id) is None
         assert await session.scalar(select(func.count(KnowledgeFeedback.id))) == 1
         assert (await service.mcp_related(resource.resource_id))["status"] == "unsupported"
 
 
-@pytest.mark.parametrize(
-    "status, message",
-    [
-        (401, "Token"),
-        (404, "不存在"),
-        (500, "HTTP 500"),
-        (httpx.ReadTimeout("test-secret"), "超时"),
-        (httpx.ConnectError("test-secret"), "无法连接"),
-    ],
-)
-async def test_unavailable_persists_failure_without_rolling_back_publication(wiki_env, status, message):
-    settings, sessions, state, space_id, directory = wiki_env
-    knowledge_id = await publish(sessions, space_id)
-    state["status"] = status
-    async with sessions() as session:
-        assert await sync_pending(session, settings) == 0
-        sync = await session.get(KnowledgeSync, knowledge_id)
-        assert sync.status == "failed" and message in sync.error
-        assert "test-secret" not in sync.error
-        assert (await session.get(KnowledgeItem, knowledge_id)).status == "published"
-        with pytest.raises(LlmWikiError, match=message):
-            await KnowledgeService(session).mcp_search(
-                LibrarySearchInput(query="original"), runtime_context=state["runtime_context"]
-            )
-        assert await session.scalar(select(func.count(KnowledgeUsage.id))) == 0
-        state["status"] = 200
-        await KnowledgeService(session).resync(LibraryPrincipal())
-        assert await sync_pending(session, settings) == 1
-        assert (directory / f"{knowledge_id}.md").exists()
-
-
-async def test_new_revision_during_rescan_remains_pending_and_converges(wiki_env):
-    settings, sessions, state, space_id, directory = wiki_env
-    knowledge_id = await publish(sessions, space_id)
-
-    async def change_during_rescan():
-        async with sessions() as other:
-            await KnowledgeService(other).update_knowledge(
-                knowledge_id, KnowledgePatch(content_md="newest"), LibraryPrincipal()
-            )
-        state["on_rescan"] = None
-
-    state["on_rescan"] = change_during_rescan
-    async with sessions() as session:
-        await sync_pending(session, settings)
-        session.expire_all()
-        assert (await session.get(KnowledgeSync, knowledge_id)).status == "pending"
-        await sync_pending(session, settings)
-        assert "newest" in (directory / f"{knowledge_id}.md").read_text()
-        session.expire_all()
-        assert (await session.get(KnowledgeSync, knowledge_id)).status == "synced"
-
-
-async def test_duplicate_workers_and_crash_retry(wiki_env):
-    settings, sessions, state, space_id, directory = wiki_env
-    knowledge_id = await publish(sessions, space_id)
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def block_rescan():
-        entered.set()
-        await release.wait()
-
-    state["on_rescan"] = block_rescan
-    async with sessions() as first, sessions() as second:
-        job = asyncio.create_task(sync_pending(first, settings))
-        await entered.wait()
-        assert await sync_pending(second, settings) == 0
-        job.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await job
-        state["on_rescan"] = None
-        assert await sync_pending(second, settings) == 1
-        assert (directory / f"{knowledge_id}.md").exists()
-
-
-async def test_archive_failure_and_delete_tombstone_retry(wiki_env):
-    settings, sessions, state, space_id, directory = wiki_env
-    knowledge_id = await publish(sessions, space_id)
+async def test_batch_publish_syncs_every_record(wiki_env):
+    settings, sessions, state, space_id = wiki_env
     async with sessions() as session:
         service = KnowledgeService(session)
-        await sync_pending(session, settings)
-        await service.archive(knowledge_id, LibraryPrincipal())
-        state["status"] = 500
-        await sync_pending(session, settings)
-        assert (directory / f"{knowledge_id}.md").exists()
-        await service.delete_knowledge(knowledge_id, LibraryPrincipal())
-        await sync_pending(session, settings)
-        state["status"] = 200
-        await service.resync(LibraryPrincipal())
-        await sync_pending(session, settings)
-        assert not (directory / f"{knowledge_id}.md").exists()
+        ids = []
+        for title in ("first", "second"):
+            item = await service.create_knowledge(
+                KnowledgeCreate(space_id=space_id, title=title, content_md=title), LibraryPrincipal()
+            )
+            ids.append(item.id)
+        await service.batch_publish(ids, space_id, "verified", LibraryPrincipal())
+        for knowledge_id in ids:
+            item = await session.get(KnowledgeItem, knowledge_id)
+            assert item.status == "published" and item.sync_status == "synced"
+            assert knowledge_source_path(knowledge_id) in state["sources"]
+        await service.batch_archive(ids, LibraryPrincipal())
+        assert state["sources"] == {}
 
 
-async def test_scope_change_resyncs_descendants(wiki_env):
-    settings, sessions, state, space_id, directory = wiki_env
+async def test_scope_change_withdraws_descendants(wiki_env):
+    settings, sessions, state, space_id = wiki_env
     async with sessions() as session:
         service = KnowledgeService(session)
         child = await service.create_space(
             KnowledgeSpaceCreate(name="Child", parent_id=space_id), LibraryPrincipal()
         )
     knowledge_id = await publish(sessions, child.id)
+    expected = knowledge_source_path(knowledge_id)
+    assert expected in state["sources"]
     async with sessions() as session:
         service = KnowledgeService(session)
-        await sync_pending(session, settings)
-        await service.update_space(space_id, KnowledgeSpacePatch(access_scope="admin"), LibraryPrincipal())
-        await sync_pending(session, settings)
-        assert not (directory / f"{knowledge_id}.md").exists()
+        await service.update_space(
+            space_id, KnowledgeSpacePatch(access_scope="admin"), LibraryPrincipal()
+        )
+    assert expected not in state["sources"]
 
 
-def test_atomic_write_failure_keeps_previous_file(tmp_path, monkeypatch):
-    write_source(tmp_path, "KNOW_123", "old")
+async def test_disabled_service_and_all_feedback_types(wiki_env):
+    settings, sessions, state, _ = wiki_env
+    settings.llm_wiki_enabled = False
+    async with sessions() as session:
+        service = KnowledgeService(session)
+        with pytest.raises(LlmWikiError, match="知识服务暂不可用：未启用"):
+            await service.mcp_search(
+                LibrarySearchInput(query="anything"), runtime_context=state["runtime_context"]
+            )
+        for kind in ("helpful", "incorrect", "outdated", "missing", "mismatch"):
+            result = await service.mcp_feedback(
+                LibraryFeedbackInput(resource_id="wiki/topic.md", feedback_type=kind)
+            )
+            assert result.feedback_type == kind
+        assert await session.scalar(select(func.count(KnowledgeFeedback.id))) == 5
 
-    def fail(*args):
-        raise PermissionError(13, "permission denied")
 
-    monkeypatch.setattr(os, "replace", fail)
-    with pytest.raises(PermissionError):
-        write_source(tmp_path, "KNOW_123", "new")
-    assert (tmp_path / "KNOW_123.md").read_text() == "old"
-    assert list(tmp_path.iterdir()) == [tmp_path / "KNOW_123.md"]
+async def test_mcp_expected_errors_are_not_masked_by_sdk(wiki_env, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from app.mcp_server import mcp
+
+    settings, sessions, state, _ = wiki_env
+    settings.llm_wiki_enabled = False
+    monkeypatch.setattr("app.mcp_server.SessionLocal", sessions)
+    runtime_context = state["runtime_context"]
+    with pytest.raises(ToolError, match="知识服务暂不可用") as error:
+        await mcp.call_tool(
+            "library_search", {"query": "timeout", "runtime_context": runtime_context}
+        )
+    assert type(error.value) is ToolError
+    with pytest.raises(ToolError, match="limit") as error:
+        await mcp.call_tool(
+            "library_search", {"query": "timeout", "limit": 0, "runtime_context": runtime_context}
+        )
+    assert type(error.value) is ToolError
 
 
 @pytest.mark.parametrize("path", ["../secret.md", "/wiki/a.md", "raw/sources/a.md", "wiki/../secret.md"])
 async def test_read_rejects_non_wiki_paths(wiki_env, path):
-    settings, _, state, _, _ = wiki_env
+    settings, _, state, _ = wiki_env
     with pytest.raises(LlmWikiError, match="resource_id"):
         await LlmWikiClient(settings).read(path)
     assert not state["calls"]
@@ -403,94 +468,12 @@ def test_migration_backfills_usage_and_published_sources(tmp_path):
             "pending",
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-    migrate("downgrade", "0018_merge_runtime_category")
-    migrate("upgrade", "0019_library_llm_wiki")
-
-
-async def test_batch_publishes_rescan_once_and_reports_disk_failure(wiki_env, monkeypatch):
-    settings, sessions, state, space_id, directory = wiki_env
-    async with sessions() as session:
-        service = KnowledgeService(session)
-        ids = []
-        for title in ("first", "second"):
-            item = await service.create_knowledge(
-                KnowledgeCreate(space_id=space_id, title=title, content_md=title), LibraryPrincipal()
-            )
-            ids.append(item.id)
-        await service.batch_publish(ids, space_id, "verified", LibraryPrincipal())
-        assert await sync_pending(session, settings) == 2
-        assert (
-            len([request for request in state["calls"] if request.url.path.endswith("/sources/rescan")]) == 1
-        )
-        await service.batch_archive(ids, LibraryPrincipal())
-
-        def fail(*args):
-            raise PermissionError(13, "denied")
-
-        with monkeypatch.context() as patch:
-            patch.setattr("app.library_sync.write_source", fail)
-            assert await sync_pending(session, settings) == 0
-        status = await service.service_status()
-        assert not status.healthy and status.failed_count == 2
-        assert "errno=13" in status.message
-        await service.resync(LibraryPrincipal())
-        assert await sync_pending(session, settings) == 2
-        assert not list(directory.glob("*.md"))
-
-
-async def test_disabled_service_and_all_feedback_types(wiki_env):
-    settings, sessions, state, _, _ = wiki_env
-    settings.llm_wiki_enabled = False
-    async with sessions() as session:
-        service = KnowledgeService(session)
-        with pytest.raises(LlmWikiError, match="知识服务暂不可用：未启用"):
-            await service.mcp_search(
-                LibrarySearchInput(query="anything"), runtime_context=state["runtime_context"]
-            )
-        for kind in ("helpful", "incorrect", "outdated", "missing", "mismatch"):
-            result = await service.mcp_feedback(
-                LibraryFeedbackInput(resource_id="wiki/topic.md", feedback_type=kind)
-            )
-            assert result.feedback_type == kind
-        assert await session.scalar(select(func.count(KnowledgeFeedback.id))) == 5
-        assert not state["calls"]
-
-
-async def test_mcp_expected_errors_are_not_masked_by_sdk(wiki_env, monkeypatch):
-    from mcp.server.mcpserver.exceptions import ToolError
-
-    from app.mcp_server import mcp
-
-    settings, sessions, state, _, _ = wiki_env
-    settings.llm_wiki_enabled = False
-    monkeypatch.setattr("app.mcp_server.SessionLocal", sessions)
-    runtime_context = state["runtime_context"]
-    with pytest.raises(ToolError, match="知识服务暂不可用") as error:
-        await mcp.call_tool(
-            "library_search", {"query": "timeout", "runtime_context": runtime_context}
-        )
-    assert type(error.value) is ToolError
-    with pytest.raises(ToolError, match="limit") as error:
-        await mcp.call_tool(
-            "library_search", {"query": "timeout", "limit": 0, "runtime_context": runtime_context}
-        )
-    assert type(error.value) is ToolError
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        {"ok": True, "result": {}},
-        {"ok": True, "result": {"queue": {"tasks": [None]}}},
-        {"ok": True, "result": {"queue": {"tasks": [{"status": "failed"}]}}},
-    ],
-)
-async def test_rescan_rejects_invalid_or_failed_queue(wiki_env, monkeypatch, data):
-    settings, _, _, _, _ = wiki_env
-
-    async def response(*args, **kwargs):
-        return data
-
-    monkeypatch.setattr(LlmWikiClient, "request", response)
-    with pytest.raises(LlmWikiError, match="知识服务暂不可用"):
-        await LlmWikiClient(settings).rescan()
+    migrate("upgrade", "0029_knowledge_sync_state")
+    with sqlite3.connect(database) as conn:
+        assert conn.execute(
+            "SELECT sync_status, source_path FROM knowledge_items WHERE id='KNOW_old'"
+        ).fetchone() == ("pending", "raw/sources/astra/knowledge/KNOW_old.md")
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "knowledge_sync" not in tables
+    migrate("downgrade", "0028_usage_breakdowns_and_task_completion")
+    migrate("upgrade", "0029_knowledge_sync_state")

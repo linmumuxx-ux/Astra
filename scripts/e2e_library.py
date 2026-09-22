@@ -23,14 +23,15 @@ sys.path.insert(0, str(BACKEND))
 
 
 async def exercise(client, environment):
-    from app.config.settings import get_settings
-    from app.llm_wiki import LlmWikiClient
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
+    from app.config.settings import get_settings
+    from app.llm_wiki import LlmWikiClient
+
     settings = get_settings()
     wiki = LlmWikiClient(settings)
-    await wiki.verify_project()
+    await wiki.health()
     marker = "ASTRAE2E" + uuid4().hex[:10].upper()
     source_id = None
     report = {"marker": marker, "checks": {}}
@@ -40,21 +41,7 @@ async def exercise(client, environment):
         response.raise_for_status()
         return response.json()
 
-    async def sync():
-        result = await asyncio.to_thread(
-            subprocess.run,
-            [
-                sys.executable,
-                "-c",
-                "from app.runtime.celery_app import library_sync; print(library_sync())",
-            ],
-            cwd=BACKEND,
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode:
-            raise RuntimeError("Celery 同步入口执行失败：" + result.stderr[-2000:])
+    def assert_synced():
         status = api("GET", "/service/status")
         if status["failed_count"] or status["pending_count"]:
             raise RuntimeError(status["message"])
@@ -120,21 +107,16 @@ async def exercise(client, environment):
                 ),
             )
             source_id = candidate["id"]
-            source = (
-                settings.absolute_path(settings.llm_wiki_project_path)
-                / "raw/sources/astra"
-                / (source_id + ".md")
-            )
-            assert candidate["status"] == "candidate" and not source.exists()
+            assert candidate["status"] == "candidate"
             report["checks"]["candidate_not_exported"] = "passed"
             api(
                 "POST",
                 f"/knowledge/{source_id}/publish",
                 json={"space_id": space["id"]},
             )
-            await sync()
-            assert source.exists()
-            report["checks"]["publish_source_rescan"] = "passed"
+            # Publishing synchronously pushes the stable source through the REST API.
+            assert_synced()
+            report["checks"]["publish_source_sync"] = "passed"
             print("Published source; waiting for original llm_wiki ingest", flush=True)
             resource = await wait_content("INITIALCHECK")
             report["resource_id"] = resource["resource_id"]
@@ -160,8 +142,7 @@ async def exercise(client, environment):
                     )
                 },
             )
-            await sync()
-            assert "UPDATEDCHECK" in source.read_text()
+            assert_synced()
             await wait_content("UPDATEDCHECK")
             report["checks"]["published_update_search"] = "passed"
             raw = await wiki.request(
@@ -176,9 +157,8 @@ async def exercise(client, environment):
             report["search_mode"] = raw.get("mode")
             report["vector_hits"] = raw.get("vectorHits")
             api("POST", f"/knowledge/{source_id}/archive")
-            await sync()
-            assert not source.exists()
-            report["checks"]["archive_source_rescan"] = "passed"
+            assert_synced()
+            report["checks"]["archive_source_sync"] = "passed"
             # Observe cleanup without treating accepted upstream limitations as success.
             await asyncio.sleep(5)
             hits = await tool("library_search", query=marker)
@@ -192,7 +172,7 @@ async def exercise(client, environment):
                 detail = api("GET", f"/knowledge/{source_id}")
                 if detail["status"] == "published":
                     api("POST", f"/knowledge/{source_id}/archive")
-                await sync()
+                assert_synced()
 
 
 async def verify_unavailable(environment):
@@ -245,8 +225,9 @@ def main():
             check=True,
             capture_output=True,
         )
-        from app.main import app
         from fastapi.testclient import TestClient
+
+        from app.main import app
 
         with TestClient(app) as client:
             report = asyncio.run(exercise(client, environment))

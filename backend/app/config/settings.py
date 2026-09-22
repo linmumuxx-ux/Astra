@@ -99,7 +99,6 @@ class Settings(BaseSettings):
     llm_wiki_api_base_url: str = "http://127.0.0.1:19828/api/v1"
     llm_wiki_api_token: str = Field(default="", repr=False)
     llm_wiki_project_id: str = ""
-    llm_wiki_project_path: Path | None = None
     llm_wiki_timeout: float = Field(default=10, gt=0, le=300)
 
     @field_validator("llm_wiki_api_base_url")

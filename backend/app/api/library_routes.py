@@ -232,7 +232,7 @@ async def archive_knowledge(
     session: AsyncSession = Depends(get_session),
     principal: LibraryPrincipal = Depends(library_principal),
 ):
-    return await KnowledgeService(session).archive(knowledge_id, principal)
+    return await KnowledgeService(session).archive_knowledge(knowledge_id, principal)
 
 
 @router.delete("/knowledge/{knowledge_id}")
@@ -261,7 +261,16 @@ async def publish_knowledge(
     session: AsyncSession = Depends(get_session),
     principal: LibraryPrincipal = Depends(library_principal),
 ):
-    return await KnowledgeService(session).publish(knowledge_id, payload, principal)
+    return await KnowledgeService(session).publish_knowledge(knowledge_id, payload, principal)
+
+
+@router.post("/knowledge/{knowledge_id}/resync", response_model=KnowledgeDetail)
+async def resync_knowledge(
+    knowledge_id: str,
+    session: AsyncSession = Depends(get_session),
+    principal: LibraryPrincipal = Depends(library_principal),
+):
+    return await KnowledgeService(session).resync_knowledge(knowledge_id, principal)
 
 
 @router.post("/knowledge/{knowledge_id}/reject", response_model=KnowledgeDetail)
