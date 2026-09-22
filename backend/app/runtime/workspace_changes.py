@@ -1,4 +1,4 @@
-"""Collect stable Workspace/Git facts for TaskSummary."""
+"""Collect deterministic Workspace/Git facts."""
 
 from __future__ import annotations
 

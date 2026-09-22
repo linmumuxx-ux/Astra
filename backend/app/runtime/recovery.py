@@ -6,18 +6,14 @@ from pathlib import Path
 
 from sqlalchemy import and_, or_, select
 
+from app.assistant.review import reconcile_task_reviews
 from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.executors.errors import OpenCodeSessionNotFound
 from app.executors.opencode_server import server_event_session_id
-from app.models import Task, TaskSummary
+from app.models import Task
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.session_connection import connect, resolve_environment, session_tree
-from app.runtime.summary import (
-    TaskSummaryService,
-    extract_final_assistant_text,
-    summary_is_complete,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -32,28 +28,6 @@ def _active_task_filter():
         Task.status == "RUNNING",
         and_(Task.status == "WAITING", Task.submitted_at.is_(None)),
         Task.pending_prompt.is_not(None),
-    )
-
-
-def _terminal_task_filter():
-    return or_(
-        Task.status.in_(["SUCCEEDED", "FAILED", "CANCELED"]),
-        and_(Task.status == "WAITING", Task.submitted_at.is_not(None)),
-    )
-
-
-def _summary_needs_repair_filter():
-    return or_(
-        TaskSummary.id.is_(None),
-        TaskSummary.stale.is_(True),
-        TaskSummary.source_status != Task.status,
-        # A summary whose source Session is no longer the Task's current round
-        # is stale by definition and must be rebuilt from the live Session.
-        TaskSummary.primary_session_id.is_distinct_from(Task.current_session_id),
-        and_(
-            Task.status.in_(["SUCCEEDED", "FAILED"]),
-            TaskSummary.artifacts_processed_generation < TaskSummary.generation,
-        ),
     )
 
 
@@ -221,119 +195,10 @@ async def watch_session(task_id):
                 await asyncio.gather(next_event, return_exceptions=True)
 
 
-async def _read_final_text(session, task: Task) -> str:
-    """Read the current turn's real final assistant reply from the bound Session."""
-
-    environment = await resolve_environment(session, task)
-    anchor_id = task.last_message_id
-    session_id = task.current_session_id
-    workspace = task.workspace
-    await session.commit()
-    async with connect(environment, start=True) as client:
-        messages = await client.messages(Path(workspace), session_id)
-    final_text, _ = extract_final_assistant_text(messages, turn_anchor_id=anchor_id)
-    return final_text
-
-
-async def _read_summary(session, task_id: str) -> TaskSummary | None:
-    """Read the summary from the database, bypassing any stale identity-map copy."""
-
-    return await session.scalar(
-        select(TaskSummary)
-        .where(TaskSummary.task_id == task_id)
-        .execution_options(populate_existing=True)
-    )
-
-
-async def reconcile_terminal_artifacts(limit: int = 100) -> list[str]:
-    """Repair summaries/experience after a crash between Task terminal commit and artifact commit."""
-
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(Task.id)
-                .outerjoin(TaskSummary, TaskSummary.task_id == Task.id)
-                .where(_terminal_task_filter(), _summary_needs_repair_filter())
-                .order_by(Task.updated_at.desc())
-                .limit(limit)
-            )
-        ).all()
-    task_ids = [row[0] for row in rows]
-
-    repaired: list[str] = []
-    for task_id in task_ids:
-        async with SessionLocal() as session:
-            task = await session.get(Task, task_id)
-            if not task:
-                continue
-            summary = await session.scalar(
-                select(TaskSummary).where(TaskSummary.task_id == task.id)
-            )
-            needs_summary = not summary_is_complete(summary, task)
-            needs_artifacts = bool(
-                summary
-                and task.status in {"SUCCEEDED", "FAILED"}
-                and summary.artifacts_processed_generation < summary.generation
-            )
-            if not needs_summary and not needs_artifacts:
-                continue
-
-            # The round this compensation is based on. Reading the final reply is
-            # network I/O, so the round may advance (new Session, new summary)
-            # while we wait. The compensation may only write when the round is
-            # still exactly this one.
-            expected_session_id = task.current_session_id
-            expected_last_message_id = task.last_message_id
-            expected_status = task.status
-            expected_generation = summary.generation if summary else 0
-
-            final_text = summary.summary if summary and not summary.stale else ""
-            if needs_summary and task.current_session_id and task.workspace:
-                try:
-                    final_text = await _read_final_text(session, task)
-                except OpenCodeSessionNotFound:
-                    # The Session is proven absent; recorded Task facts are definitive.
-                    final_text = ""
-                except Exception as exc:
-                    # Temporary transport failure: keep the Task pending so the next
-                    # reconcile round can still read the real result.
-                    logger.warning(
-                        "Unable to reload terminal Session for artifact repair %s: %s",
-                        task_id,
-                        exc,
-                    )
-                    await session.rollback()
-                    continue
-
-                task = await RuntimeService(session).lock_task(task_id)
-                summary = await _read_summary(session, task_id)
-                if (
-                    task.current_session_id != expected_session_id
-                    or task.last_message_id != expected_last_message_id
-                    or task.status != expected_status
-                    or (summary.generation if summary else 0) != expected_generation
-                ):
-                    # A newer execution round (or another writer) already produced
-                    # a result. The old Session's compensation must not overwrite it.
-                    await session.rollback()
-                    continue
-
-            summary = await TaskSummaryService(session).upsert(
-                task,
-                source_status=task.status,
-                primary_session_id=task.current_session_id,
-                summary_text=final_text,
-            )
-            if task.status in {"SUCCEEDED", "FAILED"}:
-                await RuntimeService(session).process_terminal_artifacts(task, summary)
-            repaired.append(task_id)
-    return repaired
-
-
 class _BackgroundWork:
     """Bounded, single-flight background jobs owned by the Supervisor.
 
-    Jobs run off the supervision loop so a slow summary repair or history
+    Jobs run off the supervision loop so a slow assistant dispatch or history
     recovery can never delay Session discovery or listener management.
     """
 
@@ -374,19 +239,19 @@ class _BackgroundWork:
 
 
 async def supervise_sessions():
-    """Own native Session watching and idempotent terminal artifact repair."""
+    """Own native Session watching and independent assistant review dispatch."""
 
     listeners: dict[str, asyncio.Task] = {}
     settings = get_settings()
     loop = asyncio.get_running_loop()
     work = _BackgroundWork(settings.supervisor_max_concurrency)
-    next_artifact_reconcile = loop.time() + settings.terminal_artifact_reconcile_interval_seconds
+    next_review_reconcile = loop.time() + settings.task_review_reconcile_interval_seconds
     delay = SUPERVISOR_INTERVAL_SECONDS
     try:
         # Startup recovery/repair is scheduled off-loop: discovery and listener
         # creation must never wait on a slow OpenCode request.
         work.spawn("startup_refresh", refresh_sessions)
-        work.spawn("startup_artifacts", reconcile_terminal_artifacts)
+        work.spawn("startup_reviews", reconcile_task_reviews)
         while True:
             try:
                 async with SessionLocal() as session:
@@ -409,11 +274,11 @@ async def supervise_sessions():
                         listener.cancel()
                         await asyncio.gather(listener, return_exceptions=True)
 
-                if loop.time() >= next_artifact_reconcile:
+                if loop.time() >= next_review_reconcile:
                     # Never await repair inline; keep supervising while it runs.
-                    work.spawn("artifacts", reconcile_terminal_artifacts)
-                    next_artifact_reconcile = (
-                        loop.time() + settings.terminal_artifact_reconcile_interval_seconds
+                    work.spawn("reviews", reconcile_task_reviews)
+                    next_review_reconcile = (
+                        loop.time() + settings.task_review_reconcile_interval_seconds
                     )
                 delay = SUPERVISOR_INTERVAL_SECONDS
             except asyncio.CancelledError:

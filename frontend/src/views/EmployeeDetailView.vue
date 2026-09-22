@@ -41,6 +41,7 @@ import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeConfigModal from '@/components/employee/EmployeeConfigModal.vue'
 import UsageTrendChart from '@/components/runtime/UsageTrendChart.vue'
+import { notify } from '@/composables/useToast'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, environmentLabel, formatDurationSeconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
 
@@ -59,5 +60,5 @@ onMounted(load)
 async function changeDays(value: number) { days.value = value; usage.value = await api.employeeUsage(id.value, value) }
 async function onSaved() { await store.refresh() }
 async function employeeAction(action: 'pause' | 'resume') { await api.employeeAction(id.value, action); await store.refresh() }
-async function testEnvironment() { checking.value = true; try { const result = await api.testEnvironment(id.value); environmentChecks.value = result.checks; await store.refresh() } catch (error) { window.alert(error instanceof Error ? error.message : '环境检查失败') } finally { checking.value = false } }
+async function testEnvironment() { checking.value = true; try { const result = await api.testEnvironment(id.value); environmentChecks.value = result.checks; await store.refresh() } catch (error) { notify(error instanceof Error ? error.message : '环境检查失败', 'error') } finally { checking.value = false } }
 </script>

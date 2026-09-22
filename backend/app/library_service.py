@@ -1312,6 +1312,9 @@ class KnowledgeService:
         payload: LibrarySubmitExperienceInput,
         *,
         runtime_context: str | None = None,
+        review_session: RuntimeSession | None = None,
+        review_key: str | None = None,
+        commit: bool = True,
     ) -> KnowledgeDetail:
         source_session_id: str | None = None
         runtime_session: RuntimeSession | None = None
@@ -1328,6 +1331,14 @@ class KnowledgeService:
             source_session_id = context.session_id
             runtime_session = await self.session.get(RuntimeSession, source_session_id)
             origin = "runtime"
+        if review_session is not None:
+            runtime_session = review_session
+            source_session_id = review_session.id
+            origin = "assistant"
+            payload = payload.model_copy(update={
+                "source_employee_id": review_session.employee_id,
+                "source_task_id": review_session.task_id,
+            })
         employee, task = await self._validate_source_context(
             payload.source_employee_id,
             payload.source_task_id,
@@ -1342,8 +1353,11 @@ class KnowledgeService:
         )
         created_by = f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp"
         dedupe_key = f"session:{source_session_id}" if source_session_id else f"manual:{created_by}"
+        if review_session is not None:
+            dedupe_key = f"review:{review_key}"
+            created_by = "assistant:nexus-task-experience-review"
         experience_data = dict(payload.experience_data)
-        experience_data.setdefault("source", "runtime" if source_session_id else "manual")
+        experience_data.setdefault("source", origin)
         snapshot = {
             "task_id": task.id if task else None,
             "task_title": task.title if task else None,
@@ -1377,7 +1391,10 @@ class KnowledgeService:
                     "turn_anchor_id": task.last_message_id if task else None,
                 }
                 await self._apply_runtime_verification(existing, runtime_session, task)
-            await self.session.commit()
+            if commit:
+                await self.session.commit()
+            else:
+                await self.session.flush()
             return await self.get_detail(
                 existing.id, LibraryPrincipal(user_id="mcp-review", role="reviewer")
             )
@@ -1447,12 +1464,15 @@ class KnowledgeService:
                 employee_id=payload.source_employee_id,
                 task_id=payload.source_task_id,
                 session_id=source_session_id,
-                tool_name="library_submit_experience",
+                tool_name="nexus_task_review_submit" if review_session else "library_submit_experience",
                 action="experience_submitted",
                 result={"status": "candidate"},
             )
         )
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return await self.get_detail(item.id, LibraryPrincipal(user_id="mcp-review", role="reviewer"))
 
     async def _apply_runtime_verification(

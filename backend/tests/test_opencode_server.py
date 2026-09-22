@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import pytest
+
 from app.config.settings import Settings
 from app.executors.opencode_remote_server import (
     RemoteOpenCodeServerConnection,
@@ -14,6 +16,7 @@ from app.executors.opencode_server import (
     OpenCodeServerUnavailable,
 )
 from app.models import OpenCodeExecutionEnvironment, Task
+from app.runtime.opencode_server import OpenCodeServerManager
 
 
 def test_control_client_timeout_is_bounded_and_separate_from_execution():
@@ -22,6 +25,22 @@ def test_control_client_timeout_is_bounded_and_separate_from_execution():
 
     assert client._timeout_seconds == settings.opencode_control_timeout_seconds
     assert client._timeout_seconds < settings.opencode_timeout_seconds
+
+
+def test_min_version_magic_value_is_rejected():
+    with pytest.raises(ValueError, match="0.0.0"):
+        Settings(seed_demo=False, opencode_server_min_version="0.0.0")
+
+
+def test_version_check_is_enforced_by_default_and_can_be_disabled():
+    strict = OpenCodeServerManager(Settings(seed_demo=False))
+    assert strict.version_error("1.0.0") is not None
+    assert strict.version_error("1.18.25") is None
+
+    relaxed = OpenCodeServerManager(
+        Settings(seed_demo=False, opencode_server_version_check_enabled=False)
+    )
+    assert relaxed.version_error("1.0.0") is None
 
 
 class FakeServerClient:
@@ -417,7 +436,8 @@ async def test_remote_server_connection_starts_private_loopback_server():
     assert len(ssh.commands) == 2
     assert "opencode.json" in ssh.commands[0]
     assert "serve --hostname 127.0.0.1 --port 4196" in ssh.commands[1]
-    assert "OPENCODE_CONFIG=" in ssh.commands[1]
+    # The workspace owns its config; Astra never injects OPENCODE_CONFIG.
+    assert "OPENCODE_CONFIG" not in ssh.commands[1]
     assert "cd '/srv/projects/NEXUS 工作区'" in ssh.commands[1]
     assert runtime.mcp_session.reverse is not None
     assert runtime.mcp_session.reverse_tunnel.closed is False
@@ -426,6 +446,39 @@ async def test_remote_server_connection_starts_private_loopback_server():
     await close_remote_mcp_tunnels()
     assert runtime.mcp_session.reverse_tunnel.closed is True
     assert runtime.mcp_session.closed is True
+
+
+async def test_remote_server_refuses_to_start_without_workspace_config():
+    await close_remote_mcp_tunnels()
+    ssh = FakeSSHSession()
+
+    async def run_command(command: str):
+        ssh.commands.append(command)
+        if "test -f" in command:
+            return 1, "", ""
+        return 0, "", ""
+
+    ssh.run_command = run_command
+
+    class UnavailableClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def health(self):
+            raise OpenCodeServerUnavailable("connection refused")
+
+    runtime = FakeRemoteRuntime(ssh)
+    connection = RemoteOpenCodeServerConnection(
+        remote_environment(),
+        settings(),
+        runtime,
+        client_factory=lambda base_url: UnavailableClient(),
+    )
+    with pytest.raises(RuntimeError, match="未提供 OpenCode 配置"):
+        async with connection:
+            pass
+    assert all("OPENCODE_CONFIG" not in command for command in ssh.commands)
+    await close_remote_mcp_tunnels()
 
 
 async def test_remote_executor_uses_remote_posix_workspace_and_structured_events(tmp_path: Path):
@@ -494,3 +547,28 @@ async def test_remote_environment_probe_does_not_start_absent_server(monkeypatch
     assert passed and "未启动" in detail
     assert ssh.commands == []
     assert ssh.closed and ssh.tunnel.closed
+
+
+async def test_messages_page_uses_native_opaque_cursor(monkeypatch):
+    import httpx
+
+    real_client = httpx.AsyncClient
+    calls = []
+
+    def respond(request):
+        calls.append(request.url.params)
+        if len(calls) == 1:
+            return httpx.Response(200, json=[{"info": {"id": "msg_latest"}, "parts": []}],
+                                  headers={"x-next-cursor": "opaque+/cursor="})
+        assert request.url.params["before"] == "opaque+/cursor="
+        return httpx.Response(200, json=[{"info": {"id": "msg_early"}, "parts": []}])
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(
+        **kwargs, transport=httpx.MockTransport(respond), trust_env=False,
+    ))
+    client = OpenCodeServerClient(Settings(), base_url="http://localhost:1")
+    first = await client.messages_page(Path("/workspace"), "ses_a", limit=1)
+    second = await client.messages_page(Path("/workspace"), "ses_a", limit=1, before=first["next_before"])
+    assert first["next_before"] == "opaque+/cursor="
+    assert second["next_before"] is None  # Full-sized last pages do not imply another page.
+    assert calls[0]["limit"] == "1" and calls[0]["directory"] == "/workspace"

@@ -40,7 +40,7 @@
       <button type="button" aria-label="取消重命名" @click="editingId = null"><X :size="14" /></button>
     </form>
 
-    <div v-if="moveNode" class="move-backdrop" @click.self="moveNode = null">
+    <div v-if="moveNode" class="move-backdrop">
       <form class="move-card" @submit.prevent="submitMove">
         <header><div><h3>移动「{{ moveNode.name }}」</h3><p>选择目标目录（保存在同一知识空间内）。</p></div><button type="button" aria-label="关闭" @click="moveNode = null"><X :size="16" /></button></header>
         <label>移动到<select v-model="moveTargetId" required><option value="" disabled>选择目标目录</option><option v-for="item in moveTargets" :key="item.id" :value="item.id">{{ '　'.repeat(item.level) }}{{ item.name }}</option></select></label>

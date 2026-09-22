@@ -55,38 +55,64 @@
     </section>
 
     <KnowledgeUsageSummary :summary="usage" />
-    <div v-if="toast" class="library-toast"><CircleCheck :size="15" />{{ toast }}</div>
 
     <KnowledgeEditorDialog :open="editorOpen" :directories="directoryOptions" :saving="editorSaving" :error="editorError" :initial-content="editorInitialContent" :initial-title="editorInitialTitle" :initial-space-id="editorInitialSpaceId" @close="editorOpen = false" @save="saveKnowledge" />
     <KnowledgeDetailDialog :open="detailOpen" :detail="detail" :directories="directoryOptions" :can-review="Boolean(permissions?.can_review)" :working="detailWorking" :error="detailError" :related-tasks="relatedTasks" :related-loading="relatedLoading" :usages="usages" :usages-loading="usagesLoading" @close="closeDetail" @favorite="favorite" @helpful="helpful" @related="loadRelatedTasks" @publish="publish" @reject="reject" @supplement="supplement" />
 
-    <div v-if="moveDialog" class="modal-backdrop" data-testid="knowledge-move-dialog" @click.self="moveDialog = null">
-      <form class="modal-card move-knowledge-card" @submit.prevent="submitMove">
-        <header><div><h3>移动到目录</h3><p>为 {{ moveDialog.ids.length }} 条知识选择目标目录。</p></div><button type="button" aria-label="关闭" @click="moveDialog = null"><X :size="17" /></button></header>
-        <div class="modal-body"><label>目标目录<select v-model="moveSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div>
-        <footer><button type="button" class="button" @click="moveDialog = null">取消</button><button class="button button--primary" :disabled="!moveSpaceId || moving" type="submit"><LoaderCircle v-if="moving" :size="14" class="spin" />移动</button></footer>
+    <AstraDialog
+      v-if="moveDialog"
+      :open="true"
+      title="移动到目录"
+      :subtitle="`为 ${moveDialog.ids.length} 条知识选择目标目录。`"
+      :dismissible="false"
+      :busy="moving"
+      testid="knowledge-move-dialog"
+      card-class="move-knowledge-card"
+      width="min(460px,100%)"
+      @close="moveDialog = null"
+    >
+      <form id="knowledge-move-form" @submit.prevent="submitMove">
+        <label>目标目录<select v-model="moveSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
       </form>
-    </div>
+      <template #footer>
+        <button type="button" class="button" :disabled="moving" @click="moveDialog = null">取消</button>
+        <button type="submit" form="knowledge-move-form" class="button button--primary" :disabled="!moveSpaceId || moving"><LoaderCircle v-if="moving" :size="14" class="spin" />移动</button>
+      </template>
+    </AstraDialog>
 
-    <div v-if="publishDialog" class="modal-backdrop" data-testid="knowledge-publish-dialog" @click.self="publishDialog = null">
-      <form class="modal-card move-knowledge-card" @submit.prevent="submitBatchPublish">
-        <header><div><h3>发布知识</h3><p>为 {{ publishDialog.ids.length }} 条知识选择目录并发布。</p></div><button type="button" aria-label="关闭" @click="publishDialog = null"><X :size="17" /></button></header>
-        <div class="modal-body">
-          <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-          <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
-        </div>
-        <footer><button type="button" class="button" @click="publishDialog = null">取消</button><button class="button button--primary" :disabled="!publishSpaceId || working" type="submit"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button></footer>
+    <AstraDialog
+      v-if="publishDialog"
+      :open="true"
+      title="发布知识"
+      :subtitle="`为 ${publishDialog.ids.length} 条知识选择目录并发布。`"
+      :dismissible="false"
+      :busy="working"
+      testid="knowledge-publish-dialog"
+      card-class="move-knowledge-card"
+      width="min(460px,100%)"
+      @close="publishDialog = null"
+    >
+      <form id="knowledge-publish-form" @submit.prevent="submitBatchPublish">
+        <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+        <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
       </form>
-    </div>
+      <template #footer>
+        <button type="button" class="button" :disabled="working" @click="publishDialog = null">取消</button>
+        <button type="submit" form="knowledge-publish-form" class="button button--primary" :disabled="!publishSpaceId || working"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
+      </template>
+    </AstraDialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { CircleCheck, LoaderCircle, Plus, Search, TriangleAlert, Upload, X } from 'lucide-vue-next'
+import { LoaderCircle, Plus, Search, TriangleAlert, Upload, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
+import AstraDialog from '@/components/astra/AstraDialog.vue'
+import { confirmDialog } from '@/composables/useConfirm'
+import { notify } from '@/composables/useToast'
 import KnowledgeDetailDialog from '@/views/library/KnowledgeDetailDialog.vue'
 import KnowledgeEditorDialog from '@/views/library/KnowledgeEditorDialog.vue'
 import KnowledgeList from '@/views/library/KnowledgeList.vue'
@@ -133,7 +159,6 @@ const queryInput = ref('')
 const statsActive = ref('all')
 const listLoading = ref(false)
 const pageError = ref('')
-const toast = ref('')
 const editorOpen = ref(false)
 const editorSaving = ref(false)
 const editorError = ref('')
@@ -158,7 +183,6 @@ const publishVerification = ref('verified')
 const moving = ref(false)
 const working = ref(false)
 let searchTimer = 0
-let toastTimer = 0
 
 const selectedSpace = computed(() => spaces.value.find((space) => space.id === filters.spaceId) ?? findNode(spaces.value, filters.spaceId) ?? null)
 const directoryOptions = computed(() => {
@@ -192,7 +216,7 @@ onMounted(async () => {
   const knowledgeId = typeof route.query.knowledge === 'string' ? route.query.knowledge : ''
   if (knowledgeId) await openDetail(knowledgeId, false)
 })
-onBeforeUnmount(() => { disposed = true; window.clearTimeout(serviceTimer); window.clearTimeout(searchTimer); window.clearTimeout(toastTimer) })
+onBeforeUnmount(() => { disposed = true; window.clearTimeout(serviceTimer); window.clearTimeout(searchTimer) })
 watch(queryInput, (value) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => { filters.keyword = value.trim(); filters.page = 1; statsActive.value = filters.keyword ? 'search' : 'all'; loadList() }, 320)
@@ -250,7 +274,11 @@ async function saveKnowledge(payload: Record<string, unknown>) {
 }
 async function createSpace(name: string, parentId: string | null) { try { await api.createLibrarySpace({ name, parent_id: parentId }); notify(parentId ? '子目录已创建' : '知识空间已创建'); await refreshOverview() } catch (error) { pageError.value = message(error, '创建失败') } }
 async function renameSpace(space: KnowledgeSpace, name: string) { try { await api.updateLibrarySpace(space.id, { name }); notify('已重命名'); await refreshOverview() } catch (error) { pageError.value = message(error, '重命名失败') } }
-async function deleteSpace(space: KnowledgeSpace) { if (!window.confirm(`确认删除「${space.name}」？仅空目录可以删除，其下内容不会被级联删除。`)) return; try { await api.deleteLibrarySpace(space.id); if (filters.spaceId === space.id) filters.spaceId = null; notify('目录已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '删除失败') } }
+async function deleteSpace(space: KnowledgeSpace) {
+  const confirmed = await confirmDialog({ title: '删除目录', message: `确认删除「${space.name}」？仅空目录可以删除，其下内容不会被级联删除。`, confirmLabel: '删除目录', danger: true })
+  if (!confirmed) return
+  try { await api.deleteLibrarySpace(space.id); if (filters.spaceId === space.id) filters.spaceId = null; notify('目录已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '删除失败'), 'error') }
+}
 async function moveSpace(space: KnowledgeSpace, targetParentId: string) { try { await api.moveLibrarySpace(space.id, targetParentId); notify('目录已移动'); await refreshOverview() } catch (error) { pageError.value = message(error, '移动失败') } }
 function openMoveDialog(item: KnowledgeListItem) { moveSpaceId.value = item.space_id ?? ''; moveDialog.value = { ids: [item.id] } }
 async function submitMove() {
@@ -259,12 +287,21 @@ async function submitMove() {
   try { await api.batchMoveLibraryKnowledge(moveDialog.value.ids, moveSpaceId.value); moveDialog.value = null; notify('知识已移动'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '移动失败') } finally { moving.value = false }
 }
 async function archiveFromList(item: KnowledgeListItem) { try { await api.archiveLibraryKnowledge(item.id); notify('已归档'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '归档失败') } }
-async function deleteFromList(item: KnowledgeListItem) { if (!window.confirm(`确认删除「${item.title}」？`)) return; try { await api.deleteLibraryKnowledge(item.id); notify('已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '删除失败') } }
+async function deleteFromList(item: KnowledgeListItem) {
+  const confirmed = await confirmDialog({ title: '删除知识', message: `确认删除「${item.title}」？删除后无法恢复。`, confirmLabel: '删除知识', danger: true })
+  if (!confirmed) return
+  try { await api.deleteLibraryKnowledge(item.id); notify('已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '删除失败'), 'error') }
+}
 function onBatch(ids: string[], action: 'move' | 'archive' | 'publish' | 'delete') {
   if (action === 'move') { moveSpaceId.value = ''; moveDialog.value = { ids }; return }
   if (action === 'publish') { publishSpaceId.value = ''; publishVerification.value = 'verified'; publishDialog.value = { ids }; return }
-  if (action === 'archive') { void api.batchArchiveLibraryKnowledge(ids).then(() => { notify('已批量归档'); return Promise.all([refreshOverview(), loadList()]) }).catch((error) => { pageError.value = message(error, '批量归档失败') }); return }
-  if (action === 'delete') { if (!window.confirm(`确认删除选中的 ${ids.length} 条知识？`)) return; void api.batchDeleteLibraryKnowledge(ids).then(() => { notify('已批量删除'); return Promise.all([refreshOverview(), loadList()]) }).catch((error) => { pageError.value = message(error, '批量删除失败') }) }
+  if (action === 'archive') { void api.batchArchiveLibraryKnowledge(ids).then(() => { notify('已批量归档'); return Promise.all([refreshOverview(), loadList()]) }).catch((error) => { notify(message(error, '批量归档失败'), 'error') }); return }
+  if (action === 'delete') {
+    void confirmDialog({ title: '批量删除知识', message: `确认删除选中的 ${ids.length} 条知识？删除后无法恢复。`, confirmLabel: '批量删除', danger: true }).then((confirmed) => {
+      if (!confirmed) return
+      return api.batchDeleteLibraryKnowledge(ids).then(() => { notify('已批量删除'); return Promise.all([refreshOverview(), loadList()]) }).catch((error) => { notify(message(error, '批量删除失败'), 'error') })
+    })
+  }
 }
 async function submitBatchPublish() {
   if (!publishDialog.value || !publishSpaceId.value) return
@@ -287,7 +324,6 @@ async function publish(payload: Record<string, unknown>) { if (!detail.value) re
 async function reject(reason: string) { if (!detail.value) return; await reviewAction(async () => api.rejectLibraryKnowledge(detail.value!.id, reason), '候选经验已驳回') }
 async function supplement(reason: string) { if (!detail.value) return; await reviewAction(async () => api.supplementLibraryKnowledge(detail.value!.id, reason), '补充要求已记录') }
 async function reviewAction(action: () => Promise<KnowledgeDetail>, success: string) { detailWorking.value = true; detailError.value = ''; try { detail.value = await action(); notify(success); await Promise.all([refreshOverview(), loadList()]) } catch (error) { detailError.value = message(error, '审核操作失败') } finally { detailWorking.value = false } }
-function notify(value: string) { toast.value = value; window.clearTimeout(toastTimer); toastTimer = window.setTimeout(() => { toast.value = '' }, 2600) }
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }
 const sourceLabel = (value: string) => ({ task: '任务沉淀', manual: '人工创建', import: '文档导入', system: '系统同步' }[value] ?? value)
 function findNode(nodes: KnowledgeSpace[], id: string | null): KnowledgeSpace | null {
@@ -310,6 +346,6 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 <style scoped>
 .knowledge-service{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;padding:12px 16px;border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-card,#fff);font-size:var(--astra-font-body);color:var(--astra-text-secondary)}.knowledge-service strong{color:var(--astra-text-primary)}.knowledge-service small{flex-basis:100%;color:var(--astra-text-muted)}
 
-.digital-library-page{position:relative}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:17px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary);}.library-intro p{margin-top:5px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.library-search{display:flex;align-items:center;gap:8px;width:min(440px,38vw);height:42px;padding:0 10px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(35,76,59,.04)}.library-search input{min-width:0;flex:1;color:var(--astra-text-primary);border:0;outline:0;background:transparent}.library-search>button{display:grid;place-items:center;padding:0;color:var(--astra-text-muted);border:0;background:transparent;cursor:pointer}.hidden-input{display:none}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}.library-error{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.library-toast{position:fixed;z-index:1400;right:28px;bottom:28px;display:flex;align-items:center;gap:7px;padding:11px 14px;color:#fff;border-radius:9px;background:#178f5d;box-shadow:0 12px 36px rgba(16,37,34,.24);font-size:var(--astra-font-body)}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.digital-library-page{position:relative}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:17px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary);}.library-intro p{margin-top:5px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.library-search{display:flex;align-items:center;gap:8px;width:min(440px,38vw);height:42px;padding:0 10px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(35,76,59,.04)}.library-search input{min-width:0;flex:1;color:var(--astra-text-primary);border:0;outline:0;background:transparent}.library-search>button{display:grid;place-items:center;padding:0;color:var(--astra-text-muted);border:0;background:transparent;cursor:pointer}.hidden-input{display:none}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}.library-error{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 @media(max-width:1100px){.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-search{width:auto;min-width:280px;flex:1}}@media(max-width:780px){.library-workspace{grid-template-columns:1fr}.library-head-actions .button{flex:1}.library-search{flex-basis:100%}}
 </style>

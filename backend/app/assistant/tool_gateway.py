@@ -17,8 +17,10 @@ from sqlalchemy.orm import selectinload
 
 from app.assistant.cards import employee_card, knowledge_card, session_card, task_card
 from app.assistant.operations import OperationService
+from app.assistant.review import review_id
 from app.domain import RuntimeSessionStatus, TaskStatus
-from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task
+from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task, TaskReview, TaskSummary
+from app.runtime.summary import summary_is_complete
 
 MAX_LIMIT = 50
 
@@ -80,6 +82,17 @@ async def task_get(session: AsyncSession, task_id: str) -> dict[str, Any]:
         "failure_reason": task.failure_reason,
         "human_required_reason": task.human_required_reason,
         "card": task_card(task),
+    }
+    summary = await session.scalar(select(TaskSummary).where(TaskSummary.task_id == task.id))
+    binding = await session.get(RuntimeSession, task.current_session_id) if task.current_session_id else None
+    job = await session.get(TaskReview, review_id(task, binding)) if binding else None
+    detail["current_session_id"] = task.current_session_id
+    detail["task_summary"] = summary.content_md if summary_is_complete(summary, task) else None
+    detail["review"] = {
+        "status": job.status if job else "pending",
+        "error": job.error if job else None,
+        "attempts": job.attempts if job else 0,
+        "retry_at": job.retry_at.isoformat() if job else None,
     }
     return detail
 

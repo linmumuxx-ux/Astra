@@ -46,6 +46,8 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
         ports.append(port)
         root = tmp_path / name
         root.mkdir()
+        # The workspace, not Astra, owns OpenCode config.
+        (root / "opencode.json").write_text("{}", encoding="utf-8")
         env = OpenCodeExecutionEnvironment(
             employee_id=name,
             mode="LOCAL",
@@ -166,8 +168,18 @@ async def test_unready_server_times_out_without_session(serve):
 
 
 
+async def test_missing_workspace_config_refuses_to_start_serve(serve, monkeypatch):
+    executor = serve("no-config")
+    (executor.workspace / "opencode.json").unlink()
+    monkeypatch.setattr(local, "discover_workspace_config", lambda workspace: None)
+    with pytest.raises(RuntimeError, match="未提供 OpenCode 配置"):
+        await executor.ensure_ready()
+    assert executor.environment.opencode_server_port not in local._processes
+
+
 async def test_missing_workspace_fails_environment_check(serve):
     executor = serve("missing-workspace")
+    (executor.workspace / "opencode.json").unlink()
     executor.workspace.rmdir()
     checks = await ExecutionEnvironmentRuntime(executor.settings).test(executor.environment)
     assert checks_status(checks) == "UNAVAILABLE"

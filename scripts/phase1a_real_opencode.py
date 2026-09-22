@@ -5,7 +5,7 @@ Exercises, against a real local OpenCode Server (no Run, no message mirror):
   1. RuntimeService.start creates a RuntimeSession and a runtime_context token.
   2. The synthetic runtime-context prompt part reaches the native Session.
   3. Session terminal state is derived and persisted (SUCCEEDED).
-  4. astra_library MCP is loaded through OPENCODE_CONFIG (outside the worktree).
+  4. astra_library MCP is loaded from the workspace-owned opencode.json (no OPENCODE_CONFIG).
   5. restart while a long write command runs aborts the old Session, preserves
      its INTERRUPTED status, links superseded_by, and the old Session stops
      modifying the shared workspace.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,7 +18,6 @@ from app.executors.opencode_server import (
 )
 from app.models import OpenCodeExecutionEnvironment, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
-from app.runtime.opencode_config import remote_runtime_config_content
 from app.runtime.ssh_client import SSHReverseTunnel, SSHSession, SSHTunnel
 
 ClientFactory = Callable[[str], OpenCodeServerClient]
@@ -136,7 +134,9 @@ class RemoteOpenCodeServerConnection:
                 remote_port=self.environment.opencode_server_port,
             )
             self.client = self.client_factory(self.tunnel.base_url)
-            mcp_url = await ensure_remote_mcp_tunnel(
+            # Keep the reverse MCP tunnel alive even though the workspace, not
+            # Astra, owns the OpenCode config that references it.
+            await ensure_remote_mcp_tunnel(
                 self.environment,
                 self.settings,
                 self.runtime,
@@ -144,7 +144,8 @@ class RemoteOpenCodeServerConnection:
             try:
                 await self.client.health()
             except (OpenCodeServerUnavailable, OpenCodeServerCapabilityError):
-                await self._start_server(self.session, mcp_url)
+                await self._require_workspace_config(self.session)
+                await self._start_server(self.session)
                 await self._wait_until_ready(self.client)
             return self.client
         except Exception as exc:
@@ -168,28 +169,29 @@ class RemoteOpenCodeServerConnection:
                 await self.session.close()
                 self.session = None
 
-    async def _write_runtime_config(
-        self,
-        session: SSHSession,
-        runtime_dir: str,
-        mcp_url: str,
-    ) -> None:
-        content = remote_runtime_config_content(self.settings, mcp_url)
-        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        exit_code, stdout, stderr = await session.run_command(
-            f"umask 077; mkdir -p {runtime_dir}; "
-            f"printf %s {shlex.quote(encoded)} | base64 -d > {runtime_dir}/opencode.json"
+    async def _require_workspace_config(self, session: SSHSession) -> None:
+        """Fail loudly when the remote workspace owns no OpenCode config.
+
+        Astra no longer writes a temporary config or exports ``OPENCODE_CONFIG``;
+        the workspace must provide providers/models/MCP itself.
+        """
+        workspace = shlex.quote(self.environment.workspace_root)
+        exit_code, _, _ = await session.run_command(
+            f"test -f {workspace}/opencode.json || "
+            f"test -f {workspace}/opencode.jsonc || "
+            f"test -f {workspace}/.opencode/opencode.json"
         )
         if exit_code != 0:
-            detail = stderr.strip() or stdout.strip() or f"退出码 {exit_code}"
-            raise RuntimeError(f"远程 OpenCode MCP 配置写入失败: {detail}")
+            raise RuntimeError(
+                f"远程 Workspace 未提供 OpenCode 配置：{self.environment.workspace_root} "
+                "下无 opencode.json；Astra 不会生成临时配置，请补齐后重试"
+            )
 
-    async def _start_server(self, session: SSHSession, mcp_url: str) -> None:
+    async def _start_server(self, session: SSHSession) -> None:
         port = self.environment.opencode_server_port
         binary = shlex.quote(self.environment.opencode_path)
         workspace = shlex.quote(self.environment.workspace_root)
         runtime_dir = f"/tmp/astra-opencode-server-$(id -u)-{port}"
-        await self._write_runtime_config(session, runtime_dir, mcp_url)
         command = (
             "set -eu; umask 077; "
             f"runtime_dir={runtime_dir}; "
@@ -206,7 +208,7 @@ class RemoteOpenCodeServerConnection:
             'if command -v ss >/dev/null 2>&1; then '
             f'if ss -ltnH "sport = :{port}" | grep -q .; then '
             f'echo "端口冲突：{port} 已被占用" >&2; exit 1; fi; fi; '
-            f'OPENCODE_CONFIG="$runtime_dir/opencode.json" nohup {binary} serve '
+            f'nohup {binary} serve '
             f"--hostname 127.0.0.1 --port {port} "
             '>>"$runtime_dir/server.log" 2>&1 </dev/null & '
             'server_pid=$!; printf "%s\\n" "$server_pid" >"$runtime_dir/server.pid"'

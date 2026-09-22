@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from app.config.settings import get_settings
 from app.domain import ExecutionMode
@@ -76,58 +76,150 @@ async def connect(environment, *, start: bool = False):
         await ssh.close()
 
 
+async def _local_git(args: list[str]) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await process.communicate()
+    return (
+        process.returncode,
+        out.decode(errors="replace").strip(),
+        err.decode(errors="replace").strip(),
+    )
+
+
+async def _git_common_dir(path: Path) -> Path | None:
+    code, out, _ = await _local_git(["-C", str(path), "rev-parse", "--git-common-dir"])
+    if code != 0 or not out:
+        return None
+    candidate = Path(out)
+    if not candidate.is_absolute():
+        candidate = path / candidate
+    return candidate.resolve()
+
+
+async def _assert_valid_task_worktree(main_repo: Path, target: Path) -> None:
+    """Prove an existing directory is this repository's worktree for the task."""
+
+    if target.is_symlink() or not target.is_dir():
+        raise RuntimeError(f"任务工作区路径异常（非目录或符号链接）：{target}")
+    code, top, _ = await _local_git(["-C", str(target), "rev-parse", "--show-toplevel"])
+    if code != 0 or Path(top).resolve() != target.resolve():
+        raise RuntimeError(f"任务工作区不是合法的 Git worktree：{target}")
+    if await _git_common_dir(main_repo) != await _git_common_dir(target):
+        raise RuntimeError(f"任务工作区不属于当前仓库：{target}")
+    code, listing, _ = await _local_git(
+        ["-C", str(main_repo), "worktree", "list", "--porcelain"]
+    )
+    registered = {
+        Path(line[len("worktree ") :]).resolve()
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    }
+    if code != 0 or target.resolve() not in registered:
+        raise RuntimeError(f"任务工作区未注册到当前仓库的 worktree 列表：{target}")
+
+
+async def _assert_reusable_local_workspace(root: Path, workspace: str) -> None:
+    """Guard the reuse path: a bound workspace must still be safe to continue."""
+
+    path = Path(workspace)
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError(f"任务工作区不存在或不可用：{workspace}；请显式重新执行以创建 Worktree")
+    code, top, _ = await _local_git(["-C", str(path), "rev-parse", "--show-toplevel"])
+    if code != 0:
+        return  # A plain (non-git) workspace is valid.
+    if Path(top).resolve() != path.resolve():
+        raise RuntimeError(f"任务工作区不是目录根：{workspace}")
+    root_common = await _git_common_dir(root)
+    if root_common is not None and await _git_common_dir(path) != root_common:
+        raise RuntimeError(f"任务工作区不属于当前仓库：{workspace}")
+
+
+async def _ensure_local_task_worktree(root: Path, target: Path) -> None:
+    if target.exists():
+        # A residual worktree from a crashed run is safe to reuse once proven
+        # valid; anything else is handled explicitly instead of silently reused.
+        await _assert_valid_task_worktree(root, target)
+        return
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(root),
+        "worktree",
+        "add",
+        "--detach",
+        str(target),
+        "HEAD",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, error = await process.communicate()
+    if process.returncode:
+        raise RuntimeError(error.decode(errors="replace"))
+
+
+async def _ensure_remote_workspace(runtime, environment, *, root: str, target: str) -> None:
+    quoted_root = shlex.quote(root)
+    quoted_target = shlex.quote(target)
+    parent = shlex.quote(str(PurePosixPath(target).parent))
+    command = (
+        f"test -d {quoted_root} || {{ echo 'Workspace 不存在' >&2; exit 1; }}; "
+        f"mkdir -p {parent}; "
+        f"if test -d {quoted_target}; then "
+        f"if git -C {quoted_root} rev-parse --show-toplevel >/dev/null 2>&1 && "
+        f"git -C {quoted_target} rev-parse --show-toplevel >/dev/null 2>&1; then "
+        f"test \"$(git -C {quoted_root} rev-parse --git-common-dir 2>/dev/null)\" "
+        f"= \"$(git -C {quoted_target} rev-parse --git-common-dir 2>/dev/null)\" "
+        f"|| {{ echo '任务工作区不属于当前仓库' >&2; exit 1; }}; "
+        f"fi; "
+        f"else "
+        f"if git -C {quoted_root} rev-parse --show-toplevel >/dev/null 2>&1; then "
+        f"git -C {quoted_root} worktree add --detach {quoted_target} HEAD; "
+        f"else mkdir {quoted_target}; fi; "
+        f"fi"
+    )
+    code, _, error = await runtime.run_remote(environment, command)
+    if code:
+        raise RuntimeError(error or "任务工作区准备失败")
+
+
 async def prepare_workspace(task: Task, environment, *, reuse_existing: bool = True) -> str:
     """Prepare a task directory; environment relocation gets a distinct worktree."""
-    if reuse_existing and task.workspace:
-        return task.workspace
     settings = get_settings()
+    local = environment.mode == ExecutionMode.LOCAL
     root = (
         str(settings.employee_workspace_path(environment.workspace_root).resolve())
-        if (environment.mode == ExecutionMode.LOCAL)
+        if local
         else environment.workspace_root
     )
+    runtime = None if local else ExecutionEnvironmentRuntime(settings)
+    # Reuse the bound workspace only after proving it is still usable.
+    if reuse_existing and task.workspace:
+        if local:
+            await _assert_reusable_local_workspace(Path(root), task.workspace)
+        else:
+            await _ensure_remote_workspace(
+                runtime, environment, root=root, target=task.workspace
+            )
+        return task.workspace
     target_name = task.id if reuse_existing else f"{task.id}-env-{environment.id}"
     target = str(Path(root).parent / ".astra-tasks" / environment.employee_id / target_name)
-    if environment.mode == ExecutionMode.LOCAL:
+    if local:
         if not Path(root).is_dir():
             raise FileNotFoundError(f"Workspace 不存在：{root}")
         Path(target).parent.mkdir(parents=True, exist_ok=True)
-        probe = await asyncio.create_subprocess_exec(
-            "git",
-            "-C",
-            root,
-            "rev-parse",
-            "--show-toplevel",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await probe.communicate()
-        if probe.returncode == 0:
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                root,
-                "worktree",
-                "add",
-                "--detach",
-                target,
-                "HEAD",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, error = await process.communicate()
-            if process.returncode:
-                raise RuntimeError(error.decode(errors="replace"))
+        code, _, _ = await _local_git(["-C", root, "rev-parse", "--show-toplevel"])
+        if code == 0:
+            await _ensure_local_task_worktree(Path(root), Path(target))
+        elif Path(target).exists():
+            if Path(target).is_symlink() or not Path(target).is_dir():
+                raise RuntimeError(f"任务工作区路径异常（非目录或符号链接）：{target}")
         else:
             Path(target).mkdir(exist_ok=False)
     else:
-        command = (
-            f"test -d {shlex.quote(root)} && mkdir -p {shlex.quote(str(Path(target).parent))} && "
-            f"if git -C {shlex.quote(root)} rev-parse --show-toplevel >/dev/null 2>&1; then "
-            f"git -C {shlex.quote(root)} worktree add --detach {shlex.quote(target)} HEAD; "
-            f"else mkdir {shlex.quote(target)}; fi"
-        )
-        code, _, error = await ExecutionEnvironmentRuntime(settings).run_remote(environment, command)
-        if code:
-            raise RuntimeError(error)
+        await _ensure_remote_workspace(runtime, environment, root=root, target=target)
     return target

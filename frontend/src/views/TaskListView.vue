@@ -80,28 +80,48 @@
       </footer>
     </AstraPanel>
 
-    <Teleport to="body">
-      <div v-if="dialogOpen" class="modal-backdrop" data-testid="task-create-modal" @click.self="dialogOpen = false">
-        <form class="modal-card task-create-card" @submit.prevent="createTask">
-          <header><div><h3>创建任务</h3><p>定义目标和验收标准，执行方式由数字员工决定。</p></div><button type="button" aria-label="关闭创建任务" @click="dialogOpen = false"><X :size="17" /></button></header>
-          <div class="modal-body">
-            <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
-            <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
-            <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-            <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
-          </div>
-          <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
-          <footer><button type="button" class="button" @click="dialogOpen = false">取消</button><button class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button></footer>
-        </form>
-      </div>
+    <AstraDialog
+      v-if="dialogOpen"
+      :open="true"
+      title="创建任务"
+      subtitle="定义目标和验收标准，执行方式由数字员工决定。"
+      :dismissible="false"
+      :busy="submitting"
+      testid="task-create-modal"
+      card-class="task-create-card"
+      width="min(620px,100%)"
+      @close="requestCloseCreate"
+    >
+      <form id="task-create-form" @submit.prevent="createTask">
+        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
+        <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
+        <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
+        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
+        <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
+      </form>
+      <template #footer>
+        <button type="button" class="button" :disabled="submitting" @click="requestCloseCreate">取消</button>
+        <button type="submit" form="task-create-form" class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button>
+      </template>
+    </AstraDialog>
 
-      <div v-if="pending" class="modal-backdrop" data-testid="task-action-confirm" @click.self="pending = null">
-        <div class="modal-card confirm-action-card">
-          <header><div><h3>{{ pending.label }}</h3><p>确认对「{{ shortTitle(pending.task.title) }}」执行该操作？</p></div><button type="button" aria-label="关闭确认" @click="pending = null"><X :size="17" /></button></header>
-          <footer><button type="button" class="button" @click="pending = null">取消</button><button class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button></footer>
-        </div>
-      </div>
-    </Teleport>
+    <AstraDialog
+      v-if="pending"
+      :open="true"
+      :title="pending.label"
+      :subtitle="`确认对「${shortTitle(pending.task.title)}」执行该操作？`"
+      :dismissible="false"
+      :busy="acting"
+      testid="task-action-confirm"
+      card-class="confirm-action-card"
+      width="min(440px,100%)"
+      @close="pending = null"
+    >
+      <template #footer>
+        <button type="button" class="button" :disabled="acting" @click="pending = null">取消</button>
+        <button type="button" class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button>
+      </template>
+    </AstraDialog>
   </div>
 </template>
 
@@ -112,9 +132,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
+import AstraDialog from '@/components/astra/AstraDialog.vue'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
+import { confirmDialog } from '@/composables/useConfirm'
+import { notify } from '@/composables/useToast'
 import {
   TASK_RUNTIME_FILTER_STATES,
   runtimeStatusLabel,
@@ -161,7 +184,6 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const isInitialLoading = computed(() => store.loading && !store.tasks.length)
 
 watch(() => filters, () => { currentPage.value = 1 }, { deep: true })
-watch([dialogOpen, pending], ([create, confirm]) => document.body.classList.toggle('overlay-open', Boolean(create) || Boolean(confirm)))
 watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
 
 onMounted(async () => {
@@ -169,7 +191,7 @@ onMounted(async () => {
   form.category_id = store.categories[0]?.id ?? ''
   document.addEventListener('click', closeMenu)
 })
-onBeforeUnmount(() => { document.removeEventListener('click', closeMenu); document.body.classList.remove('overlay-open') })
+onBeforeUnmount(() => { document.removeEventListener('click', closeMenu) })
 
 function closeMenu() { openMenu.value = null }
 function toggleMenu(id: string) { openMenu.value = openMenu.value === id ? null : id }
@@ -261,7 +283,7 @@ async function runAction(task: Task, action: MenuAction) {
     await dispatchAction(task, action)
     await store.refresh()
   } catch (error) {
-    window.alert(error instanceof Error ? error.message : '操作失败')
+    notify(error instanceof Error ? error.message : '操作失败', 'error')
   }
 }
 async function runPendingAction() {
@@ -273,11 +295,32 @@ async function runPendingAction() {
     pending.value = null
     await store.refresh()
   } catch (error) {
-    pending.value = null
-    window.alert(error instanceof Error ? error.message : '操作失败')
+    // Keep the dialog open on failure so the user can retry or cancel.
+    notify(error instanceof Error ? error.message : '操作失败', 'error')
   } finally {
     acting.value = false
   }
+}
+
+const createDirty = computed(() => Boolean(
+  form.title.trim()
+  || form.description.trim()
+  || form.employee_id
+  || attachments.value.length
+  || criteria.value.some((item) => item.content.trim()),
+))
+async function requestCloseCreate() {
+  if (submitting.value) return
+  if (createDirty.value) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存的任务草稿？',
+      message: '创建任务的内容尚未提交，关闭后将无法恢复。',
+      confirmLabel: '放弃并关闭',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  dialogOpen.value = false
 }
 
 const addCriterion = () => criteria.value.push({ key: safeUUID(), content: '' })

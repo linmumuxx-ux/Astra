@@ -244,16 +244,32 @@ class TaskSummary(Base):
     key_changes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_status: Mapped[str] = mapped_column(String(32), default="PENDING")
     generation: Mapped[int] = mapped_column(Integer, default=0)
-    artifacts_processed_generation: Mapped[int] = mapped_column(
-        Integer, default=0, server_default="0"
-    )
     stale: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
-    generated_by: Mapped[str] = mapped_column(String(120), default="deterministic")
+    generated_by: Mapped[str] = mapped_column(String(120), default="nexus-task-experience-review")
     source_ref_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     generated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="summary")
+
+
+class TaskReview(Base):
+    """Durable assistant review dispatch, independent of Task execution."""
+
+    __tablename__ = "task_reviews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    source_session_id: Mapped[str] = mapped_column(ForeignKey("runtime_sessions.id", ondelete="CASCADE"))
+    source_status: Mapped[str] = mapped_column(String(32))
+    turn_anchor_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    final_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    assistant_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    retry_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class KnowledgeSpace(Base):

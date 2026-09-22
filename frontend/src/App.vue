@@ -46,6 +46,8 @@
 
     <AssistantLauncher />
     <AssistantDrawer />
+    <AstraToaster />
+    <AstraConfirmHost />
   </div>
 </template>
 
@@ -53,7 +55,9 @@
 import { Bell, BookOpen, ChevronDown, ClipboardList, House, Menu, Search, Settings, TriangleAlert, UserRound, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
+import AstraToaster from '@/components/astra/AstraToaster.vue'
 import AssistantDrawer from '@/features/assistant/AssistantDrawer.vue'
 import AssistantLauncher from '@/features/assistant/AssistantLauncher.vue'
 import { useAstraStore } from '@/stores/astra'

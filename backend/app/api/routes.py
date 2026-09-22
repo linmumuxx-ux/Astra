@@ -34,6 +34,7 @@ from app.models import (
     RuntimeSession,
     Task,
     TaskCategory,
+    TaskReview,
     TaskSummary,
 )
 from app.runtime.environment import (
@@ -560,6 +561,7 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
         .where(ExperienceEvidence.task_id == task_id)
         .values(task_id=None, source_session_id=None)
     )
+    await session.execute(delete(TaskReview).where(TaskReview.task_id == task_id))
     await session.execute(delete(TaskSummary).where(TaskSummary.task_id == task_id))
     await session.execute(delete(RuntimeSession).where(RuntimeSession.task_id == task_id))
     await session.delete(task)

@@ -98,8 +98,12 @@ class OpenCodeServerClient:
         *,
         directory: WorkspacePath | None = None,
         body: Any = None,
+        query: dict[str, Any] | None = None,
+        include_headers: bool = False,
     ) -> Any:
-        params = {"directory": str(directory)} if directory else None
+        params = dict(query or {})
+        if directory:
+            params["directory"] = str(directory)
         try:
             async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
                 response = await client.request(
@@ -118,7 +122,8 @@ class OpenCodeServerClient:
             raise OpenCodeServerUnavailable(f"OpenCode HTTP {response.status_code}")
         if response.is_error:
             raise OpenCodeExecutionError(f"OpenCode HTTP {response.status_code}: {response.text[:1000]}")
-        return response.json() if response.content else None
+        payload = response.json() if response.content else None
+        return (payload, response.headers) if include_headers else payload
 
     async def health(self) -> dict[str, Any]:
         try:
@@ -129,12 +134,9 @@ class OpenCodeServerClient:
         except (httpx.HTTPError, ValueError) as exc:
             raise OpenCodeServerUnavailable(f"OpenCode Server 不可用: {exc}") from exc
         version = str(payload.get("version") or "") or None
-        if version and OpenCodeServerManager._version_tuple(version) < OpenCodeServerManager._version_tuple(
-            self.settings.opencode_server_min_version
-        ):
-            raise OpenCodeServerCapabilityError(
-                f"OpenCode {version} 低于已验证的最低版本 {self.settings.opencode_server_min_version}"
-            )
+        version_error = self.manager.version_error(version)
+        if version_error:
+            raise OpenCodeServerCapabilityError(version_error)
         if payload.get("healthy") is not True:
             raise OpenCodeServerCapabilityError(
                 f"OpenCode Server 健康检查失败: {json.dumps(payload, ensure_ascii=False)}"
@@ -203,6 +205,18 @@ class OpenCodeServerClient:
 
     async def messages(self, directory: WorkspacePath, session_id: str) -> list[dict[str, Any]]:
         return await self.request("GET", f"/session/{session_id}/message", directory=directory)
+
+    async def messages_page(
+        self, directory: WorkspacePath, session_id: str, *, limit: int, before: str | None = None
+    ) -> dict[str, Any]:
+        query: dict[str, Any] = {"limit": limit}
+        if before:
+            query["before"] = before
+        messages, headers = await self.request(
+            "GET", f"/session/{session_id}/message", directory=directory,
+            query=query, include_headers=True,
+        )
+        return {"messages": messages, "next_before": headers.get("x-next-cursor")}
 
     async def children(self, directory: WorkspacePath, session_id: str) -> list[dict[str, Any]]:
         return await self.request("GET", f"/session/{session_id}/children", directory=directory)

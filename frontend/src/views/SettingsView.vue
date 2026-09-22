@@ -19,6 +19,7 @@
 import { Database, FolderTree, LockKeyhole, SlidersHorizontal } from 'lucide-vue-next'
 import { onMounted, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { confirmDialog } from '@/composables/useConfirm'
 import CategoryConfig from '@/views/settings/CategoryConfig.vue'
 import SourceConfig from '@/views/settings/SourceConfig.vue'
 import SystemSettings from '@/views/settings/SystemSettings.vue'
@@ -34,9 +35,12 @@ const tabs = [
   { id: 'system', label: '系统设置', icon: SlidersHorizontal },
 ]
 
-function switchTab(next: string) {
+async function switchTab(next: string) {
   if (next === tab.value) return
-  if (tab.value === 'categories' && categoryRef.value?.getDirty() && !window.confirm('有未保存的任务分类修改，确定放弃并切换吗？')) return
+  if (tab.value === 'categories' && categoryRef.value?.getDirty()) {
+    const confirmed = await confirmDialog({ title: '放弃未保存的分类修改？', message: '切换页签后未保存的修改将丢失。', confirmLabel: '放弃并切换', danger: true })
+    if (!confirmed) return
+  }
   tab.value = next
   router.replace({ query: { ...route.query, tab: next } })
 }
@@ -46,8 +50,10 @@ onMounted(() => {
   if (tabs.some((item) => item.id === tabFromQuery)) tab.value = tabFromQuery
 })
 
-onBeforeRouteLeave(() => {
-  if (tab.value === 'categories' && categoryRef.value?.getDirty()) return window.confirm('有未保存的任务分类修改，确定离开吗？')
+onBeforeRouteLeave(async () => {
+  if (tab.value === 'categories' && categoryRef.value?.getDirty()) {
+    return await confirmDialog({ title: '放弃未保存的分类修改？', message: '离开页面后未保存的修改将丢失。', confirmLabel: '放弃并离开', danger: true })
+  }
   return true
 })
 </script>

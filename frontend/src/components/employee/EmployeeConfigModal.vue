@@ -1,6 +1,6 @@
 <template>
   <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" data-testid="employee-config-modal" @click.self="requestClose">
+    <div v-if="open" class="modal-backdrop" data-testid="employee-config-modal">
       <section class="modal-card employee-config-modal" role="dialog" aria-modal="true" :aria-label="creating ? '新建数字员工' : `编辑 ${employeeDisplayName(employee?.name)}`">
         <header>
           <div>
@@ -29,8 +29,10 @@
 
 <script setup lang="ts">
 import { LoaderCircle, X } from 'lucide-vue-next'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import type { Employee, TaskCategory } from '@/api/types'
+import { confirmDialog } from '@/composables/useConfirm'
+import { acquireOverlayLock, releaseOverlayLock } from '@/composables/useOverlayLock'
 import { employeeDisplayName } from '@/utils/format'
 import EmployeeConfig from '@/views/settings/EmployeeConfig.vue'
 
@@ -38,8 +40,19 @@ const props = defineProps<{ open: boolean; employee: Employee | null; creating: 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', id: string): void }>()
 const configRef = ref<InstanceType<typeof EmployeeConfig> | null>(null)
 
-function requestClose() {
-  if (configRef.value?.getDirty() && !window.confirm('有未保存的员工配置修改，确定放弃并关闭吗？')) return
+// The config dialog is a form: overlay click and ESC never close it. Only the
+// explicit 取消 / 关闭 actions do, and they confirm first when there are edits.
+async function requestClose() {
+  if (configRef.value?.saving) return
+  if (configRef.value?.getDirty()) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存的员工配置？',
+      message: '当前修改尚未保存，关闭后将无法恢复。',
+      confirmLabel: '放弃并关闭',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
   emit('close')
 }
 function onSaved(id: string, environmentOk?: boolean) {
@@ -47,10 +60,12 @@ function onSaved(id: string, environmentOk?: boolean) {
   // 保存已成功；仅当工作环境检测也通过时才自动关闭，异常时保留弹框以便处理检查项。
   if (environmentOk !== false) emit('close')
 }
-function handleEscape(event: KeyboardEvent) { if (props.open && event.key === 'Escape') requestClose() }
-watch(() => props.open, (value) => document.body.classList.toggle('overlay-open', value), { immediate: true })
-onMounted(() => window.addEventListener('keydown', handleEscape))
-onBeforeUnmount(() => { document.body.classList.remove('overlay-open'); window.removeEventListener('keydown', handleEscape) })
+let locked = false
+watch(() => props.open, (value) => {
+  if (value && !locked) { acquireOverlayLock(); locked = true }
+  else if (!value && locked) { releaseOverlayLock(); locked = false }
+}, { immediate: true })
+onBeforeUnmount(() => { if (locked) releaseOverlayLock() })
 </script>
 
 <style scoped>

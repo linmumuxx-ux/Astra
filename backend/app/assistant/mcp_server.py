@@ -14,6 +14,7 @@ from mcp.server.mcpserver import MCPServer
 
 from app.assistant import tool_gateway
 from app.assistant.operations import OperationError
+from app.assistant.review import ReviewExperience, session_messages, submit_review
 from app.config.settings import get_settings
 from app.database import SessionLocal
 
@@ -27,7 +28,8 @@ def build_assistant_mcp_server() -> MCPServer:
         version="1.0.0",
         description="查询和操作 NEXUS 数字员工平台的任务、员工、运行和知识。",
         instructions=(
-            "查询类工具直接调用；任何变更必须先调用 prepare 工具，"
+            "查询类工具直接调用；任务经验沉淀使用 nexus_task_review_submit 提交总结和 candidate，无需确认；"
+            "其他变更必须先调用 prepare 工具，"
             "等待平台向用户展示确认卡，禁止重复调用 prepare，也不要自己执行确认。"
         ),
     )
@@ -165,6 +167,27 @@ def build_assistant_mcp_server() -> MCPServer:
     async def nexus_session_get(session_id: str) -> dict[str, Any]:
         """获取单次执行会话详情。"""
         return await _run(lambda session: tool_gateway.session_get(session, session_id))
+
+    @server.tool(name="nexus_session_messages", structured_output=True)
+    async def nexus_session_messages(
+        session_id: str, before: str | None = None, limit: int = 20,
+        native_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """只读完整原生会话。分页从新到旧，必须读到 next_before 为空；子会话用 native_session_id。"""
+        return await _run(lambda session: session_messages(
+            session, session_id, before=before, limit=limit, native_session_id=native_session_id,
+        ))
+
+    @server.tool(name="nexus_task_review_submit", structured_output=True)
+    async def nexus_task_review_submit(
+        task_id: str, source_session_id: str, review_id: str,
+        task_summary: str, experiences: list[ReviewExperience],
+    ) -> dict[str, Any]:
+        """结构化、幂等保存模型复盘与 0～N 条 candidate；review_id 来自会话读取，不改变任务状态。"""
+        return await _run(lambda session: submit_review(
+            session, task_id=task_id, source_session_id=source_session_id,
+            expected_review_id=review_id, task_summary=task_summary, experiences=experiences,
+        ))
 
     @server.tool(name="nexus_session_failure_summary", structured_output=True)
     async def nexus_session_failure_summary(task_id: str | None = None) -> dict[str, Any]:

@@ -182,7 +182,7 @@ async def test_slow_artifact_repair_does_not_block_session_discovery(
         await release.wait()
         return []
 
-    monkeypatch.setattr(recovery, "reconcile_terminal_artifacts", slow_reconcile)
+    monkeypatch.setattr(recovery, "reconcile_task_reviews", slow_reconcile)
 
     discovered: list[str] = []
     watcher_started = asyncio.Event()
@@ -228,7 +228,7 @@ async def test_supervisor_survives_transient_db_failure(monkeypatch, session_fac
         return []
 
     monkeypatch.setattr(recovery, "refresh_sessions", noop)
-    monkeypatch.setattr(recovery, "reconcile_terminal_artifacts", noop)
+    monkeypatch.setattr(recovery, "reconcile_task_reviews", noop)
 
     real_asyncio = asyncio
     delays = []

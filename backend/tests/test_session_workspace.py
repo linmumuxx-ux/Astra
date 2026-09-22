@@ -24,6 +24,7 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
+from app.runtime.session_connection import prepare_workspace
 from app.runtime.workspace_changes import collect_workspace_changes
 from app.runtime.workspace_files import (
     materialize_task_attachments,
@@ -579,6 +580,74 @@ async def test_start_definitive_failure_clears_pending_and_aborts_created_sessio
     assert created in aborted
 
 
+async def test_start_rolls_back_new_binding_when_supersede_fails(runtime, monkeypatch):
+    r = runtime
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("supersede failed")
+
+    monkeypatch.setattr(r.service, "_supersede_session", boom)
+    with pytest.raises(RuntimeError, match="supersede failed"):
+        await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    # The whole round is one transaction: the new binding must not survive.
+    assert r.task.current_session_id == "ses_current"
+    assert await r.session.scalar(select(func.count()).select_from(RuntimeSession)) == 1
+    old = await r.session.get(RuntimeSession, "ses_current")
+    assert old.superseded_by is None
+
+
+async def test_restart_from_running_definitive_failure_does_not_leave_fake_running(runtime):
+    from app.executors.errors import OpenCodeExecutionError
+
+    r = runtime
+    await r.service.project(r.task, "RUNNING")
+    original_request = r.native.request
+
+    async def failing_request(method, path, **kwargs):
+        if method == "POST" and path.endswith("/prompt_async"):
+            raise OpenCodeExecutionError("provider rejected restart")
+        return await original_request(method, path, **kwargs)
+
+    r.native.request = failing_request
+    with pytest.raises(OpenCodeExecutionError):
+        await r.service.start("T1", restart=True)
+
+    await r.session.refresh(r.task)
+    created = r.task.current_session_id
+    assert created != "ses_current"
+    # A definitively failed restart must not leave RUNNING with a dead Session.
+    assert r.task.status == "FAILED"
+    assert r.task.pending_message_id is None
+    assert r.task.pending_prompt is None
+    assert r.task.runtime_error
+    binding = await r.session.get(RuntimeSession, created)
+    assert binding.status == "INTERRUPTED"
+
+
+async def test_retry_submission_is_not_stale_when_bound_session_is_still_running(runtime):
+    r = runtime
+    # A new round may be bound while the Task status still reflects the old
+    # CANCELED result; the RUNNING RuntimeSession is the source of truth.
+    pending_id = "msg_retrycancel01"
+    r.task.status = "CANCELED"
+    r.task.pending_message_id = pending_id
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    binding.status = "RUNNING"
+    await r.session.commit()
+
+    result = await r.service.retry_submission("T1")
+
+    assert result.status == "RUNNING"
+    assert r.task.pending_message_id is None
+    assert r.native.abort_count == 0
+
+
 async def test_failed_current_turn_summary_never_reuses_previous_success(runtime):
     r = runtime
     r.native.sessions["ses_current"] = [
@@ -608,8 +677,7 @@ async def test_failed_current_turn_summary_never_reuses_previous_success(runtime
 
     summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
     assert r.task.status == "FAILED"
-    assert "上一轮修复完成" not in summary.summary
-    assert summary.summary == r.task.failure_reason
+    assert summary is None  # Task failure never fabricates a review from the last reply.
 
 
 async def test_turn_without_assistant_reply_projects_failed(runtime):
@@ -811,38 +879,6 @@ async def test_restart_from_failed_initializes_new_round_fields(runtime):
     assert old.superseded_by == r.task.current_session_id
 
 
-async def test_restart_from_succeeded_stales_summary_and_advances_generation(runtime):
-    r = runtime
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
-    await _complete_current_turn(r)
-    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
-    assert summary.generation == 1 and summary.stale is False
-
-    await r.service.start("T1", restart=True)
-    await r.session.refresh(r.task)
-    new_id = r.task.current_session_id
-    assert new_id != "ses_current"
-    assert r.task.status == "RUNNING"
-    await r.session.refresh(summary)
-    assert summary.stale is True and summary.generation == 1
-
-    r.native.sessions[new_id] = [
-        {"info": {"id": "u2", "role": "user"}, "parts": []},
-        {
-            "info": {"id": "a2", "role": "assistant", "time": {"completed": 2}, "finish": "stop"},
-            "parts": [{"type": "text", "text": "RESTART_DONE"}],
-        },
-    ]
-    r.task.last_message_id = "u2"
-    await r.session.commit()
-    r.native.state = "idle"
-    await r.service.refresh("T1")
-
-    await r.session.refresh(summary)
-    assert summary.generation == 2 and summary.stale is False
-    assert summary.primary_session_id == new_id
-    assert summary.summary == "RESTART_DONE"
-    assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 1
 
 
 def test_windows_workspace_path_comparison_accepts_slash_and_case_variants(runtime):
@@ -1176,70 +1212,10 @@ async def test_restart_preserves_succeeded_old_status(runtime):
     assert new.status == "RUNNING" and new.runtime_context_hash is not None
 
 
-async def test_task_summary_is_one_row_with_generation_and_stale(runtime):
-    r = runtime
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
-    await _complete_current_turn(r)
-
-    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
-    assert summary is not None
-    assert summary.generation == 1 and summary.stale is False
-    assert summary.primary_session_id == "ses_current"
-    assert summary.summary == "DONE"
-    assert summary.source_status == "SUCCEEDED"
-    final_message_id = r.native.sessions["ses_current"][-1]["info"]["id"]
-    assert summary.source_ref_snapshot["final_message_id"] == final_message_id
-    assert [item["status"] for item in summary.acceptance_results] == []
-
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "again"}]})
-    await r.session.refresh(summary)
-    assert summary.stale is True
-
-    await _complete_current_turn(r)
-    await r.session.refresh(summary)
-    assert summary.generation == 2 and summary.stale is False
-
-    count = await r.session.scalar(select(func.count()).select_from(TaskSummary))
-    assert count == 1
 
 
-async def test_repeated_terminal_refresh_does_not_regenerate_summary(runtime):
-    r = runtime
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
-    await _complete_current_turn(r)
-
-    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
-    assert summary.generation == 1
-
-    await r.service.refresh("T1")
-    await r.session.refresh(summary)
-    assert summary.generation == 1
 
 
-async def test_task_summary_survives_restart_with_new_primary_session(runtime):
-    r = runtime
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
-    await _complete_current_turn(r)
-    await r.service.start("T1", restart=True)
-    new_id = r.task.current_session_id
-    r.native.sessions[new_id] = [
-        {"info": {"id": "u2", "role": "user"}, "parts": []},
-        {
-            "info": {"id": "a2", "role": "assistant", "time": {"completed": 2}, "finish": "stop"},
-            "parts": [{"type": "text", "text": "RESTART_DONE"}],
-        },
-    ]
-    r.task.last_message_id = "u2"
-    await r.session.commit()
-    r.native.state = "idle"
-    await r.service.refresh("T1")
-
-    summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
-    await r.session.refresh(summary)
-    assert summary.primary_session_id == new_id
-    assert summary.summary == "RESTART_DONE"
-    assert set(summary.referenced_session_ids) == {"ses_current", new_id}
-    assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 1
 
 
 async def test_restart_allows_explicit_new_session_when_old_session_is_missing(runtime):
@@ -1563,46 +1539,122 @@ async def test_task_summary_records_committed_changes_with_clean_tree(runtime, t
     assert len(changes["commits"]) == 1
 
 
-async def test_terminal_artifact_failure_is_compensated_on_retry(runtime, monkeypatch):
-    r = runtime
-    r.task.status = "SUCCEEDED"
-    await r.session.commit()
-    summary = TaskSummary(
-        id="TS-COMP",
-        task_id="T1",
-        primary_session_id="ses_current",
-        referenced_session_ids=["ses_current"],
-        summary="已定位缓存刷新遗漏并补充刷新逻辑，pytest 回归通过。",
-        content_md="缓存刷新",
-        acceptance_results=[],
-        key_changes={},
-        source_status="SUCCEEDED",
-        generation=1,
-        stale=False,
-        artifacts_processed_generation=0,
+
+
+def _init_repo(repo: Path) -> None:
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "a@b.c"],
+        check=True,
+        capture_output=True,
+        text=True,
     )
-    r.session.add(summary)
-    await r.session.commit()
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "t"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (repo / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "base"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
-    toggle = {"fail": True}
-    original = RuntimeService._extract_experience
 
-    async def flaky(self, task):
-        if toggle["fail"]:
-            raise RuntimeError("experience extraction down")
-        return await original(self, task)
+def _workspace_environment(root: Path) -> OpenCodeExecutionEnvironment:
+    return OpenCodeExecutionEnvironment(
+        id="ENV1",
+        employee_id="E1",
+        mode="LOCAL",
+        name="test",
+        workspace_root=str(root),
+        opencode_server_port=54198,
+    )
 
-    monkeypatch.setattr("app.runtime.lifecycle.RuntimeService._extract_experience", flaky)
-    await r.service.process_terminal_artifacts(r.task, summary)
-    pending = await r.session.get(TaskSummary, "TS-COMP")
-    await r.session.refresh(pending)
-    assert pending.artifacts_processed_generation == 0
+
+async def test_prepare_workspace_reuses_a_valid_residual_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    environment = _workspace_environment(repo)
+    task = Task(id="T9", title="t", task_type="ISSUE")
+    target = Path(repo).parent / ".astra-tasks" / "E1" / "T9"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(target), "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    # A crashed run's worktree is legal residue and must be reused idempotently.
+    assert await prepare_workspace(task, environment, reuse_existing=True) == str(target)
+    assert await prepare_workspace(task, environment, reuse_existing=True) == str(target)
+
+
+async def test_prepare_workspace_rejects_a_foreign_directory(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    environment = _workspace_environment(repo)
+    task = Task(id="T9", title="t", task_type="ISSUE")
+    target = Path(repo).parent / ".astra-tasks" / "E1" / "T9"
+    target.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="不是合法的 Git worktree"):
+        await prepare_workspace(task, environment, reuse_existing=True)
+
+
+async def test_prepare_workspace_refuses_missing_reuse_workspace(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    environment = _workspace_environment(repo)
+    task = Task(id="T9", title="t", task_type="ISSUE", workspace=str(tmp_path / "gone"))
+
+    with pytest.raises(RuntimeError, match="不存在或不可用"):
+        await prepare_workspace(task, environment, reuse_existing=True)
+
+
+async def test_prepare_workspace_reuses_a_valid_bound_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    environment = _workspace_environment(repo)
+    target = Path(repo).parent / ".astra-tasks" / "E1" / "T9"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(target), "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    task = Task(id="T9", title="t", task_type="ISSUE", workspace=str(target))
+
+    assert await prepare_workspace(task, environment, reuse_existing=True) == str(target)
+
+
+async def test_prepare_workspace_reuses_a_plain_bound_directory(tmp_path):
+    root = tmp_path / "plain-root"
+    root.mkdir()
+    workspace = root / "task-workspace"
+    workspace.mkdir()
+    environment = _workspace_environment(root)
+    task = Task(id="T9", title="t", task_type="ISSUE", workspace=str(workspace))
+
+    assert await prepare_workspace(task, environment, reuse_existing=True) == str(workspace)
+
+
+async def test_completion_and_restart_do_not_create_reviews(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    assert r.task.status == "SUCCEEDED"
+    await r.service.refresh("T1")
+    assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 0
     assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
-
-    toggle["fail"] = False
-    await r.session.refresh(r.task)
-    await r.service.process_terminal_artifacts(r.task, pending)
-    done = await r.session.get(TaskSummary, "TS-COMP")
-    await r.session.refresh(done)
-    assert done.artifacts_processed_generation == 1
-    assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
+    await r.service.start("T1", restart=True)
+    assert r.task.status == "RUNNING"
+    assert r.task.current_session_id != "ses_current"

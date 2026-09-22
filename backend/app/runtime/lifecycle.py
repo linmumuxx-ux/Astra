@@ -40,7 +40,7 @@ from app.executors.usage import (
     parse_opencode_usage,
     parse_usage_breakdowns,
 )
-from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory, TaskSummary
+from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
 from app.runtime.runtime_context import (
     build_runtime_context_part,
@@ -56,11 +56,6 @@ from app.runtime.session_connection import (
     session_tree,
 )
 from app.runtime.session_state import SessionState, derive_session_state
-from app.runtime.summary import (
-    TaskSummaryService,
-    extract_final_assistant_text,
-    summary_is_complete,
-)
 from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
@@ -154,7 +149,6 @@ class RuntimeService:
             task.confirmed_at = None
             task.human_required_reason = None
             task.human_intervention = None
-            await TaskSummaryService(self.session).mark_stale(task, commit=False)
         await self.session.commit()
         await event_bus.publish({"type": "TASK_STATUS", "task_id": task.id, "status": task.status})
 
@@ -244,59 +238,11 @@ class RuntimeService:
         runtime_session.model_usage = model_usage
 
     async def apply_session_state(
-        self, task: Task, state: SessionState, *, final_text: str | None = None
+        self, task: Task, state: SessionState
     ) -> None:
-        """Persist one derived Session outcome, project it, and summarize terminals."""
+        """Persist one derived Session outcome, project it independently of assistant reviews."""
         await self._sync_session_state(task, state)
         await self._project_session_state(task, state)
-        if state.status in {
-            RuntimeSessionStatus.SUCCEEDED.value,
-            RuntimeSessionStatus.FAILED.value,
-        } or state.terminal_reason == SessionTerminalReason.TIMEOUT.value:
-            summary = await TaskSummaryService(self.session).upsert(
-                task,
-                source_status=task.status,
-                primary_session_id=task.current_session_id,
-                summary_text=final_text or "",
-            )
-            if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
-                await self.process_terminal_artifacts(task, summary)
-
-    async def _reconcile_experience(self, task: Task) -> None:
-        """Only a successful source Session verifies its submitted candidates."""
-        from app.library_service import KnowledgeService
-
-        await KnowledgeService(self.session).reconcile_session_verification(
-            task.current_session_id
-        )
-
-    async def _extract_experience(self, task: Task) -> None:
-        from app.runtime.experience import ExperienceExtractionService
-
-        await ExperienceExtractionService(self.session).extract(task.id)
-
-    async def process_terminal_artifacts(self, task: Task, summary: TaskSummary) -> None:
-        """Idempotently finish post-terminal verification/extraction for one summary generation."""
-
-        if summary.artifacts_processed_generation >= summary.generation:
-            return
-        try:
-            if task.status == TaskStatus.SUCCEEDED:
-                await self._reconcile_experience(task)
-            if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
-                await self._extract_experience(task)
-            # Extraction may commit internally; reload before advancing the durable cursor.
-            summary = await self.session.get(TaskSummary, summary.id)
-            if summary:
-                summary.artifacts_processed_generation = summary.generation
-                await self.session.commit()
-        except Exception:
-            logger.exception(
-                "Terminal artifact processing failed for task %s generation %s",
-                task.id,
-                summary.generation,
-            )
-            await self.session.rollback()
 
     async def _project_session_state(self, task: Task, state: SessionState) -> None:
         """The single Session -> Task mapping. Never changes status on UNKNOWN."""
@@ -325,7 +271,7 @@ class RuntimeService:
                 task.human_required_reason = "执行已完成，等待人工确认任务结果"
                 task.human_intervention = {
                     "blocking_reason": "任务完成策略要求人工确认",
-                    "completed_work": "OpenCode Session 已正常结束并生成结果摘要",
+                    "completed_work": "OpenCode Session 已正常结束",
                     "current_state": "等待确认任务完成",
                     "requested_input": "确认结果后完成任务；如结果不符合预期，可重新执行或取消",
                     "kind": "completion_confirmation",
@@ -595,6 +541,10 @@ class RuntimeService:
                         runtime_context_id=runtime_context_id(context_digest),
                     )
                 )
+                # Flush the new binding before superseding the old Session so the
+                # whole round (new RuntimeSession + old supersede) is one
+                # transaction: any failure rolls everything back atomically.
+                await self.session.flush()
                 await self._supersede_session(
                     old_session_id,
                     created_session_id,
@@ -631,11 +581,12 @@ class RuntimeService:
                 task.finished_at = None
                 if restart:
                     # An explicit restart is a new execution round: the new Session
-                    # must not inherit the previous round's status or timeout window.
+                    # must not inherit the previous round's status or timeout
+                    # window. Status becomes RUNNING only when the first
+                    # submission is confirmed (retry_submission), so a failed
+                    # submit can never leave a fake RUNNING round behind.
                     task.turn_started_at = now
-                    await self.project(task, TaskStatus.RUNNING, detail="重新开始执行")
-                else:
-                    await self.session.commit()
+                await self.session.commit()
             return await self.retry_submission(task.id)
         except Exception as exc:
             await self.session.rollback()
@@ -649,16 +600,42 @@ class RuntimeService:
                     task.pending_message_id = None
                     task.pending_prompt = None
                     task.runtime_error = str(exc)
-                    active = (
-                        task.status == TaskStatus.RUNNING
-                        or (task.status == TaskStatus.WAITING and task.submitted_at is None)
+                    owns_new_session = bool(
+                        created_session_id
+                        and task.current_session_id == created_session_id
                     )
-                    employee = await self.session.get(DigitalEmployee, task.employee_id)
-                    if employee and not active:
-                        employee.current_task_count = 0
-                        if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
-                            employee.status = EmployeeStatus.IDLE
-                    await self.session.commit()
+                    if owns_new_session and task.status == TaskStatus.RUNNING:
+                        # The new round definitively failed to start. Never leave
+                        # the Task looking RUNNING with a dead Session: fail the
+                        # round and mark its RuntimeSession interrupted.
+                        task.failure_reason = str(exc)
+                        task.execution_error = {
+                            "code": "submission_failed",
+                            "message": str(exc),
+                            "source": "opencode_session",
+                            "session_id": created_session_id,
+                        }
+                        runtime_session = await self.session.get(
+                            RuntimeSession, created_session_id
+                        )
+                        if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
+                            runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
+                            runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
+                            runtime_session.finished_at = datetime.now(UTC)
+                        await self.project(
+                            task, TaskStatus.FAILED, detail="重新开始执行失败"
+                        )
+                    else:
+                        active = (
+                            task.status == TaskStatus.RUNNING
+                            or (task.status == TaskStatus.WAITING and task.submitted_at is None)
+                        )
+                        employee = await self.session.get(DigitalEmployee, task.employee_id)
+                        if employee and not active:
+                            employee.current_task_count = 0
+                            if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
+                                employee.status = EmployeeStatus.IDLE
+                        await self.session.commit()
                     abort_unbound_session = True
                 else:
                     # OpenCode may already hold the submitted prompt and only the ACK
@@ -784,16 +761,12 @@ class RuntimeService:
 
         task = await self.lock_task(task_id)
         # A background refresh may have already confirmed this exact message and
-        # cleared pending. Only an actual control operation (session switch or
-        # cancel) or a different reservation invalidates the submission.
+        # cleared pending. Only an actual control operation invalidates the
+        # submission; session identity and the bound RuntimeSession are the
+        # facts, never a Task status projected for a different round.
         background_acked = task.pending_message_id is None
-        pending_replaced = (
-            task.pending_message_id is not None and task.pending_message_id != outbound_id
-        )
-        if (
-            task.current_session_id != submitted_session
-            or task.status == TaskStatus.CANCELED
-            or pending_replaced
+        if await self._submission_invalidated(
+            task, submitted_session=submitted_session, pending_id=outbound_id
         ):
             await self.session.commit()
             async with connect(environment, start=True) as client:
@@ -814,6 +787,29 @@ class RuntimeService:
         task.failure_reason = None
         await self._mark_session_running(task)
         return task
+
+    async def _submission_invalidated(
+        self, task: Task, *, submitted_session: str, pending_id: str
+    ) -> bool:
+        """Whether a control operation invalidated an in-flight submission.
+
+        A background ACK that only clears ``pending_message_id`` is normal
+        convergence, never invalidation. The round is invalidated only when the
+        Task points at a different Session, the reservation was replaced, or the
+        bound RuntimeSession was interrupted (stop/cancel/timeout). This is
+        Session-based on purpose: a Task status projected to RUNNING for a new
+        round must not be able to mask a stale in-flight submission.
+        """
+
+        if task.current_session_id != submitted_session:
+            return True
+        if task.pending_message_id is not None and task.pending_message_id != pending_id:
+            return True
+        runtime_session = await self.session.get(RuntimeSession, submitted_session)
+        return bool(
+            runtime_session
+            and runtime_session.status == RuntimeSessionStatus.INTERRUPTED.value
+        )
 
     async def _mark_session_running(self, task: Task) -> None:
         await self.apply_session_state(
@@ -850,16 +846,11 @@ class RuntimeService:
             # invalidated this reservation while the request was in flight.
             task = await self.lock_task(task_id)
             # A background refresh ACK clears pending without invalidating the
-            # submission. Only a session switch, cancel, or a different
-            # reservation is a real control-operation failure.
+            # submission. Only a session switch, an interrupted bound Session, or
+            # a different reservation is a real control-operation failure.
             background_acked = task.pending_message_id is None
-            pending_replaced = (
-                task.pending_message_id is not None and task.pending_message_id != pending_id
-            )
-            stale = (
-                task.current_session_id != session_id
-                or task.status == TaskStatus.CANCELED
-                or pending_replaced
+            stale = await self._submission_invalidated(
+                task, submitted_session=session_id, pending_id=pending_id
             )
             if stale:
                 await self.session.rollback()
@@ -997,12 +988,6 @@ class RuntimeService:
             # valid; a previous round's SUCCEEDED must not block cancellation.
             await self.project(task, TaskStatus.RUNNING)
         await self.project(task, TaskStatus.CANCELED)
-        await TaskSummaryService(self.session).upsert(
-            task,
-            source_status=TaskStatus.CANCELED.value,
-            primary_session_id=task.current_session_id,
-            summary_text="用户或平台明确取消了任务，当前执行（如有）已停止。",
-        )
         return task
 
     async def refresh(self, task_id, *, client=None):
@@ -1110,8 +1095,7 @@ class RuntimeService:
             timed_out=timed_out,
             grace_seconds=get_settings().opencode_no_reply_grace_seconds,
         )
-        final_text, _ = extract_final_assistant_text(messages, turn_anchor_id=task.last_message_id)
-        await self.apply_session_state(task, state, final_text=final_text)
+        await self.apply_session_state(task, state)
         return task
 
     async def confirm_completion(self, task_id: str):
@@ -1131,27 +1115,12 @@ class RuntimeService:
         if not runtime_session or runtime_session.status != RuntimeSessionStatus.SUCCEEDED.value:
             await self.session.rollback()
             raise RuntimeStateError("当前 Session 尚未正常完成")
-        summary = await self.session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == task.id)
-        )
-        if not summary_is_complete(summary, task):
-            await self.session.rollback()
-            raise RuntimeStateError("任务结果摘要尚未补齐，暂不能确认完成")
-        summary_text = summary.summary
-
         task.confirmed_at = datetime.now(UTC)
         task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None
         task.human_intervention = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务结果已人工确认")
 
-        summary = await TaskSummaryService(self.session).upsert(
-            task,
-            source_status=TaskStatus.SUCCEEDED.value,
-            primary_session_id=task.current_session_id,
-            summary_text=summary_text,
-        )
-        await self.process_terminal_artifacts(task, summary)
         return task
 
     async def disconnected(self, task_id, error):

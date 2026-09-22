@@ -68,16 +68,9 @@ class OpenCodeServerManager:
                 response.raise_for_status()
                 payload = response.json()
             version = str(payload.get("version") or "") or None
-            if version and self._version_tuple(version) < self._version_tuple(
-                self.settings.opencode_server_min_version
-            ):
-                return OpenCodeServerHealth(
-                    False,
-                    version=version,
-                    detail=(
-                        f"OpenCode {version} 低于已验证的最低版本 {self.settings.opencode_server_min_version}"
-                    ),
-                )
+            version_error = self.version_error(version)
+            if version_error:
+                return OpenCodeServerHealth(False, version=version, detail=version_error)
             return OpenCodeServerHealth(
                 healthy=payload.get("healthy") is True,
                 version=version,
@@ -95,6 +88,24 @@ class OpenCodeServerManager:
                 return last
             await asyncio.sleep(0.2)
         raise TimeoutError(f"OpenCode Server 未就绪: {last.detail}")
+
+    def version_error(self, version: str | None) -> str | None:
+        """Compatibility gate shared by the manager and every client.
+
+        Returns a human-readable reason when the server version is unsupported,
+        or ``None`` when the check passes or is explicitly disabled. The
+        disable switch lives in settings, never in a magic minimum version.
+        """
+        if not version or not self.settings.opencode_server_version_check_enabled:
+            return None
+        if self._version_tuple(version) < self._version_tuple(
+            self.settings.opencode_server_min_version
+        ):
+            return (
+                f"OpenCode {version} 低于已验证的最低版本 "
+                f"{self.settings.opencode_server_min_version}"
+            )
+        return None
 
     @staticmethod
     def _version_tuple(value: str) -> tuple[int, ...]:

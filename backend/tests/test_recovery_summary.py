@@ -1,367 +1,54 @@
+"""Assistant review acceptance: source facts, atomic candidates and retry isolation."""
+
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.executors.errors import OpenCodeSessionNotFound
-from app.models import Base, DigitalEmployee, RuntimeSession, Task, TaskSummary
-from app.runtime import recovery
-from app.runtime.lifecycle import RuntimeService, RuntimeStateError
+from app.assistant import review
+from app.domain import ExecutionMode
+from app.models import (
+    Base,
+    DigitalEmployee,
+    KnowledgeItem,
+    OpenCodeExecutionEnvironment,
+    RuntimeSession,
+    Task,
+    TaskReview,
+    TaskSummary,
+)
+from app.runtime.environment import environment_snapshot
+from app.runtime.lifecycle import RuntimeService
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SKILL_PATH = (
+    REPOSITORY_ROOT / ".opencode" / "skills"
+    / "nexus-task-experience-review" / "SKILL.md"
+)
 
 
 @pytest.fixture
-async def session_factory():
+async def factory(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    yield factory
-    await engine.dispose()
-
-
-async def _fake_resolve_environment(session, task):
-    return SimpleNamespace(mode="LOCAL", opencode_server_port=1, workspace_root="/tmp")
-
-
-class _FakeClient:
-    def __init__(self, state):
-        self._state = state
-
-    async def messages(self, directory, sid):
-        error = self._state.get("error")
-        if error is not None:
-            raise error
-        return self._state["messages"]
-
-
-class _HookedClient:
-    def __init__(self, on_messages):
-        self._on_messages = on_messages
-
-    async def messages(self, directory, sid):
-        return await self._on_messages(directory, sid)
-
-
-def _install_connect(monkeypatch, state):
-    @asynccontextmanager
-    async def fake_connect(*args, **kwargs):
-        yield _FakeClient(state)
-
-    monkeypatch.setattr(recovery, "connect", fake_connect)
-
-
-def _noop_artifacts(monkeypatch):
-    async def noop(self, task):
-        return None
-
-    monkeypatch.setattr(RuntimeService, "_reconcile_experience", noop)
-    monkeypatch.setattr(RuntimeService, "_extract_experience", noop)
-
-
-async def _seed_terminal_task(session_factory, *, task_id="T1", status="SUCCEEDED", **kwargs):
-    async with session_factory() as session:
-        session.add(
-            Task(
-                id=task_id,
-                task_type="ISSUE",
-                title="t",
-                status=status,
-                current_session_id="ses_1",
-                workspace="/tmp/ws",
-                last_message_id="msg_anchor",
-                current_progress="中间进度",
-                **kwargs,
-            )
-        )
-        await session.commit()
-
-
-def _reply_messages(text):
-    return [
-        {"info": {"id": "msg_anchor", "role": "user"}, "parts": [{"type": "text", "text": "go"}]},
-        {"info": {"id": "msg_reply", "role": "assistant"}, "parts": [{"type": "text", "text": text}]},
-    ]
-
-
-async def test_transient_network_failure_keeps_summary_pending(monkeypatch, session_factory):
-    await _seed_terminal_task(session_factory)
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    _install_connect(
-        monkeypatch, {"messages": [], "error": ConnectionError("network down")}
-    )
-
-    repaired = await recovery.reconcile_terminal_artifacts()
-
-    async with session_factory() as session:
-        summary = await session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == "T1")
-        )
-    assert repaired == []
-    assert summary is None
-
-
-async def test_recovery_reads_real_final_reply(monkeypatch, session_factory):
-    await _seed_terminal_task(session_factory)
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    _noop_artifacts(monkeypatch)
-    state = {"messages": [], "error": ConnectionError("network down")}
-    _install_connect(monkeypatch, state)
-
-    assert await recovery.reconcile_terminal_artifacts() == []
-
-    state["error"] = None
-    state["messages"] = _reply_messages("真实最终回复")
-    repaired = await recovery.reconcile_terminal_artifacts()
-
-    async with session_factory() as session:
-        summary = await session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == "T1")
-        )
-    assert repaired == ["T1"]
-    assert summary.summary == "真实最终回复"
-    assert summary.stale is False
-    assert summary.source_status == "SUCCEEDED"
-    assert summary.artifacts_processed_generation == summary.generation
-
-
-async def test_missing_session_uses_recorded_facts(monkeypatch, session_factory):
-    await _seed_terminal_task(
-        session_factory,
-        status="FAILED",
-        failure_reason="Session 已不存在，保留失败事实",
-    )
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    _noop_artifacts(monkeypatch)
-    _install_connect(
-        monkeypatch, {"messages": [], "error": OpenCodeSessionNotFound("ses_1")}
-    )
-
-    repaired = await recovery.reconcile_terminal_artifacts()
-
-    async with session_factory() as session:
-        summary = await session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == "T1")
-        )
-    assert repaired == ["T1"]
-    assert summary.summary == "Session 已不存在，保留失败事实"
-    assert summary.stale is False
-    assert summary.source_status == "FAILED"
-
-
-async def test_old_summary_compensation_cannot_overwrite_new_session(
-    monkeypatch, session_factory
-):
-    async with session_factory() as session:
-        session.add(DigitalEmployee(id="E1", name="Eng", role="build", status="IDLE"))
+    async with factory() as session:
+        session.add(DigitalEmployee(id="E1", name="员工", role="build"))
         session.add(
             Task(
                 id="T1",
+                title="测试任务",
                 task_type="ISSUE",
-                title="t",
-                status="SUCCEEDED",
                 employee_id="E1",
-                current_session_id="ses_old",
-                workspace="/tmp/ws",
-                last_message_id="msg_anchor",
-                current_progress="旧进度",
-            )
-        )
-        session.add(
-            RuntimeSession(
-                id="ses_old",
-                task_id="T1",
-                employee_id="E1",
-                workspace="/tmp/ws",
-                environment={},
                 status="SUCCEEDED",
-            )
-        )
-        await session.commit()
-
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    _noop_artifacts(monkeypatch)
-
-    async def on_messages(directory, sid):
-        # While the old compensation waits on the network read, a new Session
-        # completes and writes the authoritative summary.
-        async with session_factory() as other:
-            task = await other.get(Task, "T1")
-            task.current_session_id = "ses_new"
-            task.last_message_id = "msg_new_anchor"
-            other.add(
-                RuntimeSession(
-                    id="ses_new",
-                    task_id="T1",
-                    employee_id="E1",
-                    workspace="/tmp/ws",
-                    environment={},
-                    status="SUCCEEDED",
-                )
-            )
-            other.add(
-                TaskSummary(
-                    id="TS-new",
-                    task_id="T1",
-                    primary_session_id="ses_new",
-                    summary="新 Session 正确结果",
-                    source_status="SUCCEEDED",
-                    generation=1,
-                    stale=False,
-                    artifacts_processed_generation=1,
-                )
-            )
-            await other.commit()
-        return _reply_messages("旧 Session 过期结果")
-
-    @asynccontextmanager
-    async def fake_connect(*args, **kwargs):
-        yield _HookedClient(on_messages)
-
-    monkeypatch.setattr(recovery, "connect", fake_connect)
-
-    repaired = await recovery.reconcile_terminal_artifacts()
-
-    async with session_factory() as session:
-        summary = await session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == "T1")
-        )
-    assert repaired == []
-    assert summary.summary == "新 Session 正确结果"
-    assert summary.primary_session_id == "ses_new"
-    assert summary.generation == 1
-
-
-async def test_artifacts_only_repair_does_not_reread_messages(monkeypatch, session_factory):
-    await _seed_terminal_task(session_factory)
-    async with session_factory() as session:
-        session.add(
-            TaskSummary(
-                id="TS-1",
-                task_id="T1",
-                primary_session_id="ses_1",
-                summary="已完成结果",
-                source_status="SUCCEEDED",
-                generation=1,
-                stale=False,
-                artifacts_processed_generation=0,
-            )
-        )
-        await session.commit()
-
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    calls = {"read": 0}
-
-    @asynccontextmanager
-    async def failing_connect(*args, **kwargs):
-        calls["read"] += 1
-        raise AssertionError("messages must not be re-read for artifacts-only repair")
-        yield  # pragma: no cover
-
-    monkeypatch.setattr(recovery, "connect", failing_connect)
-    processed = {"count": 0}
-
-    async def noop(self, task):
-        processed["count"] += 1
-
-    monkeypatch.setattr(RuntimeService, "_reconcile_experience", noop)
-    monkeypatch.setattr(RuntimeService, "_extract_experience", noop)
-
-    repaired = await recovery.reconcile_terminal_artifacts()
-
-    async with session_factory() as session:
-        summary = await session.get(TaskSummary, "TS-1")
-    assert repaired == ["T1"]
-    assert calls["read"] == 0
-    assert processed["count"] == 2
-    assert summary.artifacts_processed_generation == summary.generation
-
-
-async def test_limit_filters_pending_before_scan_window(monkeypatch, session_factory):
-    base = datetime(2026, 1, 1, tzinfo=UTC)
-    async with session_factory() as session:
-        session.add(
-            Task(
-                id="T-OLD",
-                task_type="ISSUE",
-                title="old",
-                status="SUCCEEDED",
-                current_session_id="ses_old",
-                workspace="/tmp/ws",
-                last_message_id="msg_anchor",
-                current_progress="旧任务进度",
-                updated_at=base,
-            )
-        )
-        for index in range(100):
-            session.add(
-                Task(
-                    id=f"T-NEW-{index}",
-                    task_type="ISSUE",
-                    title=f"new{index}",
-                    status="SUCCEEDED",
-                    current_session_id=f"ses_{index}",
-                    workspace="/tmp/ws",
-                    updated_at=base + timedelta(seconds=index + 1),
-                )
-            )
-        await session.commit()
-        for index in range(100):
-            session.add(
-                TaskSummary(
-                    id=f"TS-NEW-{index}",
-                    task_id=f"T-NEW-{index}",
-                    primary_session_id=f"ses_{index}",
-                    summary="done",
-                    source_status="SUCCEEDED",
-                    generation=1,
-                    stale=False,
-                    artifacts_processed_generation=1,
-                )
-            )
-        await session.commit()
-
-    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
-    _noop_artifacts(monkeypatch)
-    _install_connect(
-        monkeypatch, {"messages": _reply_messages("旧任务真实回复"), "error": None}
-    )
-
-    repaired = await recovery.reconcile_terminal_artifacts(limit=100)
-
-    assert repaired == ["T-OLD"]
-    async with session_factory() as session:
-        summary = await session.scalar(
-            select(TaskSummary).where(TaskSummary.task_id == "T-OLD")
-        )
-    assert summary is not None
-    assert summary.summary == "旧任务真实回复"
-
-
-async def _seed_manual_confirm(session_factory, *, summary=None, stale=False):
-    async with session_factory() as session:
-        session.add(DigitalEmployee(id="E1", name="Eng", role="build", status="IDLE"))
-        session.add(
-            Task(
-                id="T1",
-                task_type="ISSUE",
-                title="t",
-                status="WAITING",
-                completion_policy="MANUAL_CONFIRM",
-                employee_id="E1",
                 current_session_id="ses_1",
-                workspace="/tmp/ws",
-                last_message_id="msg_anchor",
-                current_progress="等待人工确认",
-                submitted_at=datetime.now(UTC),
+                last_message_id="msg_001",
             )
         )
         session.add(
@@ -369,73 +56,348 @@ async def _seed_manual_confirm(session_factory, *, summary=None, stale=False):
                 id="ses_1",
                 task_id="T1",
                 employee_id="E1",
-                workspace="/tmp/ws",
+                workspace="/bound",
                 environment={},
                 status="SUCCEEDED",
+                last_message_id="msg_200",
             )
         )
-        if summary is not None:
-            session.add(
-                TaskSummary(
-                    id="TS-1",
-                    task_id="T1",
-                    primary_session_id="ses_1",
-                    summary=summary,
-                    source_status="WAITING",
-                    generation=1,
-                    stale=stale,
-                    artifacts_processed_generation=1,
-                )
+        await session.commit()
+    monkeypatch.setattr(review, "SessionLocal", factory)
+    yield factory
+    await engine.dispose()
+
+
+async def submit(session, text="任务总结，无可复用经验", experiences=None, source="ses_1", token=None):
+    task = await session.get(Task, "T1")
+    binding = await session.get(RuntimeSession, source)
+    return await review.submit_review(
+        session,
+        task_id="T1",
+        source_session_id=source,
+        expected_review_id=token or review.review_id(task, binding),
+        task_summary=text,
+        experiences=experiences or [],
+    )
+
+
+@pytest.mark.parametrize(
+    "task_type,summary,rule",
+    [
+        (
+            "REQUIREMENT",
+            "需求与关键澄清：AI 误以为删除数据；人工纠正为仅隐藏。\n最终方案：展示层隐藏。\n"
+            "实现与验证：确认数据库保留数据。\n注意事项：人工纠正 msg_002。\n"
+            "可复用经验：先澄清数据保留语义。",
+            "遇到隐藏需求，先确认是否保留数据，再调整展示层，验证隐藏后数据仍可恢复。",
+        ),
+        (
+            "ISSUE",
+            "问题与关键现象：缓存未更新。\n排查与根因：AI 误判网络；人工补充 msg_002：直连同样失败，"
+            "最终定位缓存失效遗漏。\n修复与验证：补充失效，回归通过。\n注意事项：排除网络不能仅靠猜测。\n"
+            "可复用经验：对照直连与缓存路径。",
+            "遇到更新不可见，比较直连和缓存路径，定位失效环节，修复后验证更新前后读取一致。",
+        ),
+    ],
+)
+async def test_structured_review_preserves_correction_and_candidate(factory, task_type, summary, rule):
+    # These are model-authored fixtures; this tests transport/persistence, not LLM quality.
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.task_type = task_type
+        await session.commit()
+        experience = review.ReviewExperience(
+            title="判断和验证规则",
+            content_md=rule,
+            evidence=[
+                {
+                    "message_id": "msg_002",
+                    "part_id": "prt_2",
+                    "evidence_type": "human_correction",
+                    "content": "人工纠正",
+                }
+            ],
+        )
+        result = await submit(session, summary, [experience])
+        again = await submit(session, "响应丢失后重复提交", [experience])
+        assert again == result
+        saved = await session.get(TaskSummary, result["summary_id"])
+        assert saved.content_md == summary and "人工" in saved.content_md
+        assert saved.generation == 1
+        item = await session.get(KnowledgeItem, result["candidate_ids"][0])
+        assert item.status == "candidate" and item.content_md == rule
+        assert item.source_session_id == "ses_1"
+        assert item.origin == "assistant"
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
+
+
+async def test_no_experience_is_valid(factory):
+    async with factory() as session:
+        result = await submit(session)
+        assert result["candidate_ids"] == []
+        assert await session.scalar(select(func.count()).select_from(TaskSummary)) == 1
+        assert (await session.get(Task, "T1")).status == "SUCCEEDED"
+
+
+async def test_atomic_submission_failure_can_retry(factory, monkeypatch):
+    original = review.KnowledgeService.mcp_submit_experience
+    calls = 0
+
+    async def fail_second(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("library unavailable")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(review.KnowledgeService, "mcp_submit_experience", fail_second)
+    experiences = [review.ReviewExperience(title=str(i), content_md=f"判断处理验证 {i}") for i in range(2)]
+    async with factory() as session:
+        with pytest.raises(RuntimeError):
+            await submit(session, experiences=experiences)
+        await session.rollback()
+        assert (await session.get(Task, "T1")).status == "SUCCEEDED"
+        assert await session.scalar(select(func.count()).select_from(TaskSummary)) == 0
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
+        result = await submit(session, experiences=experiences)
+        assert len(result["candidate_ids"]) == 2
+
+
+async def test_old_session_and_old_round_cannot_overwrite(factory):
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        binding = await session.get(RuntimeSession, "ses_1")
+        old_token = review.review_id(task, binding)
+        await submit(session, "旧总结")
+        task.last_message_id = "new_turn"
+        binding.last_message_id = "new_final"
+        await session.commit()
+        with pytest.raises(ValueError, match="轮次"):
+            await submit(session, token=old_token)
+        await submit(session, "同 Session 新轮次总结")
+        session.add(
+            RuntimeSession(
+                id="ses_2",
+                task_id="T1",
+                employee_id="E1",
+                workspace="/new",
+                environment={},
+                status="SUCCEEDED",
+                last_message_id="final_2",
             )
+        )
+        task.current_session_id = "ses_2"
+        await session.commit()
+        await submit(session, "新 Session 总结", source="ses_2")
+        with pytest.raises(ValueError, match="旧 Session"):
+            await submit(session, "延迟旧总结", token=old_token)
+        summary = await session.scalar(select(TaskSummary))
+        assert summary.content_md == "新 Session 总结" and summary.primary_session_id == "ses_2"
+
+
+async def test_manual_confirmation_needs_no_summary(factory):
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.status = "WAITING"
+        task.completion_policy = "MANUAL_CONFIRM"
+        task.submitted_at = datetime.now(UTC)
+        await session.commit()
+        await RuntimeService(session).confirm_completion("T1")
+        assert task.status == "SUCCEEDED"
+        assert await session.scalar(select(func.count()).select_from(TaskSummary)) == 0
+
+
+async def test_long_session_reads_early_correction_and_question_answer(factory, monkeypatch):
+    messages = [
+        {
+            "info": {"id": f"msg_{i:03}", "role": "user" if i == 1 else "assistant"},
+            "parts": [{"id": f"prt_{i}", "type": "text", "text": "人工纠正" * 1000 if i == 1 else "工作"}],
+        }
+        for i in range(201)
+    ]
+    messages[2]["parts"] = [
+        {
+            "id": "question_part",
+            "type": "tool",
+            "tool": "question",
+            "state": {
+                "input": {"questions": ["需要保留吗？"]},
+                "metadata": {"answers": [["保留全部历史"]]},
+                "output": "保留全部历史",
+            },
+        }
+    ]
+    calls = []
+
+    class Client:
+        async def children(self, directory, sid):
+            return [{"id": "child"}] if sid == "ses_1" else []
+
+        async def messages_page(self, directory, sid, *, limit, before):
+            calls.append((str(directory), sid, before))
+            source = messages if sid == "ses_1" else []
+            end = int(before.removeprefix("cursor:")) if before else len(source)
+            start = max(0, end - limit)
+            return {"messages": source[start:end], "next_before": f"cursor:{start}" if start else None}
+
+    @asynccontextmanager
+    async def connect(environment):
+        yield Client()
+
+    resolver = AsyncMock(return_value=SimpleNamespace())
+    monkeypatch.setattr(review, "connect", connect)
+    monkeypatch.setattr(review, "resolve_runtime_session_environment", resolver)
+    async with factory() as session:
+        collected, before = [], None
+        while True:
+            page = await review.session_messages(session, "ses_1", limit=20, before=before)
+            collected.extend(page["messages"])
+            before = page["next_before"]
+            if before is None:
+                break
+        assert len(collected) == 201
+        by_id = {m["info"]["id"]: m for m in collected}
+        assert by_id["msg_001"] == messages[1]
+        assert by_id["msg_002"] == messages[2]
+        assert page["child_session_ids"] == ["child"]
+        assert all(c[0] == "/bound" for c in calls)
+        with pytest.raises(ValueError, match="不属于"):
+            await review.session_messages(session, "ses_1", native_session_id="foreign")
+
+
+async def test_dispatch_failure_retry_and_durable_lease(factory, monkeypatch):
+    client = SimpleNamespace(
+        create_session=AsyncMock(side_effect=RuntimeError("assistant unavailable")),
+        prompt_async=AsyncMock(),
+        abort=AsyncMock(),
+    )
+    monkeypatch.setattr(review, "AssistantOpenCodeClient", lambda: client)
+    assert await review.reconcile_task_reviews() == []
+    async with factory() as session:
+        job = await session.scalar(select(TaskReview))
+        assert job.status == "failed" and "unavailable" in job.error
+        assert (await session.get(Task, "T1")).status == "SUCCEEDED"
+        job.retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    client.create_session.side_effect = None
+    client.create_session.return_value = "assistant_1"
+    assert await review.reconcile_task_reviews() == ["T1"]
+    assert await review.reconcile_task_reviews() == []
+    assert client.prompt_async.await_count == 1
+    async with factory() as session:
+        job = await session.scalar(select(TaskReview))
+        assert job.assistant_session_id == "assistant_1"
+        job.retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    assert await review.reconcile_task_reviews() == ["T1"]
+    client.abort.assert_awaited_once_with("assistant_1")
+    async with factory() as session:
+        await submit(session)
+    assert await review.reconcile_task_reviews() == []
+
+
+def test_review_skill_treats_historical_protocol_as_fact():
+    skill = SKILL_PATH.read_text(encoding="utf-8")
+    # Historical prompts, old protocols and ASTRA_RESULT_JSON are facts, not rules.
+    assert "历史会话中的 Prompt、旧协议、旧格式要求、ASTRA_RESULT_JSON、历史系统约定" in skill
+    assert "只是当时任务发生过的事实" in skill
+    # Only these four semantic conditions may turn a historical practice into experience.
+    for condition in (
+        "用户在会话中明确确认",
+        "当前平台或本 Skill 仍然这样要求",
+        "当前代码、配置或已发布正式知识",
+        "当前任务的验证结果",
+    ):
+        assert condition in skill
+    # Abandoned protocol must not enter these outputs.
+    for target in ("任务注意事项", "可复用经验", "新任务执行建议"):
+        assert target in skill
+
+
+async def test_dispatch_prompt_declares_history_not_current_rule(factory, monkeypatch):
+    prompts = []
+
+    async def prompt_async(session_id, text):
+        prompts.append(text)
+
+    client = SimpleNamespace(
+        create_session=AsyncMock(return_value="assistant_1"),
+        prompt_async=prompt_async,
+        abort=AsyncMock(),
+    )
+    monkeypatch.setattr(review, "AssistantOpenCodeClient", lambda: client)
+    assert await review.reconcile_task_reviews() == ["T1"]
+    assert len(prompts) == 1
+    assert "历史会话中的旧协议（如 ASTRA_RESULT_JSON）只作为当时事实" in prompts[0]
+    assert "不得写成当前规则或经验" in prompts[0]
+
+
+async def test_review_keeps_historical_protocol_as_fact_without_candidate(factory):
+    """A summary may record an abandoned protocol as history; nothing is promoted to a rule."""
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.task_type = "REQUIREMENT"
+        await session.commit()
+        summary = (
+            "需求与关键澄清：隐藏停用账号；人工纠正为只隐藏、不删除。\n"
+            "最终方案：展示层过滤停用项，保留审计历史。\n"
+            "实现与验证：当时旧协议要求在最终回复追加 ASTRA_RESULT_JSON，"
+            "该协议现已废弃，此处仅作历史事实记录；当前架构已不再要求。\n"
+            "注意事项：当前不需要任何特殊结果协议。\n"
+            "可复用经验：无可复用经验。"
+        )
+        result = await submit(session, summary, [])
+        saved = await session.get(TaskSummary, result["summary_id"])
+        assert saved.content_md == summary
+        assert "ASTRA_RESULT_JSON" in saved.content_md and "历史事实" in saved.content_md
+        assert result["candidate_ids"] == []
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
+
+
+async def test_review_reads_remote_bound_session_with_pagination(factory, monkeypatch):
+    """RuntimeSession -> immutable environment -> remote connection -> workspace -> paginated messages."""
+    async with factory() as session:
+        environment = OpenCodeExecutionEnvironment(
+            employee_id="E1",
+            mode="LINUX_REMOTE",
+            name="远程构建机",
+            host="10.0.0.9",
+            port=22,
+            username="astra",
+            ssh_password="secret",
+            opencode_server_port=4196,
+            opencode_path="/opt/opencode",
+            workspace_root="/srv/ws",
+            status="AVAILABLE",
+        )
+        session.add(environment)
+        await session.flush()
+        binding = await session.get(RuntimeSession, "ses_1")
+        binding.environment = environment_snapshot(environment)
+        binding.workspace = "/srv/ws/T1"
         await session.commit()
 
+    seen = {}
+    client = SimpleNamespace(
+        children=AsyncMock(return_value=[]),
+        messages_page=AsyncMock(
+            return_value={"messages": [{"info": {"id": "msg_2"}, "parts": []}], "next_before": None}
+        ),
+    )
 
-async def test_confirm_rejects_missing_summary(monkeypatch, session_factory):
-    await _seed_manual_confirm(session_factory, summary=None)
-    _noop_artifacts(monkeypatch)
+    @asynccontextmanager
+    async def connect(environment):
+        # Credentials come from the RuntimeSession's immutable environment row.
+        seen["mode"] = environment.mode
+        seen["host"] = environment.host
+        seen["ssh_password"] = environment.ssh_password
+        yield client
 
-    async with session_factory() as session:
-        with pytest.raises(RuntimeStateError, match="摘要尚未补齐"):
-            await RuntimeService(session).confirm_completion("T1")
-        await session.rollback()
-
-    async with session_factory() as session:
-        task = await session.get(Task, "T1")
-        summary = await session.get(TaskSummary, "TS-1")
-    assert task.status == "WAITING"
-    assert task.confirmed_at is None
-    assert task.submitted_at is not None
-    assert summary is None
-
-
-async def test_confirm_rejects_stale_summary(monkeypatch, session_factory):
-    await _seed_manual_confirm(session_factory, summary="旧结果", stale=True)
-    _noop_artifacts(monkeypatch)
-
-    async with session_factory() as session:
-        with pytest.raises(RuntimeStateError, match="摘要尚未补齐"):
-            await RuntimeService(session).confirm_completion("T1")
-        await session.rollback()
-
-    async with session_factory() as session:
-        task = await session.get(Task, "T1")
-        summary = await session.get(TaskSummary, "TS-1")
-    assert task.status == "WAITING"
-    assert task.confirmed_at is None
-    assert summary.stale is True
-    assert summary.summary == "旧结果"
-
-
-async def test_confirm_succeeds_with_complete_summary(monkeypatch, session_factory):
-    await _seed_manual_confirm(session_factory, summary="真实已完成结果", stale=False)
-    _noop_artifacts(monkeypatch)
-
-    async with session_factory() as session:
-        task = await RuntimeService(session).confirm_completion("T1")
-        assert task.status == "SUCCEEDED"
-
-    async with session_factory() as session:
-        summary = await session.get(TaskSummary, "TS-1")
-    assert summary.summary == "真实已完成结果"
-    assert summary.source_status == "SUCCEEDED"
-    assert summary.artifacts_processed_generation == summary.generation
+    monkeypatch.setattr(review, "connect", connect)
+    async with factory() as session:
+        page = await review.session_messages(session, "ses_1", limit=20)
+    assert seen["mode"] == ExecutionMode.LINUX_REMOTE
+    assert seen["host"] == "10.0.0.9"
+    assert seen["ssh_password"] == "secret"
+    assert client.messages_page.await_args.args[0] == Path("/srv/ws/T1")
+    assert page["messages"] == [{"info": {"id": "msg_2"}, "parts": []}]

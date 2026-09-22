@@ -47,14 +47,12 @@
     <EmployeeDetailDrawer :employee="detailEmployee" :tasks="store.tasks" @close="detailId = ''" @edit="beginEdit(detailEmployee)" />
 
     <EmployeeConfigModal :open="modalOpen" :employee="modalEmployee" :creating="modalCreating" :categories="store.categories" @close="closeModal" @saved="onModalSaved" />
-
-    <div v-if="notice" class="employee-notice" role="status">{{ notice }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, WifiOff } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import type { Employee } from '@/api/types'
@@ -62,6 +60,8 @@ import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeConfigModal from '@/components/employee/EmployeeConfigModal.vue'
 import EmployeeDetailDrawer from '@/components/employee/EmployeeDetailDrawer.vue'
+import { confirmDialog } from '@/composables/useConfirm'
+import { notify } from '@/composables/useToast'
 import { employeeMatches, toEmployeeViewModel, workspaceAreas } from '@/features/employees/presentation'
 import { useAstraStore } from '@/stores/astra'
 import { environmentLabel, formatTime, platformCopy } from '@/utils/format'
@@ -96,25 +96,23 @@ const modalOpen = ref(false)
 const modalCreating = ref(false)
 const modalEmployee = ref<Employee | null>(null)
 const busyId = ref('')
-const notice = ref('')
-let noticeTimer = 0
 function openDetail(id: string) { detailId.value = id }
 function beginCreate() { modalEmployee.value = null; modalCreating.value = true; modalOpen.value = true }
 function beginEdit(employee: Employee | null) { if (!employee) return; detailId.value = ''; modalEmployee.value = employee; modalCreating.value = false; modalOpen.value = true }
 function closeModal() { modalOpen.value = false; modalEmployee.value = null }
-function notify(value: string) { notice.value = value; window.clearTimeout(noticeTimer); noticeTimer = window.setTimeout(() => { notice.value = '' }, 2800) }
 async function onModalSaved() { await store.refresh(); notify(modalCreating.value ? '数字员工已创建' : '数字员工已更新') }
 async function toggleEnabled(employee: Employee) {
   busyId.value = employee.id
   try { await api.updateEmployee(employee.id, { enabled: !employee.enabled }); await store.refresh(); notify(employee.enabled ? '员工已停用' : '员工已启用') }
-  catch (reason) { notify(reason instanceof Error ? reason.message : '操作失败') }
+  catch (reason) { notify(reason instanceof Error ? reason.message : '操作失败', 'error') }
   finally { busyId.value = '' }
 }
 async function removeEmployee(employee: Employee) {
-  if (!window.confirm(`确认删除「${employee.name}」？删除后无法恢复。`)) return
+  const confirmed = await confirmDialog({ title: '删除数字员工', message: `确认删除「${employee.name}」？删除后无法恢复。`, confirmLabel: '删除员工', danger: true })
+  if (!confirmed) return
   busyId.value = employee.id
   try { await api.deleteEmployee(employee.id); if (detailId.value === employee.id) detailId.value = ''; await store.refresh(); notify('数字员工已删除') }
-  catch (reason) { notify(reason instanceof Error ? reason.message : '删除失败') }
+  catch (reason) { notify(reason instanceof Error ? reason.message : '删除失败', 'error') }
   finally { busyId.value = '' }
 }
 watch([query, status, role, area, enabled], () => { page.value = 1 })
@@ -127,7 +125,6 @@ onMounted(async () => {
   if (editId) beginEdit(store.employees.find((item) => item.id === editId) ?? null)
   else if (create) beginCreate()
 })
-onBeforeUnmount(() => { window.clearTimeout(noticeTimer) })
 </script>
 
 <style scoped>
@@ -138,7 +135,7 @@ onBeforeUnmount(() => { window.clearTimeout(noticeTimer) })
 .employee-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }.employee-cell > span,.environment-cell,.task-link { display: grid; min-width: 0; }.employee-cell strong,.employee-cell small,.environment-cell strong,.environment-cell small,.task-link strong,.task-link small,.truncate { display: block; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }.employee-cell strong,.task-link strong,.environment-cell strong { margin: 0; color: var(--astra-text-primary); font-size: var(--astra-font-label); }.employee-cell small,.task-link small,.environment-cell small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.employee-id { color: #42655b; font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }.task-link:hover strong { color: var(--astra-primary); }.enabled-tag { display: inline-flex; align-items:center; gap: 5px; color: #247655; font-size: var(--astra-font-control); }.enabled-tag::before { width: 6px; height: 6px; border-radius: 50%; background: var(--astra-success); content: ''; }.enabled-tag[data-enabled='false'] { color: #7f8e89; }.enabled-tag[data-enabled='false']::before { background: #a4afab; }
 .row-actions { display: flex; align-items: center; gap: 3px; }.row-actions button,.row-actions a { display: inline-grid; place-items: center; width: auto; min-width: 46px; height: 30px; padding: 0 8px; color: var(--astra-primary); border: 0; border-radius: 7px; background: transparent; font-size: var(--astra-font-control); cursor: pointer; }.row-actions button:hover,.row-actions a:hover { background: var(--astra-primary-soft); }
 .row-actions .row-action-danger { color: var(--astra-danger); }.row-actions .row-action-danger:hover { background: var(--astra-danger-soft); }.row-actions button:disabled { opacity: .45; cursor: default; }
-.employee-notice { position: fixed; z-index: 1400; right: 28px; bottom: 28px; padding: 11px 15px; color: #fff; border-radius: 9px; background: #178f5d; box-shadow: 0 12px 36px rgba(16,37,34,.24); font-size: var(--astra-font-body); }
+
 .employee-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px; padding: 8px 14px; border-top: 1px solid var(--astra-border); background: #fbfdfc; }.employee-pagination > span { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.employee-pagination nav { display: flex; gap: 5px; }.employee-pagination button { display: grid; place-items: center; min-width: 32px; height: 32px; padding: 0 7px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: white; cursor: pointer; }.employee-pagination button.active { color: white; border-color: var(--astra-primary); background: var(--astra-primary); }.employee-pagination button:disabled { opacity: .35; cursor: default; }
 .employee-table-state { position: absolute; inset: 47px 0 0; display: grid; place-items: center; align-content: center; gap: 5px; min-height: 260px; color: var(--astra-text-muted); background: white; text-align: center; }.employee-table-state strong { color: var(--astra-text-primary); }.employee-table-state p { margin: 0 0 7px; font-size: var(--astra-font-label); }.employee-row-loading { cursor: default; }.employee-row-loading td { padding-inline: 18px; }.employee-row-loading span { display: block; width: 100%; height: 20px; border-radius: 7px; background: linear-gradient(90deg,#edf3f0,#f8fbf9,#edf3f0); background-size: 200% 100%; animation: loading-shift 1.2s linear infinite; }
 @keyframes loading-shift { to { background-position: -200% 0; } }

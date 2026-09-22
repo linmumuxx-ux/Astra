@@ -1,11 +1,9 @@
-import json
 from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.config.settings import Settings
 from app.library_schemas import LibraryResource, LibrarySubmitExperienceInput
 from app.library_service import KnowledgeService
 from app.models import (
@@ -18,7 +16,7 @@ from app.models import (
     Task,
 )
 from app.runtime.environment import environment_snapshot
-from app.runtime.opencode_config import remote_runtime_config_content, write_local_runtime_config
+from app.runtime.opencode_workspace import discover_workspace_config
 from app.runtime.runtime_context import (
     RuntimeContextError,
     generate_runtime_context,
@@ -206,24 +204,33 @@ async def test_invalid_token_never_echoes_the_token(caplog):
     assert secret not in caplog.text
 
 
-def test_local_runtime_config_is_written_outside_the_worktree(tmp_path):
-    settings = Settings(runtime_dir=tmp_path / "runtime", workspace_root=tmp_path / "worktree")
-    path = write_local_runtime_config(settings, "E1")
-    assert path.exists()
-    assert path.parent == (tmp_path / "runtime" / "opencode").resolve()
-    assert not str(path).startswith(str((tmp_path / "worktree").resolve()))
-    payload = path.read_text(encoding="utf-8")
-    assert '"astra_library"' in payload
+def test_workspace_config_is_discovered_from_nested_directory(tmp_path):
+    workspace = tmp_path / "workspaces" / "astra-01"
+    workspace.mkdir(parents=True)
+    (tmp_path / "workspaces" / "opencode.json").write_text("{}", encoding="utf-8")
+    assert discover_workspace_config(workspace) == tmp_path / "workspaces" / "opencode.json"
 
 
-def test_remote_runtime_config_reaches_knowledge_over_http_mcp():
-    settings = Settings(_env_file=None, mcp_api_key="secret")
-    payload = json.loads(remote_runtime_config_content(settings, "http://127.0.0.1:8201/mcp"))
-    server = payload["mcp"]["astra_library"]
-    assert server["type"] == "remote"
-    assert server["url"] == "http://127.0.0.1:8201/mcp"
-    assert server["headers"]["Authorization"] == "Bearer secret"
-    assert payload["permission"]["astra_library_*"] == "allow"
+def test_workspace_config_is_not_inherited_above_a_git_root(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    task_worktree = repo / "tasks" / "T1"
+    task_worktree.mkdir(parents=True)
+    (tmp_path / "opencode.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("app.runtime.opencode_workspace.global_config_path", lambda: None)
+    # A per-task git worktree is its own project root: configs above it must not leak in.
+    assert discover_workspace_config(task_worktree) is None
+
+
+def test_missing_workspace_config_falls_back_to_global(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspaces" / "astra-01"
+    workspace.mkdir(parents=True)
+    global_config = tmp_path / "global-opencode.json"
+    global_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "app.runtime.opencode_workspace.global_config_path", lambda: global_config
+    )
+    assert discover_workspace_config(workspace) == global_config
 
 
 async def test_runtime_session_context_hash_is_unique():
