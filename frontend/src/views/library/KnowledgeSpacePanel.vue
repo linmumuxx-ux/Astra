@@ -83,8 +83,8 @@ import SpaceTreeNode from './SpaceTreeNode.vue'
 const props = defineProps<{ spaces: KnowledgeSpace[]; selectedId: string | null; total: number; canManage: boolean }>()
 const emit = defineEmits<{
   select: [id: string | null]
-  create: [name: string, parentId: string | null]
-  rename: [space: KnowledgeSpace, name: string]
+  create: [name: string, parentId: string | null, done: (success: boolean) => void]
+  rename: [space: KnowledgeSpace, name: string, done: (success: boolean) => void]
   move: [space: KnowledgeSpace, targetParentId: string]
   delete: [space: KnowledgeSpace]
 }>()
@@ -150,13 +150,19 @@ async function beginCreate(parentId: string | null) {
 function cancelCreate() { creating.value = undefined; rootName.value = '' }
 function submitRootCreate() {
   if (!rootName.value) return
-  emit('create', rootName.value, null)
-  cancelCreate()
+  emit('create', rootName.value, null, async (success) => {
+    if (success) cancelCreate()
+    else {
+      await nextTick()
+      rootCreateInput.value?.focus()
+    }
+  })
 }
 function submitCreate(name: string, parentId: string) {
   if (!name) return
-  emit('create', name, parentId)
-  creating.value = undefined
+  emit('create', name, parentId, (success) => {
+    if (success) creating.value = undefined
+  })
 }
 function beginRename(space: KnowledgeSpace) {
   creating.value = undefined
@@ -165,8 +171,9 @@ function beginRename(space: KnowledgeSpace) {
 }
 function cancelRename() { editingId.value = null }
 function submitRename(space: KnowledgeSpace, name: string) {
-  emit('rename', space, name)
-  editingId.value = null
+  emit('rename', space, name, (success) => {
+    if (success) editingId.value = null
+  })
 }
 function openMove(space: KnowledgeSpace) {
   creating.value = undefined
