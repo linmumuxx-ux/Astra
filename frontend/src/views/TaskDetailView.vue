@@ -55,7 +55,13 @@ const awaitingConfirmation = computed(() =>
   Boolean(task.value?.submitted_at) &&
   !task.value?.confirmed_at,
 )
-const frameUrl = computed(() => selectedSession.value ? `/opencode-workspace/index.html?task=${encodeURIComponent(String(route.params.id))}&session=${encodeURIComponent(selectedSession.value)}` : '')
+const selectedSessionBinding = computed(() => binding.value?.sessions.find(item => item.id === selectedSession.value))
+const frameUrl = computed(() => {
+  if (!selectedSession.value) return ''
+  const workspaceUi = selectedSessionBinding.value?.workspace_ui || binding.value?.runtime.workspace_ui
+  if (!workspaceUi) return ''
+  return `${workspaceUi}?task=${encodeURIComponent(String(route.params.id))}&session=${encodeURIComponent(selectedSession.value)}`
+})
 const now = ref(Date.now())
 const duration = computed(() => {
   if (!task.value?.started_at) return '尚未开始'
