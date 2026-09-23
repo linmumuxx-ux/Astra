@@ -48,7 +48,7 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
       if (!(native in data)) { errors.push(`Unhandled native GET: ${native}`); return route.fulfill({status: 404, json: {message: native}}) }
       return route.fulfill({json: data[native]})
     }
-    if (path.endsWith('/workspace')) return route.fulfill({json: {task_id: task.id, task_status: task.status, runtime: {server: `/api/tasks/${task.id}/opencode`, session_id: sid, workspace: directory, connection: 'CONNECTED'}, sessions: [{id: sid, workspace: directory, current: true, created_at: task.created_at}], history: []}})
+    if (path.endsWith('/workspace')) return route.fulfill({json: {task_id: task.id, task_status: task.status, runtime: {server: `/api/tasks/${task.id}/opencode`, session_id: sid, workspace: directory, connection: 'CONNECTED', error: null, opencode_version: '1.18.31', workspace_ui: '/opencode-workspace/1.18.31/index.html'}, sessions: [{id: sid, workspace: directory, current: true, created_at: task.created_at, status: 'RUNNING', superseded_by: null, finished_at: null, opencode_version: '1.18.31', workspace_ui: '/opencode-workspace/1.18.31/index.html'}], history: []}})
     if (path.endsWith('/repo')) return route.fulfill({json: {name: 'sample', branch: 'main', commit: '0123456789abcdef', dirty: true, changes: 1}})
     if (path === '/api/tasks/T-WORKSPACE') return route.fulfill({json: task})
     if (path === '/api/tasks') return route.fulfill({json: [task]})
