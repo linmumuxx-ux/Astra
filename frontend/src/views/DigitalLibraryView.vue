@@ -15,7 +15,7 @@
     <section class="library-status-row">
       <div class="knowledge-service" :data-state="serviceError || serviceStatus?.healthy === false ? 'error' : 'ok'" aria-label="知识服务状态">
         <span class="service-dot" />
-        <strong>知识服务{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
+        <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
         <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
         <span v-if="(serviceStatus?.pending_count ?? 0) || (serviceStatus?.failed_count ?? 0)">待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
         <button v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" type="button" class="text-action" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
