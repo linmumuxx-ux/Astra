@@ -46,7 +46,6 @@
         :loading="listLoading"
         :can-manage="Boolean(permissions?.can_manage)"
         :can-review="Boolean(permissions?.can_review)"
-        :space-name="selectedSpace?.name ?? null"
         :space-path="selectedPath"
         :keyword="queryInput"
         :filter-label="activeFilterLabel"
