@@ -1,16 +1,38 @@
 <template>
   <aside class="space-panel">
-    <header>
-      <div><h3>知识空间</h3><p>空间 · 目录树</p></div>
-      <button v-if="canManage" type="button" aria-label="新建一级目录" @click="beginCreate(null)"><Plus :size="15" /></button>
+    <header class="space-panel__header">
+      <div><h3>知识空间</h3><p>选择空间或目录查看知识</p></div>
+      <button v-if="canManage" type="button" title="新建知识空间" aria-label="新建知识空间" @click="beginCreate(null)"><Plus :size="15" /></button>
     </header>
 
+    <div class="space-search">
+      <Search :size="14" />
+      <input v-model.trim="searchQuery" type="search" placeholder="搜索知识空间" aria-label="搜索知识空间" />
+      <button v-if="searchQuery" type="button" aria-label="清空空间搜索" @click="searchQuery = ''"><X :size="13" /></button>
+    </div>
+
     <nav aria-label="知识空间目录树">
-      <button type="button" class="space-all" :class="{ selected: selectedId === null }" @click="emit('select', null)">
+      <button type="button" class="space-all" :class="{ selected: selectedId === null }" @click="select(null)">
         <span><Layers3 :size="16" />全部知识</span><strong>{{ total }}</strong>
       </button>
+
+      <form v-if="creating === null" class="root-inline-create" @submit.prevent="submitRootCreate">
+        <FolderPlus :size="15" />
+        <input
+          ref="rootCreateInput"
+          v-model.trim="rootName"
+          required
+          maxlength="160"
+          placeholder="输入知识空间名称"
+          aria-label="知识空间名称"
+          @keydown.esc.prevent="cancelCreate"
+        />
+        <button type="submit" aria-label="创建知识空间"><Check :size="13" /></button>
+        <button type="button" aria-label="取消创建" @click="cancelCreate"><X :size="13" /></button>
+      </form>
+
       <SpaceTreeNode
-        v-for="node in spaces"
+        v-for="node in visibleSpaces"
         :key="node.id"
         :node="node"
         :level="0"
@@ -18,49 +40,51 @@
         :can-manage="canManage"
         :expanded-ids="expandedIds"
         :menu-id="menuId"
-        @select="emit('select', $event)"
+        :creating-parent-id="creating"
+        :editing-id="editingId"
+        :force-expanded="Boolean(searchQuery)"
+        @select="select"
         @toggle="toggleTree"
         @menu="toggleMenu"
         @create="beginCreate"
         @rename="beginRename"
         @move="openMove"
         @delete="emit('delete', $event)"
+        @commit-create="submitCreate"
+        @cancel-create="cancelCreate"
+        @commit-rename="submitRename"
+        @cancel-rename="cancelRename"
       />
+
+      <div v-if="searchQuery && !visibleSpaces.length" class="space-empty">没有匹配的知识空间</div>
     </nav>
 
-    <form v-if="creating !== undefined" class="space-form" @submit.prevent="submitCreate">
-      <input v-model.trim="newName" required maxlength="160" :placeholder="creating === null ? '一级目录名称' : '子目录名称'" autofocus />
-      <button type="submit" aria-label="保存"><Check :size="14" /></button>
-      <button type="button" aria-label="取消" @click="creating = undefined"><X :size="14" /></button>
-    </form>
-
-    <form v-if="editingTarget" class="space-form" @submit.prevent="submitRename">
-      <input v-model.trim="editName" required maxlength="160" autofocus />
-      <button type="submit" aria-label="保存重命名"><Check :size="14" /></button>
-      <button type="button" aria-label="取消重命名" @click="editingId = null"><X :size="14" /></button>
-    </form>
-
-    <div v-if="moveNode" class="move-backdrop">
-      <form class="move-card" @submit.prevent="submitMove">
-        <header><div><h3>移动「{{ moveNode.name }}」</h3><p>选择目标目录（保存在同一知识空间内）。</p></div><button type="button" aria-label="关闭" @click="moveNode = null"><X :size="16" /></button></header>
-        <label>移动到<select v-model="moveTargetId" required><option value="" disabled>选择目标目录</option><option v-for="item in moveTargets" :key="item.id" :value="item.id">{{ '　'.repeat(item.level) }}{{ item.name }}</option></select></label>
-        <footer><button type="button" class="button" @click="moveNode = null">取消</button><button class="button button--primary" type="submit">移动</button></footer>
-      </form>
-    </div>
+    <DirectoryPickerDialog
+      :open="Boolean(moveNode)"
+      title="移动目录"
+      :subtitle="moveNode ? `将「${moveNode.name}」移动到新的父目录。` : ''"
+      :spaces="moveRoot ? [moveRoot] : []"
+      :selected-id="moveNode?.parent_id ?? ''"
+      :exclude-ids="moveExcludedIds"
+      confirm-label="移动"
+      @close="moveNode = null"
+      @confirm="submitMove"
+    />
   </aside>
 </template>
 
 <script setup lang="ts">
-import { Check, Layers3, Plus, X } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { Check, FolderPlus, Layers3, Plus, Search, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { KnowledgeSpace } from '@/api/types'
+import DirectoryPickerDialog from './DirectoryPickerDialog.vue'
 import SpaceTreeNode from './SpaceTreeNode.vue'
 
 const props = defineProps<{ spaces: KnowledgeSpace[]; selectedId: string | null; total: number; canManage: boolean }>()
 const emit = defineEmits<{
   select: [id: string | null]
-  create: [name: string, parentId: string | null]
-  rename: [space: KnowledgeSpace, name: string]
+  create: [name: string, parentId: string | null, done: (success: boolean) => void]
+  rename: [space: KnowledgeSpace, name: string, done: (success: boolean) => void]
   move: [space: KnowledgeSpace, targetParentId: string]
   delete: [space: KnowledgeSpace]
 }>()
@@ -68,14 +92,40 @@ const emit = defineEmits<{
 const expandedIds = ref<Set<string>>(new Set())
 const menuId = ref<string | null>(null)
 const creating = ref<string | null | undefined>(undefined)
-const newName = ref('')
+const rootName = ref('')
+const rootCreateInput = ref<HTMLInputElement | null>(null)
 const editingId = ref<string | null>(null)
-const editName = ref('')
 const moveNode = ref<KnowledgeSpace | null>(null)
-const moveTargetId = ref('')
+const searchQuery = ref('')
 
-const editingTarget = computed(() => findNode(props.spaces, editingId.value))
+const visibleSpaces = computed(() => {
+  const keyword = searchQuery.value.toLocaleLowerCase()
+  if (!keyword) return props.spaces
 
+  const filter = (nodes: KnowledgeSpace[]): KnowledgeSpace[] => {
+    const result: KnowledgeSpace[] = []
+    for (const node of nodes) {
+      const children = filter(node.children ?? [])
+      if (node.name.toLocaleLowerCase().includes(keyword) || children.length) result.push({ ...node, children })
+    }
+    return result
+  }
+  return filter(props.spaces)
+})
+const moveRoot = computed(() => moveNode.value ? findRoot(props.spaces, moveNode.value.id) : null)
+const moveExcludedIds = computed(() => {
+  if (!moveNode.value) return []
+  return [...descendantIds(moveNode.value), moveNode.value.id]
+})
+
+function closeMenu() { menuId.value = null }
+onMounted(() => document.addEventListener('click', closeMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
+
+function select(id: string | null) {
+  menuId.value = null
+  emit('select', id)
+}
 function toggleTree(id: string) {
   const value = new Set(expandedIds.value)
   if (value.has(id)) value.delete(id)
@@ -83,44 +133,69 @@ function toggleTree(id: string) {
   expandedIds.value = value
 }
 function toggleMenu(id: string) { menuId.value = menuId.value === id ? null : id }
-function beginCreate(parentId: string | null) {
+async function beginCreate(parentId: string | null) {
   creating.value = parentId
-  newName.value = ''
+  editingId.value = null
+  menuId.value = null
   if (parentId) {
     const value = new Set(expandedIds.value)
     value.add(parentId)
     expandedIds.value = value
+    return
   }
+  rootName.value = ''
+  await nextTick()
+  rootCreateInput.value?.focus()
 }
-function submitCreate() {
-  if (!newName.value) return
-  emit('create', newName.value, creating.value ?? null)
-  newName.value = ''
+function cancelCreate() { creating.value = undefined; rootName.value = '' }
+function submitRootCreate() {
+  if (!rootName.value) return
+  emit('create', rootName.value, null, async (success) => {
+    if (success) cancelCreate()
+    else {
+      await nextTick()
+      rootCreateInput.value?.focus()
+    }
+  })
+}
+function submitCreate(name: string, parentId: string) {
+  if (!name) return
+  emit('create', name, parentId, (success) => {
+    if (success) creating.value = undefined
+  })
+}
+function beginRename(space: KnowledgeSpace) {
   creating.value = undefined
+  menuId.value = null
+  editingId.value = space.id
 }
-function beginRename(space: KnowledgeSpace) { editingId.value = space.id; editName.value = space.name }
-function submitRename() {
-  if (!editName.value || !editingTarget.value) return
-  emit('rename', editingTarget.value, editName.value)
+function cancelRename() { editingId.value = null }
+function submitRename(space: KnowledgeSpace, name: string) {
+  emit('rename', space, name, (success) => {
+    if (success) editingId.value = null
+  })
+}
+function openMove(space: KnowledgeSpace) {
+  creating.value = undefined
   editingId.value = null
+  menuId.value = null
+  moveNode.value = space
 }
-function openMove(space: KnowledgeSpace) { moveNode.value = space; moveTargetId.value = space.parent_id ?? '' }
-function submitMove() {
-  if (!moveNode.value || !moveTargetId.value) return
-  emit('move', moveNode.value, moveTargetId.value)
+function submitMove(targetId: string) {
+  if (!moveNode.value) return
+  if (targetId === moveNode.value.parent_id) {
+    moveNode.value = null
+    return
+  }
+  emit('move', moveNode.value, targetId)
   moveNode.value = null
 }
-const moveTargets = computed(() => {
-  if (!moveNode.value) return []
-  const root = findRoot(props.spaces, moveNode.value.id)
-  if (!root || root.id === moveNode.value.id) return []
-  const excluded = descendantIds(moveNode.value)
-  excluded.add(moveNode.value.id)
-  return flatten([root]).filter((item) => !excluded.has(item.id))
-})
 function descendantIds(node: KnowledgeSpace): Set<string> {
   const result = new Set<string>()
-  for (const child of node.children ?? []) { result.add(child.id); for (const id of descendantIds(child)) result.add(id) }
+  for (const child of node.children ?? []) {
+    result.add(child.id)
+    for (const id of descendantIds(child)) result.add(id)
+  }
   return result
 }
 function findNode(nodes: KnowledgeSpace[], id: string | null): KnowledgeSpace | null {
@@ -138,32 +213,8 @@ function findRoot(nodes: KnowledgeSpace[], id: string): KnowledgeSpace | null {
   }
   return null
 }
-function flatten(nodes: KnowledgeSpace[], level = 0): Array<KnowledgeSpace & { level: number }> {
-  return nodes.reduce<Array<KnowledgeSpace & { level: number }>>((result, node) => {
-    result.push({ ...node, level })
-    return result.concat(flatten(node.children ?? [], level + 1))
-  }, [])
-}
 </script>
 
 <style scoped>
-.space-panel { align-self: start; min-width: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: rgba(255,255,255,.96); box-shadow: var(--astra-shadow-panel); }
-.space-panel > header { display: flex; align-items: center; justify-content: space-between; min-height: 68px; padding: 13px 14px; border-bottom: 1px solid var(--astra-border); }
-.space-panel h3, .space-panel p { margin: 0; }.space-panel h3 { color: var(--astra-text-primary);  }.space-panel p { margin-top: 3px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.space-panel > header button, .space-form button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 7px; background: white; cursor: pointer; }
-.space-panel nav { display: grid; gap: 2px; max-height: min(560px, calc(100vh - 380px)); overflow-y: auto; padding: 8px; }
-.space-all { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 0 10px; color: var(--astra-text-secondary); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
-.space-all:hover, .space-all.selected { background: #eef8f3; }
-.space-all.selected { color: var(--astra-primary-bright); font-weight: var(--astra-weight-bold); }
-.space-all span { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.space-all strong { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); }
-.space-form { display: grid; grid-template-columns: minmax(0,1fr) 30px 30px; gap: 4px; padding: 8px; border-top: 1px solid var(--astra-border); }
-.space-form input { min-width: 0; height: 32px; padding: 0 8px; color: var(--astra-text-primary); border: 1px solid var(--astra-primary-border); border-radius: 7px; background: white; outline: none; }
-.move-backdrop { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px; background: rgba(16,37,34,.38); backdrop-filter: blur(2px); }
-.move-card { width: min(420px,100%); padding: 18px; border: 1px solid var(--astra-border); border-radius: 13px; background: white; box-shadow: 0 24px 70px rgba(16,37,34,.22); }
-.move-card h3 { margin: 0; color: var(--astra-text-primary);  }
-.move-card header p { margin: 4px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.move-card label { display: grid; gap: 6px; margin-top: 14px; color: var(--astra-text-secondary); font-size: var(--astra-font-body); }
-.move-card select { min-height: 38px; padding: 0 9px; color: var(--astra-text-primary); border: 1px solid var(--astra-border); border-radius: 8px; background: white; }
-.move-card footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.space-panel{display:grid;grid-template-rows:auto auto minmax(0,1fr);min-width:0;height:100%;overflow:hidden;border-right:1px solid var(--astra-border);background:#fbfdfc}.space-panel__header{display:flex;align-items:center;justify-content:space-between;min-height:64px;padding:12px 14px 10px}.space-panel h3,.space-panel p{margin:0}.space-panel h3{color:var(--astra-text-primary)}.space-panel p{margin-top:3px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.space-panel__header>button{display:grid;place-items:center;width:30px;height:30px;padding:0;color:var(--astra-primary-bright);border:1px solid var(--astra-primary-border);border-radius:7px;background:#fff;cursor:pointer}.space-panel__header>button:hover{background:var(--astra-primary-soft)}.space-search{display:flex;align-items:center;gap:7px;height:34px;margin:0 10px 8px;padding:0 8px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:8px;background:#fff}.space-search:focus-within{border-color:var(--astra-primary-border);box-shadow:0 0 0 3px var(--astra-primary-soft)}.space-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:var(--astra-text-primary);font-size:var(--astra-font-control)}.space-search button{display:grid;place-items:center;padding:0;color:var(--astra-text-muted);border:0;background:transparent;cursor:pointer}.space-panel nav{display:block;min-height:0;overflow:auto;padding:3px 8px 10px}.space-all{display:flex;align-items:center;justify-content:space-between;width:100%;min-height:40px;padding:0 10px;color:var(--astra-text-secondary);border:0;border-radius:8px;background:transparent;cursor:pointer}.space-all:hover{background:#f3f8f5}.space-all.selected{color:var(--astra-primary-bright);background:var(--astra-primary-soft);box-shadow:inset 3px 0 0 var(--astra-primary);font-weight:var(--astra-weight-bold)}.space-all span{display:flex;align-items:center;gap:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.space-all strong{color:var(--astra-text-muted);font-size:var(--astra-font-helper);font-weight:var(--astra-weight-bold)}.root-inline-create{display:flex;align-items:center;gap:6px;min-height:38px;margin:2px 4px;padding:0 4px 0 9px;color:var(--astra-primary-bright);border-radius:8px;background:var(--astra-primary-soft)}.root-inline-create input{min-width:0;flex:1;height:30px;padding:0 8px;color:var(--astra-text-primary);border:1px solid var(--astra-primary-border);border-radius:6px;background:#fff;outline:0}.root-inline-create button{display:grid;place-items:center;flex:none;width:27px;height:27px;padding:0;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:6px;background:#fff;cursor:pointer}.root-inline-create button[type='submit']{color:var(--astra-primary-bright)}.space-empty{display:grid;place-items:center;min-height:100px;color:var(--astra-text-muted);font-size:var(--astra-font-body)}
 </style>

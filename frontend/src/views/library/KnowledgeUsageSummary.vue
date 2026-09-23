@@ -1,7 +1,7 @@
 <template>
   <section class="usage-summary">
     <header role="button" tabindex="0" @click="collapsed = !collapsed" @keydown.enter="collapsed = !collapsed">
-      <div><h3>知识使用情况</h3><p>最近 {{ summary?.days ?? 7 }} 天，引用指 Agent 读取完整知识正文</p></div>
+      <div><h3>知识使用分析</h3><p>最近 {{ summary?.days ?? 7 }} 天 · {{ summary?.total_references ?? 0 }} 次引用 · {{ summary?.used_resources ?? 0 }} 条知识被使用</p></div>
       <span class="collapse-toggle"><ChevronDown :size="16" :class="{ open: !collapsed }" /></span>
     </header>
     <div v-if="!collapsed" class="usage-summary__body">
@@ -29,7 +29,7 @@ import { computed, ref } from 'vue'
 import type { LibraryUsageSummary } from '@/api/types'
 
 const props = defineProps<{ summary: LibraryUsageSummary | null }>()
-const collapsed = ref(false)
+const collapsed = ref(true)
 const maximum = computed(() => Math.max(1, ...(props.summary?.trend.map((point) => point.reference_count) ?? [0])))
 const barHeight = (value: number) => value ? Math.max(12, Math.round(value / maximum.value * 100)) : 4
 </script>

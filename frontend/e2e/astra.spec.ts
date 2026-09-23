@@ -88,7 +88,7 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
   }
 })
 
-test('数字图书馆支持全局搜索、安全 Markdown 弹框和滚动恢复', async ({ page, request }) => {
+test('数字图书馆支持当前空间搜索、安全 Markdown 弹框和滚动恢复', async ({ page, request }) => {
   const spacesResponse = await request.get('/api/library/spaces')
   expect(spacesResponse.ok()).toBeTruthy()
   const spaces = await spacesResponse.json()
@@ -114,7 +114,7 @@ test('数字图书馆支持全局搜索、安全 Markdown 弹框和滚动恢复'
   const library = page.getByTestId('digital-library-page')
   await expect(library.getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
   await expect(library.getByRole('heading', { name: '知识空间', exact: true })).toBeVisible()
-  await library.getByLabel('知识库搜索').fill('50004')
+  await library.getByLabel('搜索当前空间').fill('50004')
   await expect(library.getByText(title, { exact: true })).toBeVisible()
   await library.getByText(title, { exact: true }).click()
 
@@ -154,7 +154,7 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
   await expect(detail.locator('.detail-error')).toHaveCount(0)
   await detail.getByRole('button', { name: '关闭知识详情' }).click()
 
-  await library.getByRole('button', { name: '更多目录操作' }).first().click()
+  await library.getByRole('button', { name: /^管理目录 / }).first().click()
   await expect(library.getByText('新建子目录', { exact: true })).toBeVisible()
   await expect(library.getByText('移动到…', { exact: true })).toHaveCount(0)
 
@@ -166,7 +166,28 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
   await expect(statusFilter).toBeVisible()
   const statusOptions = await statusFilter.locator('option').allTextContents()
   expect(statusOptions).toEqual(['全部状态', '已发布'])
-  await expect(library.getByRole('button', { name: '更多目录操作' })).toHaveCount(0)
+  await expect(library.getByRole('button', { name: /^管理目录 / })).toHaveCount(0)
+})
+
+test('数字图书馆目录创建保持在树内原位置并自动进入新目录', async ({ page }) => {
+  await page.goto('/library')
+  const library = page.getByTestId('digital-library-page')
+  const rootRow = library.locator('.tree-node').first()
+  const rootName = (await rootRow.locator('.space-label em').first().textContent())?.trim()
+  expect(rootName).toBeTruthy()
+
+  await rootRow.getByRole('button', { name: /^管理目录 / }).click()
+  await rootRow.getByRole('button', { name: '新建子目录' }).click()
+
+  const childName = `E2E 子目录 ${Date.now()}`
+  const inlineInput = rootRow.getByLabel('子目录名称')
+  await expect(inlineInput).toBeVisible()
+  await inlineInput.fill(childName)
+  await inlineInput.press('Enter')
+
+  await expect(library.getByText(childName, { exact: true })).toBeVisible()
+  await expect(library.getByRole('heading', { name: new RegExp(childName) })).toBeVisible()
+  await expect(library.getByLabel('子目录名称')).toHaveCount(0)
 })
 
 test('创建任务仅填写业务事实且高优先级默认人工确认', async ({ page, request }) => {
