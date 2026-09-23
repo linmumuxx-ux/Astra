@@ -15,7 +15,7 @@
           type="search"
           placeholder="搜索当前空间"
           aria-label="搜索当前空间"
-          @input="emit('search', ($event.target as HTMLInputElement).value)"
+          @input="onSearchInput"
         />
         <button v-if="keyword" type="button" aria-label="清空搜索" @click="emit('search', '')"><X :size="13" /></button>
       </label>
@@ -128,8 +128,7 @@ const props = defineProps<{
   loading: boolean
   canManage: boolean
   canReview: boolean
-  spaceName: string | null
-  spacePath: string
+    spacePath: string
   keyword: string
   filterLabel: string
 }>()
@@ -162,6 +161,7 @@ const tagOptions = computed(() => allTags.value.slice(0, 24))
 const allSelected = computed(() => props.page.items.length > 0 && props.page.items.every((item) => selected.value.has(item.id)))
 const hasFilters = computed(() => Boolean(props.keyword || props.filters.type || props.filters.status || props.filters.source || props.filters.tag))
 
+function onSearchInput(event: Event) { emit('search', (event.target as HTMLInputElement).value) }
 function change(key: keyof ListFilters, event: Event) { emit('filter', key, (event.target as HTMLSelectElement).value) }
 function toggle(id: string) { const value = new Set(selected.value); if (value.has(id)) value.delete(id); else value.add(id); selected.value = value }
 function toggleAll() { if (allSelected.value) selected.value = new Set(); else selected.value = new Set(props.page.items.map((item) => item.id)) }
