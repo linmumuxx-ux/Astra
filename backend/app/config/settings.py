@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # disable it explicitly; never encode "off" as a magic minimum such as 0.0.0.
     opencode_server_version_check_enabled: bool = True
     opencode_server_min_version: str = "1.18.25"
+    # Company standard OpenCode builds that are explicitly verified even when
+    # they are older than the rolling minimum.
+    opencode_server_compatible_versions: list[str] = Field(default_factory=lambda: ["1.2.27"])
     # Embedded Workspace UI builds are stored by the exact OpenCode version.
     # This default is only for historical RuntimeSessions created before Astra
     # persisted the server version in the environment snapshot.
@@ -171,6 +174,17 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {"opencode_server", "opencode_cli_fallback"}:
             raise ValueError("ASTRA_EXECUTOR_TYPE 只支持 opencode_server 或 opencode_cli_fallback")
+        return normalized
+
+    @field_validator("opencode_server_compatible_versions")
+    @classmethod
+    def validate_opencode_server_compatible_versions(cls, values: list[str]) -> list[str]:
+        normalized = []
+        for value in values:
+            version = str(value).strip().removeprefix("v")
+            if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+                raise ValueError("ASTRA_OPENCODE_SERVER_COMPATIBLE_VERSIONS 包含非法版本号")
+            normalized.append(version)
         return normalized
 
     @field_validator("opencode_workspace_ui_default_version")
