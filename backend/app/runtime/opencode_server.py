@@ -98,12 +98,17 @@ class OpenCodeServerManager:
         """
         if not version or not self.settings.opencode_server_version_check_enabled:
             return None
-        if self._version_tuple(version) < self._version_tuple(
+        normalized = version.strip().removeprefix("v")
+        if normalized in self.settings.opencode_server_compatible_versions:
+            return None
+        if self._version_tuple(normalized) < self._version_tuple(
             self.settings.opencode_server_min_version
         ):
+            compatible = ", ".join(self.settings.opencode_server_compatible_versions)
             return (
                 f"OpenCode {version} 低于已验证的最低版本 "
                 f"{self.settings.opencode_server_min_version}"
+                + (f"；显式兼容版本：{compatible}" if compatible else "")
             )
         return None
 
