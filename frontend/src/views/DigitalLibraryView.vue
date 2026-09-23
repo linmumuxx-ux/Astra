@@ -245,7 +245,7 @@ async function loadList() {
     if (filters.tag) query.set('tag', filters.tag)
     if (filters.keyword) query.set('keyword', filters.keyword)
     page.value = await api.libraryKnowledge(`?${query}`)
-  } catch (error) { pageError.value = message(error, '知识列表加载失败'); page.value = emptyPage() } finally { listLoading.value = false }
+  } catch (error) { notify(message(error, '知识列表加载失败'), 'error'); page.value = emptyPage() } finally { listLoading.value = false }
 }
 async function refreshOverview() {
   const [statsValue, spacesValue, usageValue] = await Promise.all([api.libraryStats(), api.librarySpaces(), api.libraryUsageSummary(7)])
@@ -262,7 +262,7 @@ function applyStat(value: string) {
 function selectSpace(id: string | null) { filters.spaceId = id; filters.page = 1; statsActive.value = 'spaces'; loadList() }
 function setPage(value: number) { filters.page = value; loadList() }
 function setFilter(key: 'type' | 'status' | 'source' | 'tag' | 'sort', value: string) { filters[key] = value; filters.page = 1; statsActive.value = value === 'candidate' ? 'candidate' : 'filter'; loadList() }
-function clearFilters() { filters.spaceId = null; filters.type = ''; filters.status = ''; filters.source = ''; filters.tag = ''; filters.sort = 'updated_desc'; filters.keyword = ''; filters.page = 1; queryInput.value = ''; statsActive.value = 'all'; loadList() }
+function clearFilters() { filters.type = ''; filters.status = ''; filters.source = ''; filters.tag = ''; filters.sort = 'updated_desc'; filters.keyword = ''; filters.page = 1; queryInput.value = ''; statsActive.value = 'all'; loadList() }
 function beginCreate() { editorInitialContent.value = ''; editorInitialTitle.value = ''; editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorSourceType.value = 'manual'; editorError.value = ''; editorOpen.value = true }
 function publishFromList(item: KnowledgeListItem) { openDetail(item.id) }
 function triggerImport() { importInput.value?.click() }
@@ -336,7 +336,7 @@ function onBatch(ids: string[], action: 'move' | 'archive' | 'publish' | 'delete
 async function submitBatchPublish() {
   if (!publishDialog.value || !publishSpaceId.value) return
   working.value = true
-  try { await api.batchPublishLibraryKnowledge(publishDialog.value.ids, publishSpaceId.value, publishVerification.value); publishDialog.value = null; notify('候选经验已发布'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '发布失败') } finally { working.value = false }
+  try { await api.batchPublishLibraryKnowledge(publishDialog.value.ids, publishSpaceId.value, publishVerification.value); publishDialog.value = null; notify('候选经验已发布'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '发布失败'), 'error') } finally { working.value = false }
 }
 async function openDetail(id: string, syncUrl = true) {
   detailOpen.value = true; detail.value = null; detailError.value = ''; relatedTasks.value = []; usages.value = []; usagesLoading.value = true
@@ -352,7 +352,7 @@ async function helpful() { if (!detail.value) return; try { const result = await
 async function loadRelatedTasks() { if (!detail.value || relatedLoading.value) return; relatedLoading.value = true; try { relatedTasks.value = await api.libraryRelatedTasks(detail.value.id) } catch (error) { detailError.value = message(error, '关联任务加载失败') } finally { relatedLoading.value = false } }
 async function publish(payload: Record<string, unknown>) { if (!detail.value) return; await reviewAction(async () => api.publishLibraryKnowledge(detail.value!.id, payload), '候选经验已发布，数字员工现可立即检索') }
 async function reject(reason: string) { if (!detail.value) return; await reviewAction(async () => api.rejectLibraryKnowledge(detail.value!.id, reason), '候选经验已驳回') }
-async function supplement(reason: string) { if (!detail.value) return; await reviewAction(async () => api.supplementLibraryKnowledge(detail.value!.id, reason), '补充要求已记录') }
+async function supplement(reason: string) { if (!detail.value) return; await reviewAction(async () => api.supplementLibraryKnowledge(detail.value!.id, reason), '已记录退回补充要求') }
 async function reviewAction(action: () => Promise<KnowledgeDetail>, success: string) { detailWorking.value = true; detailError.value = ''; try { detail.value = await action(); notify(success); await Promise.all([refreshOverview(), loadList()]) } catch (error) { detailError.value = message(error, '审核操作失败') } finally { detailWorking.value = false } }
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }
 const sourceLabel = (value: string) => ({ task: '任务沉淀', manual: '人工创建', import: '文档导入', system: '系统同步' }[value] ?? value)
