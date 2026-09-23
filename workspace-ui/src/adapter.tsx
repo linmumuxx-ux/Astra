@@ -23,6 +23,9 @@ async function boot() {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
   const binding = await response.json()
   if (!response.ok) throw new Error(binding.detail)
+  if (binding.runtime.opencode_version !== __OPENCODE_WORKSPACE_VERSION__) {
+    throw new Error(`Workspace UI ${__OPENCODE_WORKSPACE_VERSION__} 与 OpenCode ${binding.runtime.opencode_version} 不匹配`)
+  }
   const sessionID = selected || binding.runtime.session_id
   if (!sessionID) throw new Error('任务尚未绑定 OpenCode Session')
   if (!binding.sessions.some((session: { id: string }) => session.id === sessionID)) throw new Error('Session 不属于此任务')
