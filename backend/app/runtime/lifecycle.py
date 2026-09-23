@@ -500,6 +500,11 @@ class RuntimeService:
             async with connect(environment, start=True) as client:
                 runtime_token = generate_runtime_context()
                 settings = get_settings()
+                health = await client.health()
+                server_version = str(
+                    health.get("version") or settings.opencode_workspace_ui_default_version
+                ).strip().removeprefix("v")
+                new_snapshot["opencode_version"] = server_version
                 effective_model = environment.model_name or settings.opencode_model
                 created = await client.create_session(
                     Path(new_workspace),
