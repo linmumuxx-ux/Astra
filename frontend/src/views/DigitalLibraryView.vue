@@ -1,24 +1,30 @@
 <template>
   <div class="page digital-library-page" data-testid="digital-library-page">
     <section class="library-intro">
-      <div><h2>数字图书馆</h2><p>知识空间 · 多级目录 · 候选经验审核与引用追踪。</p></div>
+      <div>
+        <h2>数字图书馆</h2>
+        <p>管理团队知识、经验与项目资料。</p>
+      </div>
       <div class="library-head-actions">
-        <label class="library-search"><Search :size="17" /><input v-model="queryInput" placeholder="搜索标题、正文、标签、来源任务或关键词" aria-label="知识库搜索" /><button v-if="queryInput" type="button" aria-label="清空搜索" @click="queryInput = ''"><X :size="14" /></button></label>
-        <button v-if="permissions?.can_manage" type="button" class="button" @click="triggerImport"><Upload :size="15" />导入</button>
+        <button v-if="permissions?.can_manage" type="button" class="button" @click="triggerImport"><Upload :size="15" />导入知识</button>
         <button v-if="permissions?.can_manage" type="button" class="button button--primary" @click="beginCreate"><Plus :size="15" />新建知识</button>
         <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
       </div>
     </section>
 
-    <section class="knowledge-service" aria-label="知识服务状态">
-      <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
-      <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
-      <span>待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
-      <button v-if="permissions?.can_manage" type="button" class="button" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
-      <small role="status">{{ serviceError || serviceStatus?.message }}</small>
+    <section class="library-status-row">
+      <div class="knowledge-service" :data-state="serviceError || serviceStatus?.healthy === false ? 'error' : 'ok'" aria-label="知识服务状态">
+        <span class="service-dot" />
+        <strong>知识服务{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
+        <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
+        <span v-if="(serviceStatus?.pending_count ?? 0) || (serviceStatus?.failed_count ?? 0)">待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
+        <button v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" type="button" class="text-action" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
+        <small v-if="serviceError" role="status">{{ serviceError }}</small>
+      </div>
+      <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
+        待审核经验 <strong>{{ stats?.candidate_experiences ?? 0 }}</strong><ChevronRight :size="14" />
+      </button>
     </section>
-
-    <LibraryStats :stats="stats" :active="statsActive" :can-review="Boolean(permissions?.can_review)" @select="applyStat" />
 
     <div v-if="pageError" class="library-error"><TriangleAlert :size="16" />{{ pageError }}<button type="button" @click="loadAll">重试</button></div>
 
@@ -41,7 +47,11 @@
         :can-manage="Boolean(permissions?.can_manage)"
         :can-review="Boolean(permissions?.can_review)"
         :space-name="selectedSpace?.name ?? null"
+        :space-path="selectedPath"
+        :keyword="queryInput"
         :filter-label="activeFilterLabel"
+        @search="queryInput = $event"
+        @create="beginCreate"
         @open="openDetail"
         @move="openMoveDialog"
         @publish="publishFromList"
@@ -59,26 +69,17 @@
     <KnowledgeEditorDialog :open="editorOpen" :directories="directoryOptions" :saving="editorSaving" :error="editorError" :initial-content="editorInitialContent" :initial-title="editorInitialTitle" :initial-space-id="editorInitialSpaceId" @close="editorOpen = false" @save="saveKnowledge" />
     <KnowledgeDetailDialog :open="detailOpen" :detail="detail" :directories="directoryOptions" :can-review="Boolean(permissions?.can_review)" :working="detailWorking" :error="detailError" :related-tasks="relatedTasks" :related-loading="relatedLoading" :usages="usages" :usages-loading="usagesLoading" @close="closeDetail" @favorite="favorite" @helpful="helpful" @related="loadRelatedTasks" @publish="publish" @reject="reject" @supplement="supplement" />
 
-    <AstraDialog
-      v-if="moveDialog"
-      :open="true"
-      title="移动到目录"
-      :subtitle="`为 ${moveDialog.ids.length} 条知识选择目标目录。`"
-      :dismissible="false"
+    <DirectoryPickerDialog
+      :open="Boolean(moveDialog)"
+      title="移动知识"
+      :subtitle="moveDialog ? `为 ${moveDialog.ids.length} 条知识选择目标目录。` : ''"
+      :spaces="spaces"
+      :selected-id="moveSpaceId"
+      confirm-label="移动"
       :busy="moving"
-      testid="knowledge-move-dialog"
-      card-class="move-knowledge-card"
-      width="min(460px,100%)"
       @close="moveDialog = null"
-    >
-      <form id="knowledge-move-form" @submit.prevent="submitMove">
-        <label>目标目录<select v-model="moveSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-      </form>
-      <template #footer>
-        <button type="button" class="button" :disabled="moving" @click="moveDialog = null">取消</button>
-        <button type="submit" form="knowledge-move-form" class="button button--primary" :disabled="!moveSpaceId || moving"><LoaderCircle v-if="moving" :size="14" class="spin" />移动</button>
-      </template>
-    </AstraDialog>
+      @confirm="submitMove"
+    />
 
     <AstraDialog
       v-if="publishDialog"
@@ -105,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { LoaderCircle, Plus, Search, TriangleAlert, Upload, X } from 'lucide-vue-next'
+import { ChevronRight, LoaderCircle, Plus, TriangleAlert, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -113,12 +114,12 @@ import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace,
 import AstraDialog from '@/components/astra/AstraDialog.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
+import DirectoryPickerDialog from '@/views/library/DirectoryPickerDialog.vue'
 import KnowledgeDetailDialog from '@/views/library/KnowledgeDetailDialog.vue'
 import KnowledgeEditorDialog from '@/views/library/KnowledgeEditorDialog.vue'
 import KnowledgeList from '@/views/library/KnowledgeList.vue'
 import KnowledgeSpacePanel from '@/views/library/KnowledgeSpacePanel.vue'
 import KnowledgeUsageSummary from '@/views/library/KnowledgeUsageSummary.vue'
-import LibraryStats from '@/views/library/LibraryStats.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -185,6 +186,10 @@ const working = ref(false)
 let searchTimer = 0
 
 const selectedSpace = computed(() => spaces.value.find((space) => space.id === filters.spaceId) ?? findNode(spaces.value, filters.spaceId) ?? null)
+const selectedPath = computed(() => {
+  if (!filters.spaceId) return '全部知识'
+  return findPath(spaces.value, filters.spaceId)?.join(' / ') ?? selectedSpace.value?.name ?? '全部知识'
+})
 const directoryOptions = computed(() => {
   const result: Array<{ id: string; name: string; level: number }> = []
   const walk = (nodes: KnowledgeSpace[], level: number) => {
@@ -272,21 +277,47 @@ async function saveKnowledge(payload: Record<string, unknown>) {
     await openDetail(created.id)
   } catch (error) { editorError.value = message(error, '知识保存失败') } finally { editorSaving.value = false }
 }
-async function createSpace(name: string, parentId: string | null) { try { await api.createLibrarySpace({ name, parent_id: parentId }); notify(parentId ? '子目录已创建' : '知识空间已创建'); await refreshOverview() } catch (error) { pageError.value = message(error, '创建失败') } }
-async function renameSpace(space: KnowledgeSpace, name: string) { try { await api.updateLibrarySpace(space.id, { name }); notify('已重命名'); await refreshOverview() } catch (error) { pageError.value = message(error, '重命名失败') } }
+async function createSpace(name: string, parentId: string | null) {
+  try {
+    const created = await api.createLibrarySpace({ name, parent_id: parentId })
+    filters.spaceId = created.id
+    filters.page = 1
+    notify(parentId ? `已创建子目录「${created.name}」` : `已创建知识空间「${created.name}」`)
+    await Promise.all([refreshOverview(), loadList()])
+  } catch (error) { notify(message(error, '创建失败'), 'error') }
+}
+async function renameSpace(space: KnowledgeSpace, name: string) {
+  try {
+    await api.updateLibrarySpace(space.id, { name })
+    notify(`已重命名为「${name}」`)
+    await refreshOverview()
+  } catch (error) { notify(message(error, '重命名失败'), 'error') }
+}
 async function deleteSpace(space: KnowledgeSpace) {
   const confirmed = await confirmDialog({ title: '删除目录', message: `确认删除「${space.name}」？仅空目录可以删除，其下内容不会被级联删除。`, confirmLabel: '删除目录', danger: true })
   if (!confirmed) return
   try { await api.deleteLibrarySpace(space.id); if (filters.spaceId === space.id) filters.spaceId = null; notify('目录已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '删除失败'), 'error') }
 }
-async function moveSpace(space: KnowledgeSpace, targetParentId: string) { try { await api.moveLibrarySpace(space.id, targetParentId); notify('目录已移动'); await refreshOverview() } catch (error) { pageError.value = message(error, '移动失败') } }
-function openMoveDialog(item: KnowledgeListItem) { moveSpaceId.value = item.space_id ?? ''; moveDialog.value = { ids: [item.id] } }
-async function submitMove() {
-  if (!moveDialog.value || !moveSpaceId.value) return
-  moving.value = true
-  try { await api.batchMoveLibraryKnowledge(moveDialog.value.ids, moveSpaceId.value); moveDialog.value = null; notify('知识已移动'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '移动失败') } finally { moving.value = false }
+async function moveSpace(space: KnowledgeSpace, targetParentId: string) {
+  try {
+    await api.moveLibrarySpace(space.id, targetParentId)
+    notify(`已移动「${space.name}」`)
+    await refreshOverview()
+  } catch (error) { notify(message(error, '移动失败'), 'error') }
 }
-async function archiveFromList(item: KnowledgeListItem) { try { await api.archiveLibraryKnowledge(item.id); notify('已归档'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { pageError.value = message(error, '归档失败') } }
+function openMoveDialog(item: KnowledgeListItem) { moveSpaceId.value = item.space_id ?? ''; moveDialog.value = { ids: [item.id] } }
+async function submitMove(targetSpaceId: string) {
+  if (!moveDialog.value || !targetSpaceId) return
+  moving.value = true
+  moveSpaceId.value = targetSpaceId
+  try {
+    await api.batchMoveLibraryKnowledge(moveDialog.value.ids, targetSpaceId)
+    moveDialog.value = null
+    notify('知识已移动')
+    await Promise.all([refreshOverview(), loadList()])
+  } catch (error) { notify(message(error, '移动失败'), 'error') } finally { moving.value = false }
+}
+async function archiveFromList(item: KnowledgeListItem) { try { await api.archiveLibraryKnowledge(item.id); notify('已归档'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '归档失败'), 'error') } }
 async function deleteFromList(item: KnowledgeListItem) {
   const confirmed = await confirmDialog({ title: '删除知识', message: `确认删除「${item.title}」？删除后无法恢复。`, confirmLabel: '删除知识', danger: true })
   if (!confirmed) return
@@ -331,6 +362,15 @@ function findNode(nodes: KnowledgeSpace[], id: string | null): KnowledgeSpace | 
   for (const node of nodes) { if (node.id === id) return node; const found = findNode(node.children ?? [], id); if (found) return found }
   return null
 }
+function findPath(nodes: KnowledgeSpace[], id: string, parents: string[] = []): string[] | null {
+  for (const node of nodes) {
+    const path = [...parents, node.name]
+    if (node.id === id) return path
+    const found = findPath(node.children ?? [], id, path)
+    if (found) return found
+  }
+  return null
+}
 function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
   return nodes.map((node) => {
     const children = normalizeSpaces(Array.isArray(node.children) ? node.children : [])
@@ -344,8 +384,7 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
-.knowledge-service{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;padding:12px 16px;border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-card,#fff);font-size:var(--astra-font-body);color:var(--astra-text-secondary)}.knowledge-service strong{color:var(--astra-text-primary)}.knowledge-service small{flex-basis:100%;color:var(--astra-text-muted)}
-
-.digital-library-page{position:relative}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:17px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary);}.library-intro p{margin-top:5px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.library-search{display:flex;align-items:center;gap:8px;width:min(440px,38vw);height:42px;padding:0 10px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(35,76,59,.04)}.library-search input{min-width:0;flex:1;color:var(--astra-text-primary);border:0;outline:0;background:transparent}.library-search>button{display:grid;place-items:center;padding:0;color:var(--astra-text-muted);border:0;background:transparent;cursor:pointer}.hidden-input{display:none}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}.library-error{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
-@media(max-width:1100px){.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-search{width:auto;min-width:280px;flex:1}}@media(max-width:780px){.library-workspace{grid-template-columns:1fr}.library-head-actions .button{flex:1}.library-search{flex-basis:100%}}
+.digital-library-page{position:relative;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow:hidden}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:0;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+@media(max-width:1100px){.digital-library-page{height:auto;min-height:0;overflow:visible}.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-workspace{grid-template-columns:270px minmax(0,1fr);min-height:620px}.library-status-row{align-items:flex-start;flex-direction:column}}
+@media(max-width:780px){.library-workspace{grid-template-columns:1fr;overflow:visible}.library-head-actions .button{flex:1}.knowledge-service{flex-wrap:wrap}}
 </style>
