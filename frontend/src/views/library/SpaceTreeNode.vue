@@ -64,9 +64,9 @@
         @rename="emit('rename', $event)"
         @move="emit('move', $event)"
         @delete="emit('delete', $event)"
-        @commit-create="emit('commit-create', $event[0], $event[1])"
+        @commit-create="forwardCreate"
         @cancel-create="emit('cancel-create')"
-        @commit-rename="emit('commit-rename', $event[0], $event[1])"
+        @commit-rename="forwardRename"
         @cancel-rename="emit('cancel-rename')"
       />
 
@@ -149,6 +149,8 @@ watch(editing, async (active) => {
   renameInput.value?.select()
 })
 
+function forwardCreate(name: string, parentId: string) { emit('commit-create', name, parentId) }
+function forwardRename(space: KnowledgeSpace, name: string) { emit('commit-rename', space, name) }
 function pick(action: 'create' | 'rename' | 'move' | 'delete') {
   emit('menu', props.node.id)
   if (action === 'create') emit('create', props.node.id)
