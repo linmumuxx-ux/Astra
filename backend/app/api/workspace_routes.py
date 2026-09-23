@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.api.routes import require_task
+from app.config.settings import get_settings
 from app.database import get_session
 from app.domain import ExecutionMode
 from app.executors.errors import OpenCodeSessionNotFound
@@ -74,6 +75,15 @@ SESSION_WRITE = re.compile(
     r"^/session/([^/]+)/(prompt_async|message|abort|revert|unrevert|summarize|command)$"
 )
 REPLY = re.compile(r"^/(question|permission)/([^/]+)/(reply|reject)$")
+OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+
+
+def workspace_ui_for(snapshot: dict | None) -> tuple[str, str]:
+    raw = (snapshot or {}).get("opencode_version") or get_settings().opencode_workspace_ui_default_version
+    version = str(raw).strip().removeprefix("v")
+    if not OPENCODE_VERSION.fullmatch(version):
+        raise HTTPException(409, f"无法识别 OpenCode 版本：{raw}")
+    return version, f"/opencode-workspace/{version}/index.html"
 
 
 def error_response(exc):
@@ -147,6 +157,24 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
     selected = next((item for item in bindings if item.id == (session_id or task.current_session_id)), None)
     if session_id and not selected:
         raise HTTPException(404, "Session 不属于此任务")
+
+    selected_snapshot = selected.environment if selected else task.execution_environment_snapshot
+    selected_version, selected_ui = workspace_ui_for(selected_snapshot)
+
+    def session_item(item: RuntimeSession):
+        version, workspace_ui = workspace_ui_for(item.environment)
+        return {
+            "id": item.id,
+            "workspace": item.workspace,
+            "created_at": item.created_at,
+            "status": item.status,
+            "superseded_by": item.superseded_by,
+            "finished_at": item.finished_at,
+            "current": item.id == task.current_session_id,
+            "opencode_version": version,
+            "workspace_ui": workspace_ui,
+        }
+
     return {
         "task_id": task.id,
         "task_status": task.status,
@@ -156,19 +184,10 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
             "workspace": selected.workspace if selected else task.workspace,
             "connection": task.runtime_connection,
             "error": task.runtime_error,
+            "opencode_version": selected_version,
+            "workspace_ui": selected_ui,
         },
-        "sessions": [
-            {
-                "id": item.id,
-                "workspace": item.workspace,
-                "created_at": item.created_at,
-                "status": item.status,
-                "superseded_by": item.superseded_by,
-                "finished_at": item.finished_at,
-                "current": item.id == task.current_session_id,
-            }
-            for item in bindings
-        ],
+        "sessions": [session_item(item) for item in bindings],
     }
 
 
