@@ -1,4 +1,5 @@
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -74,6 +75,10 @@ class Settings(BaseSettings):
     # disable it explicitly; never encode "off" as a magic minimum such as 0.0.0.
     opencode_server_version_check_enabled: bool = True
     opencode_server_min_version: str = "1.18.25"
+    # Embedded Workspace UI builds are stored by the exact OpenCode version.
+    # This default is only for historical RuntimeSessions created before Astra
+    # persisted the server version in the environment snapshot.
+    opencode_workspace_ui_default_version: str = "1.2.27"
     opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
     # A turn with no assistant reply is only a failure after this window; a
     # freshly submitted prompt must never be classified as failed.
@@ -166,6 +171,14 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {"opencode_server", "opencode_cli_fallback"}:
             raise ValueError("ASTRA_EXECUTOR_TYPE 只支持 opencode_server 或 opencode_cli_fallback")
+        return normalized
+
+    @field_validator("opencode_workspace_ui_default_version")
+    @classmethod
+    def validate_opencode_workspace_ui_default_version(cls, value: str) -> str:
+        normalized = value.strip().removeprefix("v")
+        if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", normalized):
+            raise ValueError("ASTRA_OPENCODE_WORKSPACE_UI_DEFAULT_VERSION 必须是完整版本号")
         return normalized
 
     @field_validator("opencode_server_min_version")
