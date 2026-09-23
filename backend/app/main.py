@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.gateway_routes import gateway_error_handler
+from app.api.gateway_routes import router as gateway_router
 from app.api.library_routes import library_error_handler
 from app.api.library_routes import router as library_router
 from app.api.routes import router
@@ -13,6 +15,8 @@ from app.assistant.orchestrator import AssistantOrchestrator, get_orchestrator, 
 from app.bootstrap import bootstrap_categories, bootstrap_employees, bootstrap_knowledge_spaces
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
+from app.gateway.security import CredentialError
+from app.gateway.service import GatewayError
 from app.library_service import LibraryError
 from app.runtime.recovery import supervise_sessions
 from app.seed import seed_demo_data
@@ -73,4 +77,7 @@ app.include_router(router)
 app.include_router(workspace_router)
 app.include_router(library_router)
 app.include_router(assistant_router)
+app.include_router(gateway_router)
 app.add_exception_handler(LibraryError, library_error_handler)
+app.add_exception_handler(GatewayError, gateway_error_handler)
+app.add_exception_handler(CredentialError, gateway_error_handler)

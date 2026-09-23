@@ -27,6 +27,10 @@ BACKEND_HOST = os.getenv("ASTRA_SERVICE_BACKEND_HOST", "0.0.0.0")
 BACKEND_PORT = int(os.getenv("ASTRA_SERVICE_BACKEND_PORT", "8100"))
 FRONTEND_HOST = os.getenv("ASTRA_SERVICE_FRONTEND_HOST", "0.0.0.0")
 FRONTEND_PORT = int(os.getenv("ASTRA_SERVICE_FRONTEND_PORT", "5173"))
+# API 中转数据面是独立 ASGI 进程（app.gateway.server:app）。默认只监听 loopback，
+# 由同机 nginx 反代 /v1；模型长连接绝不进入主 Backend。
+GATEWAY_HOST = os.getenv("ASTRA_SERVICE_GATEWAY_HOST", "127.0.0.1")
+GATEWAY_PORT = int(os.getenv("ASTRA_SERVICE_GATEWAY_PORT", "8110"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -207,6 +211,28 @@ def validate_start(mode: str, settings: Any) -> None:
             raise RuntimeError("production mode requires MySQL")
         if settings.executor_type != "opencode_server":
             raise RuntimeError("production mode requires ASTRA_EXECUTOR_TYPE=opencode_server")
+        validate_gateway_production(settings)
+
+
+def validate_gateway_production(settings: Any) -> None:
+    """正式模式启用 API 中转时，强制校验数据面依赖，不靠回退掩盖缺失配置。"""
+
+    if not settings.gateway_enabled:
+        return
+    if not settings.gateway_master_key:
+        raise RuntimeError(
+            "production mode requires ASTRA_GATEWAY_MASTER_KEY when API gateway is enabled"
+        )
+    if not settings.gateway_control_credentials.strip():
+        raise RuntimeError(
+            "production mode requires ASTRA_GATEWAY_CONTROL_CREDENTIALS "
+            "when API gateway is enabled"
+        )
+    if not (settings.redis_url or "").strip():
+        raise RuntimeError(
+            "API gateway requires a configured Redis (ASTRA_REDIS_URL); "
+            "in-process counters are not a fallback"
+        )
 
 
 def prepare(mode: str, settings: Any, npm: str, local_command: Any) -> None:
@@ -330,6 +356,24 @@ def backend_command(mode: str) -> list[str]:
     return command
 
 
+def gateway_command(mode: str) -> list[str]:
+    """独立 Gateway 数据面进程：只承载 /v1 转发，与任务 Runtime 隔离。"""
+
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.gateway.server:app",
+        "--host",
+        GATEWAY_HOST,
+        "--port",
+        str(GATEWAY_PORT),
+    ]
+    if mode == "dev" and os.name != "nt":
+        command.append("--reload")
+    return command
+
+
 def frontend_command(mode: str, npm: str, local_command: Any) -> list[str]:
     script = "dev" if mode == "dev" else "preview"
     return local_command(
@@ -338,13 +382,18 @@ def frontend_command(mode: str, npm: str, local_command: Any) -> list[str]:
     )
 
 
-def start_core(
+def core_services(
     mode: str,
     settings: Any,
     npm: str,
     local_command: Any,
-    processes: dict[str, dict[str, Any]],
-) -> None:
+) -> list[tuple[str, list[str], Path, dict[str, str] | None]]:
+    """核心受管服务清单：Backend、Celery、可选 MCP/Gateway、Frontend。
+
+    只组装命令，不做启动与就绪等待，便于脚本级校验。Gateway 仅在
+    ``ASTRA_GATEWAY_ENABLED=true`` 时作为独立进程加入；长连接不进入 Backend。
+    """
+
     schedule = settings.resolved_runtime_dir / "celerybeat-schedule"
     services: list[tuple[str, list[str], Path, dict[str, str] | None]] = [
         ("backend", backend_command(mode), BACKEND, None),
@@ -382,11 +431,27 @@ def start_core(
     if settings.mcp_transport == "streamable-http":
         services.append(("library-mcp", [sys.executable, "-m", "app.mcp_server"], BACKEND, None))
 
+    # 只加载最近已发布配置，启动时不发布草稿。
+    if settings.gateway_enabled:
+        services.append(("gateway", gateway_command(mode), BACKEND, None))
+
     frontend_env = os.environ.copy()
     frontend_env["VITE_PROXY_TARGET"] = f"http://127.0.0.1:{BACKEND_PORT}"
+    frontend_env["VITE_GATEWAY_PROXY_TARGET"] = f"http://127.0.0.1:{GATEWAY_PORT}"
     services.append(
         ("frontend", frontend_command(mode, npm, local_command), FRONTEND, frontend_env)
     )
+    return services
+
+
+def start_core(
+    mode: str,
+    settings: Any,
+    npm: str,
+    local_command: Any,
+    processes: dict[str, dict[str, Any]],
+) -> None:
+    services = core_services(mode, settings, npm, local_command)
 
     for name, command, cwd, env in services:
         print(f"[START] {name}")
@@ -396,6 +461,8 @@ def start_core(
     wait_http("backend", f"http://127.0.0.1:{BACKEND_PORT}/api/health")
     wait_worker("runtime-control", processes["runtime-control"])
     wait_worker("runtime-agent", processes["runtime-agent"])
+    if "gateway" in processes:
+        wait_http("gateway", f"http://127.0.0.1:{GATEWAY_PORT}/healthz")
     wait_http("frontend", f"http://127.0.0.1:{FRONTEND_PORT}")
 
 
@@ -472,6 +539,8 @@ def start(
     print(f"Console : http://localhost:{FRONTEND_PORT}")
     print(f"API     : http://localhost:{BACKEND_PORT}/api/health")
     print(f"Docs    : http://localhost:{BACKEND_PORT}/docs")
+    if settings.gateway_enabled:
+        print(f"Gateway : http://localhost:{GATEWAY_PORT}/v1/models")
     print(f"Logs    : {settings.resolved_log_dir}")
     print("=" * 64)
     return status(settings)

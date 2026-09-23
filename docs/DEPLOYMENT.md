@@ -28,17 +28,20 @@ Astra 使用主机原生进程部署，不维护 Docker Compose、bat/sh 启停�
 - Agent Worker
 - 员工 OpenCode Server
 - 平台助手 OpenCode Server
+- API Gateway 数据面（`app.gateway.server:app`，独立进程）
 - 数字图书馆 MCP（`streamable-http` 时）
 
 基础设施：
 
-- MySQL：业务数据、Task、RuntimeSession、TaskSummary、配置和审计数据
-- Redis：Celery Broker / Result Backend
+- MySQL：业务数据、Task、RuntimeSession、TaskSummary、配置和审计数据；API 中转的节点、Pool、路由、Key、调用日志与配置版本
+- Redis：Celery Broker / Result Backend，以及 API Gateway 的已发布配置快照、跨实例并发租约、周期 Token、熔断与实例心跳
 - 员工 Workspace：员工长期工程目录
 - `ASTRA_LOG_DIR`：服务日志
 - `ASTRA_RUNTIME_DIR`：服务 PID、Beat schedule 等运行状态
 
 Control Worker、Agent Worker 和 Beat 必须独立运行，不能合并为单个 `solo` Worker。
+
+API Gateway 必须作为独立进程运行，模型长连接不得放入主 Backend。Gateway 只在启动时加载最近已发布配置，**不会自动发布草稿**；发布必须由具备 `publish` 角色的管理员显式触发。
 
 ## 3. 首次安装
 
@@ -107,6 +110,19 @@ ASTRA_OPENCODE_MODEL=
 ASTRA_ASSISTANT_ENABLED=true
 ASTRA_ASSISTANT_OPENCODE_HOSTNAME=127.0.0.1
 ASTRA_ASSISTANT_OPENCODE_PORT=4097
+
+# API 中转：控制面在主 Backend，数据面是独立 astra-gateway 进程。
+ASTRA_GATEWAY_ENABLED=true
+# Fernet 主密钥，用于加密节点下游凭据；生成：
+# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+ASTRA_GATEWAY_MASTER_KEY=replace-with-a-fernet-key
+# 管理凭据：JSON 数组（按角色最小授权）或单个 token（授予全部角色）
+ASTRA_GATEWAY_CONTROL_CREDENTIALS=[{"name":"admin","token":"replace-with-a-strong-random-token","roles":["system"]}]
+# 数据面从 DB 追平已吊销 Key 阻断列表的周期（秒），Redis 清空/重启后据此重建。
+# ASTRA_GATEWAY_REVOCATION_SYNC_INTERVAL=60
+# 数据面监听（nginx 反代 /v1 到该端口）
+ASTRA_SERVICE_GATEWAY_HOST=127.0.0.1
+ASTRA_SERVICE_GATEWAY_PORT=8110
 ```
 
 机器相关路径和秘密配置只放 `.env`，不要散落修改源码，也不要提交真实密码、令牌或 SSH 密码。
@@ -116,6 +132,7 @@ ASTRA_ASSISTANT_OPENCODE_PORT=4097
 - MySQL
 - `ASTRA_SEED_DEMO=false`
 - `ASTRA_EXECUTOR_TYPE=opencode_server`
+- 启用 API 中转时：`ASTRA_GATEWAY_MASTER_KEY`、`ASTRA_GATEWAY_CONTROL_CREDENTIALS` 与可用 Redis；Gateway 依赖 MySQL schema 已迁移到最新（由 Backend 的 migration 保证）
 
 ## 5. 数据库准备
 
@@ -177,7 +194,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 
 自检包含：
 
-- Python 和必要依赖
+- Python 和必要依赖（含 API Gateway 使用的 `httpx`）
 - MySQL / SQLite 配置
 - Alembic 状态
 - Redis
@@ -198,7 +215,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 
 - Linux/Mac Backend 使用 Uvicorn reload；Windows 不启用 reload，代码变更后执行 `dev restart`，避免 reloader 子进程影响 asyncio subprocess
 - Frontend 使用 Vite Dev Server
-- Runtime、OpenCode、Assistant、MCP 与正式环境共用同一套启动逻辑
+- Runtime、OpenCode、Assistant、MCP、API Gateway 与正式环境共用同一套启动逻辑
+- 开发环境同样以独立进程启动 API Gateway（默认 `127.0.0.1:8110`），Vite 将 `/v1` 反代到该进程
 
 管理：
 
@@ -229,8 +247,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\check-windows.ps1
 9. 启动 Control Worker
 10. 启动 Agent Worker
 11. 按配置启动 Library MCP
-12. 启动 Frontend
-13. 等待 Backend、Worker 和 Frontend 就绪
+12. 按配置启动 API Gateway（独立进程，不发布草稿）
+13. 启动 Frontend
+14. 等待 Backend、Worker、Gateway 和 Frontend 就绪
 
 管理：
 
@@ -257,6 +276,7 @@ ASTRA_LOG_DIR/
 ├── opencode-server.log
 ├── assistant-opencode.log
 ├── library-mcp.log
+├── gateway.log
 └── frontend.log
 ```
 
@@ -268,9 +288,10 @@ ASTRA_LOG_DIR/
 - Backend：`http://localhost:8100/api/health`
 - API 文档：`http://localhost:8100/docs`
 - 平台助手：`http://localhost:8100/api/assistant/health`
+- API Gateway 数据面：`http://127.0.0.1:8110`（`/healthz`、`/v1/models`、`/v1/chat/completions`）
 - Library MCP：`http://127.0.0.1:8201/mcp`
 
-OpenCode Server 默认只监听 loopback。
+OpenCode Server 默认只监听 loopback。API Gateway 默认也只监听 loopback，由同机 nginx 反代 `/v1`；如需独立部署 Gateway，请自行限制访问来源并保持 Redis、MySQL 可达。
 
 ## 10. Linux 远程数字员工
 
@@ -306,6 +327,58 @@ ASTRA_MCP_TRANSPORT=stdio
 ```
 
 此时不启动独立 MCP 服务。
+
+## 11.1 API 中转（astra-gateway）
+
+API 中转分为两部分：
+
+- 控制面：现有 Backend 的 `/api/gateway` 路由，负责节点、Pool、路由、Gateway Key、探测、草稿/发布/回滚、审计与统计。
+- 数据面：独立进程 `app.gateway.server:app`，只提供 OpenAI 兼容的 `/v1/models` 与 `/v1/chat/completions`。**模型长连接不进入主 Backend**。
+
+`ASTRA_GATEWAY_ENABLED=true` 时，`astra_service.py` 在 dev/pro 都会以独立进程启动数据面，可用同一套命令管理：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro status   # gateway 与 backend 等一并显示
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro restart
+.\.venv\Scripts\python.exe .\scripts\astra_service.py pro stop
+```
+
+systemd 部署使用 `deploy/systemd/astra-gateway.service`；数据面默认监听 `127.0.0.1:8110`，由 nginx 将 `/v1` 反代到该端口。`deploy/nginx-astra.conf` 已关闭缓冲与请求缓冲以保证 SSE 流式转发。
+
+运维要点：
+
+- 数据面健康检查：`GET http://127.0.0.1:8110/healthz`，状态文件与其它服务同在 `ASTRA_RUNTIME_DIR/astra-service.json`。
+- 实例心跳、配置版本、连接数、请求/错误计数与 CPU/内存由管理台「API 中转」总览展示；心跳过期只标记实例不可用，不据此推断节点健康。
+- Redis 是数据面并发、额度、熔断、心跳与配置通知的唯一事实来源。Redis 不可用时新请求返回结构化 503，不会退化为进程内计数。
+- Key 吊销立即生效，无需重新发布：控制面先把摘要写入 Redis 共享阻断集合再提交 DB 吊销（Redis 失败返回结构化 503），数据面在读取请求体与调度前原子查询该集合；集合只增不减，回滚旧版本也不会复活。就绪状态是同一集合内的哨兵成员（`__ready__`），不是独立键：Redis 淘汰整个集合键时哨兵与摘要一起消失，不会留下假就绪而放行旧 Key。Redis 清空/重启或集合键被淘汰后由数据面启动与后台周期从 DB 追平（`ASTRA_GATEWAY_REVOCATION_SYNC_INTERVAL`，默认 60 秒），追平前新请求 fail closed，已有长流不断开。
+- 启动只加载最近已发布版本，**不自动发布草稿**。修改配置后必须在「API 中转 → 配置」显式发布；发布失败不影响当前版本。
+- 节点在发布并完成一次健康/模型探测前处于 `UNKNOWN`，不会被调度。
+- 正式模式启用网关时会强制校验主密钥、管理凭据与 Redis；`ASTRA_GATEWAY_MASTER_KEY` 与 `ASTRA_GATEWAY_CONTROL_CREDENTIALS` 只从受保护环境提供，节点下游凭据以主密钥加密入库。
+
+下游接入（以 OpenCode 自定义 OpenAI 兼容 provider 为例）：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "astra-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Astra Gateway",
+      "options": {
+        "baseURL": "https://astra.example.internal/v1",
+        "apiKey": "{env:ASTRA_GATEWAY_CLIENT_KEY}"
+      },
+      "models": {
+        "gpt-4o": { "name": "gpt-4o" }
+      }
+    }
+  }
+}
+```
+
+- `baseURL`：Gateway 对外地址加 `/v1`（经 nginx；直连开发环境为 `http://127.0.0.1:8110/v1`）。
+- `apiKey`：控制面创建的 Gateway Key，前缀 `agw_`，**仅在创建时返回一次**；不要写入仓库，使用环境变量或秘密系统注入。
+- `models` 的键必须与控制面里已发布的路由模型名一致；调用标识为 `astra-gateway/<路由模型名>`，例如 `astra-gateway/gpt-4o`。
 
 ## 12. 质量验证
 
@@ -382,12 +455,23 @@ CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 - 4096 / 4097 端口占用
 - Workspace 权限
 
+### API Gateway 启动失败或请求 503
+
+检查：
+
+- `ASTRA_GATEWAY_ENABLED` 与 `gateway.log`
+- 8110 端口占用（nginx 反代目标须一致）
+- Redis 可达；数据面在 Redis 不可用时返回结构化 503，不退回进程内计数
+- MySQL schema 是否已迁移到最新
+- 是否已在「API 中转 → 配置」发布至少一个含可用节点与路由的版本
+
 ### 正式模式拒绝启动
 
 正式模式主动拒绝：
 
 - SQLite
 - 非 `opencode_server` Runtime
+- 启用 API 中转时缺少 `ASTRA_GATEWAY_MASTER_KEY`、`ASTRA_GATEWAY_CONTROL_CREDENTIALS` 或 Redis
 - preflight 失败
 - 数据库迁移失败
 - 前端构建失败

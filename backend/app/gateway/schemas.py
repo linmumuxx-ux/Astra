@@ -1,0 +1,367 @@
+"""API 中转控制面请求 / 响应模型。响应只包含脱敏字段。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.gateway.models import AUTH_BEARER, CONFIG_DISABLED, SCHEDULING_DRAINING
+
+
+class PoolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = ""
+    weight: int = Field(default=1, ge=0)
+    enabled: bool = True
+    sort_order: int = 0
+
+
+class PoolPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = None
+    weight: int | None = Field(default=None, ge=0)
+    enabled: bool | None = None
+    sort_order: int | None = None
+
+
+class PoolRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    description: str
+    weight: int
+    enabled: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class NodeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    base_url: str = Field(min_length=1, max_length=512)
+    pool_id: str | None = None
+    api_key: str | None = None
+    auth_type: str = AUTH_BEARER
+    auth_header: str = Field(default="Authorization", min_length=1, max_length=64)
+    connect_timeout_seconds: float | None = Field(default=None, gt=0, le=60)
+    request_timeout_seconds: float | None = Field(default=None, gt=0, le=600)
+    health_path: str = Field(default="", max_length=256)
+    probe_interval_seconds: int | None = Field(default=None, ge=10, le=86400)
+    models: list[str] = Field(default_factory=list)
+    weight: int = Field(default=1, ge=0)
+    max_concurrency: int = Field(default=0, ge=0)
+    hourly_token_limit: int | None = Field(default=None, ge=0)
+    daily_token_limit: int | None = Field(default=None, ge=0)
+    quota_policy: str = "STOP"
+    # 新节点必须显式启用并探测通过后才能进入调度：默认安全态为 DISABLED/DRAINING，
+    # 避免缺省 ACTIVE 绕过「显式 ACTIVE 创建需 HEALTHY」的限制。
+    config_state: str = CONFIG_DISABLED
+    scheduling_state: str = SCHEDULING_DRAINING
+    sort_order: int = 0
+
+
+class NodePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    base_url: str | None = Field(default=None, min_length=1, max_length=512)
+    pool_id: str | None = None
+    api_key: str | None = None
+    auth_type: str | None = None
+    auth_header: str | None = Field(default=None, min_length=1, max_length=64)
+    connect_timeout_seconds: float | None = Field(default=None, gt=0, le=60)
+    request_timeout_seconds: float | None = Field(default=None, gt=0, le=600)
+    health_path: str | None = Field(default=None, max_length=256)
+    probe_interval_seconds: int | None = Field(default=None, ge=10, le=86400)
+    models: list[str] | None = None
+    weight: int | None = Field(default=None, ge=0)
+    max_concurrency: int | None = Field(default=None, ge=0)
+    hourly_token_limit: int | None = Field(default=None, ge=0)
+    daily_token_limit: int | None = Field(default=None, ge=0)
+    quota_policy: str | None = None
+    config_state: str | None = None
+    scheduling_state: str | None = None
+    sort_order: int | None = None
+
+
+class NodeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    pool_id: str | None
+    base_url: str
+    auth_type: str
+    auth_header: str
+    connect_timeout_seconds: float | None
+    request_timeout_seconds: float | None
+    health_path: str
+    probe_interval_seconds: int | None
+    models: list[str]
+    weight: int
+    max_concurrency: int
+    hourly_token_limit: int | None
+    daily_token_limit: int | None
+    quota_policy: str
+    config_state: str
+    scheduling_state: str
+    health_state: str
+    success_streak: int
+    failure_streak: int
+    health_detail: dict[str, Any]
+    has_api_key: bool
+    sort_order: int
+    last_checked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RouteCreate(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+    pool_id: str
+    description: str = ""
+    enabled: bool = True
+    weight: int = Field(default=1, ge=0)
+
+
+class RoutePatch(BaseModel):
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    pool_id: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    weight: int | None = Field(default=None, ge=0)
+
+
+class RouteRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    model: str
+    pool_id: str
+    description: str
+    enabled: bool
+    weight: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class GatewayKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    owner_id: str | None = None
+    allowed_models: list[str] = Field(default_factory=list)
+    max_concurrency: int = Field(default=0, ge=0)
+    hourly_token_limit: int | None = Field(default=None, ge=0)
+    daily_token_limit: int | None = Field(default=None, ge=0)
+    expires_at: datetime | None = None
+
+
+class GatewayKeyPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    owner_id: str | None = None
+    allowed_models: list[str] | None = None
+    max_concurrency: int | None = Field(default=None, ge=0)
+    hourly_token_limit: int | None = Field(default=None, ge=0)
+    daily_token_limit: int | None = Field(default=None, ge=0)
+    enabled: bool | None = None
+    expires_at: datetime | None = None
+
+
+class GatewayKeyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    key_prefix: str
+    owner_id: str | None
+    allowed_models: list[str]
+    max_concurrency: int
+    hourly_token_limit: int | None
+    daily_token_limit: int | None
+    enabled: bool
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GatewayKeyCreated(GatewayKeyRead):
+    key: str
+
+
+class ProbeRequest(BaseModel):
+    probe_types: list[str] = Field(default_factory=list)
+
+
+class HealthCheckRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    node_id: str
+    probe_type: str
+    success: bool
+    latency_ms: int
+    status_code: int | None
+    error: str | None
+    detail: dict[str, Any]
+    created_at: datetime
+
+
+class NodeProbeResult(BaseModel):
+    node: NodeRead
+    checks: list[HealthCheckRead]
+
+
+class ValidationErrorRead(BaseModel):
+    code: str
+    message: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+
+
+class DraftValidationRead(BaseModel):
+    valid: bool
+    errors: list[ValidationErrorRead]
+    warnings: list[str]
+    counts: dict[str, int]
+
+
+class PublishRequest(BaseModel):
+    note: str = ""
+
+
+class RollbackRequest(BaseModel):
+    version: int = Field(ge=1)
+
+
+class ConfigVersionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    version: int
+    status: str
+    source_version: int | None
+    note: str
+    published_by: str
+    published_at: datetime
+    created_at: datetime
+
+
+class ConfigVersionDetail(ConfigVersionRead):
+    snapshot: dict[str, Any]
+
+
+class AuditEventRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    actor: str
+    actor_role: str
+    action: str
+    resource_type: str
+    resource_id: str | None
+    result: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    created_at: datetime
+
+
+class GatewayPermissions(BaseModel):
+    actor: str
+    roles: list[str]
+
+
+class RequestLogRead(BaseModel):
+    """调用日志：元数据与测量值，绝不包含 Prompt / Authorization / 响应体。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    key_id: str | None
+    owner_id: str | None
+    model: str | None
+    pool_id: str | None
+    node_id: str | None
+    streaming: bool
+    retry_count: int
+    status_code: int | None
+    error_code: str | None
+    stream_interrupted: bool
+    connect_ms: int | None
+    ttfb_ms: int | None
+    ttft_ms: int | None
+    duration_ms: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    output_tps: float | None
+    usage_known: bool
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class RequestLogPage(BaseModel):
+    items: list[RequestLogRead]
+    total: int
+    page: int
+    page_size: int
+
+
+class LatencyStats(BaseModel):
+    avg: float | None
+    p50: float | None
+    p95: float | None
+
+
+class StatBucket(BaseModel):
+    bucket_start: datetime
+    requests: int
+    success: int
+    errors: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    unknown_usage_requests: int
+
+
+class ScopeStats(BaseModel):
+    scope: str
+    scope_id: str | None
+    window: str
+    window_start: datetime
+    window_end: datetime
+    requests: int
+    success: int
+    errors: int
+    success_rate: float | None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    unknown_usage_requests: int
+    qps: float
+    active: int
+    peak_concurrency: int
+    connect_ms: LatencyStats
+    ttfb_ms: LatencyStats
+    ttft_ms: LatencyStats
+    duration_ms: LatencyStats
+    output_tps: LatencyStats
+    trend: list[StatBucket]
+
+
+class GatewayInstanceRead(BaseModel):
+    instance_id: str
+    status: str
+    app_version: str | None = None
+    config_version: int | None = None
+    pid: int | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    uptime_seconds: int | None = None
+    age_seconds: float | None = None
+    requests: int | None = None
+    errors: int | None = None
+    active: int | None = None
+    cpu_percent: float | None = None
+    memory_bytes: int | None = None

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 # Register assistant tables on the shared metadata before autogenerate/upgrade.
 import app.assistant.models  # noqa: E402,F401
+import app.gateway.models  # noqa: E402,F401
 from alembic import context
 from app.config.settings import get_settings
 from app.models import Base

@@ -52,7 +52,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bell, BookOpen, ChevronDown, ClipboardList, House, Menu, Search, Settings, TriangleAlert, UserRound, X } from 'lucide-vue-next'
+import { Bell, BookOpen, ChevronDown, ClipboardList, House, Menu, Search, Settings, TriangleAlert, UserRound, Waypoints, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'
@@ -76,6 +76,7 @@ const navigation = computed(() => [
   { to: '/employees', label: '数字员工', icon: UserRound },
   { to: '/tasks', label: '任务管理', icon: ClipboardList },
   { to: '/library', label: '数字图书馆', icon: BookOpen },
+  { to: '/gateway', label: 'API 中转', icon: Waypoints },
   { to: '/settings', label: '设置', icon: Settings },
 ])
 

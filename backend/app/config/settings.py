@@ -144,6 +144,26 @@ class Settings(BaseSettings):
     nr_test_system_result_path: str = "/api/astra/tasks/{external_task_id}/result"
     nr_test_system_token: str | None = None
 
+    # API 中转控制面。管理凭据与节点凭据都由服务端校验：浏览器提交的身份 Header 一律不可信。
+    # 主密钥（Fernet）只用于加密节点下游凭据，缺失时拒绝相关写操作；生产环境启动强制校验。
+    gateway_enabled: bool = True
+    gateway_master_key: str | None = Field(default=None, repr=False)
+    gateway_control_credentials: str = Field(default="", repr=False)
+    gateway_probe_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    gateway_health_path: str = "/health"
+    gateway_probe_interval_seconds: int = Field(default=300, ge=10, le=86400)
+    gateway_config_channel: str = "astra:gateway:config"
+    # 数据面独立进程（app.gateway.server:app）：实例心跳、租约 TTL、版本轮询与
+    # 运行态健康检查。实例 ID 缺省时按主机名与进程号生成。
+    gateway_instance_id: str | None = None
+    gateway_heartbeat_interval: int = Field(default=10, ge=1, le=3600)
+    gateway_heartbeat_ttl: int = Field(default=60, ge=5, le=86400)
+    gateway_lease_ttl: int = Field(default=900, ge=10, le=86400)
+    gateway_config_poll_interval: int = Field(default=10, ge=1, le=3600)
+    gateway_runtime_health_interval: int = Field(default=5, ge=1, le=3600)
+    # 已吊销 Key 摘要的后台追平周期：Redis 清空/重启后据此从 DB 重建阻断列表。
+    gateway_revocation_sync_interval: int = Field(default=60, ge=5, le=86400)
+
     @field_validator("database_backend")
     @classmethod
     def validate_database_backend(cls, value: str) -> str:
@@ -158,6 +178,33 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized != "utf8mb4":
             raise ValueError("Astra MySQL 必须使用 utf8mb4 字符集")
+        return normalized
+
+    @field_validator("gateway_master_key")
+    @classmethod
+    def validate_gateway_master_key(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        from app.gateway.security import CredentialCipher
+
+        CredentialCipher(value)
+        return value.strip()
+
+    @field_validator("gateway_control_credentials")
+    @classmethod
+    def validate_gateway_control_credentials(cls, value: str) -> str:
+        if value and value.strip():
+            from app.gateway.security import parse_credentials
+
+            parse_credentials(value)
+        return value
+
+    @field_validator("gateway_health_path")
+    @classmethod
+    def validate_gateway_health_path(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith("/"):
+            raise ValueError("ASTRA_GATEWAY_HEALTH_PATH 必须以 / 开头")
         return normalized
 
     @field_validator("executor_type")
@@ -211,6 +258,13 @@ class Settings(BaseSettings):
             raise ValueError("数字图书馆 MCP 非 loopback 监听时必须配置 ASTRA_MCP_API_KEY")
         if not self.mcp_streamable_http_path.startswith("/"):
             raise ValueError("ASTRA_MCP_STREAMABLE_HTTP_PATH 必须以 / 开头")
+        if self.gateway_enabled and self.environment == "production":
+            if not self.gateway_master_key:
+                raise ValueError("生产模式启用 API 中转时必须配置 ASTRA_GATEWAY_MASTER_KEY")
+            if not self.gateway_control_credentials.strip():
+                raise ValueError(
+                    "生产模式启用 API 中转时必须配置 ASTRA_GATEWAY_CONTROL_CREDENTIALS"
+                )
         return self
 
     def absolute_path(self, value: Path) -> Path:

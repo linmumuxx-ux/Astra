@@ -1,0 +1,22 @@
+[Unit]
+Description=Astra API gateway data plane (OpenAI-compatible /v1)
+After=network-online.target astra-backend.service
+Wants=network-online.target
+# 迁移由 astra-backend 的 ExecStartPre 完成；Gateway 需要已到最新的 MySQL schema。
+Requires=astra-backend.service
+
+[Service]
+Type=simple
+User=astra
+Group=astra
+WorkingDirectory=/opt/astra/backend
+EnvironmentFile=/etc/astra/astra.env
+ExecStart=/opt/astra/.venv/bin/uvicorn app.gateway.server:app --host 127.0.0.1 --port 8110
+Restart=on-failure
+RestartSec=3
+# 允许在途长流结束：较长的优雅停止窗口，避免切断已建立的下游连接。
+TimeoutStopSec=120
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -59,6 +59,7 @@ def check_dependencies() -> CheckResult:
         "asyncmy": "asyncmy",
         "celery": "celery",
         "fastapi": "fastapi",
+        "httpx": "httpx",
         "paramiko": "paramiko",
         "redis": "redis",
         "sqlalchemy": "sqlalchemy",
@@ -95,6 +96,20 @@ def check_writable_directory(item: str, path: Path) -> CheckResult:
             str(exc),
             "创建该目录，并给 Astra 运行账号读写权限",
         )
+
+
+def astra_table_names() -> set[str]:
+    # Mirror alembic/env.py: import every model module so all Astra tables are
+    # registered on the shared metadata before the isolation check runs.
+    import app.assistant.models  # noqa: F401 - register assistant tables on shared metadata
+    import app.gateway.models  # noqa: F401 - register gateway tables on shared metadata
+    from app.models import Base
+
+    return set(Base.metadata.tables)
+
+
+def foreign_table_names(tables: set[str]) -> list[str]:
+    return sorted(tables - astra_table_names() - {"alembic_version"})
 
 
 async def check_database(settings) -> list[CheckResult]:
@@ -167,11 +182,7 @@ async def check_database(settings) -> list[CheckResult]:
             }
             missing_tables = sorted(required_tables - tables)
             migration_ok = not missing_tables and current_revision == head_revision
-            import app.assistant.models  # noqa: F401 - register assistant tables on shared metadata
-            from app.models import Base
-
-            astra_tables = set(Base.metadata.tables)
-            foreign_tables = sorted(tables - astra_tables - {"alembic_version"})
+            foreign_tables = foreign_table_names(tables)
             checks.append(
                 result(
                     "数据库隔离",
