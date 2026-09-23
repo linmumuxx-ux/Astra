@@ -10,6 +10,8 @@ import {
 } from '@opencode-ai/app'
 import { base64Encode } from '@opencode-ai/core/util/encode'
 
+declare const __OPENCODE_WORKSPACE_VERSION__: string
+
 // Only binding belongs here. Conversation, tools, files, diff, composer and theme are upstream;
 // Astra must not restyle the OpenCode surface.
 const taskID = new URLSearchParams(location.search).get('task')
@@ -28,7 +30,7 @@ async function boot() {
   const server: ServerConnection.Http = { type: 'http', http: { url: endpoint } }
   location.hash = `/${base64Encode(binding.runtime.workspace)}/session/${sessionID}`
   const platform: Platform = {
-    platform: 'web', version: '1.18.31',
+    platform: 'web', version: __OPENCODE_WORKSPACE_VERSION__,
     fetch: (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input), location.origin)
       // Upstream probes absolute health URLs; keep them within the task-bound transport.
