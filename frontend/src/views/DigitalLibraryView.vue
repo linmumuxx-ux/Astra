@@ -276,21 +276,29 @@ async function saveKnowledge(payload: Record<string, unknown>) {
     await openDetail(created.id)
   } catch (error) { editorError.value = message(error, '知识保存失败') } finally { editorSaving.value = false }
 }
-async function createSpace(name: string, parentId: string | null) {
+async function createSpace(name: string, parentId: string | null, done: (success: boolean) => void) {
   try {
     const created = await api.createLibrarySpace({ name, parent_id: parentId })
     filters.spaceId = created.id
     filters.page = 1
     notify(parentId ? `已创建子目录「${created.name}」` : `已创建知识空间「${created.name}」`)
     await Promise.all([refreshOverview(), loadList()])
-  } catch (error) { notify(message(error, '创建失败'), 'error') }
+    done(true)
+  } catch (error) {
+    notify(message(error, '创建失败'), 'error')
+    done(false)
+  }
 }
-async function renameSpace(space: KnowledgeSpace, name: string) {
+async function renameSpace(space: KnowledgeSpace, name: string, done: (success: boolean) => void) {
   try {
     await api.updateLibrarySpace(space.id, { name })
     notify(`已重命名为「${name}」`)
     await refreshOverview()
-  } catch (error) { notify(message(error, '重命名失败'), 'error') }
+    done(true)
+  } catch (error) {
+    notify(message(error, '重命名失败'), 'error')
+    done(false)
+  }
 }
 async function deleteSpace(space: KnowledgeSpace) {
   const confirmed = await confirmDialog({ title: '删除目录', message: `确认删除「${space.name}」？仅空目录可以删除，其下内容不会被级联删除。`, confirmLabel: '删除目录', danger: true })
