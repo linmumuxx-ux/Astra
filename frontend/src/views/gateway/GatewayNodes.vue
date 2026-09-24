@@ -3,12 +3,12 @@
     <header class="gateway-section__head">
       <div><h3>节点</h3><p>配置态、健康态与调度态相互独立；节点默认先安全下线再删除。</p></div>
       <div class="gateway-section__actions">
-        <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
-        <button v-if="canManage" type="button" class="button button--primary" @click="openCreate"><Plus :size="15" />新增节点</button>
+        <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
+        <el-button v-if="canManage" type="primary" @click="openCreate"><Plus :size="15" />新增节点</el-button>
       </div>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
     <GatewayNodeTable
       :nodes="nodes"

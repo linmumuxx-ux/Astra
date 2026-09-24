@@ -5,13 +5,13 @@
         <h3>API 中转总览</h3>
         <p>Token、QPS、延迟、节点健康与实例状态均直接来自后端观测契约。</p>
       </div>
-      <div class="gateway-window-switch" role="tablist" aria-label="统计窗口">
-        <button v-for="item in windows" :key="item.id" type="button" :class="{ active: statsWindow === item.id }" @click="statsWindow = item.id">{{ item.label }}</button>
-      </div>
-      <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
+      <el-radio-group v-model="statsWindow" size="small" aria-label="统计窗口">
+        <el-radio-button v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</el-radio-button>
+      </el-radio-group>
+      <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
     <div class="metrics-grid gateway-metrics">
       <AstraMetricCard label="请求数" :value="stats?.requests ?? '—'" hint="窗口内完成的调用总量" :icon="Activity" />
@@ -69,26 +69,18 @@
     </AstraPanel>
 
     <AstraPanel title="Gateway 实例" subtitle="心跳过期即标记不可用，不从实例反推节点健康" flush>
-      <div class="table-wrap">
-        <table class="gateway-instance-table">
-          <thead><tr><th>实例</th><th>状态</th><th>应用版本</th><th>配置版本</th><th>运行时长</th><th>活跃</th><th>请求 / 错误</th><th>CPU</th><th>内存</th><th>心跳</th></tr></thead>
-          <tbody>
-            <tr v-for="instance in instances" :key="instance.instance_id">
-              <td class="gateway-mono">{{ instance.instance_id }}</td>
-              <td><span class="status-badge" :data-tone="instance.status === 'ACTIVE' ? 'success' : 'neutral'">{{ instance.status === 'ACTIVE' ? '在线' : '已过期' }}</span></td>
-              <td class="gateway-mono">{{ instance.app_version ?? '—' }}</td>
-              <td class="gateway-mono">{{ instance.config_version ?? '—' }}</td>
-              <td>{{ formatSeconds(instance.uptime_seconds) }}</td>
-              <td>{{ instance.active ?? '—' }}</td>
-              <td>{{ instance.requests ?? '—' }} / {{ instance.errors ?? '—' }}</td>
-              <td>{{ instance.cpu_percent !== null && instance.cpu_percent !== undefined ? `${instance.cpu_percent.toFixed(1)}%` : '—' }}</td>
-              <td>{{ formatBytes(instance.memory_bytes) }}</td>
-              <td class="gateway-time">{{ formatRelativeTime(instance.updated_at) }}</td>
-            </tr>
-            <tr v-if="!instances.length"><td colspan="10" class="empty-cell">暂无实例心跳。</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <el-table :data="instances" stripe empty-text="暂无实例心跳。">
+        <el-table-column prop="instance_id" label="实例" min-width="180" class-name="gateway-mono" />
+        <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" effect="light">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</el-tag></template></el-table-column>
+        <el-table-column label="应用版本" min-width="120"><template #default="{ row }">{{ row.app_version ?? '—' }}</template></el-table-column>
+        <el-table-column label="配置版本" min-width="120"><template #default="{ row }">{{ row.config_version ?? '—' }}</template></el-table-column>
+        <el-table-column label="运行时长" min-width="110"><template #default="{ row }">{{ formatSeconds(row.uptime_seconds) }}</template></el-table-column>
+        <el-table-column label="活跃" width="80"><template #default="{ row }">{{ row.active ?? '—' }}</template></el-table-column>
+        <el-table-column label="请求 / 错误" min-width="120"><template #default="{ row }">{{ row.requests ?? '—' }} / {{ row.errors ?? '—' }}</template></el-table-column>
+        <el-table-column label="CPU" width="90"><template #default="{ row }">{{ row.cpu_percent !== null && row.cpu_percent !== undefined ? `${row.cpu_percent.toFixed(1)}%` : '—' }}</template></el-table-column>
+        <el-table-column label="内存" min-width="100"><template #default="{ row }">{{ formatBytes(row.memory_bytes) }}</template></el-table-column>
+        <el-table-column label="心跳" min-width="120"><template #default="{ row }">{{ formatRelativeTime(row.updated_at) }}</template></el-table-column>
+      </el-table>
     </AstraPanel>
   </section>
 </template>

@@ -11,23 +11,24 @@
       <form @submit.prevent="submit">
         <label class="gateway-field">
           <span>管理凭据（Bearer）</span>
-          <div class="gateway-token">
-            <input
-              v-model="input"
-              :type="reveal ? 'text' : 'password'"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="粘贴部署环境提供的管理 Token"
-            />
-            <button type="button" :aria-label="reveal ? '隐藏凭据' : '显示凭据'" @click="reveal = !reveal">
-              <EyeOff v-if="reveal" :size="15" /><Eye v-else :size="15" />
-            </button>
-          </div>
+          <el-input
+            v-model="input"
+            :type="reveal ? 'text' : 'password'"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="粘贴部署环境提供的管理 Token"
+          >
+            <template #suffix>
+              <el-button text circle :aria-label="reveal ? '隐藏凭据' : '显示凭据'" @click="reveal = !reveal">
+                <EyeOff v-if="reveal" :size="15" /><Eye v-else :size="15" />
+              </el-button>
+            </template>
+          </el-input>
         </label>
         <p v-if="authError" class="gateway-connect__error"><TriangleAlert :size="14" />{{ authError }}</p>
-        <button class="button button--primary" type="submit" :disabled="connecting">
-          <LoaderCircle v-if="connecting" :size="15" class="spin" />{{ connecting ? '校验中…' : '连接控制面' }}
-        </button>
+        <el-button type="primary" native-type="submit" :loading="connecting" :disabled="connecting">
+          {{ connecting ? '校验中…' : '连接控制面' }}
+        </el-button>
       </form>
       <small>需要 view 只读角色，写操作还需 node / route / key / publish 角色；system 等价于全部权限。</small>
     </div>
@@ -35,7 +36,7 @@
 </template>
 
 <script setup lang="ts">
-import { Eye, EyeOff, LoaderCircle, LockKeyhole, TriangleAlert } from 'lucide-vue-next'
+import { Eye, EyeOff, LockKeyhole, TriangleAlert } from 'lucide-vue-next'
 import { ref } from 'vue'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
 
