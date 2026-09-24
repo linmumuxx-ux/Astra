@@ -1,3 +1,4 @@
+import { ElMessageBox } from 'element-plus'
 import { ref, type Ref } from 'vue'
 
 export interface ConfirmOptions {
@@ -12,29 +13,35 @@ interface ConfirmState extends ConfirmOptions {
   resolve: (value: boolean) => void
 }
 
-const state = ref<ConfirmState | null>(null)
+// Compatibility state for the old host component. The live application no
+// longer mounts that host; confirmation rendering is owned by Element Plus.
+const legacyState = ref<ConfirmState | null>(null)
 
-// Imperative confirm rendered by the single AstraConfirmHost. It replaces
-// window.confirm and, by design, cannot be dismissed by overlay click or ESC:
-// the user must explicitly choose 取消 or 确认.
-export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
-  return new Promise((resolve) => {
-    state.value = {
-      confirmLabel: '确认',
-      cancelLabel: '取消',
-      danger: false,
-      ...options,
-      resolve,
-    }
-  })
+export async function confirmDialog(options: ConfirmOptions): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(options.message ?? '', options.title, {
+      confirmButtonText: options.confirmLabel ?? '确认',
+      cancelButtonText: options.cancelLabel ?? '取消',
+      closeOnClickModal: false,
+      closeOnPressEscape: false,
+      showClose: false,
+      lockScroll: true,
+      distinguishCancelAndClose: false,
+      confirmButtonClass: options.danger ? 'astra-confirm-danger' : '',
+      type: options.danger ? 'warning' : 'info',
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function resolveConfirm(value: boolean): void {
-  const current = state.value
-  state.value = null
+  const current = legacyState.value
+  legacyState.value = null
   current?.resolve(value)
 }
 
 export function useConfirmState(): Ref<ConfirmState | null> {
-  return state
+  return legacyState
 }

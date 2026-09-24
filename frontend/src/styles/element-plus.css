@@ -94,3 +94,31 @@
   --el-table-text-color: var(--astra-text-secondary);
   --el-table-header-text-color: var(--astra-text-muted);
 }
+
+.el-button.astra-confirm-danger,
+.astra-confirm-danger {
+  --el-button-bg-color: var(--astra-danger);
+  --el-button-border-color: var(--astra-danger);
+  --el-button-hover-bg-color: #eb7180;
+  --el-button-hover-border-color: #eb7180;
+  --el-button-active-bg-color: #cf4b59;
+  --el-button-active-border-color: #cf4b59;
+  color: #fff;
+}
+
+.el-dialog.astra-dialog {
+  overflow: hidden;
+}
+
+.el-dialog.astra-dialog .el-dialog__header {
+  margin: 0;
+  padding: 20px 22px 16px;
+}
+
+.el-dialog.astra-dialog .el-dialog__body {
+  padding: 18px 22px;
+}
+
+.el-dialog.astra-dialog .el-dialog__footer {
+  padding: 14px 22px 18px;
+}
