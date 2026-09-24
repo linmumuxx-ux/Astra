@@ -223,6 +223,7 @@ const filtered = computed(() => store.tasks.filter((task) => {
 }))
 
 const total = computed(() => filtered.value.length)
+const paged = computed(() => filtered.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
 function setStatus(value: RuntimeStatusFilter) { filters.status = value; currentPage.value = 1 }
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
