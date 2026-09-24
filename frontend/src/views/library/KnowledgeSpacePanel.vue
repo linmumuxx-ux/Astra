@@ -78,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { Check, FolderPlus, Layers3, Plus, Search, X } from 'lucide-vue-next'
+import { Check, FolderPlus, Layers3, Plus, Search } from 'lucide-vue-next'
 import type { InputInstance } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { KnowledgeSpace } from '@/api/types'
@@ -104,7 +104,7 @@ const moveNode = ref<KnowledgeSpace | null>(null)
 const searchQuery = ref('')
 
 const visibleSpaces = computed(() => {
-  const keyword = searchQuery.value.toLocaleLowerCase()
+  const keyword = searchQuery.value.trim().toLocaleLowerCase()
   if (!keyword) return props.spaces
 
   const filter = (nodes: KnowledgeSpace[]): KnowledgeSpace[] => {
@@ -154,8 +154,9 @@ async function beginCreate(parentId: string | null) {
 }
 function cancelCreate() { creating.value = undefined; rootName.value = '' }
 function submitRootCreate() {
-  if (!rootName.value) return
-  emit('create', rootName.value, null, async (success) => {
+  const name = rootName.value.trim()
+  if (!name) return
+  emit('create', name, null, async (success) => {
     if (success) cancelCreate()
     else {
       await nextTick()

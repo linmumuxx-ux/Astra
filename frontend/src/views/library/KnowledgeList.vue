@@ -116,7 +116,7 @@
 </template>
 
 <script setup lang="ts">
-import { BookMarked, ChevronLeft, ChevronRight, Library, LoaderCircle, MoreHorizontal, Plus, Quote, Search, SlidersHorizontal, X } from 'lucide-vue-next'
+import { BookMarked, ChevronLeft, ChevronRight, Library, LoaderCircle, MoreHorizontal, Plus, Quote, Search, SlidersHorizontal } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { KnowledgeListItem, KnowledgePage, KnowledgeStatus } from '@/api/types'
 
@@ -156,8 +156,6 @@ const selected = ref<Set<string>>(new Set())
 const menuId = ref<string | null>(null)
 const moreOpen = ref(false)
 const tagInput = ref(props.filters.tag)
-const allTags = computed(() => { const set = new Set<string>(); props.page.items.forEach((item) => item.tags.forEach((tag) => set.add(tag))); return [...set] })
-const tagOptions = computed(() => allTags.value.slice(0, 24))
 const allSelected = computed(() => props.page.items.length > 0 && props.page.items.every((item) => selected.value.has(item.id)))
 const hasFilters = computed(() => Boolean(props.keyword || props.filters.type || props.filters.status || props.filters.source || props.filters.tag))
 
