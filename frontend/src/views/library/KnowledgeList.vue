@@ -8,62 +8,61 @@
     </header>
 
     <div class="list-toolbar">
-      <label class="list-search">
-        <Search :size="15" />
-        <input
-          :value="keyword"
-          type="search"
-          placeholder="搜索当前空间"
-          aria-label="搜索当前空间"
-          @input="onSearchInput"
-        />
-        <button v-if="keyword" type="button" aria-label="清空搜索" @click="emit('search', '')"><X :size="13" /></button>
-      </label>
+      <el-input
+        :model-value="keyword"
+        class="list-search"
+        clearable
+        placeholder="搜索当前空间"
+        aria-label="搜索当前空间"
+        @update:model-value="emit('search', String($event))"
+      >
+        <template #prefix><Search :size="15" /></template>
+      </el-input>
 
       <div class="list-filters">
-        <select :value="filters.type" aria-label="知识类型" @change="change('type', $event)">
-          <option value="">全部类型</option><option v-for="item in types" :key="item.value" :value="item.value">{{ item.label }}</option>
-        </select>
-        <select :value="filters.status" aria-label="知识状态" @change="change('status', $event)">
-          <option value="">全部状态</option><option value="published">已发布</option><option v-if="canReview" value="candidate">待审核经验</option><option v-if="canManage || canReview" value="draft">草稿</option><option v-if="canManage" value="archived">已归档</option><option v-if="canReview" value="rejected">已驳回</option>
-        </select>
-        <button type="button" class="filter-button" :class="{ active: moreOpen || filters.source || filters.tag }" @click="moreOpen = !moreOpen">
+        <el-select :model-value="filters.type" aria-label="知识类型" @change="emit('filter', 'type', String($event))">
+          <el-option label="全部类型" value="" /><el-option v-for="item in types" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+        <el-select :model-value="filters.status" aria-label="知识状态" @change="emit('filter', 'status', String($event))">
+          <el-option label="全部状态" value="" /><el-option label="已发布" value="published" /><el-option v-if="canReview" label="待审核经验" value="candidate" /><el-option v-if="canManage || canReview" label="草稿" value="draft" /><el-option v-if="canManage" label="已归档" value="archived" /><el-option v-if="canReview" label="已驳回" value="rejected" />
+        </el-select>
+        <el-button :type="moreOpen || filters.source || filters.tag ? 'primary' : 'default'" plain @click="moreOpen = !moreOpen">
           <SlidersHorizontal :size="14" />更多筛选
-        </button>
-        <select :value="filters.sort" aria-label="知识排序" @change="change('sort', $event)">
-          <option value="updated_desc">最近更新</option><option value="updated_asc">最早更新</option><option value="references_desc">引用最多</option><option value="title_asc">标题排序</option>
-        </select>
+        </el-button>
+        <el-select :model-value="filters.sort" aria-label="知识排序" @change="emit('filter', 'sort', String($event))">
+          <el-option label="最近更新" value="updated_desc" /><el-option label="最早更新" value="updated_asc" /><el-option label="引用最多" value="references_desc" /><el-option label="标题排序" value="title_asc" />
+        </el-select>
       </div>
     </div>
 
     <div v-if="moreOpen" class="more-filters">
-      <label>来源<select :value="filters.source" aria-label="知识来源" @change="change('source', $event)"><option value="">全部来源</option><option v-for="item in sources" :key="item.value" :value="item.value">{{ item.label }}</option></select></label>
-      <label>标签<span class="tag-filter"><input :value="tagInput" type="text" list="knowledge-tag-options" placeholder="全部标签" aria-label="知识标签" @input="onTagInput" @keydown.enter.prevent="applyTag" /><datalist id="knowledge-tag-options"><option v-for="tag in tagOptions" :key="tag" :value="tag" /></datalist><button type="button" class="tag-apply" aria-label="应用标签筛选" @click="applyTag">应用</button></span></label>
-      <button v-if="hasFilters" type="button" class="text-clear" @click="emit('clear-filter')">清除筛选</button>
+      <label>来源<el-select :model-value="filters.source" aria-label="知识来源" @change="emit('filter', 'source', String($event))"><el-option label="全部来源" value="" /><el-option v-for="item in sources" :key="item.value" :label="item.label" :value="item.value" /></el-select></label>
+      <label>标签<span class="tag-filter"><el-input v-model="tagInput" placeholder="全部标签" aria-label="知识标签" @keyup.enter="applyTag" /><el-button @click="applyTag">应用</el-button></span></label>
+      <el-button v-if="hasFilters" type="primary" link @click="emit('clear-filter')">清除筛选</el-button>
     </div>
 
-    <div v-if="filterLabel" class="active-filter"><span>{{ filterLabel }}<button type="button" aria-label="清除当前筛选" @click="emit('clear-filter')"><X :size="12" /></button></span></div>
+    <div v-if="filterLabel" class="active-filter"><el-tag closable @close="emit('clear-filter')">{{ filterLabel }}</el-tag></div>
 
     <div v-if="selected.size" class="batch-bar">
       <span>已选 {{ selected.size }} 条</span>
-      <button v-if="canManage" type="button" class="button" @click="emitBatch('move')">移动</button>
-      <button v-if="canManage" type="button" class="button" @click="emitBatch('archive')">归档</button>
-      <button v-if="canReview" type="button" class="button" @click="emitBatch('publish')">发布</button>
-      <button v-if="canManage" type="button" class="button button--danger" @click="emitBatch('delete')">删除</button>
-      <button type="button" class="button button--ghost" @click="selected = new Set()">取消选择</button>
+      <el-button v-if="canManage" @click="emitBatch('move')">移动</el-button>
+      <el-button v-if="canManage" @click="emitBatch('archive')">归档</el-button>
+      <el-button v-if="canReview" type="primary" @click="emitBatch('publish')">发布</el-button>
+      <el-button v-if="canManage" type="danger" @click="emitBatch('delete')">删除</el-button>
+      <el-button text @click="selected = new Set()">取消选择</el-button>
     </div>
 
     <div class="knowledge-table-wrap" :class="{ loading }">
       <table>
         <thead>
           <tr>
-            <th v-if="canManage || canReview" class="check-col"><input type="checkbox" :checked="allSelected" aria-label="全选" @change="toggleAll" /></th>
+            <th v-if="canManage || canReview" class="check-col"><el-checkbox :model-value="allSelected" aria-label="全选" @change="toggleAll" /></th>
             <th class="title-col">知识</th><th>来源</th><th>状态</th><th>更新时间</th><th class="num-col">引用</th><th aria-label="操作" />
           </tr>
         </thead>
         <tbody>
           <tr v-for="item in page.items" :key="item.id" tabindex="0" @click="emit('open', item.id)" @keydown.enter="emit('open', item.id)">
-            <td v-if="canManage || canReview" class="check-col" @click.stop><input type="checkbox" :checked="selected.has(item.id)" :aria-label="`选择 ${item.title}`" @change="toggle(item.id)" /></td>
+            <td v-if="canManage || canReview" class="check-col" @click.stop><el-checkbox :model-value="selected.has(item.id)" :aria-label="`选择 ${item.title}`" @change="toggle(item.id)" /></td>
             <td class="title-cell">
               <div class="knowledge-title">
                 <span :data-status="item.status"><BookMarked :size="16" /></span>
@@ -101,16 +100,16 @@
         <strong>{{ hasFilters ? '没有匹配的知识' : '这里还没有知识' }}</strong>
         <p v-if="hasFilters">调整搜索或筛选条件后重试。</p>
         <p v-else>当前位置：{{ spacePath }}。你可以新建知识，或将已有知识移动到这里。</p>
-        <button v-if="!hasFilters && canManage" type="button" class="button button--primary" @click="emit('create')"><Plus :size="14" />新建知识</button>
-        <button v-else-if="hasFilters" type="button" class="button" @click="emit('clear-filter')">清除筛选</button>
+        <el-button v-if="!hasFilters && canManage" type="primary" @click="emit('create')"><Plus :size="14" />新建知识</el-button>
+        <el-button v-else-if="hasFilters" @click="emit('clear-filter')">清除筛选</el-button>
       </div>
     </div>
 
     <footer v-if="page.total > 0">
       <span>第 {{ page.page }} / {{ page.pages }} 页</span>
       <div>
-        <button type="button" :disabled="page.page <= 1" @click="emit('page', page.page - 1)"><ChevronLeft :size="15" />上一页</button>
-        <button type="button" :disabled="page.page >= page.pages" @click="emit('page', page.page + 1)">下一页<ChevronRight :size="15" /></button>
+        <el-button :disabled="page.page <= 1" @click="emit('page', page.page - 1)"><ChevronLeft :size="15" />上一页</el-button>
+        <el-button :disabled="page.page >= page.pages" @click="emit('page', page.page + 1)">下一页<ChevronRight :size="15" /></el-button>
       </div>
     </footer>
   </section>
@@ -163,9 +162,6 @@ const allSelected = computed(() => props.page.items.length > 0 && props.page.ite
 const hasFilters = computed(() => Boolean(props.keyword || props.filters.type || props.filters.status || props.filters.source || props.filters.tag))
 
 watch(() => props.filters.tag, (value) => { tagInput.value = value })
-function onSearchInput(event: Event) { emit('search', (event.target as HTMLInputElement).value) }
-function change(key: keyof ListFilters, event: Event) { emit('filter', key, (event.target as HTMLSelectElement).value) }
-function onTagInput(event: Event) { tagInput.value = (event.target as HTMLInputElement).value }
 function applyTag() { const value = tagInput.value.trim(); if (value === props.filters.tag) return; emit('filter', 'tag', value) }
 function toggle(id: string) { const value = new Set(selected.value); if (value.has(id)) value.delete(id); else value.add(id); selected.value = value }
 function toggleAll() { if (allSelected.value) selected.value = new Set(); else selected.value = new Set(props.page.items.map((item) => item.id)) }

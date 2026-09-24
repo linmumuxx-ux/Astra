@@ -2,14 +2,12 @@
   <aside class="space-panel">
     <header class="space-panel__header">
       <div><h3>知识空间</h3><p>选择空间或目录查看知识</p></div>
-      <button v-if="canManage" type="button" title="新建知识空间" aria-label="新建知识空间" @click="beginCreate(null)"><Plus :size="15" /></button>
+      <el-button v-if="canManage" text circle title="新建知识空间" aria-label="新建知识空间" @click="beginCreate(null)"><Plus :size="15" /></el-button>
     </header>
 
-    <div class="space-search">
-      <Search :size="14" />
-      <input v-model.trim="searchQuery" type="search" placeholder="搜索知识空间" aria-label="搜索知识空间" />
-      <button v-if="searchQuery" type="button" aria-label="清空空间搜索" @click="searchQuery = ''"><X :size="13" /></button>
-    </div>
+    <el-input v-model="searchQuery" class="space-search" clearable placeholder="搜索知识空间" aria-label="搜索知识空间">
+      <template #prefix><Search :size="14" /></template>
+    </el-input>
 
     <nav aria-label="知识空间目录树">
       <button
@@ -24,17 +22,17 @@
 
       <form v-if="creating === null" class="root-inline-create" @submit.prevent="submitRootCreate">
         <FolderPlus :size="15" />
-        <input
+        <el-input
           ref="rootCreateInput"
-          v-model.trim="rootName"
+          v-model="rootName"
           required
           maxlength="160"
           placeholder="输入知识空间名称"
           aria-label="知识空间名称"
           @keydown.esc.prevent="cancelCreate"
         />
-        <button type="submit" aria-label="创建知识空间"><Check :size="13" /></button>
-        <button type="button" aria-label="取消创建" @click="cancelCreate"><X :size="13" /></button>
+        <el-button native-type="submit" text circle aria-label="创建知识空间"><Check :size="13" /></el-button>
+        <el-button text circle aria-label="取消创建" @click="cancelCreate"><X :size="13" /></el-button>
       </form>
 
       <SpaceTreeNode
@@ -81,6 +79,7 @@
 
 <script setup lang="ts">
 import { Check, FolderPlus, Layers3, Plus, Search, X } from 'lucide-vue-next'
+import type { InputInstance } from 'element-plus'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { KnowledgeSpace } from '@/api/types'
 import DirectoryPickerDialog from './DirectoryPickerDialog.vue'
@@ -99,7 +98,7 @@ const expandedIds = ref<Set<string>>(new Set())
 const menuId = ref<string | null>(null)
 const creating = ref<string | null | undefined>(undefined)
 const rootName = ref('')
-const rootCreateInput = ref<HTMLInputElement | null>(null)
+const rootCreateInput = ref<InputInstance | null>(null)
 const editingId = ref<string | null>(null)
 const moveNode = ref<KnowledgeSpace | null>(null)
 const searchQuery = ref('')

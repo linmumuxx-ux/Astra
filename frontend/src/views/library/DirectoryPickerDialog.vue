@@ -20,11 +20,9 @@
     >
       <p class="astra-dialog-subtitle">{{ subtitle }}</p>
     <div class="directory-picker">
-      <label class="directory-search">
-        <Search :size="15" />
-        <input v-model.trim="query" type="search" placeholder="搜索知识空间或目录" aria-label="搜索目录" />
-        <button v-if="query" type="button" aria-label="清空目录搜索" @click="query = ''"><X :size="13" /></button>
-      </label>
+      <el-input v-model="query" class="directory-search" clearable placeholder="搜索知识空间或目录" aria-label="搜索目录">
+        <template #prefix><Search :size="15" /></template>
+      </el-input>
 
       <div class="directory-tree" role="radiogroup" aria-label="目标目录">
         <button
@@ -52,21 +50,21 @@
     </div>
 
     <template #footer>
-      <button type="button" class="button" :disabled="busy" @click="emit('close')">取消</button>
-      <button
-        type="button"
-        class="button button--primary"
+      <el-button :disabled="busy" @click="emit('close')">取消</el-button>
+      <el-button
+        type="primary"
+        :loading="busy"
         :disabled="busy || !localSelected || excluded.has(localSelected)"
         @click="confirm"
       >
-        <LoaderCircle v-if="busy" :size="14" class="spin" />{{ confirmLabel }}
-      </button>
+        {{ confirmLabel }}
+      </el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { Folder, LoaderCircle, Search, X } from 'lucide-vue-next'
+import { Folder, Search } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { KnowledgeSpace } from '@/api/types'
 
