@@ -6,19 +6,18 @@
       </div>
       <div class="sticky-action-bar__actions">
         <slot name="extra" />
-        <button type="button" class="button" :disabled="disabled" @click="$emit('cancel')">取消</button>
-        <button type="button" class="button button--primary" :disabled="disabled || saving" @click="$emit('save')">
+        <el-button :disabled="disabled" @click="$emit('cancel')">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="disabled || saving" @click="$emit('save')">
           <Save v-if="!saving" :size="14" />
-          <RefreshCw v-else :size="14" class="spin" />
           {{ saving ? '保存中' : saveLabel }}
-        </button>
+        </el-button>
       </div>
     </div>
   </transition>
 </template>
 
 <script setup lang="ts">
-import { RefreshCw, Save } from 'lucide-vue-next'
+import { Save } from 'lucide-vue-next'
 
 defineProps<{
   dirty: boolean
