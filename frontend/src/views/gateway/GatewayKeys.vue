@@ -39,7 +39,14 @@
       </table>
     </div>
 
-    <AstraDialog :open="editorOpen" :title="form.id ? '编辑 Gateway Key' : '新建 Gateway Key'" :busy="saving" testid="gateway-key-dialog" width="min(540px,100%)" @close="editorOpen = false">
+    <el-dialog :model-value="editorOpen" :title="form.id ? '编辑 Gateway Key' : '新建 Gateway Key'" data-testid="gateway-key-dialog" width="min(540px,100%)" @close="editorOpen = false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="!(saving)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
       <form id="gateway-key-form" class="gateway-dialog-form" @submit.prevent="submit">
         <label>名称<input v-model="form.name" required /></label>
         <div class="gateway-form__grid">
@@ -60,15 +67,23 @@
         <button type="button" class="button" :disabled="saving" @click="editorOpen = false">取消</button>
         <button type="submit" form="gateway-key-form" class="button button--primary" :disabled="saving"><LoaderCircle v-if="saving" :size="14" class="spin" />保存</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
 
-    <AstraDialog :open="plaintextOpen && Boolean(createdKey)" title="Gateway Key 已创建" subtitle="请立即复制保存，关闭后无法再次查看原文。" :busy="false" testid="gateway-key-plaintext" width="min(560px,100%)" @close="closePlaintext">
+    <el-dialog :model-value="plaintextOpen && Boolean(createdKey)" title="Gateway Key 已创建" data-testid="gateway-key-plaintext" width="min(560px,100%)" @close="closePlaintext"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="true"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
+      <p class="astra-dialog-subtitle">请立即复制保存，关闭后无法再次查看原文。</p>
       <p class="gateway-key-warning"><TriangleAlert :size="15" />库中只保存摘要，任何页面与日志都不会再显示该 Key。</p>
       <IdDisplay v-if="createdKey" :value="createdKey.key" :max-width="52" />
       <template #footer>
         <button type="button" class="button button--primary" @click="closePlaintext">我已保存</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
   </section>
 </template>
 
@@ -81,7 +96,6 @@ import {
   type GatewayKey,
   type GatewayKeyCreated,
 } from '@/api/gateway'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'

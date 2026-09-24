@@ -80,18 +80,26 @@
       </footer>
     </AstraPanel>
 
-    <AstraDialog
+    <el-dialog
       v-if="dialogOpen"
-      :open="true"
+      :model-value="true"
       title="创建任务"
-      subtitle="定义目标和验收标准，执行方式由数字员工决定。"
-      :dismissible="false"
-      :busy="submitting"
-      testid="task-create-modal"
-      card-class="task-create-card"
+     
+     
+     
+      data-testid="task-create-modal"
+      class="task-create-card"
       width="min(620px,100%)"
       @close="requestCloseCreate"
+    
+      :close-on-click-modal="((false)) && !(submitting)"
+      :close-on-press-escape="((false)) && !(submitting)"
+      :show-close="!(submitting)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
     >
+      <p class="astra-dialog-subtitle">定义目标和验收标准，执行方式由数字员工决定。</p>
       <form id="task-create-form" @submit.prevent="createTask">
         <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
         <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
@@ -103,25 +111,33 @@
         <button type="button" class="button" :disabled="submitting" @click="requestCloseCreate">取消</button>
         <button type="submit" form="task-create-form" class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
 
-    <AstraDialog
+    <el-dialog
       v-if="pending"
-      :open="true"
+      :model-value="true"
       :title="pending.label"
-      :subtitle="`确认对「${shortTitle(pending.task.title)}」执行该操作？`"
-      :dismissible="false"
-      :busy="acting"
-      testid="task-action-confirm"
-      card-class="confirm-action-card"
+     
+     
+     
+      data-testid="task-action-confirm"
+      class="confirm-action-card"
       width="min(440px,100%)"
       @close="pending = null"
+    
+      :close-on-click-modal="((false)) && !(acting)"
+      :close-on-press-escape="((false)) && !(acting)"
+      :show-close="!(acting)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
     >
+      <p class="astra-dialog-subtitle">{{ `确认对「${shortTitle(pending.task.title)}」执行该操作？` }}</p>
       <template #footer>
         <button type="button" class="button" :disabled="acting" @click="pending = null">取消</button>
         <button type="button" class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
   </div>
 </template>
 
@@ -132,7 +148,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'

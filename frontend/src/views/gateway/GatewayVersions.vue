@@ -58,9 +58,17 @@
       </AstraPanel>
     </div>
 
-    <AstraDialog :open="detailOpen" :title="detail ? `版本 v${detail.version} 快照` : '版本快照'" subtitle="已脱敏：不含节点密文与 Key 摘要" :busy="false" width="min(720px,100%)" testid="gateway-version-detail" @close="detailOpen = false">
+    <el-dialog :model-value="detailOpen" :title="detail ? `版本 v${detail.version} 快照` : '版本快照'" width="min(720px,100%)" data-testid="gateway-version-detail" @close="detailOpen = false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="true"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
+      <p class="astra-dialog-subtitle">已脱敏：不含节点密文与 Key 摘要</p>
       <pre class="gateway-snapshot">{{ detail ? JSON.stringify(detail.snapshot, null, 2) : '' }}</pre>
-    </AstraDialog>
+    </el-dialog>
   </section>
 </template>
 
@@ -74,7 +82,6 @@ import {
   type GatewayConfigVersionDetail,
   type GatewayDraftValidation,
 } from '@/api/gateway'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'

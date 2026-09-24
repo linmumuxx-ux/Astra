@@ -80,18 +80,26 @@
       @confirm="submitMove"
     />
 
-    <AstraDialog
+    <el-dialog
       v-if="publishDialog"
-      :open="true"
+      :model-value="true"
       title="发布知识"
-      :subtitle="`为 ${publishDialog.ids.length} 条知识选择目录并发布。`"
-      :dismissible="false"
-      :busy="working"
-      testid="knowledge-publish-dialog"
-      card-class="move-knowledge-card"
+     
+     
+     
+      data-testid="knowledge-publish-dialog"
+      class="move-knowledge-card"
       width="min(460px,100%)"
       @close="publishDialog = null"
+    
+      :close-on-click-modal="((false)) && !(working)"
+      :close-on-press-escape="((false)) && !(working)"
+      :show-close="!(working)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
     >
+      <p class="astra-dialog-subtitle">{{ `为 ${publishDialog.ids.length} 条知识选择目录并发布。` }}</p>
       <form id="knowledge-publish-form" @submit.prevent="submitBatchPublish">
         <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
         <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
@@ -100,18 +108,26 @@
         <button type="button" class="button" :disabled="working" @click="publishDialog = null">取消</button>
         <button type="submit" form="knowledge-publish-form" class="button button--primary" :disabled="!publishSpaceId || working"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
 
-    <AstraDialog
+    <el-dialog
       v-if="deleteBlocked"
-      :open="true"
+      :model-value="true"
       title="无法删除目录"
-      :subtitle="`「${deleteBlocked.name}」不是空目录。`"
-      dismissible
-      testid="knowledge-space-delete-blocked"
+     
+     
+      data-testid="knowledge-space-delete-blocked"
       width="min(460px,100%)"
       @close="deleteBlocked = null"
+    
+      :close-on-click-modal="true"
+      :close-on-press-escape="true"
+      :show-close="true"
+      append-to-body
+      lock-scroll
+      destroy-on-close
     >
+      <p class="astra-dialog-subtitle">{{ `「${deleteBlocked.name}」不是空目录。` }}</p>
       <div class="delete-blocked">
         <p>该目录下还有 <strong>{{ Array.isArray(deleteBlocked.children) ? deleteBlocked.children.length : 0 }}</strong> 个直接子目录、<strong>{{ deleteBlocked.knowledge_count }}</strong> 条直接知识（子树共 {{ deleteBlocked.subtree_knowledge_count }} 条知识）。</p>
         <p>请先删除或移动这些子目录与知识，待目录为空后再删除本目录。</p>
@@ -119,7 +135,7 @@
       <template #footer>
         <button type="button" class="button button--primary" @click="deleteBlocked = null">知道了</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
   </div>
 </template>
 
@@ -129,7 +145,6 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import DirectoryPickerDialog from '@/views/library/DirectoryPickerDialog.vue'

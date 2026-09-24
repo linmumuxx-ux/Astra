@@ -57,7 +57,14 @@
       </AstraPanel>
     </div>
 
-    <AstraDialog :open="poolDialog" :title="poolForm.id ? '编辑资源池' : '新增资源池'" :busy="saving" testid="gateway-pool-dialog" @close="poolDialog = false">
+    <el-dialog :model-value="poolDialog" :title="poolForm.id ? '编辑资源池' : '新增资源池'" data-testid="gateway-pool-dialog" @close="poolDialog = false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="!(saving)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
       <form id="gateway-pool-form" class="gateway-dialog-form" @submit.prevent="submitPool">
         <label>名称<input v-model="poolForm.name" required /></label>
         <label>描述<textarea v-model="poolForm.description" rows="2" /></label>
@@ -71,9 +78,16 @@
         <button type="button" class="button" :disabled="saving" @click="poolDialog = false">取消</button>
         <button type="submit" form="gateway-pool-form" class="button button--primary" :disabled="saving">保存</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
 
-    <AstraDialog :open="routeDialog" :title="routeForm.id ? '编辑路由' : '新增路由'" :busy="saving" testid="gateway-route-dialog" @close="routeDialog = false">
+    <el-dialog :model-value="routeDialog" :title="routeForm.id ? '编辑路由' : '新增路由'" data-testid="gateway-route-dialog" @close="routeDialog = false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="!(saving)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
       <form id="gateway-route-form" class="gateway-dialog-form" @submit.prevent="submitRoute">
         <label>模型名<input v-model="routeForm.model" required placeholder="例如 gpt-4o-mini" /></label>
         <label>资源池<select v-model="routeForm.pool_id" required><option value="" disabled>选择资源池</option><option v-for="pool in pools" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select></label>
@@ -87,7 +101,7 @@
         <button type="button" class="button" :disabled="saving" @click="routeDialog = false">取消</button>
         <button type="submit" form="gateway-route-form" class="button button--primary" :disabled="saving">保存</button>
       </template>
-    </AstraDialog>
+    </el-dialog>
   </section>
 </template>
 
@@ -100,7 +114,6 @@ import {
   type GatewayPool,
   type GatewayRoute,
 } from '@/api/gateway'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'

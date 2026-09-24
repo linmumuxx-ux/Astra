@@ -122,3 +122,31 @@
 .el-dialog.astra-dialog .el-dialog__footer {
   padding: 14px 22px 18px;
 }
+
+.astra-dialog-subtitle {
+  margin: -4px 0 16px;
+  color: var(--astra-text-muted);
+  font-size: var(--astra-font-body);
+  line-height: 1.55;
+}
+
+.el-dialog.task-create-card .el-dialog__header {
+  padding-bottom: 13px;
+}
+
+.el-dialog.task-create-card .el-dialog__body {
+  padding-top: 13px;
+  padding-bottom: 4px;
+}
+
+.el-dialog.task-create-card .el-dialog__footer {
+  padding-top: 13px;
+}
+
+.el-dialog.move-knowledge-card .el-dialog__footer,
+.el-dialog.confirm-action-card .el-dialog__footer,
+.el-dialog.directory-picker-card .el-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

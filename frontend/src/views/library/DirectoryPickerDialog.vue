@@ -1,16 +1,24 @@
 <template>
-  <AstraDialog
+  <el-dialog
     v-if="open"
-    :open="true"
+    :model-value="true"
     :title="title"
-    :subtitle="subtitle"
-    :dismissible="false"
-    :busy="busy"
-    testid="directory-picker-dialog"
-    card-class="directory-picker-card"
+   
+   
+   
+    data-testid="directory-picker-dialog"
+    class="directory-picker-card"
     width="min(520px, 100%)"
     @close="emit('close')"
-  >
+  
+      :close-on-click-modal="((false)) && !(busy)"
+      :close-on-press-escape="((false)) && !(busy)"
+      :show-close="!(busy)"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+    >
+      <p class="astra-dialog-subtitle">{{ subtitle }}</p>
     <div class="directory-picker">
       <label class="directory-search">
         <Search :size="15" />
@@ -54,14 +62,13 @@
         <LoaderCircle v-if="busy" :size="14" class="spin" />{{ confirmLabel }}
       </button>
     </template>
-  </AstraDialog>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { Folder, LoaderCircle, Search, X } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { KnowledgeSpace } from '@/api/types'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 
 interface FlatDirectory extends KnowledgeSpace {
   level: number
