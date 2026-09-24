@@ -29,18 +29,30 @@ if (action === "build" && !dependenciesInstalled) {
 }
 
 const windows = process.platform === "win32"
-const candidates = windows
-  ? [
-      { command: "pnpm.cmd", prefix: [] },
-      { command: "corepack.cmd", prefix: ["pnpm"] },
-      { command: "bun.exe", prefix: [] },
-      { command: "bun.cmd", prefix: [] },
-    ]
-  : [
-      { command: "pnpm", prefix: [] },
-      { command: "corepack", prefix: ["pnpm"] },
-      { command: "bun", prefix: [] },
-    ]
+
+const managers = {
+  pnpm: windows
+    ? [
+        { command: "pnpm.cmd", prefix: [] },
+        { command: "corepack.cmd", prefix: ["pnpm"] },
+      ]
+    : [
+        { command: "pnpm", prefix: [] },
+        { command: "corepack", prefix: ["pnpm"] },
+      ],
+  bun: windows
+    ? [
+        { command: "bun.exe", prefix: [] },
+        { command: "bun.cmd", prefix: [] },
+      ]
+    : [{ command: "bun", prefix: [] }],
+}
+
+const hasBunLock = existsSync(path.join(workspace, "bun.lock"))
+const hasPnpmLock = existsSync(path.join(workspace, "pnpm-lock.yaml"))
+const preferred = hasBunLock && !hasPnpmLock ? "bun" : "pnpm"
+const order = preferred === "bun" ? ["bun", "pnpm"] : ["pnpm", "bun"]
+const candidates = order.flatMap((name) => managers[name])
 
 function run(candidate, args, options = {}) {
   return spawnSync(candidate.command, [...candidate.prefix, ...args], {
@@ -60,17 +72,24 @@ for (const candidate of candidates) {
   }
 }
 if (!manager) {
-  console.error("workspace-ui requires pnpm (preferred) or bun")
+  console.error(
+    `workspace-ui requires ${preferred} to match its lockfile, but it is not available; install ${preferred} (fallback: pnpm or bun)`,
+  )
   process.exit(1)
 }
 
 const isBun = manager.command.startsWith("bun")
-const args =
-  action === "install"
-    ? ["install"]
-    : isBun
-      ? ["run", action]
-      : ["run", action]
+if (preferred === "bun" && !isBun) {
+  console.error(
+    "[workspace-ui] bun.lock detected but bun is not available; falling back to pnpm. Install bun to match the committed lockfile.",
+  )
+} else if (preferred === "pnpm" && isBun) {
+  console.error(
+    "[workspace-ui] no bun.lock detected and pnpm/corepack is not available; falling back to bun.",
+  )
+}
+
+const args = action === "install" ? ["install"] : ["run", action]
 
 console.log(`[workspace-ui] ${manager.command} ${[...manager.prefix, ...args].join(" ")}`)
 const result = run(manager, args)
