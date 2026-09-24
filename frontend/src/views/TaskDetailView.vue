@@ -1,23 +1,23 @@
 <template>
   <section class="task-workspace" data-testid="task-workspace">
     <header v-if="task" class="task-header">
-      <RouterLink to="/tasks" class="button">返回任务列表</RouterLink>
+      <el-button @click="router.push('/tasks')">返回任务列表</el-button>
       <div class="task-title"><h1>{{ task.title }}</h1><small>{{ employeeName }} · {{ task.id }}</small></div>
       <RuntimeStatusBadge :projection="task" :show-detail="false" />
       <span v-if="repo" class="repo" :title="repo.commit">{{ repo.name }} / {{ repo.branch || 'detached' }} · {{ repo.commit?.slice(0, 8) }} · {{ repo.dirty ? `${repo.changes} 个变更` : '干净' }}</span>
-      <select v-if="binding?.sessions.length" v-model="selectedSession" aria-label="选择 Session">
-        <option v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id">Session #{{ binding.sessions.length - index }}{{ item.current ? ' · 当前' : ' · 历史只读' }}</option>
-      </select>
-      <button v-if="!task.current_session_id && !task.pending_message_id" class="button button--primary" :disabled="busy" @click="action('start')">启动任务</button>
-      <button v-if="awaitingConfirmation" class="button button--primary" :disabled="busy" @click="action('confirm')">确认完成</button>
-      <button v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" class="button" :disabled="busy" @click="action('stop')">{{ awaitingConfirmation ? '取消任务' : '停止' }}</button>
-      <button v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" class="button" :disabled="busy" @click="action('restart')">重新开始（新 Session）</button>
-      <button class="button" @click="showInfo = !showInfo">任务信息</button>
+      <el-select v-if="binding?.sessions.length" v-model="selectedSession" aria-label="选择 Session" class="session-select">
+        <el-option v-for="(item, index) in binding.sessions" :key="item.id" :label="`Session #${binding.sessions.length - index}${item.current ? ' · 当前' : ' · 历史只读'}`" :value="item.id" />
+      </el-select>
+      <el-button v-if="!task.current_session_id && !task.pending_message_id" type="primary" :loading="busy" :disabled="busy" @click="action('start')">启动任务</el-button>
+      <el-button v-if="awaitingConfirmation" type="primary" :loading="busy" :disabled="busy" @click="action('confirm')">确认完成</el-button>
+      <el-button v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" type="danger" plain :disabled="busy" @click="action('stop')">{{ awaitingConfirmation ? '取消任务' : '停止' }}</el-button>
+      <el-button v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" :disabled="busy" @click="action('restart')">重新开始（新 Session）</el-button>
+      <el-button @click="showInfo = !showInfo">任务信息</el-button>
     </header>
     <div v-if="error || task?.runtime_error || task?.pending_message_id" role="alert" class="workspace-alert">
       <span>{{ error || task?.runtime_error || '正在核对 Session 输入；启动中断时可先停止后重新开始。' }}</span><span>最后已知状态：{{ task?.runtime_status_label }}</span>
-      <button class="button" :disabled="busy" @click="reconnect">重连</button>
-      <button v-if="task?.pending_message_id" class="button" :disabled="busy" @click="action('retry-submission')">核对并重试未确认输入</button>
+      <el-button :loading="busy" :disabled="busy" @click="reconnect">重连</el-button>
+      <el-button v-if="task?.pending_message_id" :disabled="busy" @click="action('retry-submission')">核对并重试未确认输入</el-button>
     </div>
     <details v-if="showInfo && task" open class="task-info"><summary>任务信息</summary><p>{{ task.description }}</p>
       <p v-for="criterion in task.acceptance_criteria" :key="criterion.id">{{ criterion.content }}</p>
@@ -33,12 +33,13 @@
 </template>
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { Task, TaskWorkspaceBinding } from '@/api/types'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
 const route = useRoute()
+const router = useRouter()
 const store = useAstraStore()
 const task = ref<Task | null>(null)
 const binding = ref<TaskWorkspaceBinding | null>(null)

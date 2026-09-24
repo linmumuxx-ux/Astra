@@ -2,15 +2,15 @@
   <div class="page employee-page" data-testid="employee-list-page">
     <section class="page-intro compact-intro">
       <div><h2>数字员工</h2><p>集中管理员工职责、运行状态与执行配置</p></div>
-      <div class="employee-page__actions"><button class="button" type="button" :disabled="store.loading" @click="store.refresh()"><RefreshCw :size="16" :class="{ spin: store.loading }" /> 刷新</button><button class="button button--primary" type="button" @click="beginCreate"><Plus :size="17" /> 新建数字员工</button></div>
+      <div class="employee-page__actions"><el-button :loading="store.loading" :disabled="store.loading" @click="store.refresh()"><RefreshCw v-if="!store.loading" :size="16" />刷新</el-button><el-button type="primary" @click="beginCreate"><Plus :size="17" />新建数字员工</el-button></div>
     </section>
 
     <div class="filter-bar employee-filter">
-      <label class="search-box"><Search :size="17" /><input v-model="query" aria-label="搜索员工" placeholder="搜索员工名称 / 编号 / 职责 / 任务" /></label>
-      <select v-model="status" aria-label="员工状态"><option value="">状态：全部</option><option value="WORKING">工作中</option><option value="IDLE">空闲</option><option value="WAIT_HUMAN">需要人工处理</option><option value="PAUSED">已暂停</option><option value="ERROR">异常</option><option value="OFFLINE">离线</option></select>
-      <select v-model="role" aria-label="员工职责"><option value="">职责：全部</option><option v-for="item in roles" :key="item" :value="item">{{ item }}</option></select>
-      <select v-model="area" aria-label="所属区域"><option value="">区域：全部</option><option v-for="item in workspaceAreas" :key="item.id" :value="item.id">{{ item.name }}</option></select>
-      <select v-model="enabled" aria-label="启用状态"><option value="">启用：全部</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select>
+      <el-input v-model="query" class="employee-search" clearable aria-label="搜索员工" placeholder="搜索员工名称 / 编号 / 职责 / 任务"><template #prefix><Search :size="17" /></template></el-input>
+      <el-select v-model="status" aria-label="员工状态"><el-option label="状态：全部" value="" /><el-option label="工作中" value="WORKING" /><el-option label="空闲" value="IDLE" /><el-option label="需要人工处理" value="WAIT_HUMAN" /><el-option label="已暂停" value="PAUSED" /><el-option label="异常" value="ERROR" /><el-option label="离线" value="OFFLINE" /></el-select>
+      <el-select v-model="role" aria-label="员工职责"><el-option label="职责：全部" value="" /><el-option v-for="item in roles" :key="item" :label="item" :value="item" /></el-select>
+      <el-select v-model="area" aria-label="所属区域"><el-option label="区域：全部" value="" /><el-option v-for="item in workspaceAreas" :key="item.id" :label="item.name" :value="item.id" /></el-select>
+      <el-select v-model="enabled" aria-label="启用状态"><el-option label="启用：全部" value="" /><el-option label="已启用" value="enabled" /><el-option label="已停用" value="disabled" /></el-select>
       <span class="filter-summary">{{ filtered.length }} 名员工</span>
     </div>
 
@@ -27,20 +27,19 @@
               <td><RouterLink v-if="item.currentTask" class="task-link" :to="`/tasks/${item.currentTask.id}`" :title="item.currentTaskName" @click.stop><strong>{{ item.currentTaskName }}</strong><small>{{ platformCopy(item.currentTask.current_progress) || '等待进度更新' }}</small></RouterLink><span v-else>—</span></td>
               <td><span class="environment-cell"><strong>{{ environmentLabel(item.employee.execution_environment) }}</strong><small :title="item.employee.execution_environment?.model_name ?? ''">{{ item.employee.execution_environment?.model_name || '默认模型' }}</small></span></td>
               <td>{{ formatTime(item.lastActiveAt) }}</td>
-              <td><span class="enabled-tag" :data-enabled="item.employee.enabled">{{ item.employee.enabled ? '已启用' : '已停用' }}</span></td>
-              <td class="actions-col" @click.stop><div class="row-actions"><button type="button" :aria-label="`查看 ${item.name}`" @click="openDetail(item.id)">查看</button><button type="button" :aria-label="`编辑 ${item.name}`" @click="beginEdit(item.employee)">编辑</button><button type="button" :aria-label="`${item.employee.enabled ? '停用' : '启用'} ${item.name}`" :disabled="busyId === item.id" @click="toggleEnabled(item.employee)">{{ item.employee.enabled ? '停用' : '启用' }}</button><button type="button" class="row-action-danger" :aria-label="`删除 ${item.name}`" :disabled="busyId === item.id" @click="removeEmployee(item.employee)">删除</button></div></td>
+              <td><el-tag :type="item.employee.enabled ? 'success' : 'info'" effect="light">{{ item.employee.enabled ? '已启用' : '已停用' }}</el-tag></td>
+              <td class="actions-col" @click.stop><div class="row-actions"><el-button text :aria-label="`查看 ${item.name}`" @click="openDetail(item.id)">查看</el-button><el-button text :aria-label="`编辑 ${item.name}`" @click="beginEdit(item.employee)">编辑</el-button><el-button text :loading="busyId === item.id" :aria-label="`${item.employee.enabled ? '停用' : '启用'} ${item.name}`" :disabled="busyId === item.id" @click="toggleEnabled(item.employee)">{{ item.employee.enabled ? '停用' : '启用' }}</el-button><el-button type="danger" text :aria-label="`删除 ${item.name}`" :disabled="busyId === item.id" @click="removeEmployee(item.employee)">删除</el-button></div></td>
             </tr>
             <tr v-if="store.loading && !store.employees.length" v-for="index in 6" :key="`loading-${index}`" class="employee-row-loading"><td colspan="9"><span /></td></tr>
           </tbody>
         </table>
 
-        <div v-if="store.error && !store.employees.length" class="employee-table-state"><WifiOff :size="28" /><strong>员工数据加载失败</strong><p>{{ store.error }}</p><button class="button" type="button" @click="store.refresh()">重新加载</button></div>
-        <div v-else-if="!store.loading && !filtered.length" class="employee-table-state"><Search :size="28" /><strong>{{ store.employees.length ? '没有匹配员工' : '暂无数字员工' }}</strong><p>{{ store.employees.length ? '调整搜索或筛选条件后重试。' : '创建第一位数字员工后即可开始管理。' }}</p><button v-if="!store.employees.length" class="button button--primary" type="button" @click="beginCreate">新建数字员工</button></div>
+        <div v-if="store.error && !store.employees.length" class="employee-table-state"><WifiOff :size="28" /><strong>员工数据加载失败</strong><p>{{ store.error }}</p><el-button @click="store.refresh()">重新加载</el-button></div>
+        <div v-else-if="!store.loading && !filtered.length" class="employee-table-state"><Search :size="28" /><strong>{{ store.employees.length ? '没有匹配员工' : '暂无数字员工' }}</strong><p>{{ store.employees.length ? '调整搜索或筛选条件后重试。' : '创建第一位数字员工后即可开始管理。' }}</p><el-button v-if="!store.employees.length" type="primary" @click="beginCreate">新建数字员工</el-button></div>
       </div>
 
       <footer class="employee-pagination">
-        <span>共 {{ filtered.length }} 条，第 {{ page }} / {{ totalPages }} 页</span>
-        <nav aria-label="员工列表分页"><button type="button" :disabled="page === 1" aria-label="上一页" @click="page -= 1"><ChevronLeft :size="16" /></button><button v-for="number in visiblePages" :key="number" type="button" :class="{ active: page === number }" :aria-current="page === number ? 'page' : undefined" @click="page = number">{{ number }}</button><button type="button" :disabled="page === totalPages" aria-label="下一页" @click="page += 1"><ChevronRight :size="16" /></button></nav>
+        <el-pagination v-model:current-page="page" :page-size="pageSize" layout="total, prev, pager, next" :total="filtered.length" />
       </footer>
     </section>
 
@@ -51,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, Plus, RefreshCw, Search, WifiOff } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, WifiOff } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api } from '@/api/client'
@@ -87,10 +86,6 @@ const filtered = computed(() => models.value.filter((item) =>
 ))
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
-const visiblePages = computed(() => {
-  const start = Math.max(1, Math.min(page.value - 1, totalPages.value - 4))
-  return Array.from({ length: Math.min(5, totalPages.value) }, (_, index) => start + index)
-})
 const detailEmployee = computed(() => store.employees.find((employee) => employee.id === detailId.value) ?? null)
 const modalOpen = ref(false)
 const modalCreating = ref(false)
@@ -129,7 +124,7 @@ onMounted(async () => {
 
 <style scoped>
 .employee-page { display: grid; grid-template-rows: auto auto minmax(0,1fr); height: calc(100vh - 60px); min-height: 620px; padding-bottom: 22px; overflow: hidden; }
-.employee-page__actions { display: flex; gap: 9px; }.employee-filter { flex-wrap: nowrap; min-width: 0; margin-bottom: 14px; }.employee-filter .search-box { flex: 1; min-width: 230px; }.employee-filter select { min-width: 132px; }.employee-filter .filter-summary { flex: none; }
+.employee-page__actions { display: flex; gap: 9px; }.employee-filter { flex-wrap: nowrap; min-width: 0; margin-bottom: 14px; }.employee-filter .employee-search { flex: 1; min-width: 230px; }.employee-filter select { min-width: 132px; }.employee-filter .filter-summary { flex: none; }
 .employee-table-panel { display: grid; grid-template-rows: minmax(0,1fr) auto; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 13px; background: white; box-shadow: var(--astra-shadow-panel); }
 .employee-table-scroll { position: relative; min-height: 0; overflow: auto; }.employee-table-panel table { min-width: 1260px; table-layout: fixed; }.employee-table-panel thead { position: sticky; top: 0; z-index: 8; }.employee-table-panel th { height: 47px; padding: 10px 14px; border-bottom: 1px solid var(--astra-border); background: #f7faf8; font-size: var(--astra-font-control); }.employee-table-panel td { height: 67px; padding: 9px 14px; font-size: var(--astra-font-body); }.employee-table-panel tbody tr { cursor: pointer; }.employee-table-panel .employee-col { width: 220px; }.employee-table-panel .task-col { width: 220px; }.employee-table-panel th:nth-child(2) { width: 130px; }.employee-table-panel th:nth-child(3) { width: 150px; }.employee-table-panel th:nth-child(4) { width: 116px; }.employee-table-panel th:nth-child(6) { width: 180px; }.employee-table-panel th:nth-child(7) { width: 130px; }.employee-table-panel th:nth-child(8) { width: 90px; }.employee-table-panel .actions-col { position: sticky; right: 0; z-index: 6; width: 214px; background: white; box-shadow: -8px 0 15px rgba(35,76,59,.04); }.employee-table-panel thead .actions-col { z-index: 10; background: #f7faf8; }
 .employee-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }.employee-cell > span,.environment-cell,.task-link { display: grid; min-width: 0; }.employee-cell strong,.employee-cell small,.environment-cell strong,.environment-cell small,.task-link strong,.task-link small,.truncate { display: block; overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }.employee-cell strong,.task-link strong,.environment-cell strong { margin: 0; color: var(--astra-text-primary); font-size: var(--astra-font-label); }.employee-cell small,.task-link small,.environment-cell small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.employee-id { color: #42655b; font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }.task-link:hover strong { color: var(--astra-primary); }.enabled-tag { display: inline-flex; align-items:center; gap: 5px; color: #247655; font-size: var(--astra-font-control); }.enabled-tag::before { width: 6px; height: 6px; border-radius: 50%; background: var(--astra-success); content: ''; }.enabled-tag[data-enabled='false'] { color: #7f8e89; }.enabled-tag[data-enabled='false']::before { background: #a4afab; }
