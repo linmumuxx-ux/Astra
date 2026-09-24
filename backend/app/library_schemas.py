@@ -229,6 +229,7 @@ class KnowledgePage(BaseModel):
 
 class LibraryStats(BaseModel):
     knowledge_pages: int
+    visible_knowledge_total: int
     knowledge_spaces: int
     weekly_references: int
     published_experiences: int

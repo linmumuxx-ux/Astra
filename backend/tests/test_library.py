@@ -116,6 +116,86 @@ def test_library_web_api_browses_drafts_publishes_and_enforces_review_permission
         assert admin_stats["knowledge_pages"] == viewer_stats["knowledge_pages"] + 1
 
 
+def test_library_stats_visible_total_tracks_scope_statuses_and_unassigned_candidates():
+    """左树根节点与右侧列表的数量必须共用同一套可见权限口径。"""
+
+    with TestClient(app) as client:
+        space_id = client.get("/api/library/spaces").json()[0]["id"]
+        viewer_headers = {"X-Astra-User-Id": "viewer-scope", "X-Astra-Role": "viewer"}
+        reviewer_headers = {"X-Astra-User-Id": "reviewer-scope", "X-Astra-Role": "reviewer"}
+
+        admin_before = client.get("/api/library/stats").json()
+
+        draft = client.post(
+            "/api/library/knowledge",
+            json={
+                "space_id": space_id,
+                "title": unique("可见总数统计草稿条目"),
+                "type": "document",
+                "summary": "统计口径测试",
+                "content_md": "# 草稿",
+            },
+        ).json()
+        assert draft["status"] == "draft"
+
+        admin_after_draft = client.get("/api/library/stats").json()
+        # 可见总数按 visible_statuses 统计，草稿也要计入
+        assert admin_after_draft["visible_knowledge_total"] == admin_before["visible_knowledge_total"] + 1
+        # knowledge_pages 语义保持“仅已发布”，不受草稿影响
+        assert admin_after_draft["knowledge_pages"] == admin_before["knowledge_pages"]
+
+        # 未分配空间的候选经验：只有审核者口径可见
+        candidate_title = unique("未分配空间的候选经验")
+        candidate_id = f"KB-UNASSIGNED-{uuid4().hex[:10].upper()}"
+
+        async def seed_unassigned_candidate():
+            async with SessionLocal() as session:
+                session.add(
+                    KnowledgeItem(
+                        id=candidate_id,
+                        space_id=None,
+                        title=candidate_title,
+                        type="experience",
+                        status="candidate",
+                        created_by="test",
+                        updated_by="test",
+                    )
+                )
+                await session.commit()
+
+        asyncio.run(seed_unassigned_candidate())
+        admin_after_candidate = client.get("/api/library/stats").json()
+        assert (
+            admin_after_candidate["visible_knowledge_total"]
+            == admin_after_draft["visible_knowledge_total"] + 1
+        )
+
+        # 三种身份下，stats 的可见总数都必须等于同一未筛选列表的 total
+        for headers in ({}, viewer_headers, reviewer_headers):
+            stats = client.get("/api/library/stats", headers=headers).json()
+            listing = client.get("/api/library/knowledge", headers=headers).json()
+            assert stats["visible_knowledge_total"] == listing["total"]
+            assert stats["visible_knowledge_total"] >= stats["knowledge_pages"]
+
+        # viewer 只能看到已发布，可见总数与“仅已发布”口径一致
+        viewer_stats = client.get("/api/library/stats", headers=viewer_headers).json()
+        assert viewer_stats["knowledge_pages"] == viewer_stats["visible_knowledge_total"]
+
+        reviewer_list = client.get(
+            "/api/library/knowledge",
+            params={"keyword": candidate_title},
+            headers=reviewer_headers,
+        ).json()
+        assert reviewer_list["total"] == 1
+        assert reviewer_list["items"][0]["id"] == candidate_id
+        viewer_list = client.get(
+            "/api/library/knowledge",
+            params={"keyword": candidate_title},
+            headers=viewer_headers,
+        ).json()
+        assert viewer_list["total"] == 0
+
+
 def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
     employee_id = unique("employee-library")
     with TestClient(app) as client:

@@ -39,12 +39,12 @@
             <div class="markdown-body" v-html="safeMarkdown" />
           </section>
 
-          <section v-if="reviewActionMode && detail.status === 'candidate'" class="review-request-panel">
+          <section v-if="reviewActionMode && detail.status === 'candidate'" ref="reviewRequestPanel" class="review-request-panel">
             <div>
               <strong>{{ reviewActionMode === 'supplement' ? '退回补充' : '驳回候选经验' }}</strong>
               <p>{{ reviewActionMode === 'supplement' ? '明确指出需要补充的内容或证据，避免无目标地重写整条经验。' : '请说明驳回原因，便于后续生成质量分析。' }}</p>
             </div>
-            <textarea v-model.trim="review.reason" rows="3" :placeholder="reviewActionMode === 'supplement' ? '例如：请补充异常场景下的验证证据，并明确适用边界。' : '请输入驳回原因'" autofocus />
+            <textarea ref="reviewReasonInput" v-model.trim="review.reason" rows="3" :placeholder="reviewActionMode === 'supplement' ? '例如：请补充异常场景下的验证证据，并明确适用边界。' : '请输入驳回原因'" />
             <div class="review-request-actions">
               <button type="button" class="button" :disabled="working" @click="reviewActionMode = null">取消</button>
               <button type="button" class="button" :class="{ 'button--danger': reviewActionMode === 'reject', 'button--primary': reviewActionMode === 'supplement' }" :disabled="working || review.reason.length < 2" @click="confirmReviewAction">
@@ -83,7 +83,7 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { BadgeCheck, ChevronRight, CircleCheck, ClipboardEdit, Clock3, FileCheck2, Link2, ListTree, LoaderCircle, MessageSquareWarning, Pencil, Share2, Sparkles, Star, ThumbsUp, TriangleAlert, X } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { KnowledgeDetail, KnowledgeUsageRecord, RelatedTask } from '@/api/types'
 
@@ -93,6 +93,8 @@ const reviewEditing = ref(false)
 const relatedOpen = ref(false)
 const copied = ref(false)
 const reviewActionMode = ref<'supplement' | 'reject' | null>(null)
+const reviewRequestPanel = ref<HTMLElement | null>(null)
+const reviewReasonInput = ref<HTMLTextAreaElement | null>(null)
 const review = reactive({ space_id: '', title: '', summary: '', tags: '', content_md: '', verification_status: 'unverified', reason: '' })
 let previousOverflow = ''
 marked.setOptions({ gfm: true, breaks: false })
@@ -142,9 +144,11 @@ const experienceFields = computed(() => [
   { label: '修改内容摘要', value: experienceValue(['change_summary', 'changes', 'modification_summary']) },
   { label: '重试与验证结果', value: experienceValue(['retry_result', 'verification_result', 'result']) },
 ].filter((field) => field.value !== '—'))
-function openReviewAction(mode: 'supplement' | 'reject') {
+async function openReviewAction(mode: 'supplement' | 'reject') {
   reviewActionMode.value = mode
-  review.reason = ''
+  await nextTick()
+  reviewRequestPanel.value?.scrollIntoView({ block: 'nearest' })
+  reviewReasonInput.value?.focus({ preventScroll: true })
 }
 function confirmReviewAction() {
   if (!reviewActionMode.value || review.reason.length < 2) return

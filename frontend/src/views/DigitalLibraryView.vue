@@ -32,7 +32,7 @@
       <KnowledgeSpacePanel
         :spaces="spaces"
         :selected-id="filters.spaceId"
-        :total="stats?.knowledge_pages ?? 0"
+        :total="stats?.visible_knowledge_total ?? 0"
         :can-manage="Boolean(permissions?.can_manage)"
         @select="selectSpace"
         @create="createSpace"
@@ -99,6 +99,25 @@
       <template #footer>
         <button type="button" class="button" :disabled="working" @click="publishDialog = null">取消</button>
         <button type="submit" form="knowledge-publish-form" class="button button--primary" :disabled="!publishSpaceId || working"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
+      </template>
+    </AstraDialog>
+
+    <AstraDialog
+      v-if="deleteBlocked"
+      :open="true"
+      title="无法删除目录"
+      :subtitle="`「${deleteBlocked.name}」不是空目录。`"
+      dismissible
+      testid="knowledge-space-delete-blocked"
+      width="min(460px,100%)"
+      @close="deleteBlocked = null"
+    >
+      <div class="delete-blocked">
+        <p>该目录下还有 <strong>{{ Array.isArray(deleteBlocked.children) ? deleteBlocked.children.length : 0 }}</strong> 个直接子目录、<strong>{{ deleteBlocked.knowledge_count }}</strong> 条直接知识（子树共 {{ deleteBlocked.subtree_knowledge_count }} 条知识）。</p>
+        <p>请先删除或移动这些子目录与知识，待目录为空后再删除本目录。</p>
+      </div>
+      <template #footer>
+        <button type="button" class="button button--primary" @click="deleteBlocked = null">知道了</button>
       </template>
     </AstraDialog>
   </div>
@@ -177,6 +196,7 @@ const usages = ref<KnowledgeUsageRecord[]>([])
 const usagesLoading = ref(false)
 const moveDialog = ref<{ ids: string[] } | null>(null)
 const publishDialog = ref<{ ids: string[] } | null>(null)
+const deleteBlocked = ref<KnowledgeSpace | null>(null)
 const moveSpaceId = ref('')
 const publishSpaceId = ref('')
 const publishVerification = ref('verified')
@@ -301,7 +321,9 @@ async function renameSpace(space: KnowledgeSpace, name: string, done: (success: 
   }
 }
 async function deleteSpace(space: KnowledgeSpace) {
-  const confirmed = await confirmDialog({ title: '删除目录', message: `确认删除「${space.name}」？仅空目录可以删除，其下内容不会被级联删除。`, confirmLabel: '删除目录', danger: true })
+  const childCount = Array.isArray(space.children) ? space.children.length : 0
+  if (childCount > 0 || space.knowledge_count > 0) { deleteBlocked.value = space; return }
+  const confirmed = await confirmDialog({ title: '删除目录', message: `确认删除「${space.name}」？删除后无法恢复。`, confirmLabel: '删除目录', danger: true })
   if (!confirmed) return
   try { await api.deleteLibrarySpace(space.id); if (filters.spaceId === space.id) filters.spaceId = null; notify('目录已删除'); await Promise.all([refreshOverview(), loadList()]) } catch (error) { notify(message(error, '删除失败'), 'error') }
 }
@@ -361,7 +383,7 @@ async function loadRelatedTasks() { if (!detail.value || relatedLoading.value) r
 async function publish(payload: Record<string, unknown>) { if (!detail.value) return; await reviewAction(async () => api.publishLibraryKnowledge(detail.value!.id, payload), '候选经验已发布，数字员工现可立即检索') }
 async function reject(reason: string) { if (!detail.value) return; await reviewAction(async () => api.rejectLibraryKnowledge(detail.value!.id, reason), '候选经验已驳回') }
 async function supplement(reason: string) { if (!detail.value) return; await reviewAction(async () => api.supplementLibraryKnowledge(detail.value!.id, reason), '已记录退回补充要求') }
-async function reviewAction(action: () => Promise<KnowledgeDetail>, success: string) { detailWorking.value = true; detailError.value = ''; try { detail.value = await action(); notify(success); await Promise.all([refreshOverview(), loadList()]) } catch (error) { detailError.value = message(error, '审核操作失败') } finally { detailWorking.value = false } }
+async function reviewAction(action: () => Promise<KnowledgeDetail>, success: string) { detailWorking.value = true; detailError.value = ''; try { detail.value = await action(); notify(success); await Promise.all([refreshOverview(), loadList()]) } catch (error) { const text = message(error, '审核操作失败'); detailError.value = text; notify(text, 'error') } finally { detailWorking.value = false } }
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }
 const sourceLabel = (value: string) => ({ task: '任务沉淀', manual: '人工创建', import: '文档导入', system: '系统同步' }[value] ?? value)
 function findNode(nodes: KnowledgeSpace[], id: string | null): KnowledgeSpace | null {
@@ -391,7 +413,8 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
-.digital-library-page{position:relative;display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow:hidden}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:0;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.digital-library-page{position:relative;display:flex;flex-direction:column;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow-y:auto}.digital-library-page>*{flex:0 0 auto}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 @media(max-width:1100px){.digital-library-page{height:auto;min-height:0;overflow:visible}.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-workspace{grid-template-columns:270px minmax(0,1fr);min-height:620px}.library-status-row{align-items:flex-start;flex-direction:column}}
 @media(max-width:780px){.library-workspace{grid-template-columns:1fr;overflow:visible}.library-head-actions .button{flex:1}.knowledge-service{flex-wrap:wrap}}
+.delete-blocked{display:grid;gap:8px}.delete-blocked p{margin:0;color:var(--astra-text-secondary);line-height:1.6}.delete-blocked p strong{color:var(--astra-text-primary)}
 </style>

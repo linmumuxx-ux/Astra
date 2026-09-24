@@ -433,6 +433,12 @@ class KnowledgeService:
         published_count = await self.session.scalar(
             select(func.count(KnowledgeItem.id)).where(*published_conditions)
         )
+        visible_conditions = [KnowledgeItem.status.in_(principal.visible_statuses)]
+        if scope_condition is not None:
+            visible_conditions.append(scope_condition)
+        visible_count = await self.session.scalar(
+            select(func.count(KnowledgeItem.id)).where(*visible_conditions)
+        )
         if principal.is_admin:
             space_count = await self.session.scalar(
                 select(func.count(KnowledgeSpace.id)).where(KnowledgeSpace.status == "active")
@@ -470,6 +476,7 @@ class KnowledgeService:
             )
         return LibraryStats(
             knowledge_pages=published_count or 0,
+            visible_knowledge_total=visible_count or 0,
             knowledge_spaces=space_count or 0,
             weekly_references=references or 0,
             published_experiences=published_experiences or 0,

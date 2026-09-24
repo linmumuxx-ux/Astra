@@ -29,7 +29,7 @@
             <i v-else />
           </span>
           <span class="space-label"><Folder :size="15" /><em :title="node.name">{{ node.name }}</em></span>
-          <strong :title="`${node.subtree_knowledge_count} 条知识（含子目录）`">{{ node.knowledge_count }}</strong>
+          <strong :title="`当前目录可见 ${node.subtree_knowledge_count} 条知识（含子目录；本目录直接 ${node.knowledge_count} 条）`">{{ node.subtree_knowledge_count }}</strong>
         </button>
         <div v-if="canManage" class="space-actions" @click.stop>
           <button type="button" :aria-label="`管理目录 ${node.name}`" @click="emit('menu', node.id)"><MoreHorizontal :size="14" /></button>

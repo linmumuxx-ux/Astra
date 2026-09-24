@@ -12,7 +12,13 @@
     </div>
 
     <nav aria-label="知识空间目录树">
-      <button type="button" class="space-all" :class="{ selected: selectedId === null }" @click="select(null)">
+      <button
+        type="button"
+        class="space-all"
+        :class="{ selected: selectedId === null }"
+        :title="`当前身份可见的全部知识 ${total} 条（含未归入目录的知识）`"
+        @click="select(null)"
+      >
         <span><Layers3 :size="16" />全部知识</span><strong>{{ total }}</strong>
       </button>
 

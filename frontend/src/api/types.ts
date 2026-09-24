@@ -201,6 +201,7 @@ export interface LibraryPermissions {
 
 export interface LibraryStats {
   knowledge_pages: number
+  visible_knowledge_total: number
   knowledge_spaces: number
   weekly_references: number
   published_experiences: number
