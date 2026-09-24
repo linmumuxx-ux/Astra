@@ -192,6 +192,50 @@ def find_npm() -> str:
     return npm
 
 
+def upstream_workspace_ui_version() -> str:
+    """返回 workspace-ui 固定的上游 OpenCode 版本（UPSTREAM.json tag）。
+
+    UPSTREAM.json 是固定上游 UI 产物的唯一来源；缺失或损坏时必须显式失败，
+    不能静默跳过启动时的固定上游版本校验。
+    """
+
+    path = ROOT / "workspace-ui" / "UPSTREAM.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"workspace-ui upstream metadata unreadable: {path} ({exc})"
+        ) from exc
+    tag = data.get("tag") if isinstance(data, dict) else None
+    version = str(tag).strip().removeprefix("v") if isinstance(tag, str) else ""
+    if not version:
+        raise RuntimeError(f"workspace-ui upstream metadata missing valid 'tag': {path}")
+    return version
+
+
+def missing_workspace_ui_bundles(settings: Any) -> list[Path]:
+    """返回启动所需但缺失的 OpenCode 版本化 Workspace UI 产物路径。
+
+    Runtime 实际引用 ``/opencode-workspace/<version>/index.html``，因此只校验配置的
+    默认版本与 UPSTREAM.json 固定版本，不额外维护版本清单。
+    """
+
+    versions: list[str] = []
+    for value in (
+        settings.opencode_workspace_ui_default_version,
+        upstream_workspace_ui_version(),
+    ):
+        version = str(value or "").strip().removeprefix("v")
+        if version and version not in versions:
+            versions.append(version)
+    bundles = FRONTEND / "public" / "opencode-workspace"
+    return [
+        bundles / version / "index.html"
+        for version in versions
+        if not (bundles / version / "index.html").is_file()
+    ]
+
+
 def validate_start(mode: str, settings: Any) -> None:
     if sys.version_info < (3, 11):
         raise RuntimeError("Astra requires Python 3.11+")
@@ -199,9 +243,13 @@ def validate_start(mode: str, settings: Any) -> None:
         raise RuntimeError("root .env not found")
     if not (FRONTEND / "node_modules").is_dir():
         raise RuntimeError("frontend dependencies missing; run: cd frontend && npm ci")
-    if not (FRONTEND / "public" / "opencode-workspace" / "index.html").is_file():
+    missing = missing_workspace_ui_bundles(settings)
+    if missing:
+        detail = "; ".join(str(path) for path in missing)
         raise RuntimeError(
-            "workspace-ui bundle missing; rebuild with: node scripts/workspace_ui.mjs build"
+            f"workspace-ui bundle missing: {detail}; "
+            "restore the committed bundle from the repository, or rebuild the "
+            "configured upstream version with: node scripts/workspace_ui.mjs build"
         )
 
     if mode == "pro":

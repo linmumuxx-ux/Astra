@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,3 +120,91 @@ def test_production_gateway_validation_skips_when_disabled():
     service.validate_gateway_production(
         _settings(gateway_enabled=False, gateway_master_key=None, gateway_control_credentials="")
     )
+
+
+def _workspace_ui_tree(
+    tmp_path: Path,
+    *,
+    installed: list[str],
+    upstream_tag: str | None = "v1.18.31",
+    upstream_raw: str | None = None,
+):
+    frontend = tmp_path / "frontend"
+    (frontend / "node_modules").mkdir(parents=True)
+    bundles = frontend / "public" / "opencode-workspace"
+    bundles.mkdir(parents=True)
+    # 历史遗留的根产物存在，但版本化产物才是 Runtime 实际引用的入口。
+    (bundles / "index.html").write_text("legacy", encoding="utf-8")
+    for version in installed:
+        (bundles / version).mkdir(parents=True)
+        (bundles / version / "index.html").write_text("ok", encoding="utf-8")
+    upstream = tmp_path / "workspace-ui"
+    upstream.mkdir()
+    # upstream_tag=None 表示 UPSTREAM.json 缺失，upstream_raw 用于写入损坏内容。
+    if upstream_raw is not None:
+        (upstream / "UPSTREAM.json").write_text(upstream_raw, encoding="utf-8")
+    elif upstream_tag is not None:
+        (upstream / "UPSTREAM.json").write_text(
+            json.dumps({"tag": upstream_tag}), encoding="utf-8"
+        )
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    return frontend
+
+
+def test_validate_start_accepts_default_and_upstream_bundles(tmp_path, monkeypatch):
+    frontend = _workspace_ui_tree(
+        tmp_path, upstream_tag="v1.18.31", installed=["1.2.27", "1.18.31"]
+    )
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "FRONTEND", frontend)
+
+    service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+
+
+def test_validate_start_rejects_missing_upstream_bundle(tmp_path, monkeypatch):
+    # 根 index.html 与默认版本都存在，只有上游版本包缺失。
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.2.27"])
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "FRONTEND", frontend)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+
+    message = str(excinfo.value)
+    assert "1.18.31" in message
+    assert "index.html" in message
+
+
+def test_validate_start_rejects_missing_default_bundle(tmp_path, monkeypatch):
+    # 上游版本包存在，只有默认版本（历史 RuntimeSession 回退）包缺失。
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.18.31"])
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "FRONTEND", frontend)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+
+    message = str(excinfo.value)
+    assert "1.2.27" in message
+    assert "index.html" in message
+    # 默认版本产物是仓库内提交的静态资源；提示必须给出恢复方式，
+    # 不能只建议仅构建上游版本的 workspace_ui build。
+    assert "restore" in message.lower()
+
+
+@pytest.mark.parametrize("upstream_raw", [None, "{ not valid json"])
+def test_validate_start_rejects_invalid_upstream_metadata(
+    tmp_path, monkeypatch, upstream_raw
+):
+    # 上游元数据缺失或损坏时必须显式失败，不能静默跳过固定上游 UI 校验。
+    if upstream_raw is None:
+        frontend = _workspace_ui_tree(tmp_path, upstream_tag=None, installed=["1.2.27"])
+    else:
+        frontend = _workspace_ui_tree(tmp_path, upstream_raw=upstream_raw, installed=["1.2.27"])
+    monkeypatch.setattr(service, "ROOT", tmp_path)
+    monkeypatch.setattr(service, "FRONTEND", frontend)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+
+    assert "UPSTREAM.json" in str(excinfo.value)

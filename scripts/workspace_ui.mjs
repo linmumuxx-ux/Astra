@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import path from "node:path"
@@ -12,18 +12,29 @@ if (!["install", "build", "type-check"].includes(action)) {
   process.exit(2)
 }
 
-const bundle = path.join(root, "frontend", "public", "opencode-workspace", "index.html")
+const upstreamTag = JSON.parse(
+  readFileSync(path.join(workspace, "UPSTREAM.json"), "utf8"),
+).tag
+const version = String(upstreamTag).replace(/^v/, "")
+const bundle = path.join(
+  root,
+  "frontend",
+  "public",
+  "opencode-workspace",
+  version,
+  "index.html",
+)
 const dependenciesInstalled = existsSync(path.join(workspace, "node_modules"))
 
 if (action === "build" && !dependenciesInstalled) {
   if (existsSync(bundle)) {
     console.log(
-      "[workspace-ui] workspace-ui dependencies are not installed; reusing committed production bundle at frontend/public/opencode-workspace",
+      `[workspace-ui] workspace-ui dependencies are not installed; reusing committed production bundle at frontend/public/opencode-workspace/${version}`,
     )
     process.exit(0)
   }
   console.error(
-    "[workspace-ui] dependencies missing and no committed bundle; run: node scripts/workspace_ui.mjs install",
+    `[workspace-ui] dependencies missing and no committed bundle for OpenCode ${version} at frontend/public/opencode-workspace/${version}/index.html; run: node scripts/workspace_ui.mjs install`,
   )
   process.exit(1)
 }
