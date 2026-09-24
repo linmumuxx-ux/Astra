@@ -130,17 +130,35 @@ test('数字图书馆支持当前空间搜索、安全 Markdown 弹框和滚动�
   expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden')
 })
 
-test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出现', async ({ page }) => {
-  await page.route('**/api/library/spaces', async (route) => {
-    const response = await route.fetch()
-    const spaces = await response.json()
-    const flatSpaces = spaces.map(({ children: _children, subtree_knowledge_count: _count, ...space }: Record<string, unknown>) => space)
-    await route.fulfill({ response, json: flatSpaces })
-  })
+test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出现', async ({ page, request }) => {
+  const spacesResponse = await request.get('/api/library/spaces')
+  expect(spacesResponse.ok()).toBeTruthy()
+  const spaces = await spacesResponse.json()
+  const flatSpaces = spaces.map(({ children: _children, subtree_knowledge_count: _count, ...space }: Record<string, unknown>) => space)
+  await page.route('**/api/library/spaces', (route) => route.fulfill({ json: flatSpaces }))
   await page.route('**/api/library/knowledge/*/usages*', (route) => route.fulfill({
     status: 404,
     json: { detail: 'Not Found' },
   }))
+
+  const spaceId = spaces[0].id
+  const title = `平铺空间 E2E ${Date.now()}`
+  const createdResponse = await request.post('/api/library/knowledge', {
+    data: {
+      space_id: spaceId,
+      title,
+      type: 'experience',
+      summary: '验证平铺空间响应下的知识详情展示',
+      content_md: '## 问题现象\n\n平铺空间响应不应影响知识详情。',
+      tags: ['平铺空间'],
+    },
+  })
+  expect(createdResponse.ok()).toBeTruthy()
+  const created = await createdResponse.json()
+  const publishedResponse = await request.post(`/api/library/knowledge/${created.id}/publish`, {
+    data: { space_id: spaceId, verification_status: 'verified' },
+  })
+  expect(publishedResponse.ok()).toBeTruthy()
 
   await page.goto('/library')
   const library = page.getByTestId('digital-library-page')
@@ -148,7 +166,9 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
   await expect(library.locator('.library-error')).toHaveCount(0)
   await expect(library.getByText('新建子目录', { exact: true })).toHaveCount(0)
 
-  await library.locator('.knowledge-table-wrap tbody tr').first().click()
+  const row = library.locator('.knowledge-table-wrap tbody tr').filter({ hasText: title })
+  await expect(row).toBeVisible()
+  await row.click()
   const detail = page.getByTestId('knowledge-detail-dialog')
   await expect(detail).toBeVisible()
   await expect(detail.locator('.detail-error')).toHaveCount(0)
@@ -284,8 +304,10 @@ test('数字员工列表就地启用停用与删除', async ({ page, request }) 
   await expect(row).toBeVisible()
   await row.getByRole('button', { name: `停用 ${employeeName}` }).click()
   await expect(row.getByRole('button', { name: `启用 ${employeeName}` })).toBeVisible()
-  page.on('dialog', (dialog) => dialog.accept())
   await row.getByRole('button', { name: `删除 ${employeeName}` }).click()
+  const confirm = page.getByTestId('astra-confirm-dialog')
+  await expect(confirm).toBeVisible()
+  await confirm.getByRole('button', { name: '删除员工' }).click()
   await expect(page.locator('tr', { hasText: employeeName })).toHaveCount(0)
   expect((await request.get(`/api/employees/${employeeId}`)).status()).toBe(404)
 })
