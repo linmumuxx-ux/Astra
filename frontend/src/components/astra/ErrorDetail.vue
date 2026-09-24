@@ -8,9 +8,9 @@
         <p v-if="description">{{ description }}</p>
         <code v-if="code">HTTP {{ code }}</code>
       </div>
-      <button v-if="rawError" type="button" class="button button--compact" @click="expanded = !expanded">
+      <el-button v-if="rawError" size="small" @click="expanded = !expanded">
         {{ expanded ? '收起' : '查看原始错误' }}
-      </button>
+      </el-button>
     </div>
     <pre v-if="expanded && rawError">{{ rawError }}</pre>
   </div>

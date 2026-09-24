@@ -47,7 +47,7 @@
     <div v-if="!employees.length" class="office-scene__message">
       <strong>数字办公室还没有员工</strong>
       <span>创建员工后，他们会进入对应团队的固定工位。</span>
-      <RouterLink class="button button--primary" to="/employees?create=1">创建数字员工</RouterLink>
+      <el-button type="primary" @click="$router.push('/employees?create=1')">创建数字员工</el-button>
     </div>
     <div v-else-if="query && !matchedIds.size" class="office-scene__message">
       <strong>没有找到“{{ query }}”</strong><span>可搜索员工姓名、编号、岗位或当前任务。</span>
@@ -58,7 +58,6 @@
 <script setup lang="ts">
 import { ChevronDown } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import TeamZone from '@/components/office/TeamZone.vue'
 import type { OfficeTeam } from '@/features/office/officeLayout'
 import { workspaceEmployeeMatches, type WorkspaceEmployee } from '@/features/workspace/eventAdapter'

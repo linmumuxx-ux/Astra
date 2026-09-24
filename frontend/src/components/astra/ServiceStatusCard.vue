@@ -12,15 +12,15 @@
         <span v-if="detail" class="service-status-card__detail">{{ detail }}</span>
       </div>
       <div class="service-status-card__actions">
-        <button v-if="syncable" type="button" class="button button--warning button--compact" :disabled="syncing" @click="$emit('sync')">
+        <el-button v-if="syncable" type="warning" plain size="small" :loading="syncing" :disabled="syncing" @click="$emit('sync')">
           {{ syncing ? '同步中…' : '立即同步' }}
-        </button>
-        <button v-if="recheckable" type="button" class="button button--compact" :disabled="checking" @click="$emit('recheck')">
+        </el-button>
+        <el-button v-if="recheckable" size="small" :loading="checking" :disabled="checking" @click="$emit('recheck')">
           重新检测
-        </button>
-        <button v-if="rawError" type="button" class="button button--compact" @click="expanded = !expanded">
+        </el-button>
+        <el-button v-if="rawError" size="small" @click="expanded = !expanded">
           {{ expanded ? '收起详情' : '查看详情' }}
-        </button>
+        </el-button>
       </div>
     </div>
     <div v-if="expanded && rawError" class="service-status-card__error">
