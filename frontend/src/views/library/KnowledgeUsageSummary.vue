@@ -5,18 +5,20 @@
         <h3>知识使用分析</h3>
         <p>{{ entryLine }}</p>
       </div>
-      <button type="button" class="button" @click="detailOpen = true">查看详情</button>
+      <el-button @click="detailOpen = true">查看详情</el-button>
     </div>
 
-    <AstraDialog
-      :open="detailOpen"
+    <el-dialog
+      :model-value="detailOpen"
       title="知识使用分析"
-      :subtitle="`最近 ${days} 天`"
-      dismissible
-      testid="knowledge-usage-dialog"
-      width="min(760px,100%)"
+      width="min(760px, calc(100vw - 32px))"
+      append-to-body
+      lock-scroll
+      destroy-on-close
+      data-testid="knowledge-usage-dialog"
       @close="detailOpen = false"
     >
+      <p class="astra-dialog-subtitle">最近 {{ days }} 天</p>
       <div v-if="hasUsage" class="usage-summary__body">
         <div class="usage-kpis">
           <article><span><Quote :size="16" /></span><small>总引用次数</small><strong>{{ totalReferences }}</strong></article>
@@ -34,7 +36,7 @@
         </div>
       </div>
       <p v-else class="usage-summary__empty">最近 {{ days }} 天暂无知识引用，数字员工使用知识后这里会展示引用趋势与 TOP 知识。</p>
-    </AstraDialog>
+    </el-dialog>
   </section>
 </template>
 
@@ -42,7 +44,6 @@
 import { BookOpen, LibraryBig, Quote } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { LibraryUsageSummary } from '@/api/types'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 
 const props = defineProps<{ summary: LibraryUsageSummary | null }>()
 const detailOpen = ref(false)
@@ -62,7 +63,7 @@ const barHeight = (value: number) => value ? Math.max(12, Math.round(value / max
 <style scoped>
 .usage-summary { margin-right: 52px; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: rgba(255,255,255,.92); box-shadow: var(--astra-shadow-panel); }
 .usage-summary__entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 66px; padding: 13px 16px; }
-.usage-summary h3,.usage-summary p,.usage-summary h4 { margin: 0; }.usage-summary h3 { color: var(--astra-text-primary); }.usage-summary__entry p { margin-top: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.usage-summary__entry .button { flex: none; }
+.usage-summary h3,.usage-summary p,.usage-summary h4 { margin: 0; }.usage-summary h3 { color: var(--astra-text-primary); }.usage-summary__entry p { margin-top: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.usage-summary__entry :deep(.el-button) { flex: none; }
 .usage-summary__empty { color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.6; }
 .usage-summary__body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .usage-kpis { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3,1fr); gap: 8px; }.usage-kpis article { display: grid; align-content: center; min-width: 0; padding: 12px; border-radius: 9px; background: #f5f9f7; }.usage-kpis span { display: grid; place-items: center; width: 29px; height: 29px; color: var(--astra-primary-bright); border-radius: 8px; background: var(--astra-primary-soft); }.usage-kpis small { margin-top: 6px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.usage-kpis strong { margin-top: 2px; color: var(--astra-text-primary); font: var(--astra-weight-bold) var(--astra-font-kpi) var(--astra-font-display); }.usage-kpis .text-value { overflow: hidden; font-size: var(--astra-font-emphasis); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
