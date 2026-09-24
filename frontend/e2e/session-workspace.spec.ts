@@ -1,14 +1,24 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 // Isolated protocol fixture; live acceptance is in session-workspace-real.spec.ts.
-test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，续聊保持 Session', async ({ page }) => {
+type WorkspaceFixture = {
+  requests: Array<{path: string; body: any}>
+  errors: string[]
+  frame: ReturnType<Page['frameLocator']>
+  sid: string
+}
+
+// 版本化 Workspace UI 共享的协议夹具：binding 与 OpenCode 原生 API 都按 version 生成，
+// 保证 iframe 载入的 UI 与 server 版本一致。1.18.31 与 1.2.27 复用同一份 mock。
+async function installWorkspaceFixture(page: Page, version: string): Promise<WorkspaceFixture> {
   const requests: Array<{path: string; body: any}> = []
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   const directory = '/test/workspace'
   const sid = 'ses_workspace'
   const now = Date.now()
-  const info = {id: sid, slug: 'task-workspace', projectID: 'project_test', directory, version: '1.18.31', title: 'Workspace acceptance', time: {created: now - 3000, updated: now}, summary: {additions: 1, deletions: 1, files: 1}}
+  const workspaceUi = `/opencode-workspace/${version}/index.html`
+  const info = {id: sid, slug: 'task-workspace', projectID: 'project_test', directory, version, title: 'Workspace acceptance', time: {created: now - 3000, updated: now}, summary: {additions: 1, deletions: 1, files: 1}}
   const task = {id: 'T-WORKSPACE', title: 'Workspace acceptance', description: 'Use native OpenCode', status: 'FAILED', runtime_state: 'FAILED', runtime_status_label: '执行失败', runtime_detail: '', runtime_connection: 'CONNECTED', current_session_id: sid, workspace: directory, employee_id: 'E1', acceptance_criteria: [], started_at: new Date(now - 3000).toISOString(), created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString()}
   const diff = [{file: 'hello.ts', before: 'export const hello = "before"\n', after: 'export const hello = "after"\n', additions: 1, deletions: 1, status: 'modified'}]
   const model = {id: 'test-model', providerID: 'test', name: 'Test model', api: {id: 'test-model', url: '', npm: ''}, capabilities: {temperature: true, reasoning: false, attachment: true, toolcall: true, input: {text: true, image: true}, output: {text: true}}, cost: {input: 0, output: 0, cache: {read: 0, write: 0}}, limit: {context: 128000, output: 4096}, status: 'active', options: {}, headers: {}, release_date: '2026-01-01'}
@@ -32,7 +42,7 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
       }
       if (native === '/global/event') return route.fulfill({contentType: 'text/event-stream', body: `data: ${JSON.stringify({directory, payload: {type: 'server.connected', properties: {}}})}\n\n`})
       const data: Record<string, unknown> = {
-        '/global/health': {healthy: true, version: '1.18.31'}, '/global/config': {}, '/config': {model: 'test/test-model', snapshot: true},
+        '/global/health': {healthy: true, version}, '/global/config': {}, '/config': {model: 'test/test-model', snapshot: true},
         '/path': {directory, worktree: directory, home: directory, config: directory, state: directory},
         '/project': [{id: 'project_test', worktree: directory, vcs: 'git', time: {created: now}, sandboxes: []}],
         '/project/current': {id: 'project_test', worktree: directory, vcs: 'git', time: {created: now}, sandboxes: []},
@@ -48,7 +58,7 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
       if (!(native in data)) { errors.push(`Unhandled native GET: ${native}`); return route.fulfill({status: 404, json: {message: native}}) }
       return route.fulfill({json: data[native]})
     }
-    if (path.endsWith('/workspace')) return route.fulfill({json: {task_id: task.id, task_status: task.status, runtime: {server: `/api/tasks/${task.id}/opencode`, session_id: sid, workspace: directory, connection: 'CONNECTED', error: null, opencode_version: '1.18.31', workspace_ui: '/opencode-workspace/1.18.31/index.html'}, sessions: [{id: sid, workspace: directory, current: true, created_at: task.created_at, status: 'RUNNING', superseded_by: null, finished_at: null, opencode_version: '1.18.31', workspace_ui: '/opencode-workspace/1.18.31/index.html'}], history: []}})
+    if (path.endsWith('/workspace')) return route.fulfill({json: {task_id: task.id, task_status: task.status, runtime: {server: `/api/tasks/${task.id}/opencode`, session_id: sid, workspace: directory, connection: 'CONNECTED', error: null, opencode_version: version, workspace_ui: workspaceUi}, sessions: [{id: sid, workspace: directory, current: true, created_at: task.created_at, status: 'RUNNING', superseded_by: null, finished_at: null, opencode_version: version, workspace_ui: workspaceUi}], history: []}})
     if (path.endsWith('/repo')) return route.fulfill({json: {name: 'sample', branch: 'main', commit: '0123456789abcdef', dirty: true, changes: 1}})
     if (path === '/api/tasks/T-WORKSPACE') return route.fulfill({json: task})
     if (path === '/api/tasks') return route.fulfill({json: [task]})
@@ -56,9 +66,13 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
     if (path.endsWith('/stream')) return route.fulfill({contentType: 'text/event-stream', body: 'event: connected\ndata: {}\n\n'})
     return route.fulfill({json: path === '/api/system/metrics' ? {} : []})
   })
+  return {requests, errors, frame: page.frameLocator('iframe[title="OpenCode Task Workspace"]'), sid}
+}
+
+test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，续聊保持 Session', async ({ page }) => {
+  const { requests, errors, frame, sid } = await installWorkspaceFixture(page, '1.18.31')
   await page.goto('/tasks/T-WORKSPACE')
   await expect(page.getByTestId('task-workspace')).toBeVisible()
-  const frame = page.frameLocator('iframe[title="OpenCode Task Workspace"]')
   await expect(frame.locator('[data-component="prompt-input"]')).toBeVisible({timeout: 20000})
   await expect(frame.getByText('Please update hello.ts', {exact: true})).toBeVisible()
   await expect(frame.getByText('Updated the greeting in hello.ts.', {exact: true})).toBeVisible()
@@ -82,4 +96,19 @@ test('协议契约：原生 Workspace 显示对话、工具、文件与 Diff，�
   expect(requests.some(item => item.path === '/session')).toBeFalsy()
   expect(errors).toEqual([])
   await page.screenshot({path: '../artifacts/session-workspace.png', fullPage: true})
+})
+
+test('协议契约：1.2.27 版本化 Workspace 载入自身 UI、显示输入区且不新建 Session', async ({ page }) => {
+  const { requests, errors, frame } = await installWorkspaceFixture(page, '1.2.27')
+  await page.goto('/tasks/T-WORKSPACE')
+  await expect(page.getByTestId('task-workspace')).toBeVisible()
+  // iframe 必须指向 1.2.27 产物，而不是默认或上游版本。
+  await expect(page.locator('iframe[title="OpenCode Task Workspace"]')).toHaveAttribute('src', /\/opencode-workspace\/1\.2\.27\/index\.html/)
+  await expect(frame.locator('[data-component="prompt-input"]')).toBeVisible({timeout: 20000})
+  // binding 与 server 版本一致时，1.2.27 UI 不能渲染版本不匹配错误。
+  await expect(frame.locator('body')).not.toContainText('不匹配')
+  await expect(frame.locator('body')).not.toContainText('Workspace UI')
+  // 载入既有会话不得触发 Session 创建。
+  expect(requests.some(item => item.path === '/session')).toBeFalsy()
+  expect(errors).toEqual([])
 })
