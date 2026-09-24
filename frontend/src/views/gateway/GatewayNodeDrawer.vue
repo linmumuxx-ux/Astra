@@ -117,7 +117,7 @@
               </label>
               <label class="gateway-toggle">
                 <span>启用节点</span>
-                <AstraSwitch v-model="form.enabled" />
+                <el-switch v-model="form.enabled" />
               </label>
             </div>
             <p v-if="!activationReady" class="gateway-form__note gateway-form__note--warn">
@@ -171,7 +171,6 @@ import {
   type GatewaySchedulingState,
   type GatewayAuthType,
 } from '@/api/gateway'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import { acquireOverlayLock, releaseOverlayLock } from '@/composables/useOverlayLock'
 import {
   authenticationLabel,

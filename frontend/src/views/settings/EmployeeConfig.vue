@@ -25,7 +25,7 @@
 
         <fieldset class="config-fieldset">
           <legend>配置状态</legend>
-          <FormField class="check-row" label="启用员工" help="停用后不再自动分配新任务" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.enabled" /></FormField>
+          <FormField class="check-row" label="启用员工" help="停用后不再自动分配新任务" inline v-slot="{ id }"><el-switch :id="id" v-model="form.enabled" /></FormField>
         </fieldset>
 
         <div v-if="!creating" class="runtime-card">
@@ -42,12 +42,12 @@
       <div v-else-if="employeeTab === 'scope'" class="scope-config">
         <fieldset class="config-fieldset">
           <legend>支持任务类型</legend>
-          <FormField class="check-row" label="问题" help="缺陷、故障、异常或已有能力失效" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasType('ISSUE')" @update:model-value="toggleType('ISSUE')" /></FormField>
-          <FormField class="check-row" label="需求" help="新功能、能力增强、改造、优化或重构" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasType('REQUIREMENT')" @update:model-value="toggleType('REQUIREMENT')" /></FormField>
+          <FormField class="check-row" label="问题" help="缺陷、故障、异常或已有能力失效" inline v-slot="{ id }"><el-switch :id="id" :model-value="hasType('ISSUE')" @update:model-value="toggleType('ISSUE')" /></FormField>
+          <FormField class="check-row" label="需求" help="新功能、能力增强、改造、优化或重构" inline v-slot="{ id }"><el-switch :id="id" :model-value="hasType('REQUIREMENT')" @update:model-value="toggleType('REQUIREMENT')" /></FormField>
         </fieldset>
         <fieldset class="config-fieldset">
           <legend>支持任务分类</legend>
-          <FormField v-for="category in categories" :key="category.id" class="check-row" :label="category.name" :help="category.description" inline v-slot="{ id }"><AstraSwitch :id="id" :model-value="hasCategory(category.id)" @update:model-value="toggleCategory(category.id)" /></FormField>
+          <FormField v-for="category in categories" :key="category.id" class="check-row" :label="category.name" :help="category.description" inline v-slot="{ id }"><el-switch :id="id" :model-value="hasCategory(category.id)" @update:model-value="toggleCategory(category.id)" /></FormField>
         </fieldset>
       </div>
 
@@ -81,8 +81,8 @@
 
       <div v-else class="config-fieldset policy-block">
         <div class="policy-grid">
-          <FormField class="check-row" label="自动领取任务" help="空闲时可以领取匹配的新任务。每位员工同时只处理一项任务。" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_claim" /></FormField>
-          <FormField class="check-row" label="允许自主执行" help="领取后自动启动任务独立执行会话" inline v-slot="{ id }"><AstraSwitch :id="id" v-model="form.auto_execute" /></FormField>
+          <FormField class="check-row" label="自动领取任务" help="空闲时可以领取匹配的新任务。每位员工同时只处理一项任务。" inline v-slot="{ id }"><el-switch :id="id" v-model="form.auto_claim" /></FormField>
+          <FormField class="check-row" label="允许自主执行" help="领取后自动启动任务独立执行会话" inline v-slot="{ id }"><el-switch :id="id" v-model="form.auto_execute" /></FormField>
         </div>
       </div>
 
@@ -102,7 +102,6 @@ import { api } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import StickyActionBar from '@/components/astra/StickyActionBar.vue'
 import { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/sceneLayout'

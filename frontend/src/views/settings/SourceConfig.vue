@@ -11,7 +11,7 @@
             <td class="mono">{{ source.discover_path }}</td>
             <td class="mono">{{ source.result_path }}</td>
             <td class="narrow-col">{{ source.poll_interval }}s</td>
-            <td><AstraSwitch :model-value="source.enabled" disabled :label="source.enabled ? '启用' : '停用'" /></td>
+            <td><el-switch :model-value="source.enabled" disabled active-text="启用" inactive-text="停用"  /></td>
           </tr>
           <tr v-if="!sources.length"><td colspan="7"><div class="table-empty">暂无已配置的任务来源。</div></td></tr>
         </tbody>
@@ -23,7 +23,6 @@
 
 <script setup lang="ts">
 import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 
 interface SourceRow { id: string; type: string; enabled: boolean; endpoint: string; discover_path: string; result_path: string; poll_interval: number }

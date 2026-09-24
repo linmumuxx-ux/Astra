@@ -65,7 +65,7 @@
           <label>权重<input v-model="poolForm.weight" type="number" min="0" /></label>
           <label>排序<input v-model="poolForm.sort_order" type="number" /></label>
         </div>
-        <label class="gateway-toggle"><span>启用</span><AstraSwitch v-model="poolForm.enabled" /></label>
+        <label class="gateway-toggle"><span>启用</span><el-switch v-model="poolForm.enabled" /></label>
       </form>
       <template #footer>
         <button type="button" class="button" :disabled="saving" @click="poolDialog = false">取消</button>
@@ -80,7 +80,7 @@
         <label>描述<textarea v-model="routeForm.description" rows="2" /></label>
         <div class="gateway-form__grid">
           <label>权重<input v-model="routeForm.weight" type="number" min="0" /></label>
-          <label class="gateway-toggle"><span>启用</span><AstraSwitch v-model="routeForm.enabled" /></label>
+          <label class="gateway-toggle"><span>启用</span><el-switch v-model="routeForm.enabled" /></label>
         </div>
       </form>
       <template #footer>
@@ -102,7 +102,6 @@ import {
 } from '@/api/gateway'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'

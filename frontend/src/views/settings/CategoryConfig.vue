@@ -10,7 +10,7 @@
             <td><input :disabled="loading || saving" v-model.trim="row.name" class="config-input" placeholder="分类名称" aria-label="分类名称" /></td>
             <td><input :disabled="loading || saving" v-model.trim="row.description" class="config-input" placeholder="分类说明" aria-label="分类说明" /></td>
             <td class="sort-col"><input :disabled="loading || saving" v-model.number="row.sort_order" class="config-number" type="number" min="0" aria-label="排序" /></td>
-            <td><AstraSwitch :disabled="loading || saving" :label="row.enabled ? '启用' : '停用'" :model-value="row.enabled" @update:model-value="(value) => (row.enabled = value)" /></td>
+            <td><el-switch :disabled="loading || saving" :label="row.enabled ? '启用' : '停用'" :model-value="row.enabled" @update:model-value="(value) => (row.enabled = value)" /></td>
             <td class="type-col">
               <span class="prompt-chip" :data-set="Boolean(row.task_prompt.trim())">任务 Prompt：{{ row.task_prompt.trim() ? '已配置' : '未配置' }}</span>
               <span class="prompt-chip" :data-set="Boolean(row.question_prompt.trim())">问题 Prompt：{{ row.question_prompt.trim() ? '已配置' : '未配置' }}</span>
@@ -48,7 +48,6 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { TaskCategory, TaskCategoryWrite } from '@/api/types'
 import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import StickyActionBar from '@/components/astra/StickyActionBar.vue'
 import FormField from '@/components/forms/FormField.vue'
 import { useAstraStore } from '@/stores/astra'

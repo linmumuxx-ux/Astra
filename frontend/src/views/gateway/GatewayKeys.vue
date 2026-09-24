@@ -49,7 +49,7 @@
         <label>允许模型（留空为全部，逗号或换行分隔）<textarea v-model="form.allowed_models" rows="2" /></label>
         <div class="gateway-form__grid">
           <label>最大并发（0 不限）<input v-model="form.max_concurrency" type="number" min="0" /></label>
-          <label v-if="form.id" class="gateway-toggle"><span>启用</span><AstraSwitch v-model="form.enabled" /></label>
+          <label v-if="form.id" class="gateway-toggle"><span>启用</span><el-switch v-model="form.enabled" /></label>
         </div>
         <div class="gateway-form__grid">
           <label>每小时 Token 限额<input v-model="form.hourly" type="number" min="0" placeholder="不限" /></label>
@@ -82,7 +82,6 @@ import {
   type GatewayKeyCreated,
 } from '@/api/gateway'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
