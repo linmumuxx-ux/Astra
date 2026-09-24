@@ -10,6 +10,8 @@ import {
 } from '@opencode-ai/app'
 import { base64Encode } from '@opencode-ai/core/util/encode'
 
+declare const __OPENCODE_WORKSPACE_VERSION__: string
+
 // Only binding belongs here. Conversation, tools, files, diff, composer and theme are upstream;
 // Astra must not restyle the OpenCode surface.
 const taskID = new URLSearchParams(location.search).get('task')
@@ -21,6 +23,9 @@ async function boot() {
   const response = await fetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
   const binding = await response.json()
   if (!response.ok) throw new Error(binding.detail)
+  if (binding.runtime.opencode_version !== __OPENCODE_WORKSPACE_VERSION__) {
+    throw new Error(`Workspace UI ${__OPENCODE_WORKSPACE_VERSION__} 与 OpenCode ${binding.runtime.opencode_version} 不匹配`)
+  }
   const sessionID = selected || binding.runtime.session_id
   if (!sessionID) throw new Error('任务尚未绑定 OpenCode Session')
   if (!binding.sessions.some((session: { id: string }) => session.id === sessionID)) throw new Error('Session 不属于此任务')
@@ -28,7 +33,7 @@ async function boot() {
   const server: ServerConnection.Http = { type: 'http', http: { url: endpoint } }
   location.hash = `/${base64Encode(binding.runtime.workspace)}/session/${sessionID}`
   const platform: Platform = {
-    platform: 'web', version: '1.18.31',
+    platform: 'web', version: __OPENCODE_WORKSPACE_VERSION__,
     fetch: (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input), location.origin)
       // Upstream probes absolute health URLs; keep them within the task-bound transport.

@@ -35,6 +35,8 @@ def test_min_version_magic_value_is_rejected():
 def test_version_check_is_enforced_by_default_and_can_be_disabled():
     strict = OpenCodeServerManager(Settings(seed_demo=False))
     assert strict.version_error("1.0.0") is not None
+    assert strict.version_error("1.2.27") is None
+    assert strict.version_error("v1.2.27") is None
     assert strict.version_error("1.18.25") is None
 
     relaxed = OpenCodeServerManager(

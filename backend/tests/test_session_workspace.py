@@ -50,6 +50,9 @@ class NativeServer:
     def _timeout(self):
         return 5
 
+    async def health(self):
+        return {"healthy": True, "version": "1.2.27"}
+
     async def session(self, directory, sid):
         if sid not in self.sessions:
             raise OpenCodeSessionNotFound(sid)
@@ -175,6 +178,27 @@ async def runtime(tmp_path, monkeypatch):
             )
         app.dependency_overrides.clear()
     await engine.dispose()
+
+
+async def test_workspace_uses_default_version_for_historical_session(runtime):
+    response = await runtime.api.get("/api/tasks/T1/workspace")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime"]["opencode_version"] == "1.2.27"
+    assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.2.27/index.html"
+    assert body["sessions"][0]["workspace_ui"] == "/opencode-workspace/1.2.27/index.html"
+
+
+async def test_workspace_uses_runtime_session_opencode_version(runtime):
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "opencode_version": "1.18.31"}
+    await runtime.session.commit()
+
+    response = await runtime.api.get("/api/tasks/T1/workspace")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime"]["opencode_version"] == "1.18.31"
+    assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.18.31/index.html"
 
 
 async def test_continue_keeps_session_and_does_not_create_execution_copies(runtime):

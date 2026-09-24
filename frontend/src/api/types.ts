@@ -452,7 +452,15 @@ export interface LibraryServiceStatus {
 export interface TaskWorkspaceBinding {
   task_id: string
   task_status: TaskStatus
-  runtime: { server: string; session_id: string | null; workspace: string | null; connection: string; error: string | null }
+  runtime: {
+    server: string
+    session_id: string | null
+    workspace: string | null
+    connection: string
+    error: string | null
+    opencode_version: string
+    workspace_ui: string
+  }
   sessions: Array<{
     id: string
     workspace: string
@@ -461,5 +469,7 @@ export interface TaskWorkspaceBinding {
     superseded_by: string | null
     finished_at: string | null
     current: boolean
+    opencode_version: string
+    workspace_ui: string
   }>
 }
