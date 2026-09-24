@@ -1,14 +1,23 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="gateway-drawer-backdrop" @click.self="requestClose">
-      <aside class="gateway-drawer" role="dialog" aria-modal="true" aria-label="配置 Gateway 节点">
+  <el-drawer
+    :model-value="open"
+    size="min(600px, 100vw)"
+    :with-header="false"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :show-close="false"
+    append-to-body
+    lock-scroll
+    destroy-on-close
+    class="gateway-node-drawer"
+  >
         <header class="gateway-drawer__head">
           <div>
             <small>{{ node ? '编辑节点' : '新增节点' }}</small>
             <h3>{{ form.name || 'Gateway 节点配置' }}</h3>
             <p>按顺序完成基本信息、连接与探测、限额、资源池与启用。</p>
           </div>
-          <button type="button" class="gateway-drawer__close" aria-label="关闭" :disabled="busy" @click="requestClose"><X :size="18" /></button>
+          <el-button text circle aria-label="关闭" :disabled="busy" @click="requestClose"><X :size="18" /></el-button>
         </header>
 
         <ol class="gateway-steps">
@@ -20,46 +29,45 @@
         <div class="gateway-drawer__body">
           <!-- 1. 基本信息 -->
           <section v-if="step === 1" class="gateway-form">
-            <label>节点名称<input v-model="form.name" placeholder="例如 主 Proxy 节点" /></label>
-            <label>下游 Base URL（节点根地址）<input v-model="form.baseUrl" placeholder="https://proxy.example.com" /></label>
+            <label>节点名称<el-input v-model="form.name" placeholder="例如 主 Proxy 节点" /></label>
+            <label>下游 Base URL（节点根地址）<el-input v-model="form.baseUrl" placeholder="https://proxy.example.com" /></label>
             <p class="gateway-form__note"><Info :size="13" />填节点根地址，不要带 /v1；Gateway 会自动追加 /v1/chat/completions。</p>
             <div class="gateway-form__grid">
               <label>认证方式
-                <select v-model="form.authType">
-                  <option value="BEARER">Bearer Token</option>
-                  <option value="HEADER">自定义 Header</option>
-                  <option value="NONE">无认证</option>
-                </select>
+                <el-select v-model="form.authType">
+                  <el-option label="Bearer Token" value="BEARER" />
+                  <el-option label="自定义 Header" value="HEADER" />
+                  <el-option label="无认证" value="NONE" />
+                </el-select>
               </label>
-              <label>认证 Header<input v-model="form.authHeader" :disabled="form.authType === 'NONE'" placeholder="Authorization" /></label>
+              <label>认证 Header<el-input v-model="form.authHeader" :disabled="form.authType === 'NONE'" placeholder="Authorization" /></label>
             </div>
             <label v-if="form.authType !== 'NONE'">下游凭据
-              <input v-model="form.apiKey" type="password" autocomplete="new-password" :placeholder="node?.has_api_key ? '已配置，留空保持不变' : '下游 Proxy 的 Token / 凭据值'" />
+              <el-input v-model="form.apiKey" type="password" show-password autocomplete="new-password" :placeholder="node?.has_api_key ? '已配置，留空保持不变' : '下游 Proxy 的 Token / 凭据值'" />
             </label>
             <p class="gateway-form__note"><ShieldCheck :size="13" />凭据加密入库，任何响应与日志都不会回显明文。</p>
             <div class="gateway-form__grid">
-              <label>健康路径<input v-model="form.healthPath" placeholder="/health" /></label>
-              <label>探测间隔（秒）<input v-model="form.probeInterval" type="number" min="10" placeholder="继承默认" /></label>
+              <label>健康路径<el-input v-model="form.healthPath" placeholder="/health" /></label>
+              <label>探测间隔（秒）<el-input v-model="form.probeInterval" type="number" min="10" placeholder="继承默认" /></label>
             </div>
             <div class="gateway-form__grid">
-              <label>连接超时（秒）<input v-model="form.connectTimeout" type="number" min="0.1" step="0.1" placeholder="继承默认" /></label>
-              <label>请求超时（秒）<input v-model="form.requestTimeout" type="number" min="0.1" step="0.1" placeholder="继承默认" /></label>
+              <label>连接超时（秒）<el-input v-model="form.connectTimeout" type="number" min="0.1" step="0.1" placeholder="继承默认" /></label>
+              <label>请求超时（秒）<el-input v-model="form.requestTimeout" type="number" min="0.1" step="0.1" placeholder="继承默认" /></label>
             </div>
           </section>
 
           <!-- 2. 连接 / 模型 / SSE 探测 -->
           <section v-else-if="step === 2" class="gateway-form">
-            <label>支持模型（逗号或换行分隔）<textarea v-model="form.modelsText" rows="3" placeholder="gpt-4o-mini&#10;claude-3-5-sonnet" /></label>
+            <label>支持模型（逗号或换行分隔）<el-input v-model="form.modelsText" type="textarea" :rows="3" resize="vertical" placeholder="gpt-4o-mini&#10;claude-3-5-sonnet" /></label>
             <div class="gateway-probe-block">
               <div class="gateway-probe-block__head">
                 <strong>探测项目</strong>
-                <span v-for="type in probeTypes" :key="type" class="gateway-check">
-                  <input :id="`probe-${type}`" v-model="form.probeTypes" type="checkbox" :value="type" />
-                  <label :for="`probe-${type}`">{{ probeTypeLabel(type) }}</label>
-                </span>
-                <button type="button" class="button button--compact button--primary" :disabled="busy || !form.probeTypes.length" @click="runProbe">
-                  <RefreshCw v-if="probeRunning" :size="13" class="spin" />{{ probeRunning ? '探测中…' : '保存并执行探测' }}
-                </button>
+                <el-checkbox v-for="type in probeTypes" :key="type" v-model="form.probeTypes" :value="type">
+                  {{ probeTypeLabel(type) }}
+                </el-checkbox>
+                <el-button type="primary" :loading="probeRunning" :disabled="busy || !form.probeTypes.length" @click="runProbe">
+                  <RefreshCw v-if="!probeRunning" :size="13" />{{ probeRunning ? '探测中…' : '保存并执行探测' }}
+                </el-button>
               </div>
               <p class="gateway-form__note"><Info :size="13" />必须同时勾选网络 / 服务 / 模型 / SSE 完成完整探测；局部探测不会让节点脱离 UNKNOWN。连续成功 2 次方为 HEALTHY。首次保存会先以禁用态落库。</p>
               <p v-if="probeChecks.length" class="gateway-form__note">
@@ -81,19 +89,19 @@
           <!-- 3. 限额 -->
           <section v-else-if="step === 3" class="gateway-form">
             <div class="gateway-form__grid">
-              <label>权重<input v-model="form.weight" type="number" min="0" /></label>
-              <label>最大并发（0 为不限）<input v-model="form.maxConcurrency" type="number" min="0" /></label>
+              <label>权重<el-input v-model="form.weight" type="number" min="0" /></label>
+              <label>最大并发（0 为不限）<el-input v-model="form.maxConcurrency" type="number" min="0" /></label>
             </div>
             <div class="gateway-form__grid">
-              <label>每小时 Token 限额<input v-model="form.hourly" type="number" min="0" placeholder="不限" /></label>
-              <label>每日 Token 限额<input v-model="form.daily" type="number" min="0" placeholder="不限" /></label>
+              <label>每小时 Token 限额<el-input v-model="form.hourly" type="number" min="0" placeholder="不限" /></label>
+              <label>每日 Token 限额<el-input v-model="form.daily" type="number" min="0" placeholder="不限" /></label>
             </div>
             <label>额度策略
-              <select v-model="form.quotaPolicy">
-                <option value="STOP">达到限额停止新请求</option>
-                <option value="ALERT">达到限额仅告警</option>
-                <option value="RECORD">达到限额仅记录</option>
-              </select>
+              <el-select v-model="form.quotaPolicy">
+                <el-option label="达到限额停止新请求" value="STOP" />
+                <el-option label="达到限额仅告警" value="ALERT" />
+                <el-option label="达到限额仅记录" value="RECORD" />
+              </el-select>
             </label>
             <p class="gateway-form__note"><Timer :size="13" />额度按自然小时 / 自然日统计已完成请求的实际 usage，未知用量记为 unknown，不估算为零。</p>
           </section>
@@ -101,19 +109,19 @@
           <!-- 4. 资源池与启用 -->
           <section v-else class="gateway-form">
             <label>资源池
-              <select v-model="form.poolId">
-                <option value="">不分配</option>
-                <option v-for="pool in pools" :key="pool.id" :value="pool.id">{{ pool.name }}{{ pool.enabled ? '' : '（已禁用）' }}</option>
-              </select>
+              <el-select v-model="form.poolId">
+                <el-option label="不分配" value="" />
+                <el-option v-for="pool in pools" :key="pool.id" :label="`${pool.name}${pool.enabled ? '' : '（已禁用）'}`" :value="pool.id" />
+              </el-select>
             </label>
-            <label>排序<input v-model="form.sortOrder" type="number" /></label>
+            <label>排序<el-input v-model="form.sortOrder" type="number" /></label>
             <div class="gateway-form__grid">
               <label>调度状态
-                <select v-model="form.scheduling">
-                  <option value="ACTIVE" :disabled="activeOptionDisabled">调度中</option>
-                  <option value="DRAINING">安全下线</option>
-                  <option value="BLOCKED">已阻止</option>
-                </select>
+                <el-select v-model="form.scheduling">
+                  <el-option label="调度中" value="ACTIVE" :disabled="activeOptionDisabled" />
+                  <el-option label="安全下线" value="DRAINING" />
+                  <el-option label="已阻止" value="BLOCKED" />
+                </el-select>
               </label>
               <label class="gateway-toggle">
                 <span>启用节点</span>
@@ -130,26 +138,19 @@
         </div>
 
         <footer class="gateway-drawer__foot">
-          <button v-if="step > 1" type="button" class="button" :disabled="busy" @click="prevStep">上一步</button>
+          <el-button v-if="step > 1" :disabled="busy" @click="prevStep">上一步</el-button>
           <span class="gateway-drawer__spacer" />
-          <button type="button" class="button" :disabled="busy" @click="requestClose">取消</button>
-          <button v-if="step < 4" type="button" class="button button--primary" :disabled="busy" @click="goNext">
-            <LoaderCircle v-if="saving" :size="14" class="spin" />下一步
-          </button>
-          <button v-else type="button" class="button button--primary" :disabled="busy" @click="finish">
-            <LoaderCircle v-if="saving" :size="14" class="spin" />{{ node ? '保存节点' : '完成' }}
-          </button>
+          <el-button :disabled="busy" @click="requestClose">取消</el-button>
+          <el-button v-if="step < 4" type="primary" :loading="saving" :disabled="busy" @click="goNext">下一步</el-button>
+          <el-button v-else type="primary" :loading="saving" :disabled="busy" @click="finish">{{ node ? '保存节点' : '完成' }}</el-button>
         </footer>
-      </aside>
-    </div>
-  </Teleport>
+  </el-drawer>
 </template>
 
 <script setup lang="ts">
 import {
   CheckCircle2,
   Info,
-  LoaderCircle,
   PlugZap,
   RefreshCw,
   ShieldCheck,
@@ -158,7 +159,7 @@ import {
   X,
   XCircle,
 } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   gatewayApi,
   type GatewayHealthCheck,
@@ -171,7 +172,6 @@ import {
   type GatewaySchedulingState,
   type GatewayAuthType,
 } from '@/api/gateway'
-import { acquireOverlayLock, releaseOverlayLock } from '@/composables/useOverlayLock'
 import {
   authenticationLabel,
   authenticationResult,
@@ -320,25 +320,6 @@ watch(
   },
   { immediate: true },
 )
-
-let locked = false
-watch(
-  () => props.open,
-  (open) => {
-    if (open && !locked) { acquireOverlayLock(); locked = true }
-    else if (!open && locked) { releaseOverlayLock(); locked = false }
-  },
-  { immediate: true },
-)
-
-function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.open && !busy.value) requestClose()
-}
-if (typeof window !== 'undefined') window.addEventListener('keydown', onKeydown)
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
-  if (locked) releaseOverlayLock()
-})
 
 function intOrNull(value: string): number | null {
   const text = value.trim()
@@ -504,14 +485,11 @@ function requestClose() {
 </script>
 
 <style scoped>
-.gateway-drawer-backdrop { position: fixed; inset: 0; z-index: 1200; display: flex; justify-content: flex-end; background: rgba(1, 6, 12, .5); backdrop-filter: blur(4px); }
-.gateway-drawer { display: flex; flex-direction: column; width: min(600px, 100%); height: 100%; background: var(--astra-bg-card); box-shadow: -24px 0 60px rgba(16, 37, 34, .22); }
+
 .gateway-drawer__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 20px 22px 15px; border-bottom: 1px solid var(--astra-border); }
 .gateway-drawer__head small { color: var(--astra-primary); font-size: var(--astra-font-helper); letter-spacing: .14em; }
 .gateway-drawer__head h3 { margin: 4px 0 0; color: var(--astra-text-primary); }
 .gateway-drawer__head p { margin: 4px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.gateway-drawer__close { display: grid; place-items: center; flex: none; width: 32px; height: 32px; color: var(--astra-text-muted); border: 0; border-radius: 9px; background: transparent; cursor: pointer; }
-.gateway-drawer__close:hover { color: var(--astra-text-primary); background: var(--astra-primary-soft); }
 .gateway-steps { display: flex; gap: 6px; margin: 0; padding: 12px 22px; border-bottom: 1px solid var(--astra-border); list-style: none; }
 .gateway-steps li { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 6px 8px; color: var(--astra-text-muted); border-radius: 8px; font-size: var(--astra-font-helper); }
 .gateway-steps li b { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--astra-bg-elevated); font-size: var(--astra-font-micro); }
@@ -522,8 +500,7 @@ function requestClose() {
 .gateway-drawer__body { flex: 1; min-height: 0; padding: 18px 22px; overflow-y: auto; }
 .gateway-form { display: grid; gap: 13px; }
 .gateway-form label { display: grid; gap: 6px; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
-.gateway-form input:not([type='checkbox']), .gateway-form select, .gateway-form textarea { width: 100%; min-height: var(--astra-control-height); padding: 9px 11px; color: var(--astra-text-primary); border: 1px solid var(--astra-border); border-radius: 8px; outline: none; background: var(--astra-bg-base); resize: vertical; }
-.gateway-form input:focus, .gateway-form select:focus, .gateway-form textarea:focus { border-color: var(--astra-primary-border); background: #fff; }
+.gateway-form :deep(.el-input), .gateway-form :deep(.el-select), .gateway-form :deep(.el-textarea) { width:100%;min-width:0 }
 .gateway-form__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .gateway-toggle { align-content: center; }
 .gateway-form__note { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
@@ -532,8 +509,6 @@ function requestClose() {
 .gateway-probe-block { padding: 12px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-base); }
 .gateway-probe-block__head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
 .gateway-probe-block__head strong { margin-right: auto; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
-.gateway-check { display: inline-flex; align-items: center; gap: 5px; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
-.gateway-check input { accent-color: var(--astra-primary); }
 .gateway-probe-result { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; }
 .gateway-probe-result li { display: grid; grid-template-columns: 16px 70px auto auto minmax(0, 1fr); align-items: center; gap: 8px; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
 .gateway-probe-result .ok { color: var(--astra-success); }
@@ -542,4 +517,7 @@ function requestClose() {
 .gateway-drawer__foot { display: flex; align-items: center; gap: 9px; padding: 14px 22px; border-top: 1px solid var(--astra-border); background: var(--astra-bg-card); }
 .gateway-drawer__spacer { flex: 1; }
 @media (max-width: 560px) { .gateway-form__grid { grid-template-columns: 1fr; } }
+
+:global(.gateway-node-drawer .el-drawer__body) { display:flex;flex-direction:column;padding:0;overflow:hidden; }
+:global(.gateway-node-drawer .el-drawer__header) { display:none; }
 </style>
