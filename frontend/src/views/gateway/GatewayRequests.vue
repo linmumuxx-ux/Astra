@@ -2,62 +2,43 @@
   <section class="gateway-section">
     <header class="gateway-section__head">
       <div><h3>调用日志</h3><p>只记录元数据与测量值，不保存 Prompt、Authorization 或响应体。</p></div>
-      <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
+      <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
     </header>
 
     <form class="gateway-filters" @submit.prevent="apply">
-      <label>Request ID<input v-model="filters.request_id" placeholder="精确匹配" /></label>
-      <label>模型
-        <select v-model="filters.model"><option value="">全部</option><option v-for="model in models" :key="model" :value="model">{{ model }}</option></select>
-      </label>
-      <label>节点
-        <select v-model="filters.node_id"><option value="">全部</option><option v-for="node in nodes" :key="node.id" :value="node.id">{{ node.name }}</option></select>
-      </label>
-      <label>Key
-        <select v-model="filters.key_id"><option value="">全部</option><option v-for="key in keys" :key="key.id" :value="key.id">{{ key.name }}</option></select>
-      </label>
-      <label>状态码<input v-model="filters.status_code" type="number" placeholder="200" /></label>
-      <label>错误码<input v-model="filters.error_code" placeholder="例如 UPSTREAM_CONNECT_TIMEOUT" /></label>
-      <label>每页
-        <select v-model.number="pageSize"><option :value="50">50</option><option :value="100">100</option><option :value="200">200</option></select>
-      </label>
-      <button type="submit" class="button button--primary" :disabled="loading"><Filter :size="14" />筛选</button>
-      <button type="button" class="button" :disabled="loading" @click="reset">重置</button>
+      <label>Request ID<el-input v-model="filters.request_id" placeholder="精确匹配" /></label>
+      <label>模型<el-select v-model="filters.model"><el-option label="全部" value="" /><el-option v-for="model in models" :key="model" :label="model" :value="model" /></el-select></label>
+      <label>节点<el-select v-model="filters.node_id"><el-option label="全部" value="" /><el-option v-for="node in nodes" :key="node.id" :label="node.name" :value="node.id" /></el-select></label>
+      <label>Key<el-select v-model="filters.key_id"><el-option label="全部" value="" /><el-option v-for="key in keys" :key="key.id" :label="key.name" :value="key.id" /></el-select></label>
+      <label>状态码<el-input v-model="filters.status_code" type="number" placeholder="200" /></label>
+      <label>错误码<el-input v-model="filters.error_code" placeholder="例如 UPSTREAM_CONNECT_TIMEOUT" /></label>
+      <label>每页<el-select v-model="pageSize"><el-option :value="50" label="50" /><el-option :value="100" label="100" /><el-option :value="200" label="200" /></el-select></label>
+      <el-button type="primary" native-type="submit" :loading="loading" :disabled="loading"><Filter v-if="!loading" :size="14" />筛选</el-button>
+      <el-button :disabled="loading" @click="reset">重置</el-button>
     </form>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
-    <div class="table-wrap gateway-card">
-      <table class="gateway-log-table">
-        <thead>
-          <tr><th>时间</th><th>Request ID</th><th>Key / 模型</th><th>节点</th><th>状态</th><th>流式</th><th>重试</th><th>Token（入 / 出 / 总）</th><th>TTFB / TTFT</th><th>总时长</th><th>TPS</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in page.items" :key="row.id">
-            <td class="gateway-time">{{ formatDateTime(row.started_at) }}</td>
-            <td class="gateway-mono" :title="row.id">{{ shortId(row.id) }}</td>
-            <td><strong>{{ keyName(row.key_id) }}</strong><small>{{ row.model ?? '—' }}</small></td>
-            <td>{{ nodeName(row.node_id) }}</td>
-            <td>
-              <span v-if="row.error_code" class="status-badge" data-tone="danger" :title="row.error_code">{{ row.error_code }}</span>
-              <span v-else class="status-badge" :data-tone="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</span>
-            </td>
-            <td>{{ row.streaming ? 'SSE' : '普通' }}<span v-if="row.stream_interrupted" class="gateway-bad">中断</span></td>
-            <td>{{ row.retry_count }}</td>
-            <td class="gateway-num">{{ tokenText(row) }}</td>
-            <td class="gateway-num">{{ latencyText(row.ttfb_ms) }} / {{ latencyText(row.ttft_ms) }}</td>
-            <td class="gateway-num">{{ latencyText(row.duration_ms) }}</td>
-            <td class="gateway-num">{{ row.output_tps !== null ? row.output_tps.toFixed(1) : '—' }}</td>
-          </tr>
-          <tr v-if="!page.items.length"><td colspan="11" class="empty-cell">{{ loading ? '加载中…' : '暂无调用记录。' }}</td></tr>
-        </tbody>
-      </table>
+    <div class="gateway-card">
+      <el-table :data="page.items" stripe :loading="loading" empty-text="暂无调用记录。">
+        <el-table-column label="时间" min-width="155"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+        <el-table-column label="Request ID" min-width="150"><template #default="{ row }"><span class="gateway-mono" :title="row.id">{{ shortId(row.id) }}</span></template></el-table-column>
+        <el-table-column label="Key / 模型" min-width="170"><template #default="{ row }"><strong>{{ keyName(row.key_id) }}</strong><small>{{ row.model ?? '—' }}</small></template></el-table-column>
+        <el-table-column label="节点" min-width="140"><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
+        <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag v-if="row.error_code" type="danger" effect="light" :title="row.error_code">{{ row.error_code }}</el-tag><el-tag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'" effect="light">{{ row.status_code ?? '—' }}</el-tag></template></el-table-column>
+        <el-table-column label="流式" width="100"><template #default="{ row }">{{ row.streaming ? 'SSE' : '普通' }}<span v-if="row.stream_interrupted" class="gateway-bad">中断</span></template></el-table-column>
+        <el-table-column prop="retry_count" label="重试" width="75" />
+        <el-table-column label="Token（入 / 出 / 总）" min-width="160" align="right"><template #default="{ row }">{{ tokenText(row) }}</template></el-table-column>
+        <el-table-column label="TTFB / TTFT" min-width="140" align="right"><template #default="{ row }">{{ latencyText(row.ttfb_ms) }} / {{ latencyText(row.ttft_ms) }}</template></el-table-column>
+        <el-table-column label="总时长" min-width="110" align="right"><template #default="{ row }">{{ latencyText(row.duration_ms) }}</template></el-table-column>
+        <el-table-column label="TPS" width="90" align="right"><template #default="{ row }">{{ row.output_tps !== null ? row.output_tps.toFixed(1) : '—' }}</template></el-table-column>
+      </el-table>
     </div>
 
     <footer class="gateway-pager">
       <span>共 {{ page.total }} 条 · 第 {{ page.page }} 页</span>
-      <button type="button" class="button button--compact" :disabled="page.page <= 1 || loading" @click="go(page.page - 1)">上一页</button>
-      <button type="button" class="button button--compact" :disabled="page.page * page.page_size >= page.total || loading" @click="go(page.page + 1)">下一页</button>
+      <el-button :disabled="page.page <= 1 || loading" @click="go(page.page - 1)">上一页</el-button>
+      <el-button :disabled="page.page * page.page_size >= page.total || loading" @click="go(page.page + 1)">下一页</el-button>
     </footer>
   </section>
 </template>
@@ -155,11 +136,10 @@ onMounted(async () => {
 <style scoped>
 .gateway-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 12px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-card); }
 .gateway-filters label { display: grid; gap: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.gateway-filters input, .gateway-filters select { min-width: 130px; height: var(--astra-control-height-compact); padding: 0 9px; color: var(--astra-text-primary); border: 1px solid var(--astra-border); border-radius: 8px; background: var(--astra-bg-base); }
+.gateway-filters :deep(.el-input), .gateway-filters :deep(.el-select) { min-width:130px;width:150px }
 .gateway-card { border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-card); box-shadow: var(--astra-shadow-panel); }
-.gateway-log-table { min-width: 1200px; }
-.gateway-log-table td > strong { display: block; color: var(--astra-text-primary); font-size: var(--astra-font-helper); }
-.gateway-log-table td > small { display: block; color: var(--astra-text-muted); font-size: var(--astra-font-micro); }
+:deep(.el-table strong){display:block;color:var(--astra-text-primary);font-size:var(--astra-font-helper)}
+:deep(.el-table small){display:block;color:var(--astra-text-muted);font-size:var(--astra-font-micro)}
 .gateway-mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 .gateway-num, .gateway-time { white-space: nowrap; font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
 .gateway-bad { margin-left: 5px; color: var(--astra-danger); font-size: var(--astra-font-micro); }

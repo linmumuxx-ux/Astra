@@ -2,58 +2,36 @@
   <section class="gateway-section">
     <header class="gateway-section__head">
       <div><h3>资源池与模型路由</h3><p>路由模型名唯一，第一阶段一个路由指向一个资源池。</p></div>
-      <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
+      <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
     <div class="gateway-two-col">
       <AstraPanel title="资源池" :subtitle="`共 ${pools.length} 个`" flush>
-        <template #action><button v-if="canRoute" type="button" class="button button--compact" @click="openPoolCreate"><Plus :size="13" />新增资源池</button></template>
-        <div class="table-wrap">
-          <table class="gateway-mini-table">
-            <thead><tr><th>名称</th><th>权重</th><th>状态</th><th>排序</th><th class="gateway-col-actions">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="pool in pools" :key="pool.id">
-                <td><strong>{{ pool.name }}</strong><small>{{ pool.description || '—' }}</small></td>
-                <td>{{ pool.weight }}</td>
-                <td><span class="status-badge" :data-tone="pool.enabled ? 'success' : 'neutral'">{{ pool.enabled ? '启用' : '禁用' }}</span></td>
-                <td>{{ pool.sort_order }}</td>
-                <td class="gateway-col-actions">
-                  <div v-if="canRoute" class="gateway-row-actions">
-                    <button class="gateway-icon-btn" type="button" title="编辑" @click="openPoolEdit(pool)"><Pencil :size="14" /></button>
-                    <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="删除" @click="removePool(pool)"><Trash2 :size="14" /></button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!pools.length"><td colspan="5" class="empty-cell">暂无资源池。</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <template #action><el-button v-if="canRoute" type="primary" size="small" @click="openPoolCreate"><Plus :size="13" />新增资源池</el-button></template>
+        <el-table :data="pools" stripe empty-text="暂无资源池。">
+          <el-table-column label="名称" min-width="180"><template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.description || '—' }}</small></template></el-table-column>
+          <el-table-column prop="weight" label="权重" width="90" />
+          <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" effect="light">{{ row.enabled ? '启用' : '禁用' }}</el-tag></template></el-table-column>
+          <el-table-column prop="sort_order" label="排序" width="90" />
+          <el-table-column v-if="canRoute" label="操作" width="100" fixed="right">
+            <template #default="{ row }"><el-button text circle title="编辑" @click="openPoolEdit(row)"><Pencil :size="14" /></el-button><el-button type="danger" text circle title="删除" @click="removePool(row)"><Trash2 :size="14" /></el-button></template>
+          </el-table-column>
+        </el-table>
       </AstraPanel>
 
       <AstraPanel title="模型路由" :subtitle="`共 ${routes.length} 条`" flush>
-        <template #action><button v-if="canRoute" type="button" class="button button--compact" @click="openRouteCreate"><Plus :size="13" />新增路由</button></template>
-        <div class="table-wrap">
-          <table class="gateway-mini-table">
-            <thead><tr><th>模型</th><th>资源池</th><th>权重</th><th>状态</th><th class="gateway-col-actions">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="route in routes" :key="route.id">
-                <td><strong>{{ route.model }}</strong><small>{{ route.description || '—' }}</small></td>
-                <td>{{ poolName(route.pool_id) }}</td>
-                <td>{{ route.weight }}</td>
-                <td><span class="status-badge" :data-tone="route.enabled ? 'success' : 'neutral'">{{ route.enabled ? '启用' : '禁用' }}</span></td>
-                <td class="gateway-col-actions">
-                  <div v-if="canRoute" class="gateway-row-actions">
-                    <button class="gateway-icon-btn" type="button" title="编辑" @click="openRouteEdit(route)"><Pencil :size="14" /></button>
-                    <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="删除" @click="removeRoute(route)"><Trash2 :size="14" /></button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!routes.length"><td colspan="5" class="empty-cell">暂无模型路由。</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <template #action><el-button v-if="canRoute" type="primary" size="small" @click="openRouteCreate"><Plus :size="13" />新增路由</el-button></template>
+        <el-table :data="routes" stripe empty-text="暂无模型路由。">
+          <el-table-column label="模型" min-width="190"><template #default="{ row }"><strong>{{ row.model }}</strong><small>{{ row.description || '—' }}</small></template></el-table-column>
+          <el-table-column label="资源池" min-width="140"><template #default="{ row }">{{ poolName(row.pool_id) }}</template></el-table-column>
+          <el-table-column prop="weight" label="权重" width="90" />
+          <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" effect="light">{{ row.enabled ? '启用' : '禁用' }}</el-tag></template></el-table-column>
+          <el-table-column v-if="canRoute" label="操作" width="100" fixed="right">
+            <template #default="{ row }"><el-button text circle title="编辑" @click="openRouteEdit(row)"><Pencil :size="14" /></el-button><el-button type="danger" text circle title="删除" @click="removeRoute(row)"><Trash2 :size="14" /></el-button></template>
+          </el-table-column>
+        </el-table>
       </AstraPanel>
     </div>
 
@@ -66,17 +44,17 @@
       destroy-on-close
     >
       <form id="gateway-pool-form" class="gateway-dialog-form" @submit.prevent="submitPool">
-        <label>名称<input v-model="poolForm.name" required /></label>
-        <label>描述<textarea v-model="poolForm.description" rows="2" /></label>
+        <label>名称<el-input v-model="poolForm.name" required /></label>
+        <label>描述<el-input v-model="poolForm.description" type="textarea" :rows="2" resize="vertical" /></label>
         <div class="gateway-form__grid">
-          <label>权重<input v-model="poolForm.weight" type="number" min="0" /></label>
-          <label>排序<input v-model="poolForm.sort_order" type="number" /></label>
+          <label>权重<el-input v-model="poolForm.weight" type="number" min="0" /></label>
+          <label>排序<el-input v-model="poolForm.sort_order" type="number" /></label>
         </div>
         <label class="gateway-toggle"><span>启用</span><el-switch v-model="poolForm.enabled" /></label>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="poolDialog = false">取消</button>
-        <button type="submit" form="gateway-pool-form" class="button button--primary" :disabled="saving">保存</button>
+        <el-button :disabled="saving" @click="poolDialog = false">取消</el-button>
+        <el-button type="primary" native-type="submit" form="gateway-pool-form" :loading="saving" :disabled="saving">保存</el-button>
       </template>
     </el-dialog>
 
@@ -89,17 +67,17 @@
       destroy-on-close
     >
       <form id="gateway-route-form" class="gateway-dialog-form" @submit.prevent="submitRoute">
-        <label>模型名<input v-model="routeForm.model" required placeholder="例如 gpt-4o-mini" /></label>
-        <label>资源池<select v-model="routeForm.pool_id" required><option value="" disabled>选择资源池</option><option v-for="pool in pools" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select></label>
-        <label>描述<textarea v-model="routeForm.description" rows="2" /></label>
+        <label>模型名<el-input v-model="routeForm.model" required placeholder="例如 gpt-4o-mini" /></label>
+        <label>资源池<el-select v-model="routeForm.pool_id" placeholder="选择资源池"><el-option v-for="pool in pools" :key="pool.id" :label="pool.name" :value="pool.id" /></el-select></label>
+        <label>描述<el-input v-model="routeForm.description" type="textarea" :rows="2" resize="vertical" /></label>
         <div class="gateway-form__grid">
-          <label>权重<input v-model="routeForm.weight" type="number" min="0" /></label>
+          <label>权重<el-input v-model="routeForm.weight" type="number" min="0" /></label>
           <label class="gateway-toggle"><span>启用</span><el-switch v-model="routeForm.enabled" /></label>
         </div>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="routeDialog = false">取消</button>
-        <button type="submit" form="gateway-route-form" class="button button--primary" :disabled="saving">保存</button>
+        <el-button :disabled="saving" @click="routeDialog = false">取消</el-button>
+        <el-button type="primary" native-type="submit" form="gateway-route-form" :loading="saving" :disabled="saving">保存</el-button>
       </template>
     </el-dialog>
   </section>
@@ -259,9 +237,9 @@ onMounted(load)
 
 <style scoped>
 .gateway-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.gateway-mini-table { min-width: 420px; }
-.gateway-mini-table td strong { display: block; color: var(--astra-text-primary); font-size: var(--astra-font-body); }
-.gateway-mini-table td small { display: block; max-width: 220px; overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
+:deep(.el-table strong) { display:block;color:var(--astra-text-primary);font-size:var(--astra-font-body) }
+:deep(.el-table small) { display:block;max-width:220px;overflow:hidden;color:var(--astra-text-muted);font-size:var(--astra-font-helper);text-overflow:ellipsis;white-space:nowrap }
+.gateway-dialog-form :deep(.el-select){width:100%}
 .gateway-dialog-form { display: grid; gap: 12px; }
 .gateway-dialog-form label { display: grid; gap: 6px; margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
 @media (max-width: 900px) { .gateway-two-col { grid-template-columns: 1fr; } }
