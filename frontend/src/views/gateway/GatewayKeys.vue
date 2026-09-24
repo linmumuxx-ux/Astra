@@ -3,40 +3,38 @@
     <header class="gateway-section__head">
       <div><h3>Gateway Key</h3><p>Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建后显示一次。</p></div>
       <div class="gateway-section__actions">
-        <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
-        <button v-if="canKey" type="button" class="button button--primary" @click="openCreate"><Plus :size="15" />新建 Key</button>
+        <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
+        <el-button v-if="canKey" type="primary" @click="openCreate"><Plus :size="15" />新建 Key</el-button>
       </div>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
-    <div class="table-wrap gateway-card">
-      <table class="gateway-key-table">
-        <thead><tr><th>名称</th><th>前缀</th><th>归属</th><th>允许模型</th><th>并发</th><th>额度（时 / 日）</th><th>有效期</th><th>状态</th><th>最近使用</th><th class="gateway-col-actions">操作</th></tr></thead>
-        <tbody>
-          <tr v-for="key in keys" :key="key.id">
-            <td><strong>{{ key.name }}</strong><small>{{ key.id }}</small></td>
-            <td class="gateway-mono">{{ key.key_prefix }}…</td>
-            <td>{{ key.owner_id || '—' }}</td>
-            <td>{{ key.allowed_models.length ? key.allowed_models.join('、') : '全部' }}</td>
-            <td class="gateway-num">{{ key.max_concurrency || '不限' }}</td>
-            <td class="gateway-num">{{ limitText(key.hourly_token_limit) }} / {{ limitText(key.daily_token_limit) }}</td>
-            <td class="gateway-time">{{ key.expires_at ? formatDateTime(key.expires_at) : '长期' }}</td>
-            <td>
-              <span v-if="key.revoked_at" class="status-badge" data-tone="danger">已吊销</span>
-              <span v-else class="status-badge" :data-tone="key.enabled ? 'success' : 'neutral'">{{ key.enabled ? '启用' : '停用' }}</span>
-            </td>
-            <td class="gateway-time">{{ formatRelativeTime(key.last_used_at) }}</td>
-            <td class="gateway-col-actions">
-              <div v-if="canKey" class="gateway-row-actions">
-                <button class="gateway-icon-btn" type="button" title="编辑" @click="openEdit(key)"><Pencil :size="14" /></button>
-                <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="吊销" :disabled="Boolean(key.revoked_at)" @click="revoke(key)"><Ban :size="14" /></button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!keys.length"><td colspan="10" class="empty-cell">暂无 Gateway Key。</td></tr>
-        </tbody>
-      </table>
+    <div class="gateway-card">
+      <el-table :data="keys" stripe empty-text="暂无 Gateway Key。">
+        <el-table-column label="名称" min-width="170">
+          <template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.id }}</small></template>
+        </el-table-column>
+        <el-table-column label="前缀" min-width="120"><template #default="{ row }"><span class="gateway-mono">{{ row.key_prefix }}…</span></template></el-table-column>
+        <el-table-column label="归属" min-width="130"><template #default="{ row }">{{ row.owner_id || '—' }}</template></el-table-column>
+        <el-table-column label="允许模型" min-width="200"><template #default="{ row }">{{ row.allowed_models.length ? row.allowed_models.join('、') : '全部' }}</template></el-table-column>
+        <el-table-column label="并发" width="90" align="right"><template #default="{ row }">{{ row.max_concurrency || '不限' }}</template></el-table-column>
+        <el-table-column label="额度（时 / 日）" min-width="150" align="right"><template #default="{ row }">{{ limitText(row.hourly_token_limit) }} / {{ limitText(row.daily_token_limit) }}</template></el-table-column>
+        <el-table-column label="有效期" min-width="150"><template #default="{ row }">{{ row.expires_at ? formatDateTime(row.expires_at) : '长期' }}</template></el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.revoked_at" type="danger" effect="light">已吊销</el-tag>
+            <el-tag v-else :type="row.enabled ? 'success' : 'info'" effect="light">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="最近使用" min-width="130"><template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template></el-table-column>
+        <el-table-column v-if="canKey" label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button text circle title="编辑" @click="openEdit(row)"><Pencil :size="14" /></el-button>
+            <el-button type="danger" text circle title="吊销" :disabled="Boolean(row.revoked_at)" @click="revoke(row)"><Ban :size="14" /></el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <el-dialog :model-value="editorOpen" :title="form.id ? '编辑 Gateway Key' : '新建 Gateway Key'" data-testid="gateway-key-dialog" width="min(540px,100%)" @close="editorOpen = false"
@@ -48,24 +46,24 @@
       destroy-on-close
     >
       <form id="gateway-key-form" class="gateway-dialog-form" @submit.prevent="submit">
-        <label>名称<input v-model="form.name" required /></label>
+        <label>名称<el-input v-model="form.name" required /></label>
         <div class="gateway-form__grid">
-          <label>归属 ID<input v-model="form.owner_id" placeholder="可选" /></label>
-          <label>有效至<input v-model="form.expires_at" type="datetime-local" /></label>
+          <label>归属 ID<el-input v-model="form.owner_id" placeholder="可选" /></label>
+          <label>有效至<el-input v-model="form.expires_at" type="datetime-local" /></label>
         </div>
-        <label>允许模型（留空为全部，逗号或换行分隔）<textarea v-model="form.allowed_models" rows="2" /></label>
+        <label>允许模型（留空为全部，逗号或换行分隔）<el-input v-model="form.allowed_models" type="textarea" :rows="2" resize="vertical" /></label>
         <div class="gateway-form__grid">
-          <label>最大并发（0 不限）<input v-model="form.max_concurrency" type="number" min="0" /></label>
+          <label>最大并发（0 不限）<el-input-number v-model="form.max_concurrency" :min="0" controls-position="right" /></label>
           <label v-if="form.id" class="gateway-toggle"><span>启用</span><el-switch v-model="form.enabled" /></label>
         </div>
         <div class="gateway-form__grid">
-          <label>每小时 Token 限额<input v-model="form.hourly" type="number" min="0" placeholder="不限" /></label>
-          <label>每日 Token 限额<input v-model="form.daily" type="number" min="0" placeholder="不限" /></label>
+          <label>每小时 Token 限额<el-input-number v-model="form.hourly" :min="0" controls-position="right" placeholder="不限" /></label>
+          <label>每日 Token 限额<el-input-number v-model="form.daily" :min="0" controls-position="right" placeholder="不限" /></label>
         </div>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="editorOpen = false">取消</button>
-        <button type="submit" form="gateway-key-form" class="button button--primary" :disabled="saving"><LoaderCircle v-if="saving" :size="14" class="spin" />保存</button>
+        <el-button :disabled="saving" @click="editorOpen = false">取消</el-button>
+        <el-button type="primary" native-type="submit" form="gateway-key-form" :loading="saving" :disabled="saving">保存</el-button>
       </template>
     </el-dialog>
 
@@ -81,14 +79,14 @@
       <p class="gateway-key-warning"><TriangleAlert :size="15" />库中只保存摘要，任何页面与日志都不会再显示该 Key。</p>
       <IdDisplay v-if="createdKey" :value="createdKey.key" :max-width="52" />
       <template #footer>
-        <button type="button" class="button button--primary" @click="closePlaintext">我已保存</button>
+        <el-button type="primary" @click="closePlaintext">我已保存</el-button>
       </template>
     </el-dialog>
   </section>
 </template>
 
 <script setup lang="ts">
-import { Ban, LoaderCircle, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { Ban, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   gatewayApi,
@@ -117,9 +115,9 @@ const form = reactive({
   name: '',
   owner_id: '',
   allowed_models: '',
-  max_concurrency: '0',
-  hourly: '',
-  daily: '',
+  max_concurrency: 0,
+  hourly: null as number | null,
+  daily: null as number | null,
   expires_at: '',
   enabled: true,
 })
@@ -131,11 +129,9 @@ function limitText(value: number | null): string {
   return String(value)
 }
 
-function intOrNull(value: string): number | null {
-  const text = value.trim()
-  if (!text) return null
-  const parsed = Number(text)
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null
+function intOrNull(value: number | null): number | null {
+  if (value === null || value === undefined) return null
+  return Number.isFinite(value) ? Math.trunc(value) : null
 }
 
 function expiresIso(value: string): string | null {
@@ -158,7 +154,7 @@ async function load() {
 }
 
 function openCreate() {
-  Object.assign(form, { id: '', name: '', owner_id: '', allowed_models: '', max_concurrency: '0', hourly: '', daily: '', expires_at: '', enabled: true })
+  Object.assign(form, { id: '', name: '', owner_id: '', allowed_models: '', max_concurrency: 0, hourly: null, daily: null, expires_at: '', enabled: true })
   editorOpen.value = true
 }
 
@@ -168,9 +164,9 @@ function openEdit(key: GatewayKey) {
     name: key.name,
     owner_id: key.owner_id ?? '',
     allowed_models: key.allowed_models.join('\n'),
-    max_concurrency: String(key.max_concurrency),
-    hourly: key.hourly_token_limit?.toString() ?? '',
-    daily: key.daily_token_limit?.toString() ?? '',
+    max_concurrency: key.max_concurrency,
+    hourly: key.hourly_token_limit ?? null,
+    daily: key.daily_token_limit ?? null,
     expires_at: key.expires_at ? key.expires_at.slice(0, 16) : '',
     enabled: key.enabled,
   })

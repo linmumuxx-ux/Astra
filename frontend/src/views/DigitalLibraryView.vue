@@ -6,8 +6,8 @@
         <p>管理团队知识、经验与项目资料。</p>
       </div>
       <div class="library-head-actions">
-        <button v-if="permissions?.can_manage" type="button" class="button" @click="triggerImport"><Upload :size="15" />导入知识</button>
-        <button v-if="permissions?.can_manage" type="button" class="button button--primary" @click="beginCreate"><Plus :size="15" />新建知识</button>
+        <el-button v-if="permissions?.can_manage" @click="triggerImport"><Upload :size="15" />导入知识</el-button>
+        <el-button v-if="permissions?.can_manage" type="primary" @click="beginCreate"><Plus :size="15" />新建知识</el-button>
         <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
       </div>
     </section>
@@ -18,7 +18,7 @@
         <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
         <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
         <span v-if="(serviceStatus?.pending_count ?? 0) || (serviceStatus?.failed_count ?? 0)">待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
-        <button v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" type="button" class="text-action" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
+        <el-button v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" type="primary" link :loading="resyncing" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</el-button>
         <small v-if="serviceError || serviceStatus?.healthy === false" role="status">{{ serviceError || serviceStatus?.message }}</small>
       </section>
       <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
@@ -26,7 +26,7 @@
       </button>
     </section>
 
-    <div v-if="pageError" class="library-error"><TriangleAlert :size="16" />{{ pageError }}<button type="button" @click="loadAll">重试</button></div>
+    <div v-if="pageError" class="library-error"><TriangleAlert :size="16" />{{ pageError }}<el-button type="danger" link @click="loadAll">重试</el-button></div>
 
     <section class="library-workspace">
       <KnowledgeSpacePanel
@@ -101,12 +101,12 @@
     >
       <p class="astra-dialog-subtitle">{{ `为 ${publishDialog.ids.length} 条知识选择目录并发布。` }}</p>
       <form id="knowledge-publish-form" @submit.prevent="submitBatchPublish">
-        <label>目标目录<select v-model="publishSpaceId" required><option value="" disabled>选择目录</option><option v-for="item in directoryOptions" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-        <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
+        <label>目标目录<el-select v-model="publishSpaceId" placeholder="选择目录"><el-option v-for="item in directoryOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+        <label>验证状态<el-select v-model="publishVerification"><el-option label="未验证" value="unverified" /><el-option label="已验证" value="verified" /><el-option label="验证失败" value="failed" /></el-select></label>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="working" @click="publishDialog = null">取消</button>
-        <button type="submit" form="knowledge-publish-form" class="button button--primary" :disabled="!publishSpaceId || working"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
+        <el-button :disabled="working" @click="publishDialog = null">取消</el-button>
+        <el-button type="primary" native-type="submit" form="knowledge-publish-form" :loading="working" :disabled="!publishSpaceId || working">发布</el-button>
       </template>
     </el-dialog>
 
@@ -133,14 +133,14 @@
         <p>请先删除或移动这些子目录与知识，待目录为空后再删除本目录。</p>
       </div>
       <template #footer>
-        <button type="button" class="button button--primary" @click="deleteBlocked = null">知道了</button>
+        <el-button type="primary" @click="deleteBlocked = null">知道了</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ChevronRight, LoaderCircle, Plus, TriangleAlert, Upload } from 'lucide-vue-next'
+import { ChevronRight, Plus, TriangleAlert, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -428,7 +428,7 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
-.digital-library-page{position:relative;display:flex;flex-direction:column;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow-y:auto}.digital-library-page>*{flex:0 0 auto}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.digital-library-page{position:relative;display:flex;flex-direction:column;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow-y:auto}.digital-library-page>*{flex:0 0 auto}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card :deep(.el-select){width:100%}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 @media(max-width:1100px){.digital-library-page{height:auto;min-height:0;overflow:visible}.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-workspace{grid-template-columns:270px minmax(0,1fr);min-height:620px}.library-status-row{align-items:flex-start;flex-direction:column}}
 @media(max-width:780px){.library-workspace{grid-template-columns:1fr;overflow:visible}.library-head-actions .button{flex:1}.knowledge-service{flex-wrap:wrap}}
 .delete-blocked{display:grid;gap:8px}.delete-blocked p{margin:0;color:var(--astra-text-secondary);line-height:1.6}.delete-blocked p strong{color:var(--astra-text-primary)}

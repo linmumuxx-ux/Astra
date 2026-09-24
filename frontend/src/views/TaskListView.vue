@@ -2,7 +2,7 @@
   <div class="page task-list-page" data-testid="task-list-page">
     <section class="task-head">
       <div><h2>任务管理</h2><p>现在有哪些任务，哪些正在正常运行，哪些需要人工处理。</p></div>
-      <button class="button button--primary" @click="dialogOpen = true"><Plus :size="15" /> 创建任务</button>
+      <el-button type="primary" @click="dialogOpen = true"><Plus :size="15" /> 创建任务</el-button>
     </section>
 
     <nav class="task-tabs" aria-label="任务状态筛选">
@@ -11,21 +11,21 @@
     </nav>
 
     <div class="filter-bar task-filters">
-      <div class="search-box"><Search :size="15" /><input v-model="filters.query" placeholder="搜索任务 ID 或标题" aria-label="搜索任务" /></div>
-      <select v-model="filters.type" aria-label="类型"><option value="">全部类型</option><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select>
-      <select v-model="filters.category" aria-label="分类"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
-      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">执行失败</option><option v-for="item in statuses" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
-      <select v-model="filters.employee" aria-label="执行员工"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
-      <button class="button button--ghost" type="button" @click="showMore = !showMore"><SlidersHorizontal :size="14" /> 更多筛选 <ChevronDown :size="14" :class="{ rot: showMore }" /></button>
-      <button class="button button--ghost" type="button" @click="resetFilters"><RotateCcw :size="14" /> 重置</button>
+      <el-input v-model="filters.query" class="task-search" clearable placeholder="搜索任务 ID 或标题" aria-label="搜索任务"><template #prefix><Search :size="15" /></template></el-input>
+      <el-select v-model="filters.type" aria-label="类型"><el-option label="全部类型" value="" /><el-option label="问题" value="ISSUE" /><el-option label="需求" value="REQUIREMENT" /></el-select>
+      <el-select v-model="filters.category" aria-label="分类"><el-option label="全部分类" value="" /><el-option v-for="item in store.categories" :key="item.id" :label="item.name" :value="item.id" /></el-select>
+      <el-select v-model="filters.status" aria-label="状态"><el-option label="全部状态" value="" /><el-option label="执行失败" value="ABNORMAL" /><el-option v-for="item in statuses" :key="item" :label="runtimeStatusLabel(item)" :value="item" /></el-select>
+      <el-select v-model="filters.employee" aria-label="执行员工"><el-option label="全部员工" value="" /><el-option v-for="item in store.employees" :key="item.id" :label="employeeDisplayName(item.name)" :value="item.id" /></el-select>
+      <el-button text @click="showMore = !showMore"><SlidersHorizontal :size="14" /> 更多筛选 <ChevronDown :size="14" :class="{ rot: showMore }" /></el-button>
+      <el-button text @click="resetFilters"><RotateCcw :size="14" /> 重置</el-button>
     </div>
 
     <div v-if="showMore" class="filter-bar task-filters task-filters--more">
-      <select v-model="filters.priority" aria-label="优先级"><option value="">全部优先级</option><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}</option></select>
-      <select v-model="filters.timeType" aria-label="时间类型"><option value="updated">按更新时间</option><option value="created">按创建时间</option></select>
-      <input v-model="filters.dateFrom" class="date-filter" type="date" aria-label="开始日期" />
+      <el-select v-model="filters.priority" aria-label="优先级"><el-option label="全部优先级" value="" /><el-option v-for="item in priorities" :key="item" :label="priorityLabel(item)" :value="item" /></el-select>
+      <el-select v-model="filters.timeType" aria-label="时间类型"><el-option label="按更新时间" value="updated" /><el-option label="按创建时间" value="created" /></el-select>
+      <el-date-picker v-model="filters.dateFrom" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" aria-label="开始日期" />
       <span class="range-sep">–</span>
-      <input v-model="filters.dateTo" class="date-filter" type="date" aria-label="结束日期" />
+      <el-date-picker v-model="filters.dateTo" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" aria-label="结束日期" />
     </div>
 
     <AstraPanel flush class="task-table-panel">
@@ -50,7 +50,7 @@
                 <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>
                 <td class="actions-cell" @click.stop>
                   <div class="actions-wrap">
-                    <button class="task-primary-btn" type="button" @click="openTask(task.id)">查看详情</button>
+                    <el-button size="small" @click="openTask(task.id)">查看详情</el-button>
                     <div class="menu-wrap">
                       <button class="task-menu-btn" type="button" aria-label="更多操作" @click="toggleMenu(task.id)"><MoreHorizontal :size="17" /></button>
                       <div v-if="openMenu === task.id" class="task-menu">
@@ -60,23 +60,19 @@
                   </div>
                 </td>
               </tr>
-              <tr v-if="!paged.length"><td colspan="7"><AstraEmptyState :icon="SearchX" title="暂无符合条件的任务" description="当前筛选条件下没有找到任务。"><button class="button button--ghost" type="button" @click="resetFilters">清除筛选</button></AstraEmptyState></td></tr>
+              <tr v-if="!paged.length"><td colspan="7"><AstraEmptyState :icon="SearchX" title="暂无符合条件的任务" description="当前筛选条件下没有找到任务。"><el-button text @click="resetFilters">清除筛选</el-button></AstraEmptyState></td></tr>
             </template>
           </tbody>
         </table>
       </div>
       <footer class="task-table__foot">
-        <span class="foot-total">共 {{ total }} 条</span>
-        <div class="foot-right">
-          <label class="page-size">每页<select v-model.number="pageSize"><option :value="20">20 条</option><option :value="50">50 条</option><option :value="100">100 条</option></select></label>
-          <nav class="task-page-nav" aria-label="分页">
-            <button type="button" :disabled="currentPage <= 1" @click="currentPage -= 1"><ChevronLeft :size="15" /></button>
-            <template v-for="page in pageWindow" :key="page">
-              <button type="button" :class="{ active: Number(page) === currentPage }" :disabled="page === '…'" @click="goPage(Number(page))">{{ page }}</button>
-            </template>
-            <button type="button" :disabled="currentPage >= pageCount" @click="currentPage += 1"><ChevronRight :size="15" /></button>
-          </nav>
-        </div>
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+        />
       </footer>
     </AstraPanel>
 
@@ -101,15 +97,15 @@
     >
       <p class="astra-dialog-subtitle">定义目标和验收标准，执行方式由数字员工决定。</p>
       <form id="task-create-form" @submit.prevent="createTask">
-        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
-        <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
-        <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
+        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<el-input v-model="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<el-select v-model="form.task_type"><el-option label="问题" value="ISSUE" /><el-option label="需求" value="REQUIREMENT" /></el-select></label><label>任务分类 *<el-select v-model="form.category_id" placeholder="请选择"><el-option v-for="item in store.categories" :key="item.id" :label="item.name" :value="item.id" /></el-select></label></div><div class="form-grid"><label>优先级 *<el-select v-model="form.priority"><el-option v-for="item in priorities" :key="item" :label="`${priorityLabel(item)}：${priorityHint(item)}`" :value="item" /></el-select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><el-select :id="id" v-model="form.completion_policy"><el-option label="员工提交后自动完成" value="AUTO" /><el-option label="需人工确认" value="MANUAL_CONFIRM" /></el-select></FormField></div></section>
+        <section class="form-section"><h4>任务内容</h4><label>任务描述 *<el-input v-model="form.description" type="textarea" :rows="4" resize="vertical" required placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><el-button class="attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</el-button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
+        <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><el-input v-model="item.content" required :placeholder="`验收标准 ${index + 1}`" /><el-button text circle title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></el-button><el-button text circle title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></el-button><el-button type="danger" text circle title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></el-button></div></div><el-button text @click="addCriterion"><Plus :size="14" /> 添加验收标准</el-button></section>
+        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><el-select :id="id" v-model="form.employee_id"><el-option label="自动分配" value="" /><el-option v-for="item in compatibleEmployees" :key="item.id" :label="`${employeeDisplayName(item.name)} · ${item.role}`" :value="item.id" /></el-select></FormField></section>
         <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="submitting" @click="requestCloseCreate">取消</button>
-        <button type="submit" form="task-create-form" class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button>
+        <el-button :disabled="submitting" @click="requestCloseCreate">取消</el-button>
+        <el-button type="primary" native-type="submit" form="task-create-form" :loading="submitting" :disabled="submitting">创建任务</el-button>
       </template>
     </el-dialog>
 
@@ -134,8 +130,8 @@
     >
       <p class="astra-dialog-subtitle">{{ `确认对「${shortTitle(pending.task.title)}」执行该操作？` }}</p>
       <template #footer>
-        <button type="button" class="button" :disabled="acting" @click="pending = null">取消</button>
-        <button type="button" class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button>
+        <el-button :disabled="acting" @click="pending = null">取消</el-button>
+        <el-button type="primary" :loading="acting" :disabled="acting" @click="runPendingAction">确认{{ pending.label }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -143,7 +139,7 @@
 
 <script setup lang="ts">
 import FormField from '@/components/forms/FormField.vue'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, FileText, LoaderCircle, MoreHorizontal, Paperclip, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ChevronDown, FileText, MoreHorizontal, Paperclip, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
@@ -227,26 +223,7 @@ const filtered = computed(() => store.tasks.filter((task) => {
 }))
 
 const total = computed(() => filtered.value.length)
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-const paged = computed(() => filtered.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
-const pageWindow = computed<string[]>(() => {
-  const pages = pageCount.value
-  const current = currentPage.value
-  if (pages <= 7) return Array.from({ length: pages }, (_, i) => String(i + 1))
-  const seen = new Set<number | '…'>([1])
-  for (let p = current - 1; p <= current + 1; p += 1) if (p > 1 && p < pages) seen.add(p)
-  seen.add(pages)
-  const sorted = [...seen].sort((a, b) => a === '…' ? 1 : b === '…' ? -1 : (a as number) - (b as number))
-  return sorted.reduce<string[]>((result, value, index) => {
-    const prev = sorted[index - 1]
-    if (value === '…') return [...result, '…']
-    if (typeof prev === 'number' && (value as number) - prev > 1) return [...result, '…', String(value)]
-    return [...result, String(value)]
-  }, [])
-})
-
 function setStatus(value: RuntimeStatusFilter) { filters.status = value; currentPage.value = 1 }
-function goPage(page: number) { if (!Number.isNaN(page)) currentPage.value = page }
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
 const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '自动分配')
@@ -368,8 +345,10 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .task-tabs button.active b { color: var(--astra-primary-bright); background: rgba(24,184,117,.16); }
 
 .task-filters--more { margin-top: -6px; padding-top: 12px; border-top: 1px dashed var(--astra-border); }
-.task-filters .button--ghost { gap: 6px; }
-.task-filters .button--ghost svg.rot, .task-filters .button--ghost .rot { transform: rotate(180deg); }
+.task-search { width: min(280px, 32vw); }
+.task-filters :deep(.el-select) { width: 150px; }
+.task-filters :deep(.el-date-editor) { width: 150px; }
+.task-filters :deep(.rot) { transform: rotate(180deg); }
 .range-sep { color: var(--astra-text-muted); }
 
 .task-table-panel { width: 100%; }
@@ -406,8 +385,6 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .progress-cell span, .time-cell time { color: var(--astra-text-muted); }
 
 .actions-wrap { display: flex; align-items: center; gap: 6px; }
-.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); cursor: pointer; white-space: nowrap; transition: .14s ease; }
-.task-primary-btn:hover { border-color: var(--astra-border-hover); }
 .menu-wrap { position: relative; }
 .task-menu-btn { display: grid; place-items: center; width: 30px; height: 30px; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); cursor: pointer; }
 .task-menu-btn:hover { color: var(--astra-text-primary); border-color: var(--astra-border-hover); }
@@ -417,16 +394,7 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .task-menu button.danger { color: var(--astra-danger); }
 .task-menu button.danger:hover { background: var(--astra-danger-soft); }
 
-.task-table__foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 15px; border-top: 1px solid var(--astra-border); background: #fbfdfc; }
-.foot-total { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.foot-right { display: flex; align-items: center; gap: 16px; }
-.page-size { display: flex; align-items: center; gap: 7px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.page-size select { height: 30px; padding: 0 26px 0 9px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; outline: none; background: var(--astra-bg-panel); font-size: var(--astra-font-control); }
-.task-page-nav { display: flex; align-items: center; gap: 5px; }
-.task-page-nav button { display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 7px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); font-size: var(--astra-font-control); cursor: pointer; }
-.task-page-nav button:hover:not(:disabled):not(.active) { color: var(--astra-primary-bright); border-color: var(--astra-primary-border); }
-.task-page-nav button.active { color: #fff; border-color: var(--astra-primary); background: var(--astra-primary); }
-.task-page-nav button:disabled { opacity: .4; cursor: default; }
+.task-table__foot { display: flex; align-items: center; justify-content: flex-end; padding: 10px 15px; border-top: 1px solid var(--astra-border); background: #fbfdfc; }
 
 .confirm-action-card { width: min(440px,100%); }
 .confirm-action-card header p { margin: 5px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.55; }
