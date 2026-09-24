@@ -3,9 +3,9 @@
     :is="embedded ? 'div' : AstraPanel"
     v-bind="embedded ? {} : { title: creating ? '创建数字员工' : `${employeeDisplayName(employee?.name)} 配置`, subtitle: '配置描述员工职责与工作环境；运行状态由系统状态机维护。' }"
   >
-    <nav class="sub-tabs">
-      <button v-for="item in tabs" :key="item.id" :class="{ active: employeeTab === item.id }" @click="switchTab(item.id)">{{ item.label }}</button>
-    </nav>
+    <el-tabs v-model="employeeTab" class="employee-config-tabs">
+      <el-tab-pane v-for="item in tabs" :key="item.id" :label="item.label" :name="item.id" />
+    </el-tabs>
 
     <form class="config-form config-form--editable" @submit.prevent="save">
       <div v-if="employeeTab === 'basic'">
@@ -13,15 +13,15 @@
           <label class="field-id">
             <span>员工 ID</span>
             <IdDisplay v-if="!creating" :value="employee?.id ?? ''" :max-width="200" />
-            <input v-else v-model.trim="form.id" required placeholder="employee-04" />
+            <el-input v-else v-model="form.id" required placeholder="employee-04" />
           </label>
-          <label>员工名称<input v-model.trim="form.name" required placeholder="员工-04" /></label>
+          <label>员工名称<el-input v-model="form.name" required placeholder="员工-04" /></label>
         </div>
         <div class="form-grid">
-          <label>岗位<input v-model.trim="form.role" required placeholder="测试平台开发" /></label>
-          <FormField label="默认办公区域" help="无特定任务场景时，员工会出现在这个区域。" v-slot="{ id }"><select :id="id" v-model="form.default_work_area" required><option v-for="area in workspaceAreas" :key="area.id" :value="area.id">{{ area.name }}</option></select></FormField>
+          <label>岗位<el-input v-model="form.role" required placeholder="测试平台开发" /></label>
+          <FormField label="默认办公区域" help="无特定任务场景时，员工会出现在这个区域。" v-slot="{ id }"><el-select :id="id" v-model="form.default_work_area"><el-option v-for="area in workspaceAreas" :key="area.id" :label="area.name" :value="area.id" /></el-select></FormField>
         </div>
-        <label>说明<textarea v-model="form.description" rows="4" placeholder="说明该员工的工作职责与边界" /></label>
+        <label>说明<el-input v-model="form.description" type="textarea" :rows="4" resize="vertical" placeholder="说明该员工的工作职责与边界" /></label>
 
         <fieldset class="config-fieldset">
           <legend>配置状态</legend>
@@ -32,9 +32,9 @@
           <div class="runtime-card__head"><FormLabel label="运行状态" help="由系统状态机维护（空闲 / 执行中 / 等待输入 / 异常），此表单不可直接修改。" /><span>{{ runtimeMeta.label }}</span></div>
           <div class="runtime-card__action">
             <span>{{ paused ? '员工已暂停接单，不会领取新任务。' : '员工可正常领取匹配任务。' }}</span>
-            <button type="button" class="button button--compact" :class="{ 'button--warning': !paused }" :disabled="statusChanging || (!paused && currentTaskCount > 0)" @click="toggleRuntime">
+            <el-button :type="paused ? 'primary' : 'warning'" :loading="statusChanging" :disabled="statusChanging || (!paused && currentTaskCount > 0)" @click="toggleRuntime">
               {{ statusChanging ? '处理中…' : paused ? '继续接单' : '暂停接单' }}
-            </button>
+            </el-button>
           </div>
         </div>
       </div>
@@ -57,13 +57,13 @@
           <button type="button" :class="{ active: form.environment.mode === 'LOCAL' }" @click="setMode('LOCAL')"><Laptop :size="20" /><strong>本地</strong></button>
           <button type="button" :class="{ active: form.environment.mode === 'LINUX_REMOTE' }" @click="setMode('LINUX_REMOTE')"><Server :size="20" /><strong>Linux 远程</strong></button>
         </div>
-        <div class="form-grid"><label>环境名称<input v-model.trim="form.environment.name" required /></label><FormField label="Agent 可执行文件" help="正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /></FormField></div>
-        <div class="form-grid"><FormField label="Agent 模型" help="留空时使用 Agent 自身或平台默认模型。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.model_name" placeholder="opencode/glm-5.1" /></FormField><label>环境说明<input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
-        <FormField label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。" v-slot="{ id }"><input :id="id" v-model.trim="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /></FormField>
-          <FormField label="OpenCode Server Port" help="人工配置固定端口，同一主机的员工须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" v-slot="{ id }"><input :id="id" v-model.number="form.environment.opencode_server_port" required type="number" min="1" max="65535" /></FormField>
+        <div class="form-grid"><label>环境名称<el-input v-model="form.environment.name" required /></label><FormField label="Agent 可执行文件" help="正式 Runtime 由该 OpenCode 启动 Server；显式 fallback 时才使用 CLI。" v-slot="{ id }"><el-input :id="id" v-model="form.environment.opencode_path" required :placeholder="form.environment.mode === 'LOCAL' ? 'opencode 或 C:\\Program Files\\OpenCode\\opencode.exe' : '/usr/local/bin/opencode'" /></FormField></div>
+        <div class="form-grid"><FormField label="Agent 模型" help="留空时使用 Agent 自身或平台默认模型。" v-slot="{ id }"><el-input :id="id" v-model="form.environment.model_name" placeholder="opencode/glm-5.1" /></FormField><label>环境说明<el-input v-model="form.environment.description" placeholder="例如：测试平台开发环境" /></label></div>
+        <FormField label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。" v-slot="{ id }"><el-input :id="id" v-model="form.environment.workspace_root" required :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" /></FormField>
+          <FormField label="OpenCode Server Port" help="人工配置固定端口，同一主机的员工须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" v-slot="{ id }"><el-input-number :id="id" v-model="form.environment.opencode_server_port" :min="1" :max="65535" controls-position="right" /></FormField>
         <template v-if="form.environment.mode === 'LINUX_REMOTE'">
-          <div class="form-grid"><label>SSH Host<input v-model.trim="form.environment.host" required placeholder="10.0.0.12" /></label><label>SSH Port<input v-model.number="form.environment.port" required type="number" min="1" max="65535" /></label></div>
-          <div class="form-grid"><label>Username<input v-model.trim="form.environment.username" required placeholder="nexus" /></label><FormField label="SSH 密码" help="SSH 密码保存在部署数据库中且接口不回显；已配置时留空保持不变。" v-slot="{ id }"><input :id="id" v-model="form.environment.ssh_password" :required="creating || !employee?.execution_environment?.has_ssh_password" type="password" autocomplete="new-password" :placeholder="employee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></FormField></div>
+          <div class="form-grid"><label>SSH Host<el-input v-model="form.environment.host" required placeholder="10.0.0.12" /></label><label>SSH Port<el-input-number v-model="form.environment.port" :min="1" :max="65535" controls-position="right" /></label></div>
+          <div class="form-grid"><label>Username<el-input v-model="form.environment.username" required placeholder="nexus" /></label><FormField label="SSH 密码" help="SSH 密码保存在部署数据库中且接口不回显；已配置时留空保持不变。" v-slot="{ id }"><el-input :id="id" v-model="form.environment.ssh_password" :required="creating || !employee?.execution_environment?.has_ssh_password" type="password" show-password autocomplete="new-password" :placeholder="employee?.execution_environment?.has_ssh_password ? '已配置，留空保持不变' : '请输入 SSH 密码'" /></FormField></div>
         </template>
 
         <div class="env-connection" v-if="!creating">
@@ -74,7 +74,7 @@
             <div><dt>模型</dt><dd>{{ selectedEnvironment.model_name || '—' }}</dd></div>
             <div><dt>最近检测</dt><dd>{{ formatTime(selectedEnvironment.last_checked_at) }}</dd></div>
           </div>
-          <button type="button" class="button button--compact" :disabled="testing" @click="testConnection"><RefreshCw :size="13" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</button>
+          <el-button :loading="testing" :disabled="testing" @click="testConnection"><RefreshCw v-if="!testing" :size="13" />{{ testing ? '检测中' : '测试连接' }}</el-button>
         </div>
         <div v-if="checks.length" class="environment-checks"><article v-for="check in checks" :key="check.name"><CheckCircle2 v-if="check.passed" :size="14" /><CircleX v-else :size="14" /><div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div></article></div>
       </div>
@@ -170,7 +170,6 @@ const isDirty = computed(() => snapshot() !== originalSnapshot.value)
 
 watch([() => props.employee?.id, () => props.creating], () => { fill(props.employee ?? undefined) }, { immediate: true })
 
-function switchTab(id: string) { employeeTab.value = id }
 function setMode(mode: 'LOCAL' | 'LINUX_REMOTE') { form.environment.mode = mode }
 function hasType(value: TaskType) { return form.task_types.includes(value) }
 function toggleType(value: TaskType) { form.task_types = form.task_types.includes(value) ? form.task_types.filter((item) => item !== value) : [...form.task_types, value] }
@@ -181,7 +180,17 @@ function environmentPayload() {
   return { ...form.environment, host: form.environment.mode === 'LOCAL' ? null : form.environment.host || null, username: form.environment.mode === 'LOCAL' ? null : form.environment.username || null, ssh_password: form.environment.mode === 'LINUX_REMOTE' ? form.environment.ssh_password || null : null, model_name: form.environment.model_name || null }
 }
 function employeePayload() {
-  return { name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute }
+  return {
+    name: form.name.trim(),
+    role: form.role.trim(),
+    description: form.description.trim(),
+    default_work_area: form.default_work_area,
+    task_types: form.task_types,
+    category_ids: form.category_ids,
+    enabled: form.enabled,
+    auto_claim: form.auto_claim,
+    auto_execute: form.auto_execute,
+  }
 }
 function normalizedEnvironment(value: ReturnType<typeof environmentPayload> | Employee['execution_environment']) {
   return value ? { mode: value.mode, name: value.name, description: value.description ?? '', host: value.host ?? null, port: Number(value.port), username: value.username ?? null, opencode_server_port: Number(value.opencode_server_port ?? 4096), opencode_path: value.opencode_path, model_name: value.model_name ?? null, workspace_root: value.workspace_root, labels: [...(value.labels ?? [])] } : null
@@ -266,6 +275,8 @@ defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving, reset, sav
 .env-connection__grid > div { display: grid; padding: 8px 10px; border-radius: 8px; background: var(--astra-bg-base); }
 .env-connection dt { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .env-connection dd { overflow: hidden; margin: 2px 0 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
-.env-connection .button { align-self: start; }
+.env-connection :deep(.el-button) { justify-self: start; }
+.employee-config-tabs :deep(.el-tabs__content) { display: none; }
+.employee-config-tabs { margin-bottom: 12px; }
 @media (max-width: 560px) { .env-connection__grid { grid-template-columns: 1fr; } }
 </style>

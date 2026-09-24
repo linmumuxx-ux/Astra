@@ -16,6 +16,7 @@ const controlId = `form-control-${useId()}`
 .astra-form-field { display: grid; align-content: start; gap: 7px; min-width: 0; margin-bottom: 14px; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
 .astra-form-field--inline { display: flex; align-items: center; margin-bottom: 0; }
 .astra-form-field--inline > :deep(.astra-form-label) { flex: 1; }
-.astra-form-field--inline > :deep(.astra-switch) { flex: none; }
+.astra-form-field--inline > :deep(.el-switch) { flex: none; }
+.astra-form-field :deep(.el-input), .astra-form-field :deep(.el-select), .astra-form-field :deep(.el-input-number) { width: 100%; min-width: 0; }
 .astra-form-field :deep(input:not([type='checkbox']):not([type='file'])), .astra-form-field :deep(select) { width: 100%; min-width: 0; height: var(--astra-control-height); }
 </style>
