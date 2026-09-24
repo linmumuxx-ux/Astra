@@ -1,7 +1,15 @@
 <template>
-  <Teleport to="body">
-    <div v-if="employee && model" class="employee-drawer-layer" role="presentation" @click.self="emit('close')">
-      <aside class="employee-drawer" role="dialog" aria-modal="true" :aria-label="`${model.name} 员工详情`">
+  <el-drawer
+    :model-value="Boolean(employee && model)"
+    size="min(620px, 100vw)"
+    :with-header="false"
+    append-to-body
+    lock-scroll
+    destroy-on-close
+    class="employee-detail-drawer"
+    @close="emit('close')"
+  >
+    <template v-if="employee && model">
         <header class="employee-drawer__header">
           <div class="employee-drawer__identity">
             <EmployeeAvatar :employee="employee" size="large" />
@@ -12,7 +20,7 @@
               <div class="employee-drawer__meta"><AstraStatusBadge :status="employee.runtime_state" :label="employee.runtime_status_label" :pulse="employee.status === 'WORKING'" /><span>最近活动 {{ formatTime(model.lastActiveAt) }}</span></div>
             </div>
           </div>
-          <button class="icon-button" type="button" aria-label="关闭员工详情" @click="emit('close')"><X :size="18" /></button>
+          <el-button text circle aria-label="关闭员工详情" @click="emit('close')"><X :size="18" /></el-button>
         </header>
 
         <div class="employee-drawer__body">
@@ -63,17 +71,16 @@
         </div>
 
         <footer class="employee-drawer__footer">
-          <RouterLink class="button" :to="`/employees/${employee.id}`">查看全部任务</RouterLink>
-          <button type="button" class="button button--primary" @click="emit('edit', employee)"><Settings2 :size="15" /> 编辑</button>
+          <el-button @click="$router.push(`/employees/${employee.id}`)">查看全部任务</el-button>
+          <el-button type="primary" @click="emit('edit', employee)"><Settings2 :size="15" />编辑</el-button>
         </footer>
-      </aside>
-    </div>
-  </Teleport>
+    </template>
+  </el-drawer>
 </template>
 
 <script setup lang="ts">
 import { ArrowUpRight, Settings2, X } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { Employee, Task } from '@/api/types'
 import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
@@ -87,15 +94,10 @@ const model = computed(() => props.employee ? toEmployeeViewModel(props.employee
 const recentTasks = computed(() => props.employee
   ? props.tasks.filter((task) => task.employee_id === props.employee?.id).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 3)
   : [])
-function handleEscape(event: KeyboardEvent) { if (props.employee && event.key === 'Escape') emit('close') }
-watch(() => props.employee, (employee) => document.body.classList.toggle('overlay-open', Boolean(employee)), { immediate: true })
-onMounted(() => window.addEventListener('keydown', handleEscape))
-onBeforeUnmount(() => { document.body.classList.remove('overlay-open'); window.removeEventListener('keydown', handleEscape) })
 </script>
 
 <style scoped>
-.employee-drawer-layer { position: fixed; inset: 0; z-index: 80; display: flex; justify-content: flex-end; background: rgba(24,45,39,.22); backdrop-filter: blur(2px); }
-.employee-drawer { display: grid; grid-template-rows: auto minmax(0,1fr) auto; width: min(620px,100%); height: 100%; border-left: 1px solid var(--astra-border); background: #fff; box-shadow: -18px 0 50px rgba(33,60,52,.16); animation: drawer-in .2s ease-out; }
+
 .employee-drawer__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px; border-bottom: 1px solid var(--astra-border); }
 .employee-drawer__identity { display: flex; align-items: center; gap: 15px; min-width: 0; }
 .employee-drawer__identity > div { min-width: 0; }.employee-drawer__identity small { color: var(--astra-primary); font-size: var(--astra-font-body); letter-spacing: .08em; }.employee-drawer__identity h2 { overflow: hidden; margin: 1px 0; line-height: normal; text-overflow: ellipsis; white-space: nowrap; }.employee-drawer__identity p { margin: 0; color: var(--astra-text-secondary); }
@@ -106,6 +108,7 @@ onBeforeUnmount(() => { document.body.classList.remove('overlay-open'); window.r
 .drawer-idle { margin: 0; padding: 2px 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); }
 .drawer-task-list { display: grid; }.drawer-task-list > a { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--astra-border); }.drawer-task-list > a:last-child { border-bottom: 0; }.drawer-task-list > a > span { display: grid; min-width: 0; }.drawer-task-list strong,.drawer-task-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.drawer-task-list strong { font-size: var(--astra-font-emphasis); }.drawer-task-list small { color: var(--astra-text-muted); font-size: var(--astra-font-body); }
 .employee-drawer__footer { display: flex; justify-content: flex-end; gap: 9px; padding: 15px 22px; border-top: 1px solid var(--astra-border); background: #fff; }
-@keyframes drawer-in { from { transform: translateX(30px); opacity: .5; } }
 @media(max-width:600px){.employee-drawer__header{padding-inline:16px}.employee-drawer__body{padding-inline:16px}.drawer-current-task dl,.drawer-facts{grid-template-columns:1fr}.employee-drawer__footer{padding-inline:16px}}
+
+:global(.employee-detail-drawer .el-drawer__body){display:grid;grid-template-rows:auto minmax(0,1fr) auto;padding:0;overflow:hidden}
 </style>
