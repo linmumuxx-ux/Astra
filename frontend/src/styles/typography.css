@@ -28,11 +28,6 @@
 }
 
 /* Shared typography only: no layout, spacing, color or line-height overrides. */
-@theme inline {
-  --font-sans: var(--astra-font-family);
-  --font-serif: var(--astra-font-family);
-  --font-mono: var(--astra-font-family);
-}
 html { font-family: var(--astra-font-family); }
 /* Cover native controls, rendered Markdown, SVG labels and teleported overlays. */
 :where(button, input, select, textarea, option, optgroup, table, code, pre, kbd, samp, svg text) {

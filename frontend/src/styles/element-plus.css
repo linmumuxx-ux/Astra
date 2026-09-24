@@ -1,0 +1,96 @@
+/*
+ * Astra × Element Plus theme bridge.
+ *
+ * Brand and semantic colors live in tokens.css. Element Plus consumes those
+ * tokens here so every framework control follows one theme contract.
+ * Page-specific CSS must not redefine Element Plus theme variables.
+ */
+:root {
+  --el-color-primary: var(--astra-primary);
+  --el-color-success: var(--astra-success);
+  --el-color-warning: var(--astra-warning);
+  --el-color-danger: var(--astra-danger);
+  --el-color-info: var(--astra-info);
+
+  --el-bg-color: var(--astra-bg-panel);
+  --el-bg-color-page: var(--astra-bg-base);
+  --el-bg-color-overlay: var(--astra-bg-panel);
+  --el-fill-color-blank: var(--astra-bg-panel);
+  --el-fill-color-light: #f5f8f6;
+  --el-fill-color-lighter: #f8faf9;
+  --el-fill-color-extra-light: #fbfcfb;
+
+  --el-border-color: var(--astra-border);
+  --el-border-color-light: #e2e9e6;
+  --el-border-color-lighter: #e9efec;
+  --el-border-color-extra-light: #f0f4f2;
+
+  --el-text-color-primary: var(--astra-text-primary);
+  --el-text-color-regular: var(--astra-text-secondary);
+  --el-text-color-secondary: var(--astra-text-muted);
+  --el-text-color-placeholder: #82958f;
+
+  --el-font-family: var(--astra-font-family);
+  --el-font-size-base: var(--astra-font-body);
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-component-size: var(--astra-control-height);
+  --el-component-size-small: var(--astra-control-height-compact);
+  --el-box-shadow-light: var(--astra-shadow-panel);
+}
+
+.el-button {
+  font-weight: var(--astra-weight-bold);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--astra-primary);
+  --el-button-border-color: var(--astra-primary);
+  --el-button-hover-bg-color: #18ad71;
+  --el-button-hover-border-color: #18ad71;
+  --el-button-active-bg-color: var(--astra-primary-bright);
+  --el-button-active-border-color: var(--astra-primary-bright);
+}
+
+.el-dialog,
+.el-message-box {
+  --el-dialog-border-radius: 14px;
+  border: 1px solid var(--astra-border);
+  box-shadow: 0 24px 70px rgba(28, 58, 49, .16);
+}
+
+.el-dialog__header,
+.el-message-box__header {
+  border-bottom: 1px solid var(--astra-border);
+}
+
+.el-dialog__footer,
+.el-message-box__btns {
+  border-top: 1px solid var(--astra-border);
+}
+
+.el-message {
+  border-color: var(--astra-border);
+  box-shadow: 0 12px 36px rgba(28, 58, 49, .14);
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  box-shadow: 0 0 0 1px var(--astra-border) inset;
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--astra-border-hover) inset;
+}
+
+.el-table {
+  --el-table-border-color: var(--astra-border);
+  --el-table-header-bg-color: #f7fbf9;
+  --el-table-row-hover-bg-color: #f2faf6;
+  --el-table-text-color: var(--astra-text-secondary);
+  --el-table-header-text-color: var(--astra-text-muted);
+}
