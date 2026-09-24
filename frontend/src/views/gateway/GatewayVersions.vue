@@ -3,12 +3,12 @@
     <header class="gateway-section__head">
       <div><h3>配置草稿与版本</h3><p>发布前校验全部引用，生成不可变快照；回滚会以历史快照生成新版本。</p></div>
       <div class="gateway-section__actions">
-        <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
-        <button v-if="canPublish" type="button" class="button" :disabled="reconciling" @click="reconcile"><GitMerge :size="14" />发布对账</button>
+        <el-button :loading="loading" :disabled="loading" @click="load"><RefreshCw v-if="!loading" :size="14" />刷新</el-button>
+        <el-button v-if="canPublish" :loading="reconciling" :disabled="reconciling" @click="reconcile"><GitMerge v-if="!reconciling" :size="14" />发布对账</el-button>
       </div>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
     <div class="gateway-two-col">
       <AstraPanel title="草稿校验" :subtitle="draft ? (draft.valid ? '校验通过，可发布' : `发现 ${draft.errors.length} 项错误`) : ''">
@@ -24,8 +24,8 @@
           </ul>
           <p v-if="draft.valid && !draft.warnings.length" class="gateway-note"><CheckCircle2 :size="14" class="ok" />草稿与当前引用一致，可安全发布。</p>
           <div v-if="canPublish" class="gateway-publish">
-            <input v-model="note" placeholder="发布说明（可选）" />
-            <button type="button" class="button button--primary" :disabled="publishing || !draft.valid" @click="publish"><Rocket :size="14" />{{ publishing ? '发布中…' : '发布新版本' }}</button>
+            <el-input v-model="note" placeholder="发布说明（可选）" />
+            <el-button type="primary" :loading="publishing" :disabled="publishing || !draft.valid" @click="publish"><Rocket v-if="!publishing" :size="14" />发布新版本</el-button>
           </div>
           <p v-else class="gateway-note">当前凭据缺少 publish 角色，只能查看。</p>
         </div>
@@ -33,28 +33,17 @@
       </AstraPanel>
 
       <AstraPanel title="版本历史" :subtitle="`共 ${versions.length} 个版本`" flush>
-        <div class="table-wrap">
-          <table class="gateway-version-table">
-            <thead><tr><th>版本</th><th>状态</th><th>说明</th><th>来源</th><th>发布人</th><th>发布时间</th><th class="gateway-col-actions">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="version in versions" :key="version.id">
-                <td class="gateway-mono">v{{ version.version }}</td>
-                <td><span class="status-badge" :data-tone="versionTone(version.status)">{{ versionStatusLabel(version.status) }}</span></td>
-                <td class="gateway-version-note" :title="version.note">{{ version.note || '—' }}</td>
-                <td>{{ version.source_version ? `v${version.source_version}` : '—' }}</td>
-                <td>{{ version.published_by }}</td>
-                <td class="gateway-time">{{ formatDateTime(version.published_at) }}</td>
-                <td class="gateway-col-actions">
-                  <div class="gateway-row-actions">
-                    <button class="gateway-icon-btn" type="button" title="查看快照" @click="openDetail(version.version)"><Eye :size="14" /></button>
-                    <button v-if="canPublish && version.status !== 'CURRENT'" class="gateway-icon-btn" type="button" title="回滚到此版本" @click="rollback(version)"><RotateCcw :size="14" /></button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!versions.length"><td colspan="7" class="empty-cell">尚无发布版本。</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <el-table :data="versions" stripe empty-text="尚无发布版本。">
+          <el-table-column label="版本" width="90"><template #default="{ row }"><span class="gateway-mono">v{{ row.version }}</span></template></el-table-column>
+          <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="versionTagType(versionTone(row.status))" effect="light">{{ versionStatusLabel(row.status) }}</el-tag></template></el-table-column>
+          <el-table-column label="说明" min-width="180"><template #default="{ row }"><span class="gateway-version-note" :title="row.note">{{ row.note || '—' }}</span></template></el-table-column>
+          <el-table-column label="来源" width="90"><template #default="{ row }">{{ row.source_version ? `v${row.source_version}` : '—' }}</template></el-table-column>
+          <el-table-column prop="published_by" label="发布人" min-width="110" />
+          <el-table-column label="发布时间" min-width="155"><template #default="{ row }">{{ formatDateTime(row.published_at) }}</template></el-table-column>
+          <el-table-column label="操作" width="100" fixed="right">
+            <template #default="{ row }"><el-button text circle title="查看快照" @click="openDetail(row.version)"><Eye :size="14" /></el-button><el-button v-if="canPublish && row.status !== 'CURRENT'" text circle title="回滚到此版本" @click="rollback(row)"><RotateCcw :size="14" /></el-button></template>
+          </el-table-column>
+        </el-table>
       </AstraPanel>
     </div>
 
@@ -169,6 +158,11 @@ async function openDetail(version: number) {
     notify(errorMessage(reason, '快照加载失败'), 'error')
     detailOpen.value = false
   }
+}
+
+function versionTagType(tone: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (tone === 'success' || tone === 'warning' || tone === 'danger' || tone === 'info') return tone
+  return 'info'
 }
 
 onMounted(load)

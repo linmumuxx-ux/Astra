@@ -2,20 +2,20 @@
   <section class="gateway-section">
     <header class="gateway-section__head">
       <div><h3>Key 自助用量</h3><p>普通 Gateway Key 只能查看自身的日志与统计，凭据仅存当前会话。</p></div>
-      <button v-if="selfKey" type="button" class="button" @click="clear"><LogOut :size="14" />退出去用量</button>
+      <el-button v-if="selfKey" @click="clear"><LogOut :size="14" />退出用量</el-button>
     </header>
 
     <form v-if="!selfKey" class="gateway-self-form" @submit.prevent="connect">
-      <label>Gateway Key（agw_ 开头）<input v-model="input" type="password" autocomplete="off" placeholder="粘贴你自己的 Gateway Key" /></label>
-      <button type="submit" class="button button--primary" :disabled="loading"><LoaderCircle v-if="loading" :size="14" class="spin" />查看用量</button>
+      <label>Gateway Key（agw_ 开头）<el-input v-model="input" type="password" show-password autocomplete="off" placeholder="粘贴你自己的 Gateway Key" /></label>
+      <el-button type="primary" native-type="submit" :loading="loading" :disabled="loading">查看用量</el-button>
     </form>
 
     <template v-else>
-      <div class="gateway-window-switch" role="tablist" aria-label="统计窗口">
-        <button v-for="item in windows" :key="item.id" type="button" :class="{ active: statsWindow === item.id }" @click="statsWindow = item.id">{{ item.label }}</button>
-      </div>
+      <el-radio-group v-model="statsWindow" size="small" aria-label="统计窗口">
+        <el-radio-button v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</el-radio-button>
+      </el-radio-group>
 
-      <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+      <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
       <div class="metrics-grid gateway-metrics">
         <AstraMetricCard label="请求数" :value="stats?.requests ?? '—'" hint="窗口内你的调用总量" :icon="Activity" />
@@ -32,34 +32,23 @@
       </AstraPanel>
 
       <AstraPanel :title="`调用记录 · ${page.total} 条`" flush>
-        <div class="table-wrap">
-          <table class="gateway-log-table">
-            <thead><tr><th>时间</th><th>模型</th><th>节点</th><th>状态</th><th>流式</th><th>Token（入 / 出 / 总）</th><th>TTFT</th><th>总时长</th></tr></thead>
-            <tbody>
-              <tr v-for="row in page.items" :key="row.id">
-                <td class="gateway-time">{{ formatDateTime(row.started_at) }}</td>
-                <td>{{ row.model ?? '—' }}</td>
-                <td class="gateway-mono">{{ row.node_id ?? '—' }}</td>
-                <td>
-                  <span v-if="row.error_code" class="status-badge" data-tone="danger" :title="row.error_code">{{ row.error_code }}</span>
-                  <span v-else class="status-badge" :data-tone="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</span>
-                </td>
-                <td>{{ row.streaming ? 'SSE' : '普通' }}</td>
-                <td class="gateway-num">{{ row.usage_known ? `${row.input_tokens ?? 0} / ${row.output_tokens ?? 0} / ${row.total_tokens ?? 0}` : 'unknown' }}</td>
-                <td class="gateway-num">{{ row.ttft_ms ?? '—' }} ms</td>
-                <td class="gateway-num">{{ row.duration_ms ?? '—' }} ms</td>
-              </tr>
-              <tr v-if="!page.items.length"><td colspan="8" class="empty-cell">{{ loading ? '加载中…' : '暂无调用记录。' }}</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <el-table :data="page.items" stripe :loading="loading" empty-text="暂无调用记录。">
+          <el-table-column label="时间" min-width="155"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="模型" min-width="160"><template #default="{ row }">{{ row.model ?? '—' }}</template></el-table-column>
+          <el-table-column label="节点" min-width="150"><template #default="{ row }"><span class="gateway-mono">{{ row.node_id ?? '—' }}</span></template></el-table-column>
+          <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag v-if="row.error_code" type="danger" effect="light" :title="row.error_code">{{ row.error_code }}</el-tag><el-tag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'" effect="light">{{ row.status_code ?? '—' }}</el-tag></template></el-table-column>
+          <el-table-column label="流式" width="90"><template #default="{ row }">{{ row.streaming ? 'SSE' : '普通' }}</template></el-table-column>
+          <el-table-column label="Token（入 / 出 / 总）" min-width="170" align="right"><template #default="{ row }">{{ row.usage_known ? `${row.input_tokens ?? 0} / ${row.output_tokens ?? 0} / ${row.total_tokens ?? 0}` : 'unknown' }}</template></el-table-column>
+          <el-table-column label="TTFT" width="100" align="right"><template #default="{ row }">{{ row.ttft_ms ?? '—' }} ms</template></el-table-column>
+          <el-table-column label="总时长" width="110" align="right"><template #default="{ row }">{{ row.duration_ms ?? '—' }} ms</template></el-table-column>
+        </el-table>
       </AstraPanel>
     </template>
   </section>
 </template>
 
 <script setup lang="ts">
-import { Activity, CheckCircle2, CircleHelp, Clock, Coins, LoaderCircle, LogOut, TriangleAlert, Waves } from 'lucide-vue-next'
+import { Activity, CheckCircle2, CircleHelp, Clock, Coins, LogOut, TriangleAlert, Waves } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   clearSelfKey,

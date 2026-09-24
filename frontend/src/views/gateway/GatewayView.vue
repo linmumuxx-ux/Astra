@@ -8,16 +8,16 @@
       <div v-if="authorized" class="gateway-session">
         <i />
         <span><strong>{{ actor }}</strong><small>{{ rolesText }}</small></span>
-        <button type="button" class="button button--compact" @click="disconnect">退出</button>
+        <el-button size="small" @click="disconnect">退出</el-button>
       </div>
     </section>
 
     <GatewayGate>
-      <nav class="settings-tabs gateway-tabs" aria-label="API 中转导航">
-        <button v-for="item in tabs" :key="item.id" type="button" :class="{ active: tab === item.id }" @click="switchTab(item.id)">
-          <component :is="item.icon" :size="14" />{{ item.label }}
-        </button>
-      </nav>
+      <el-tabs v-model="tab" class="gateway-main-tabs" aria-label="API 中转导航" @tab-change="switchTab(String($event))">
+        <el-tab-pane v-for="item in tabs" :key="item.id" :name="item.id">
+          <template #label><span class="gateway-tab-label"><component :is="item.icon" :size="14" />{{ item.label }}</span></template>
+        </el-tab-pane>
+      </el-tabs>
 
       <GatewayOverview v-if="tab === 'overview'" />
       <GatewayNodes v-else-if="tab === 'nodes'" />
@@ -79,4 +79,6 @@ onMounted(() => {
 .gateway-session strong { color: var(--astra-text-primary); font-size: var(--astra-font-control); }
 .gateway-session small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .gateway-tabs { flex-wrap: wrap; }
+.gateway-main-tabs :deep(.el-tabs__content){display:none}
+.gateway-tab-label{display:inline-flex;align-items:center;gap:6px}
 </style>
