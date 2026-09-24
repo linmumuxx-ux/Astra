@@ -12,27 +12,27 @@
             <small>{{ node.id }}</small>
             <h2>{{ node.name }}</h2>
             <div class="gateway-node__badges">
-              <span class="status-badge" :data-tone="healthTone(node.health_state)">{{ healthStateLabel(node.health_state) }}</span>
-              <span class="status-badge" :data-tone="schedulingTone(node.scheduling_state)">{{ schedulingStateLabel(node.scheduling_state) }}</span>
-              <span class="status-badge" :data-tone="node.config_state === 'ENABLED' ? 'success' : 'neutral'">{{ configStateLabel(node.config_state) }}</span>
+              <el-tag :type="tagType(healthTone(node.health_state))" effect="light">{{ healthStateLabel(node.health_state) }}</el-tag>
+              <el-tag :type="tagType(schedulingTone(node.scheduling_state))" effect="light">{{ schedulingStateLabel(node.scheduling_state) }}</el-tag>
+              <el-tag :type="node.config_state === 'ENABLED' ? 'success' : 'info'" effect="light">{{ configStateLabel(node.config_state) }}</el-tag>
               <span class="gateway-node__pool">{{ poolName(node.pool_id) }}</span>
             </div>
             <p class="gateway-node__url">{{ node.base_url }}</p>
           </div>
           <div class="gateway-node__actions">
-            <button type="button" class="button" :disabled="working" @click="probe"><Activity :size="14" />{{ working ? '探测中…' : '探测' }}</button>
-            <button v-if="node.scheduling_state === 'ACTIVE'" type="button" class="button button--warning" :disabled="working" @click="drain"><Pause :size="14" />安全下线</button>
-            <button v-else type="button" class="button" :disabled="working" @click="restore"><Play :size="14" />恢复调度</button>
-            <button v-if="canManage" type="button" class="button" :disabled="working" @click="toggleConfig"><PowerOff v-if="node.config_state === 'ENABLED'" :size="14" /><Power v-else :size="14" />{{ node.config_state === 'ENABLED' ? '禁用' : '启用' }}</button>
-            <button v-if="canManage" type="button" class="button button--primary" @click="openEditor"><Pencil :size="14" />编辑</button>
+            <el-button :loading="working" :disabled="working" @click="probe"><Activity v-if="!working" :size="14" />探测</el-button>
+            <el-button v-if="node.scheduling_state === 'ACTIVE'" type="warning" plain :disabled="working" @click="drain"><Pause :size="14" />安全下线</el-button>
+            <el-button v-else :disabled="working" @click="restore"><Play :size="14" />恢复调度</el-button>
+            <el-button v-if="canManage" :disabled="working" @click="toggleConfig"><PowerOff v-if="node.config_state === 'ENABLED'" :size="14" /><Power v-else :size="14" />{{ node.config_state === 'ENABLED' ? '禁用' : '启用' }}</el-button>
+            <el-button v-if="canManage" type="primary" @click="openEditor"><Pencil :size="14" />编辑</el-button>
           </div>
         </header>
 
-        <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+        <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<el-button type="danger" link @click="load">重试</el-button></p>
 
-        <nav class="settings-tabs gateway-tabs" aria-label="节点详情导航">
-          <button v-for="item in tabs" :key="item.id" type="button" :class="{ active: tab === item.id }" @click="tab = item.id">{{ item.label }}</button>
-        </nav>
+        <el-tabs v-model="tab" class="gateway-node-tabs" aria-label="节点详情导航">
+          <el-tab-pane v-for="item in tabs" :key="item.id" :label="item.label" :name="item.id" />
+        </el-tabs>
 
         <!-- 概览 -->
         <template v-if="tab === 'overview'">
@@ -57,23 +57,15 @@
             </AstraPanel>
             <AstraPanel title="最近探测结果" flush>
               <p class="gateway-auth-line">
-                <span class="status-badge" :data-tone="authenticationTone(probeAuthentication)">{{ authenticationLabel(probeAuthentication) }}</span>
+                <el-tag :type="tagType(authenticationTone(probeAuthentication))" effect="light">{{ authenticationLabel(probeAuthentication) }}</el-tag>
                 <small>由真实模型调用状态推断，未新增独立认证探测</small>
               </p>
-              <div class="table-wrap">
-                <table class="gateway-mini-table">
-                  <thead><tr><th>类型</th><th>结果</th><th>延迟</th><th>时间</th></tr></thead>
-                  <tbody>
-                    <tr v-for="check in healthChecks.slice(0, 8)" :key="check.id">
-                      <td>{{ probeTypeLabel(check.probe_type) }}</td>
-                      <td><span class="status-badge" :data-tone="check.success ? 'success' : 'danger'">{{ check.success ? '通过' : '失败' }}</span></td>
-                      <td class="gateway-num">{{ check.latency_ms }} ms</td>
-                      <td class="gateway-time">{{ formatRelativeTime(check.created_at) }}</td>
-                    </tr>
-                    <tr v-if="!healthChecks.length"><td colspan="4" class="empty-cell">暂无探测记录。</td></tr>
-                  </tbody>
-                </table>
-              </div>
+              <el-table :data="healthChecks.slice(0, 8)" stripe empty-text="暂无探测记录。">
+                <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ probeTypeLabel(row.probe_type) }}</template></el-table-column>
+                <el-table-column label="结果" width="90"><template #default="{ row }"><el-tag :type="row.success ? 'success' : 'danger'" effect="light">{{ row.success ? '通过' : '失败' }}</el-tag></template></el-table-column>
+                <el-table-column label="延迟" width="100" align="right"><template #default="{ row }">{{ row.latency_ms }} ms</template></el-table-column>
+                <el-table-column label="时间" min-width="120"><template #default="{ row }">{{ formatRelativeTime(row.created_at) }}</template></el-table-column>
+              </el-table>
             </AstraPanel>
           </div>
         </template>
@@ -88,7 +80,9 @@
             </div>
           </div>
           <AstraPanel title="Token 趋势" :subtitle="windowLabel">
-            <template #action><WindowSwitch :window="window" @change="setWindow" /></template>
+            <template #action><el-radio-group :model-value="window" size="small" @change="setWindow">
+              <el-radio-button v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</el-radio-button>
+            </el-radio-group></template>
             <GatewayTrendChart v-if="stats" :buckets="stats.trend" mode="tokens" tall />
             <div v-else class="gateway-placeholder">{{ loading ? '加载中…' : '暂无数据' }}</div>
           </AstraPanel>
@@ -97,7 +91,9 @@
         <!-- 性能 -->
         <template v-else-if="tab === 'performance'">
           <AstraPanel title="性能指标" :subtitle="`${windowLabel} · 平均 / p50 / p95`">
-            <template #action><WindowSwitch :window="window" @change="setWindow" /></template>
+            <template #action><el-radio-group :model-value="window" size="small" @change="setWindow">
+              <el-radio-button v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</el-radio-button>
+            </el-radio-group></template>
             <dl class="performance-list gateway-latency">
               <div v-for="row in latencyRows" :key="row.label"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
             </dl>
@@ -140,7 +136,7 @@
           <div class="gateway-detail-grid">
             <AstraPanel title="健康状态">
               <dl class="gateway-info-list">
-                <div><dt>健康态</dt><dd><span class="status-badge" :data-tone="healthTone(node.health_state)">{{ healthStateLabel(node.health_state) }}</span></dd></div>
+                <div><dt>健康态</dt><dd><el-tag :type="tagType(healthTone(node.health_state))" effect="light">{{ healthStateLabel(node.health_state) }}</el-tag></dd></div>
                 <div><dt>连续成功</dt><dd>{{ node.success_streak }}</dd></div>
                 <div><dt>连续失败</dt><dd>{{ node.failure_streak }}</dd></div>
                 <div><dt>最近探测</dt><dd>{{ formatDateTime(node.last_checked_at) }}</dd></div>
@@ -148,22 +144,14 @@
               <pre class="gateway-snapshot">{{ JSON.stringify(node.health_detail, null, 2) }}</pre>
             </AstraPanel>
             <AstraPanel title="探测历史" :subtitle="`最近 ${healthChecks.length} 条`" flush>
-              <div class="table-wrap">
-                <table class="gateway-mini-table">
-                  <thead><tr><th>类型</th><th>结果</th><th>延迟</th><th>状态码</th><th>错误</th><th>时间</th></tr></thead>
-                  <tbody>
-                    <tr v-for="check in healthChecks" :key="check.id">
-                      <td>{{ probeTypeLabel(check.probe_type) }}</td>
-                      <td><span class="status-badge" :data-tone="check.success ? 'success' : 'danger'">{{ check.success ? '通过' : '失败' }}</span></td>
-                      <td class="gateway-num">{{ check.latency_ms }} ms</td>
-                      <td class="gateway-num">{{ check.status_code ?? '—' }}</td>
-                      <td class="gateway-err" :title="check.error ?? ''">{{ check.error ?? '—' }}</td>
-                      <td class="gateway-time">{{ formatDateTime(check.created_at) }}</td>
-                    </tr>
-                    <tr v-if="!healthChecks.length"><td colspan="6" class="empty-cell">暂无探测记录。</td></tr>
-                  </tbody>
-                </table>
-              </div>
+              <el-table :data="healthChecks" stripe empty-text="暂无探测记录。">
+                <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ probeTypeLabel(row.probe_type) }}</template></el-table-column>
+                <el-table-column label="结果" width="90"><template #default="{ row }"><el-tag :type="row.success ? 'success' : 'danger'" effect="light">{{ row.success ? '通过' : '失败' }}</el-tag></template></el-table-column>
+                <el-table-column label="延迟" width="100" align="right"><template #default="{ row }">{{ row.latency_ms }} ms</template></el-table-column>
+                <el-table-column label="状态码" width="90" align="right"><template #default="{ row }">{{ row.status_code ?? '—' }}</template></el-table-column>
+                <el-table-column label="错误" min-width="180"><template #default="{ row }"><span class="gateway-err" :title="row.error ?? ''">{{ row.error ?? '—' }}</span></template></el-table-column>
+                <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+              </el-table>
             </AstraPanel>
           </div>
         </template>
@@ -171,35 +159,24 @@
         <!-- 日志 -->
         <template v-else-if="tab === 'logs'">
           <AstraPanel :title="`调用日志 · ${requests.total} 条`" flush>
-            <template #action><button type="button" class="button button--compact" :disabled="loading" @click="loadRequests">刷新</button></template>
-            <div class="table-wrap">
-              <table class="gateway-log-table">
-                <thead><tr><th>时间</th><th>Key / 模型</th><th>状态</th><th>流式</th><th>重试</th><th>Token</th><th>TTFT</th><th>总时长</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in requests.items" :key="row.id">
-                    <td class="gateway-time">{{ formatDateTime(row.started_at) }}</td>
-                    <td><strong>{{ row.key_id ? row.key_id.slice(0, 12) : '—' }}</strong><small>{{ row.model ?? '—' }}</small></td>
-                    <td>
-                      <span v-if="row.error_code" class="status-badge" data-tone="danger" :title="row.error_code">{{ row.error_code }}</span>
-                      <span v-else class="status-badge" :data-tone="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</span>
-                    </td>
-                    <td>{{ row.streaming ? 'SSE' : '普通' }}</td>
-                    <td>{{ row.retry_count }}</td>
-                    <td class="gateway-num">{{ row.usage_known ? `${row.input_tokens ?? 0} / ${row.output_tokens ?? 0} / ${row.total_tokens ?? 0}` : 'unknown' }}</td>
-                    <td class="gateway-num">{{ row.ttft_ms ?? '—' }} ms</td>
-                    <td class="gateway-num">{{ row.duration_ms ?? '—' }} ms</td>
-                  </tr>
-                  <tr v-if="!requests.items.length"><td colspan="8" class="empty-cell">暂无调用记录。</td></tr>
-                </tbody>
-              </table>
-            </div>
+            <template #action><el-button size="small" :loading="loading" :disabled="loading" @click="loadRequests">刷新</el-button></template>
+            <el-table :data="requests.items" stripe empty-text="暂无调用记录。">
+              <el-table-column label="时间" min-width="155"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+              <el-table-column label="Key / 模型" min-width="170"><template #default="{ row }"><strong>{{ row.key_id ? row.key_id.slice(0, 12) : '—' }}</strong><small>{{ row.model ?? '—' }}</small></template></el-table-column>
+              <el-table-column label="状态" min-width="150"><template #default="{ row }"><el-tag v-if="row.error_code" type="danger" effect="light" :title="row.error_code">{{ row.error_code }}</el-tag><el-tag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'" effect="light">{{ row.status_code ?? '—' }}</el-tag></template></el-table-column>
+              <el-table-column label="流式" width="90"><template #default="{ row }">{{ row.streaming ? 'SSE' : '普通' }}</template></el-table-column>
+              <el-table-column prop="retry_count" label="重试" width="75" />
+              <el-table-column label="Token" min-width="170" align="right"><template #default="{ row }">{{ row.usage_known ? `${row.input_tokens ?? 0} / ${row.output_tokens ?? 0} / ${row.total_tokens ?? 0}` : 'unknown' }}</template></el-table-column>
+              <el-table-column label="TTFT" width="100" align="right"><template #default="{ row }">{{ row.ttft_ms ?? '—' }} ms</template></el-table-column>
+              <el-table-column label="总时长" width="110" align="right"><template #default="{ row }">{{ row.duration_ms ?? '—' }} ms</template></el-table-column>
+            </el-table>
           </AstraPanel>
         </template>
 
         <!-- 配置 -->
         <template v-else>
           <AstraPanel title="节点配置" subtitle="配置态由管理员维护，健康态与运行态不由配置覆盖">
-            <template #action><button v-if="canManage" type="button" class="button button--compact button--primary" @click="openEditor"><Pencil :size="13" />编辑配置</button></template>
+            <template #action><el-button v-if="canManage" type="primary" size="small" @click="openEditor"><Pencil :size="13" />编辑配置</el-button></template>
             <dl class="gateway-info-list gateway-config-list">
               <div><dt>名称</dt><dd>{{ node.name }}</dd></div>
               <div><dt>资源池</dt><dd>{{ poolName(node.pool_id) }}</dd></div>
@@ -243,7 +220,7 @@ import {
   TriangleAlert,
   Waves,
 } from 'lucide-vue-next'
-import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   gatewayApi,
@@ -283,35 +260,6 @@ import GatewayGate from '@/views/gateway/GatewayGate.vue'
 import GatewayNodeDrawer from '@/views/gateway/GatewayNodeDrawer.vue'
 import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
 
-const WindowSwitch = defineComponent({
-  props: { window: { type: String, required: true } },
-  emits: ['change'],
-  setup(props, { emit }) {
-    const options: Array<{ id: GatewayStatsWindow; label: string }> = [
-      { id: 'hour', label: '本小时' },
-      { id: 'today', label: '今日' },
-      { id: '7d', label: '近 7 天' },
-      { id: '30d', label: '近 30 天' },
-    ]
-    return () =>
-      h(
-        'div',
-        { class: 'gateway-window-switch', role: 'tablist', 'aria-label': '统计窗口' },
-        options.map((item) =>
-          h(
-            'button',
-            {
-              type: 'button',
-              class: item.id === props.window ? 'active' : '',
-              onClick: () => emit('change', item.id),
-            },
-            item.label,
-          ),
-        ),
-      )
-  },
-})
-
 const route = useRoute()
 const { hasRole, disconnect } = useGatewayAuth()
 const canManage = computed(() => hasRole('node'))
@@ -347,6 +295,10 @@ const windows: Array<{ id: GatewayStatsWindow; label: string }> = [
 ]
 const windowLabel = computed(() => windows.find((item) => item.id === window.value)?.label ?? '')
 const probeAuthentication = computed(() => authenticationResult(healthChecks.value))
+function tagType(tone: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
+  if (tone === 'success' || tone === 'warning' || tone === 'danger' || tone === 'info') return tone
+  return 'info'
+}
 
 const latencyRows = computed(() => {
   const current = stats.value
@@ -479,6 +431,7 @@ onMounted(load)
 </script>
 
 <style scoped>
+
 .gateway-node { display: grid; gap: 15px; }
 .gateway-node__hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px; border: 1px solid var(--astra-border); border-radius: 14px; background: var(--astra-bg-card); box-shadow: var(--astra-shadow-panel); }
 .gateway-node__identity small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); font-family: var(--astra-font-family); }
@@ -513,4 +466,9 @@ onMounted(load)
 .gateway-gate-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 40vh; color: var(--astra-text-muted); font-size: var(--astra-font-control); }
 @media (max-width: 1280px) { .gateway-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .gateway-detail-grid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .gateway-node__hero { flex-direction: column; } .gateway-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gateway-info-list { grid-template-columns: 1fr; } }
+
+.gateway-node-tabs :deep(.el-tabs__content){display:none}
+.gateway-node__actions :deep(.el-button){margin-left:0}
+:deep(.el-table strong){display:block;color:var(--astra-text-primary);font-size:var(--astra-font-helper)}
+:deep(.el-table small){display:block;color:var(--astra-text-muted);font-size:var(--astra-font-micro)}
 </style>
