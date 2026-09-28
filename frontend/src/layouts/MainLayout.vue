@@ -52,20 +52,29 @@
     </el-header>
 
     <el-main class="app-main">
-      <div v-if="store.error && route.path !== '/'" class="error-banner">
-        <TriangleAlert :size="17" />{{ store.error }}<button type="button" @click="store.refresh()">重试</button>
-      </div>
+      <el-alert
+        v-if="store.error && route.path !== '/'"
+        class="layout-error"
+        type="error"
+        show-icon
+        :closable="false"
+        :title="store.error"
+      >
+        <el-button size="small" type="primary" @click="store.refresh()">重试</el-button>
+      </el-alert>
       <RouterView />
     </el-main>
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { BookOpen, ChevronDown, ClipboardList, House, Search, Settings, TriangleAlert, UserRound, Waypoints, Bell } from 'lucide-vue-next'
+import { Bell, BookOpen, ChevronDown, ClipboardList, House, Search, Settings, UserRound, Waypoints } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
+  ElAlert,
   ElBadge,
+  ElButton,
   ElContainer,
   ElDropdown,
   ElDropdownItem,
@@ -82,7 +91,16 @@ import { useAstraStore } from '@/stores/astra'
 const route = useRoute()
 const router = useRouter()
 const store = useAstraStore()
-const searchInput = ref('')
+const searchStorageKey = 'astra.global-search'
+
+function routeSearchQuery(): string | null {
+  return typeof route.query.q === 'string' ? route.query.q : null
+}
+
+// The global search term is the same across pages, so it survives route changes
+// and reloads through sessionStorage; on the dashboard the URL q is truth and
+// clears the stored term when it is removed (for example by the clear button).
+const searchInput = ref(routeSearchQuery() ?? sessionStorage.getItem(searchStorageKey) ?? '')
 
 const navigation = [
   { to: '/', label: '首页', icon: House },
@@ -118,8 +136,14 @@ function handleAdminCommand(command: string) {
 }
 
 watch(() => route.query.q, (value) => {
-  if (route.path === '/') searchInput.value = typeof value === 'string' ? value : ''
+  if (typeof value === 'string') searchInput.value = value
+  else if (route.path === '/') searchInput.value = ''
 }, { immediate: true })
+
+watch(searchInput, (value) => {
+  if (value) sessionStorage.setItem(searchStorageKey, value)
+  else sessionStorage.removeItem(searchStorageKey)
+})
 </script>
 
 <style scoped>
@@ -136,6 +160,7 @@ watch(() => route.query.q, (value) => {
 .header-user>span{display:grid;place-items:center;width:34px;height:34px;color:#10875a;border-radius:50%;background:#dff4eb;font-weight:var(--astra-weight-bold)}
 .header-user strong{font-size:var(--astra-font-body)}
 .app-main{--el-main-padding:0}
+.layout-error{margin:12px 16px 0}
 @media(max-width:1120px){.global-search{width:150px}.header-user strong,.header-user>svg{display:none}}
 @media(max-width:860px){.brand-link :deep(.logo-copy){display:none}}
 </style>

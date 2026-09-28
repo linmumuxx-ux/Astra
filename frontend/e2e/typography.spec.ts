@@ -35,11 +35,12 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
       }
     }).toPass({ timeout: 5000, intervals: [100, 250, 500] })
 
-    // 任务详情已改为原生 Workspace，使用紧凑的 17px 头部标题（.task-title h1），
-    // 不属于 22px 页面级标题，故不纳入此处一致性校验。
+    // 旧全局样式中的 22px 页面级标题字号已随 theme/typography.css 移除，业务页面允许视觉变化；
+    // 基础层仍然保证页面级标题可见、加粗并使用全局字体主题。
     const titles = page.locator('.page-intro h2, .task-head h2, .employee-hero h2, .task-hero h2, .library-intro h2')
     for (const title of await titles.all()) {
-      await expect(title).toHaveCSS('font-size', '22px')
+      await expect(title).toBeVisible()
+      await expect(title).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
       await expect(title).toHaveCSS('font-weight', '700')
     }
     await page.screenshot({ path: `../artifacts/typography/${route.replaceAll('/', '_') || 'home'}.png`, fullPage: true })
@@ -69,13 +70,13 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
   }
   await page.goto('/tasks')
   await page.getByRole('button', { name: /创建任务/ }).first().click()
-  const dialog = page.locator('.modal-card').first()
+  const dialog = page.locator('.el-dialog').first()
   await expect(dialog).toBeVisible()
   await expect(dialog.locator('input').first()).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
   await page.screenshot({ path: '../artifacts/typography/task-dialog.png', fullPage: true })
 })
 
-test('知识正文、表格、代码及设置各页签字体一致', async ({ page }) => {
+test('知识正文与设置各页签使用全局字体，代码块保持等宽', async ({ page }) => {
   await page.route('**/api/library/knowledge/font-qa', route => route.fulfill({ json: {
     id: 'font-qa', title: '排版验证 Typography 2026', type: 'document', status: 'published',
     verification_status: 'verified', tags: ['中文', 'English 123'], summary: '字体测试',
@@ -87,8 +88,13 @@ test('知识正文、表格、代码及设置各页签字体一致', async ({ pa
   await page.goto('/library?knowledge=font-qa')
   const dialog = page.getByTestId('knowledge-detail-dialog')
   await expect(dialog.locator('.markdown-body table')).toBeVisible()
-  for (const element of await dialog.locator('h1,h2,h3,p,th,td,code,pre,button').all()) {
+  // 全局字体覆盖正文、表格与按钮；预格式代码块不再被旧全局样式强制为衬线字体，
+  // 保留浏览器等宽回退以保证代码可读性。行内 code 的呈现仍归业务组件样式。
+  for (const element of await dialog.locator('h1,h2,h3,p,th,td,button').all()) {
     await expect(element).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
+  }
+  for (const element of await dialog.locator('pre').all()) {
+    expect(await element.evaluate((el) => getComputedStyle(el).fontFamily), 'code block stays monospace').toContain('monospace')
   }
   await page.screenshot({ path: '../artifacts/typography/knowledge-dialog.png', fullPage: true })
   for (const tab of ['categories', 'sources', 'system']) {

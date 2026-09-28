@@ -136,7 +136,7 @@ test('创建任务表单点击遮罩与 ESC 都不会关闭', async ({ page }) =
   await expect(modal).toBeVisible()
   await modal.getByLabel('任务标题 *').fill('保护中的草稿')
 
-  await modal.click({ position: { x: 6, y: 6 } })
+  await page.locator('.el-overlay-dialog').click({ position: { x: 6, y: 6 } })
   await expect(modal).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(modal).toBeVisible()
@@ -174,7 +174,7 @@ test('危险操作确认框不会因点击空白或 ESC 误关闭', async ({ pag
 
   const confirm = page.getByTestId('task-action-confirm')
   await expect(confirm).toBeVisible()
-  await confirm.click({ position: { x: 6, y: 6 } })
+  await page.locator('.el-overlay-dialog').click({ position: { x: 6, y: 6 } })
   await expect(confirm).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(confirm).toBeVisible()

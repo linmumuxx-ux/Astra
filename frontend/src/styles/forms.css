@@ -1,6 +1,0 @@
-/* Field labels use one baseline, including legacy fields without help text. */
-:is(.config-form, .modal-card, .intervention-form) label { line-height: 18px; }
-.form-grid { align-items: start; }
-.form-grid > label { align-content: start; }
-/* Read-only IDs occupy the same control row as their editable neighbours. */
-.field-id > .id-display { min-height: var(--astra-control-height); align-self: start; }

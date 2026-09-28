@@ -1,63 +1,40 @@
 <template>
-  <Teleport to="body">
-    <div v-if="state" class="modal-backdrop" data-testid="astra-confirm-dialog">
-      <div
-        class="modal-card confirm-action-card"
-        role="alertdialog"
-        aria-modal="true"
-        :aria-label="state.title"
-      >
-        <header>
-          <div>
-            <h3>{{ state.title }}</h3>
-            <p v-if="state.message" class="astra-confirm__message">{{ state.message }}</p>
-          </div>
-        </header>
-        <footer>
-          <button type="button" class="button" @click="resolveConfirm(false)">{{ state.cancelLabel }}</button>
-          <button
-            type="button"
-            class="button"
-            :class="state.danger ? 'button--danger' : 'button--primary'"
-            @click="resolveConfirm(true)"
-          >
-            {{ state.confirmLabel }}
-          </button>
-        </footer>
-      </div>
-    </div>
-  </Teleport>
+  <ElDialog
+    v-if="state"
+    data-testid="astra-confirm-dialog"
+    :model-value="true"
+    :title="state.title"
+    width="min(440px, 100%)"
+    :show-close="false"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+  >
+    <template #header>
+      <h3 class="astra-confirm__title">{{ state.title }}</h3>
+    </template>
+    <p v-if="state.message" class="astra-confirm__message">{{ state.message }}</p>
+    <template #footer>
+      <ElButton @click="resolveConfirm(false)">{{ state.cancelLabel }}</ElButton>
+      <ElButton :type="state.danger ? 'danger' : 'primary'" @click="resolveConfirm(true)">
+        {{ state.confirmLabel }}
+      </ElButton>
+    </template>
+  </ElDialog>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { ElButton, ElDialog } from 'element-plus'
 import { resolveConfirm, useConfirmState } from '@/composables/useConfirm'
-import { acquireOverlayLock, releaseOverlayLock } from '@/composables/useOverlayLock'
 
 // A danger/confirm dialog must not close by overlay click or ESC; the user has
 // to press 取消 or 确认 explicitly. Cancel is always on the left, confirm on the
-// right, and a destructive action uses the danger button style.
+// right, and a destructive action uses the danger button style. The dialog only
+// mounts while a confirm is pending, so Element Plus gives it a z-index above
+// any already-open form dialog and the explicit buttons stay reachable.
 const state = useConfirmState()
-
-let locked = false
-watch(state, (value) => {
-  if (value && !locked) {
-    acquireOverlayLock()
-    locked = true
-  } else if (!value && locked) {
-    releaseOverlayLock()
-    locked = false
-  }
-})
-
-onBeforeUnmount(() => {
-  if (locked) releaseOverlayLock()
-})
 </script>
 
 <style scoped>
-/* Must sit above any open form dialog so the explicit 取消 / 确认 is reachable. */
-.modal-backdrop { z-index: 1300; }
-.confirm-action-card { width: min(440px, 100%); }
-.astra-confirm__message { margin: 6px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.6; }
+.astra-confirm__title { margin: 0; font-size: var(--astra-font-section); line-height: normal; }
+.astra-confirm__message { margin: 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.6; }
 </style>

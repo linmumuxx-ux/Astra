@@ -1,38 +1,43 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" data-testid="employee-config-modal">
-      <section class="modal-card employee-config-modal" role="dialog" aria-modal="true" :aria-label="creating ? '新建数字员工' : `编辑 ${employeeDisplayName(employee?.name)}`">
-        <header>
-          <div>
-            <small>{{ creating ? 'NEW EMPLOYEE' : 'EDIT EMPLOYEE' }}</small>
-            <h3>{{ creating ? '新建数字员工' : `编辑 ${employeeDisplayName(employee?.name)}` }}</h3>
-          </div>
-          <button type="button" aria-label="关闭" @click="requestClose"><X :size="18" /></button>
-        </header>
+  <ElDialog
+    v-if="open"
+    data-testid="employee-config-modal"
+    :model-value="true"
+    :title="dialogTitle"
+    width="min(880px, 100%)"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :before-close="requestClose"
+  >
+    <template #header>
+      <small>{{ creating ? 'NEW EMPLOYEE' : 'EDIT EMPLOYEE' }}</small>
+      <h3 class="employee-config-modal__title">{{ dialogTitle }}</h3>
+    </template>
 
-        <div class="modal-body">
-          <EmployeeConfig ref="configRef" :employee="employee" :creating="creating" :categories="categories" embedded @saved="onSaved" />
-        </div>
+    <EmployeeConfig ref="configRef" :employee="employee" :creating="creating" :categories="categories" embedded @saved="onSaved" />
 
-        <footer class="employee-config-modal__footer">
-          <span v-if="configRef?.dirty" class="employee-config-modal__dirty"><i />有未保存修改</span>
-          <button type="button" class="button" :disabled="configRef?.saving" @click="requestClose">取消</button>
-          <button type="button" class="button button--primary" :disabled="configRef?.saving || !configRef?.dirty" @click="configRef?.save()">
-            <LoaderCircle v-if="configRef?.saving" :size="14" class="spin" />
-            {{ configRef?.saving ? '保存中' : creating ? '创建员工' : '保存' }}
-          </button>
-        </footer>
-      </section>
-    </div>
-  </Teleport>
+    <template #footer>
+      <div class="employee-config-modal__footer">
+        <span v-if="configRef?.dirty" class="employee-config-modal__dirty"><i />有未保存修改</span>
+        <ElButton :disabled="configRef?.saving" @click="requestClose">取消</ElButton>
+        <ElButton
+          type="primary"
+          :loading="configRef?.saving"
+          :disabled="!configRef?.dirty"
+          @click="configRef?.save()"
+        >
+          {{ configRef?.saving ? '保存中' : creating ? '创建员工' : '保存' }}
+        </ElButton>
+      </div>
+    </template>
+  </ElDialog>
 </template>
 
 <script setup lang="ts">
-import { LoaderCircle, X } from 'lucide-vue-next'
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
+import { ElButton, ElDialog } from 'element-plus'
 import type { Employee, TaskCategory } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
-import { acquireOverlayLock, releaseOverlayLock } from '@/composables/useOverlayLock'
 import { employeeDisplayName } from '@/utils/format'
 import EmployeeConfig from '@/views/settings/EmployeeConfig.vue'
 
@@ -40,8 +45,14 @@ const props = defineProps<{ open: boolean; employee: Employee | null; creating: 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', id: string): void }>()
 const configRef = ref<InstanceType<typeof EmployeeConfig> | null>(null)
 
+const dialogTitle = computed(() =>
+  props.creating ? '新建数字员工' : `编辑 ${employeeDisplayName(props.employee?.name)}`,
+)
+
 // The config dialog is a form: overlay click and ESC never close it. Only the
 // explicit 取消 / 关闭 actions do, and they confirm first when there are edits.
+// before-close never calls done(), so closing is always driven by the `open`
+// prop after the parent handled the emitted close event.
 async function requestClose() {
   if (configRef.value?.saving) return
   if (configRef.value?.getDirty()) {
@@ -60,16 +71,10 @@ function onSaved(id: string, environmentOk?: boolean) {
   // 保存已成功；仅当工作环境检测也通过时才自动关闭，异常时保留弹框以便处理检查项。
   if (environmentOk !== false) emit('close')
 }
-let locked = false
-watch(() => props.open, (value) => {
-  if (value && !locked) { acquireOverlayLock(); locked = true }
-  else if (!value && locked) { releaseOverlayLock(); locked = false }
-}, { immediate: true })
-onBeforeUnmount(() => { if (locked) releaseOverlayLock() })
 </script>
 
 <style scoped>
-.employee-config-modal { width: min(880px, 100%); }
+.employee-config-modal__title { margin: 0; font-size: var(--astra-font-section); line-height: normal; }
 .employee-config-modal__footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .employee-config-modal__dirty { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: var(--astra-warning); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); }
 .employee-config-modal__dirty i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
