@@ -1,29 +1,16 @@
-import { ref, type Ref } from 'vue'
+import { ElNotification } from 'element-plus'
 
 export type ToastKind = 'success' | 'error' | 'info'
 
-export interface ToastItem {
-  id: number
-  message: string
-  kind: ToastKind
-}
-
-const items = ref<ToastItem[]>([])
-let sequence = 0
-
-// Single application-wide toast channel. Business code calls notify() instead of
-// window.alert so feedback stays inside the Astra UI system.
-export function notify(message: string, kind: ToastKind = 'success', duration = 2600): number {
-  const id = ++sequence
-  items.value = [...items.value, { id, message, kind }]
-  window.setTimeout(() => dismissToast(id), duration)
-  return id
-}
-
-export function dismissToast(id: number): void {
-  items.value = items.value.filter((item) => item.id !== id)
-}
-
-export function useToasts(): Ref<ToastItem[]> {
-  return items
+// Single application-wide feedback channel built on the native Element Plus
+// notification component. Business code calls notify() instead of window.alert;
+// failures announce as error notifications and never block the user's input.
+export function notify(message: string, kind: ToastKind = 'success', duration = 2600): void {
+  ElNotification({
+    message,
+    type: kind,
+    duration,
+    position: 'bottom-right',
+    offset: 24,
+  })
 }

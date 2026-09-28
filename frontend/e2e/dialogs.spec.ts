@@ -213,6 +213,6 @@ test('任务操作失败使用统一提示而非浏览器原生弹框', async ({
   const menu = await openMenu(page, '已完成任务')
   await menu.getByRole('button', { name: '重新执行' }).click()
 
-  await expect(page.locator('.astra-toast[data-kind="error"]')).toContainText('重新执行失败')
+  await expect(page.locator('.el-notification:has(.el-notification--error)')).toContainText('重新执行失败')
   expect(nativeDialogs).toEqual([])
 })

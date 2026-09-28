@@ -9,16 +9,11 @@
     :close-on-press-escape="false"
     :before-close="requestClose"
   >
-    <template #header>
-      <small>{{ creating ? 'NEW EMPLOYEE' : 'EDIT EMPLOYEE' }}</small>
-      <h3 class="employee-config-modal__title">{{ dialogTitle }}</h3>
-    </template>
-
     <EmployeeConfig ref="configRef" :employee="employee" :creating="creating" :categories="categories" embedded @saved="onSaved" />
 
     <template #footer>
-      <div class="employee-config-modal__footer">
-        <span v-if="configRef?.dirty" class="employee-config-modal__dirty"><i />有未保存修改</span>
+      <ElSpace :size="10">
+        <ElTag v-if="configRef?.dirty" type="warning" effect="light">有未保存修改</ElTag>
         <ElButton :disabled="configRef?.saving" @click="requestClose">取消</ElButton>
         <ElButton
           type="primary"
@@ -28,14 +23,14 @@
         >
           {{ configRef?.saving ? '保存中' : creating ? '创建员工' : '保存' }}
         </ElButton>
-      </div>
+      </ElSpace>
     </template>
   </ElDialog>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElButton, ElDialog } from 'element-plus'
+import { ElButton, ElDialog, ElSpace, ElTag } from 'element-plus'
 import type { Employee, TaskCategory } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { employeeDisplayName } from '@/utils/format'
@@ -73,9 +68,3 @@ function onSaved(id: string, environmentOk?: boolean) {
 }
 </script>
 
-<style scoped>
-.employee-config-modal__title { margin: 0; font-size: var(--astra-font-section); line-height: normal; }
-.employee-config-modal__footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-.employee-config-modal__dirty { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; color: var(--astra-warning); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); }
-.employee-config-modal__dirty i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-</style>

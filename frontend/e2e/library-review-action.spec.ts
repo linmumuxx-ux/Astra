@@ -174,5 +174,5 @@ test('提交失败时显示错误 Toast', async ({ page }) => {
   await dialog.locator('.review-request-panel textarea').fill('证据不足，需要补充来源会话')
   await dialog.getByRole('button', { name: '确认驳回', exact: true }).click()
 
-  await expect(page.locator('.astra-toast[data-kind="error"]')).toContainText('驳回操作失败')
+  await expect(page.locator('.el-notification:has(.el-notification--error)')).toContainText('驳回操作失败')
 })

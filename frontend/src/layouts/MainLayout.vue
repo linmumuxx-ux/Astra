@@ -39,9 +39,11 @@
         </RouterLink>
 
         <el-dropdown trigger="click" placement="bottom-end" @command="handleAdminCommand">
-          <button class="header-user" type="button" aria-label="管理员菜单">
-            <span>NR</span><strong>管理员</strong><ChevronDown :size="15" />
-          </button>
+          <el-button class="header-user" text aria-label="管理员菜单">
+            <el-avatar class="header-user__avatar" :size="34">NR</el-avatar>
+            <el-text class="header-user__name">管理员</el-text>
+            <ChevronDown :size="15" />
+          </el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="settings">配置中心</el-dropdown-item>
@@ -73,6 +75,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   ElAlert,
+  ElAvatar,
   ElBadge,
   ElButton,
   ElContainer,
@@ -84,6 +87,7 @@ import {
   ElMain,
   ElMenu,
   ElMenuItem,
+  ElText,
 } from 'element-plus'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
 import { useAstraStore } from '@/stores/astra'
@@ -147,7 +151,7 @@ watch(searchInput, (value) => {
 </script>
 
 <style scoped>
-.layout-header{--el-header-padding:0 16px;--el-header-height:68px;position:sticky;top:0;z-index:500;display:flex;align-items:center;gap:16px;background:rgba(255,255,255,.94);border-bottom:1px solid var(--astra-border);backdrop-filter:blur(14px)}
+.layout-header{--el-header-padding:0 16px;--el-header-height:68px;position:sticky;top:0;z-index:500;display:flex;align-items:center;gap:16px;background:var(--astra-bg-panel);border-bottom:1px solid var(--astra-border)}
 .brand-link{flex:none;display:block}.brand-link :deep(.logo-copy small){display:none}
 .layout-nav{flex:1;min-width:0}
 .layout-menu{--el-menu-base-level-padding:12px;--el-menu-horizontal-height:68px;width:100%;border-bottom:0;background:transparent}
@@ -155,12 +159,10 @@ watch(searchInput, (value) => {
 .layout-actions{flex:none;display:flex;align-items:center;gap:8px}
 .global-search{width:180px}
 .header-notification{display:inline-flex;align-items:center;justify-content:center;color:#4f6961}
-.header-user{display:flex;align-items:center;gap:8px;height:42px;padding:0 7px;color:#203d35;border:0;border-radius:12px;background:transparent;cursor:pointer}
-.header-user:hover{background:#f4f8f6}
-.header-user>span{display:grid;place-items:center;width:34px;height:34px;color:#10875a;border-radius:50%;background:#dff4eb;font-weight:var(--astra-weight-bold)}
-.header-user strong{font-size:var(--astra-font-body)}
+.header-user{gap:8px;padding:0 7px}
+.header-user__avatar{--el-avatar-bg-color:var(--astra-primary-soft);--el-avatar-text-color:var(--astra-primary-bright)}
 .app-main{--el-main-padding:0}
 .layout-error{margin:12px 16px 0}
-@media(max-width:1120px){.global-search{width:150px}.header-user strong,.header-user>svg{display:none}}
+@media(max-width:1120px){.global-search{width:150px}.header-user__name,.header-user svg{display:none}}
 @media(max-width:860px){.brand-link :deep(.logo-copy){display:none}}
 </style>

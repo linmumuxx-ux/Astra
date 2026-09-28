@@ -2,7 +2,6 @@
   <RouterView />
   <AssistantLauncher />
   <AssistantDrawer />
-  <AstraToaster />
   <AstraConfirmHost />
 </template>
 
@@ -10,7 +9,6 @@
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'
-import AstraToaster from '@/components/astra/AstraToaster.vue'
 import AssistantDrawer from '@/features/assistant/AssistantDrawer.vue'
 import AssistantLauncher from '@/features/assistant/AssistantLauncher.vue'
 import { useAstraStore } from '@/stores/astra'
