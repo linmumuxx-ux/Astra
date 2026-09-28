@@ -58,3 +58,90 @@
   --astra-content-gap: 16px;
   --astra-shadow-panel: 0 10px 30px rgba(28, 58, 49, .075);
 }
+
+/* Element Plus theme mapped onto Astra brand tokens.
+   This file is imported after element-plus/dist/index.css (see src/main.ts),
+   so these :root declarations win over the Element Plus defaults.
+   Light/dark variants follow the Element Plus mixing ratios (white/black). */
+:root {
+  --el-color-primary: var(--astra-primary);
+  --el-color-primary-rgb: 21, 157, 101;
+  --el-color-primary-light-3: color-mix(in srgb, var(--astra-primary) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--astra-primary) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--astra-primary) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--astra-primary) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--astra-primary) 10%, white);
+  --el-color-primary-dark-2: var(--astra-primary-bright);
+  --el-color-success: var(--astra-success);
+  --el-color-success-rgb: 24, 184, 117;
+  --el-color-success-light-3: color-mix(in srgb, var(--astra-success) 70%, white);
+  --el-color-success-light-5: color-mix(in srgb, var(--astra-success) 50%, white);
+  --el-color-success-light-7: color-mix(in srgb, var(--astra-success) 30%, white);
+  --el-color-success-light-8: color-mix(in srgb, var(--astra-success) 20%, white);
+  --el-color-success-light-9: color-mix(in srgb, var(--astra-success) 10%, white);
+  --el-color-success-dark-2: color-mix(in srgb, var(--astra-success) 80%, black);
+  --el-color-warning: var(--astra-warning);
+  --el-color-warning-rgb: 233, 149, 63;
+  --el-color-warning-light-3: color-mix(in srgb, var(--astra-warning) 70%, white);
+  --el-color-warning-light-5: color-mix(in srgb, var(--astra-warning) 50%, white);
+  --el-color-warning-light-7: color-mix(in srgb, var(--astra-warning) 30%, white);
+  --el-color-warning-light-8: color-mix(in srgb, var(--astra-warning) 20%, white);
+  --el-color-warning-light-9: color-mix(in srgb, var(--astra-warning) 10%, white);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--astra-warning) 80%, black);
+  --el-color-danger: var(--astra-danger);
+  --el-color-danger-rgb: 228, 93, 106;
+  --el-color-danger-light-3: color-mix(in srgb, var(--astra-danger) 70%, white);
+  --el-color-danger-light-5: color-mix(in srgb, var(--astra-danger) 50%, white);
+  --el-color-danger-light-7: color-mix(in srgb, var(--astra-danger) 30%, white);
+  --el-color-danger-light-8: color-mix(in srgb, var(--astra-danger) 20%, white);
+  --el-color-danger-light-9: color-mix(in srgb, var(--astra-danger) 10%, white);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--astra-danger) 80%, black);
+  --el-color-error: var(--astra-danger);
+  --el-color-error-rgb: 228, 93, 106;
+  --el-color-error-light-3: color-mix(in srgb, var(--astra-danger) 70%, white);
+  --el-color-error-light-5: color-mix(in srgb, var(--astra-danger) 50%, white);
+  --el-color-error-light-7: color-mix(in srgb, var(--astra-danger) 30%, white);
+  --el-color-error-light-8: color-mix(in srgb, var(--astra-danger) 20%, white);
+  --el-color-error-light-9: color-mix(in srgb, var(--astra-danger) 10%, white);
+  --el-color-error-dark-2: color-mix(in srgb, var(--astra-danger) 80%, black);
+  --el-color-info: var(--astra-info);
+  --el-color-info-rgb: 61, 143, 240;
+  --el-color-info-light-3: color-mix(in srgb, var(--astra-info) 70%, white);
+  --el-color-info-light-5: color-mix(in srgb, var(--astra-info) 50%, white);
+  --el-color-info-light-7: color-mix(in srgb, var(--astra-info) 30%, white);
+  --el-color-info-light-8: color-mix(in srgb, var(--astra-info) 20%, white);
+  --el-color-info-light-9: color-mix(in srgb, var(--astra-info) 10%, white);
+  --el-color-info-dark-2: color-mix(in srgb, var(--astra-info) 80%, black);
+  --el-bg-color: var(--astra-bg-panel);
+  --el-bg-color-page: var(--astra-bg-base);
+  --el-bg-color-overlay: var(--astra-bg-card);
+  --el-text-color-primary: var(--astra-text-primary);
+  --el-text-color-regular: var(--astra-text-secondary);
+  --el-text-color-secondary: var(--astra-text-muted);
+  --el-text-color-placeholder: var(--astra-text-muted);
+  --el-text-color-disabled: var(--astra-text-muted);
+  --el-border-color: var(--astra-border);
+  --el-border-color-hover: var(--astra-border-hover);
+  --el-border-color-light: color-mix(in srgb, var(--astra-border) 72%, white);
+  --el-border-color-lighter: color-mix(in srgb, var(--astra-border) 54%, white);
+  --el-border-color-extra-light: color-mix(in srgb, var(--astra-border) 36%, white);
+  --el-border-color-dark: color-mix(in srgb, var(--astra-border) 78%, var(--astra-text-muted));
+  --el-border-color-darker: color-mix(in srgb, var(--astra-border) 60%, var(--astra-text-muted));
+  --el-fill-color: var(--astra-bg-elevated);
+  --el-fill-color-light: color-mix(in srgb, var(--astra-bg-elevated) 55%, white);
+  --el-fill-color-lighter: color-mix(in srgb, var(--astra-bg-elevated) 30%, white);
+  --el-fill-color-extra-light: color-mix(in srgb, var(--astra-bg-elevated) 15%, white);
+  --el-fill-color-dark: color-mix(in srgb, var(--astra-bg-elevated) 80%, var(--astra-border));
+  --el-fill-color-darker: color-mix(in srgb, var(--astra-bg-elevated) 65%, var(--astra-border));
+  --el-fill-color-blank: var(--astra-bg-panel);
+  --el-font-family: var(--astra-font-family);
+  --el-font-size-extra-small: var(--astra-font-helper);
+  --el-font-size-small: var(--astra-font-control);
+  --el-font-size-base: var(--astra-font-body);
+  --el-font-size-medium: var(--astra-font-emphasis);
+  --el-font-size-large: var(--astra-font-subtitle);
+  --el-font-size-extra-large: var(--astra-font-section);
+  --el-component-size: var(--astra-control-height);
+  --el-component-size-small: var(--astra-control-height-compact);
+  --el-component-size-large: calc(var(--astra-control-height) + 4px);
+}
