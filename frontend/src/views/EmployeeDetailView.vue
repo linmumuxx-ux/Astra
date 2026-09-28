@@ -1,64 +1,353 @@
 <template>
-  <div v-if="employee" class="page" data-testid="employee-detail-page">
-    <div class="detail-nav"><RouterLink to="/employees"><ArrowLeft :size="14" /> 数字员工</RouterLink><span>/</span><strong>{{ employeeDisplayName(employee.name) }}</strong></div>
-    <section class="employee-hero"><EmployeeAvatar :employee="employee" size="large" /><div class="employee-hero__identity"><div><span>{{ employee.id }}</span><AstraStatusBadge :status="employee.runtime_state" :label="employee.runtime_status_label" :pulse="employee.status === 'WORKING'" /></div><h2>{{ employeeDisplayName(employee.name) }}</h2><p>{{ employee.role }} · {{ employee.description }}</p></div><div class="hero-actions"><button class="button" type="button" @click="editOpen = true"><Settings2 :size="14" /> 编辑</button><button v-if="employee.status !== 'PAUSED' && !employee.current_task_count" class="button" @click="employeeAction('pause')"><Pause :size="14" /> 暂停员工</button><button v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" class="button button--primary" @click="employeeAction('resume')"><Play :size="14" /> 恢复员工</button></div></section>
+  <div v-if="employee" class="employee-detail" data-testid="employee-detail-page">
+    <ElBreadcrumb separator="/" class="employee-detail__nav">
+      <ElBreadcrumbItem><RouterLink to="/employees">数字员工</RouterLink></ElBreadcrumbItem>
+      <ElBreadcrumbItem>{{ employeeDisplayName(employee.name) }}</ElBreadcrumbItem>
+    </ElBreadcrumb>
 
-    <section class="metrics-grid metrics-grid--six"><AstraMetricCard label="今日 Token" :value="formatTokens(employee.today_usage.total_tokens)" hint="Agent 实际用量" :icon="Binary" /><AstraMetricCard label="工具调用" :value="employee.today_usage.tool_call_count ?? '—'" unit="次" hint="成功与失败均保留" :icon="Wrench" /><AstraMetricCard label="今日完成" :value="employee.today_completed" unit="项" hint="员工已提交结果" :icon="BadgeCheck" tone="success" /><AstraMetricCard label="处理中" :value="statusCount('RUNNING')" unit="项" hint="当前工作" :icon="Activity" /><AstraMetricCard label="等待人工" :value="statusCount('WAITING')" unit="项" hint="需要补充信息" :icon="Hand" tone="warning" /><AstraMetricCard label="今日工作时长" :value="formatDurationSeconds(employee.today_usage.duration_seconds)" hint="按运行记录汇总" :icon="Clock3" /></section>
+    <ElCard shadow="never">
+      <div class="employee-detail__hero">
+        <EmployeeAvatar :employee="employee" size="large" />
+        <div class="employee-detail__identity">
+          <div class="employee-detail__identity-top">
+            <small>{{ employee.id }}</small>
+            <ElTag size="small" :type="statusTagType(employee.runtime_state)">{{ employee.runtime_status_label }}</ElTag>
+          </div>
+          <h2>{{ employeeDisplayName(employee.name) }}</h2>
+          <ElText size="small" type="info">{{ employee.role }} · {{ employee.description || '暂无职责说明' }}</ElText>
+        </div>
+        <ElSpace :size="10">
+          <ElButton :icon="Settings2" @click="editOpen = true">编辑</ElButton>
+          <ElButton v-if="employee.status !== 'PAUSED' && !employee.current_task_count" :icon="Pause" @click="employeeAction('pause')">暂停员工</ElButton>
+          <ElButton v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" type="primary" :icon="Play" @click="employeeAction('resume')">恢复员工</ElButton>
+        </ElSpace>
+      </div>
+    </ElCard>
 
-    <section class="detail-grid">
-      <AstraPanel title="当前工作" subtitle="任务状态、实时进展和运行时长"><template #action><RouterLink v-if="currentTask" class="text-link" :to="`/tasks/${currentTask.id}`">查看任务 <ArrowUpRight :size="13" /></RouterLink></template><div v-if="currentTask" class="current-task-card"><div class="current-task-card__top"><div><small>{{ currentTask.id }}</small><h3>{{ currentTask.title }}</h3></div><AstraStatusBadge :status="currentTask.runtime_state" :label="currentTask.runtime_status_label" pulse /></div><dl><div><dt>类型</dt><dd>{{ taskTypeLabel(currentTask.task_type) }}</dd></div><div><dt>分类</dt><dd>{{ categoryName(currentTask.category_id) }}</dd></div><div><dt>优先级</dt><dd>{{ priorityLabel(currentTask.priority) }}</dd></div><div><dt>开始时间</dt><dd>{{ formatTime(currentTask.started_at) }}</dd></div><div><dt>当前状态</dt><dd>{{ currentTask.runtime_status_label }}</dd></div><div><dt>运行时长</dt><dd>{{ formatTaskDuration(currentTask) }}</dd></div></dl><div class="current-progress-copy"><strong>当前进展</strong><p>{{ platformCopy(currentTask.current_progress) }}</p></div><div class="path-row"><TerminalSquare :size="13" /><span>{{ currentTask.current_session_id ?? '执行会话尚未创建' }}</span></div></div><AstraEmptyState v-else :icon="Coffee" title="当前空闲" description="员工正在等待下一项匹配任务。" /><div v-if="latestError" class="form-note">最近异常：{{ platformCopy(String(latestError.execution_error?.reason ?? latestError.current_progress)) }} · {{ formatTime(latestError.updated_at) }}</div></AstraPanel>
+    <section class="employee-detail__metrics" aria-label="今日工作摘要">
+      <ElCard v-for="metric in metrics" :key="metric.label" shadow="never">
+        <ElStatistic :title="metric.label" :value="metric.value as number"><template v-if="metric.unit" #suffix>{{ metric.unit }}</template></ElStatistic>
+        <p class="employee-detail__metric-hint">{{ metric.hint }}</p>
+      </ElCard>
+    </section>
 
-      <AstraPanel title="工作范围" subtitle="用于自动分配的任务类型和分类"><div class="scope-detail"><div><strong>支持任务类型</strong><span v-for="item in employee.task_types" :key="item">{{ taskTypeLabel(item) }}</span></div><div><strong>支持任务分类</strong><span v-for="item in employee.category_ids" :key="item">{{ categoryName(item) }}</span></div></div></AstraPanel>
+    <ElAlert v-if="usageError" type="error" show-icon :closable="false" :title="usageError">
+      <ElButton size="small" type="primary" @click="loadUsage">重试</ElButton>
+    </ElAlert>
 
-      <AstraPanel title="工作环境" subtitle="员工长期复用的 Agent 工作空间"><template #action><button class="button button--compact" :disabled="checking" @click="testEnvironment"><RefreshCw :size="13" :class="{ spin: checking }" /> {{ checking ? '检查中' : '测试连接' }}</button></template><div v-if="employee.execution_environment" class="environment-detail"><div class="environment-detail__title"><span><Server :size="20" /></span><div><strong>{{ employee.execution_environment.name }}</strong><small>{{ environmentLabel(employee.execution_environment) }}</small></div><AstraStatusBadge :status="employee.execution_environment.status" /></div><dl class="info-list"><div><dt>执行方式</dt><dd>{{ environmentLabel(employee.execution_environment) }}</dd></div><div><dt>服务器</dt><dd>{{ employee.execution_environment.mode === 'LINUX_REMOTE' ? `${employee.execution_environment.username}@${employee.execution_environment.host}:${employee.execution_environment.port}` : '本机' }}</dd></div><div><dt>Agent</dt><dd>{{ employee.execution_environment.opencode_path }}</dd></div><div><dt>工作空间</dt><dd>{{ employee.execution_environment.workspace_root }}</dd></div><div><dt>环境状态</dt><dd>{{ statusLabel(employee.execution_environment.status) }}</dd></div><div><dt>最近检查</dt><dd>{{ formatTime(employee.execution_environment.last_checked_at) }}</dd></div></dl><div v-if="environmentChecks.length" class="environment-checks"><article v-for="check in environmentChecks" :key="check.name"><CheckCircle2 v-if="check.passed" :size="14" /><CircleX v-else :size="14" /><div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div></article></div></div></AstraPanel>
+    <section class="employee-detail__panels">
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-header">
+            <div class="employee-detail__card-title"><h3>当前工作</h3><ElText size="small" type="info">任务状态、实时进展和运行时长</ElText></div>
+            <RouterLink v-if="currentTask" class="employee-detail__link" :to="`/tasks/${currentTask.id}`">查看任务 <ArrowUpRight :size="13" /></RouterLink>
+          </div>
+        </template>
+        <div v-if="currentTask">
+          <div class="employee-detail__current-task">
+            <small>{{ currentTask.id }}</small>
+            <strong>{{ currentTask.title }}</strong>
+          </div>
+          <ElDescriptions :column="3" border size="small">
+            <ElDescriptionsItem label="类型">{{ taskTypeLabel(currentTask.task_type) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="分类">{{ categoryName(currentTask.category_id) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="优先级">{{ priorityLabel(currentTask.priority) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="开始时间">{{ formatTime(currentTask.started_at) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="当前状态"><ElTag size="small" :type="statusTagType(currentTask.runtime_state)">{{ currentTask.runtime_status_label }}</ElTag></ElDescriptionsItem>
+            <ElDescriptionsItem label="运行时长">{{ formatTaskDuration(currentTask) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="当前进展" :span="3">{{ platformCopy(currentTask.current_progress) || '暂无进展更新' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="执行会话" :span="3">{{ currentTask.current_session_id ?? '执行会话尚未创建' }}</ElDescriptionsItem>
+          </ElDescriptions>
+        </div>
+        <ElEmpty v-else :image-size="60" description="当前空闲，员工正在等待下一项匹配任务。" />
+        <ElAlert v-if="latestError" class="employee-detail__inline-alert" type="warning" show-icon :closable="false" :title="latestErrorCopy" />
+      </ElCard>
 
-      <AstraPanel title="今日工作消耗" subtitle="实际用量，缺失数据不估算"><div class="token-breakdown"><article><small>输入 Token</small><strong>{{ formatTokens(employee.today_usage.input_tokens) }}</strong></article><article><small>输出 Token</small><strong>{{ formatTokens(employee.today_usage.output_tokens) }}</strong></article><article><small>缓存读取</small><strong>{{ formatTokens(employee.today_usage.cache_read_tokens) }}</strong></article><article><small>缓存写入</small><strong>{{ formatTokens(employee.today_usage.cache_write_tokens) }}</strong></article><article><small>Token 总计</small><strong>{{ formatTokens(employee.today_usage.total_tokens) }}</strong></article><article><small>工具调用</small><strong>{{ employee.today_usage.tool_call_count ?? '—' }}</strong></article><article><small>平均每任务 Token</small><strong>{{ averageTaskTokens }}</strong></article><article><small>平均每任务工具调用</small><strong>{{ averageTaskTools }}</strong></article></div></AstraPanel>
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>工作范围</h3><ElText size="small" type="info">用于自动分配的任务类型和分类</ElText></div>
+        </template>
+        <div class="employee-detail__scope">
+          <div><ElText size="small" type="info">支持任务类型</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.task_types" :key="item" size="small" type="primary" effect="light">{{ taskTypeLabel(item) }}</ElTag><ElText v-if="!employee.task_types.length" size="small">—</ElText></div></div>
+          <div><ElText size="small" type="info">支持任务分类</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.category_ids" :key="item" size="small" type="primary" effect="light">{{ categoryName(item) }}</ElTag><ElText v-if="!employee.category_ids.length" size="small">—</ElText></div></div>
+        </div>
+      </ElCard>
 
-      <AstraPanel class="detail-wide" title="Token 趋势" subtitle="输入、输出与缓存读取"><template #action><div class="range-switch"><button :class="{ active: days === 7 }" @click="changeDays(7)">近 7 天</button><button :class="{ active: days === 30 }" @click="changeDays(30)">近 30 天</button></div></template><UsageTrendChart :data="usage?.trend ?? []" /></AstraPanel>
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-header">
+            <div class="employee-detail__card-title"><h3>工作环境</h3><ElText size="small" type="info">员工长期复用的 Agent 工作空间</ElText></div>
+            <ElButton size="small" :icon="RefreshCw" :loading="checking" @click="testEnvironment">{{ checking ? '检查中' : '测试连接' }}</ElButton>
+          </div>
+        </template>
+        <template v-if="employee.execution_environment">
+          <ElDescriptions :column="2" border size="small">
+            <ElDescriptionsItem label="环境名称">{{ employee.execution_environment.name }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="执行方式">{{ environmentLabel(employee.execution_environment) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="服务器">{{ employee.execution_environment.mode === 'LINUX_REMOTE' ? `${employee.execution_environment.username}@${employee.execution_environment.host}:${employee.execution_environment.port}` : '本机' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="Agent">{{ employee.execution_environment.opencode_path }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="工作空间">{{ employee.execution_environment.workspace_root }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="环境状态"><ElTag size="small" :type="statusTagType(employee.execution_environment.status)">{{ statusLabel(employee.execution_environment.status) }}</ElTag></ElDescriptionsItem>
+            <ElDescriptionsItem label="最近检查" :span="2">{{ formatTime(employee.execution_environment.last_checked_at) }}</ElDescriptionsItem>
+          </ElDescriptions>
+          <div v-if="environmentChecks.length" class="employee-detail__checks">
+            <div v-for="check in environmentChecks" :key="check.name" class="employee-detail__check">
+              <CheckCircle2 v-if="check.passed" :size="14" class="employee-detail__check-icon is-passed" />
+              <CircleX v-else :size="14" class="employee-detail__check-icon is-failed" />
+              <div><strong>{{ check.name }}</strong><ElText size="small" type="info">{{ check.detail }}</ElText></div>
+            </div>
+          </div>
+        </template>
+        <ElText v-else size="small" type="info">尚未配置工作环境，可在“编辑”中添加。</ElText>
+      </ElCard>
 
-      <AstraPanel title="工具调用概况" :subtitle="`近 ${days} 天`"><dl class="performance-list"><div><dt>工具调用总数</dt><dd>{{ usage?.summary.tool_call_count ?? '—' }}</dd></div><div><dt>成功次数</dt><dd>{{ usage?.summary.tool_success_count ?? 0 }}</dd></div><div><dt>失败次数</dt><dd>{{ usage?.summary.tool_failure_count ?? 0 }}</dd></div><div><dt>成功率</dt><dd>{{ toolSuccessRate }}</dd></div></dl></AstraPanel>
-      <AstraPanel title="工具调用 Top" :subtitle="`近 ${days} 天实际工具事件`"><div class="tool-ranking"><article v-for="(tool, index) in usage?.tools.slice(0, 8)" :key="tool.tool_name"><b>{{ index + 1 }}</b><div><strong>{{ tool.tool_name }}</strong><small>成功 {{ tool.success_count }} · 失败 {{ tool.failure_count }}</small></div><span>{{ tool.call_count }} 次</span></article><AstraEmptyState v-if="!usage?.tools.length" :icon="Wrench" title="暂无工具数据" description="Agent 返回工具事件后会在此汇总。" /></div></AstraPanel>
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>今日工作消耗</h3><ElText size="small" type="info">实际用量，缺失数据不估算</ElText></div>
+        </template>
+        <ElDescriptions :column="4" border size="small">
+          <ElDescriptionsItem label="输入 Token">{{ formatTokens(employee.today_usage.input_tokens) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="输出 Token">{{ formatTokens(employee.today_usage.output_tokens) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="缓存读取">{{ formatTokens(employee.today_usage.cache_read_tokens) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="缓存写入">{{ formatTokens(employee.today_usage.cache_write_tokens) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="Token 总计">{{ formatTokens(employee.today_usage.total_tokens) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="工具调用">{{ employee.today_usage.tool_call_count ?? '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="平均每任务 Token">{{ averageTaskTokens }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="平均每任务工具调用">{{ averageTaskTools }}</ElDescriptionsItem>
+        </ElDescriptions>
+      </ElCard>
 
-      <AstraPanel class="detail-wide" title="员工任务队列" subtitle="当前任务优先，其后按优先级和创建时间"><div class="table-wrap"><table><thead><tr><th>顺序</th><th>任务</th><th>优先级</th><th>状态</th><th>当前进展</th></tr></thead><tbody><tr v-for="(task, index) in employeeQueue" :key="task.id" @click="$router.push(`/tasks/${task.id}`)"><td>{{ index + 1 }}</td><td><strong>{{ task.title }}</strong><small>{{ task.id }}</small></td><td>{{ priorityLabel(task.priority) }}</td><td><AstraStatusBadge :status="task.runtime_state" :label="task.runtime_status_label" /></td><td>{{ platformCopy(task.current_progress) }}</td></tr><tr v-if="!employeeQueue.length"><td colspan="5">当前队列为空</td></tr></tbody></table></div></AstraPanel>
+      <ElCard shadow="never" class="employee-detail__panel--wide">
+        <template #header>
+          <div class="employee-detail__card-header">
+            <div class="employee-detail__card-title"><h3>Token 趋势</h3><ElText size="small" type="info">输入、输出与缓存读取</ElText></div>
+            <ElRadioGroup v-model="days" size="small" @change="loadUsage">
+              <ElRadioButton :value="7">近 7 天</ElRadioButton>
+              <ElRadioButton :value="30">近 30 天</ElRadioButton>
+            </ElRadioGroup>
+          </div>
+        </template>
+        <div class="employee-detail__chart"><UsageTrendChart :data="usage?.trend ?? []" /></div>
+      </ElCard>
 
-      <AstraPanel class="detail-wide" title="历史任务" subtitle="已完成、未完成和已取消任务的消耗均会保留" flush><div class="table-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>分类</th><th>优先级</th><th>状态</th><th>运行时长</th></tr></thead><tbody><tr v-for="task in historicalTasks" :key="task.id" @click="$router.push(`/tasks/${task.id}`)"><td><strong>{{ task.title }}</strong><small>{{ task.id }}</small></td><td>{{ taskTypeLabel(task.task_type) }}</td><td>{{ categoryName(task.category_id) }}</td><td>{{ priorityLabel(task.priority) }}</td><td><AstraStatusBadge :status="task.runtime_state" :label="task.runtime_status_label" /></td><td>{{ formatTaskDuration(task) }}</td></tr><tr v-if="!historicalTasks.length"><td colspan="6">暂无历史任务</td></tr></tbody></table></div></AstraPanel>
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>工具调用概况</h3><ElText size="small" type="info">近 {{ days }} 天</ElText></div>
+        </template>
+        <ElDescriptions :column="2" border size="small">
+          <ElDescriptionsItem label="工具调用总数">{{ usage?.summary.tool_call_count ?? '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="成功次数">{{ usage?.summary.tool_success_count ?? 0 }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="失败次数">{{ usage?.summary.tool_failure_count ?? 0 }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="成功率">{{ toolSuccessRate }}</ElDescriptionsItem>
+        </ElDescriptions>
+      </ElCard>
+
+      <ElCard shadow="never">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>模型调用统计</h3><ElText size="small" type="info">近 {{ days }} 天各模型实际用量</ElText></div>
+        </template>
+        <ElTable :data="usage?.models ?? []" size="small">
+          <ElTableColumn label="模型" prop="model_name" min-width="170" show-overflow-tooltip />
+          <ElTableColumn label="会话数" prop="session_count" width="80" align="right" />
+          <ElTableColumn label="Token" width="100" align="right"><template #default="{ row }">{{ formatTokens(row.total_tokens) }}</template></ElTableColumn>
+          <ElTableColumn label="LLM 调用" prop="llm_call_count" width="90" align="right" />
+          <ElTableColumn label="工具调用" prop="tool_call_count" width="90" align="right" />
+          <template #empty><ElEmpty :image-size="56" description="暂无模型用量数据" /></template>
+        </ElTable>
+      </ElCard>
+
+      <ElCard shadow="never" class="employee-detail__panel--wide">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>工具调用 Top</h3><ElText size="small" type="info">近 {{ days }} 天实际工具事件</ElText></div>
+        </template>
+        <ElTable :data="usage?.tools.slice(0, 8) ?? []" size="small">
+          <ElTableColumn label="工具" prop="tool_name" min-width="170" show-overflow-tooltip />
+          <ElTableColumn label="成功" prop="success_count" width="90" align="right" />
+          <ElTableColumn label="失败" prop="failure_count" width="90" align="right" />
+          <ElTableColumn label="调用次数" prop="call_count" width="100" align="right" />
+          <template #empty><ElEmpty :image-size="56" description="暂无工具数据，Agent 返回工具事件后会在此汇总。" /></template>
+        </ElTable>
+      </ElCard>
+
+      <ElCard shadow="never" class="employee-detail__panel--wide">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>员工任务队列</h3><ElText size="small" type="info">当前任务优先，其后按优先级和创建时间</ElText></div>
+        </template>
+        <ElTable :data="employeeQueue" size="small" @row-click="openTask">
+          <ElTableColumn label="顺序" width="70" align="right"><template #default="{ $index }">{{ $index + 1 }}</template></ElTableColumn>
+          <ElTableColumn label="任务" min-width="240">
+            <template #default="{ row }">
+              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
+          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
+          <ElTableColumn label="当前进展" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ platformCopy(row.current_progress) }}</template></ElTableColumn>
+          <template #empty><ElText size="small" type="info">当前队列为空</ElText></template>
+        </ElTable>
+      </ElCard>
+
+      <ElCard shadow="never" class="employee-detail__panel--wide">
+        <template #header>
+          <div class="employee-detail__card-title"><h3>历史任务</h3><ElText size="small" type="info">已完成、未完成和已取消任务的消耗均会保留</ElText></div>
+        </template>
+        <ElTable :data="historicalTasks" size="small" @row-click="openTask">
+          <ElTableColumn label="任务" min-width="240">
+            <template #default="{ row }">
+              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="类型" width="80"><template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template></ElTableColumn>
+          <ElTableColumn label="分类" width="140" show-overflow-tooltip><template #default="{ row }">{{ categoryName(row.category_id) }}</template></ElTableColumn>
+          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
+          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
+          <ElTableColumn label="运行时长" width="130"><template #default="{ row }">{{ formatTaskDuration(row as Task) }}</template></ElTableColumn>
+          <template #empty><ElText size="small" type="info">暂无历史任务</ElText></template>
+        </ElTable>
+      </ElCard>
     </section>
 
     <EmployeeConfigModal :open="editOpen" :employee="employee" :creating="false" :categories="store.categories" @close="editOpen = false" @saved="onSaved" />
   </div>
+  <div v-else-if="!store.loading" class="employee-detail">
+    <ElEmpty :image-size="80" description="未找到该数字员工，可能已被删除。">
+      <ElButton @click="router.push('/employees')">返回员工列表</ElButton>
+    </ElEmpty>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { Activity, ArrowLeft, ArrowUpRight, BadgeCheck, Binary, CheckCircle2, CircleX, Clock3, Coffee, Hand, Pause, Play, RefreshCw, Server, Settings2, TerminalSquare, Wrench } from 'lucide-vue-next'
+import { ArrowUpRight, CheckCircle2, CircleX, Pause, Play, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ElAlert, ElBreadcrumb, ElBreadcrumbItem, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElEmpty, ElRadioButton, ElRadioGroup, ElSpace, ElStatistic, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
 import { api } from '@/api/client'
-import type { EmployeeUsage } from '@/api/types'
-import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
-import AstraMetricCard from '@/components/astra/AstraMetricCard.vue'
-import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraStatusBadge from '@/components/astra/AstraStatusBadge.vue'
+import type { EmployeeUsage, Task } from '@/api/types'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeConfigModal from '@/components/employee/EmployeeConfigModal.vue'
 import UsageTrendChart from '@/components/runtime/UsageTrendChart.vue'
 import { notify } from '@/composables/useToast'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, environmentLabel, formatDurationSeconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, statusLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, environmentLabel, formatDurationSeconds, formatTaskDuration, formatTime, formatTokens, platformCopy, priorityLabel, statusLabel, statusTagType, taskTypeLabel } from '@/utils/format'
 
-const route = useRoute(); const store = useAstraStore(); const id = computed(() => String(route.params.id)); const usage = ref<EmployeeUsage | null>(null); const days = ref(7); const checking = ref(false); const editOpen = ref(false); const environmentChecks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
-const employee = computed(() => store.employees.find((item) => item.id === id.value)); const employeeTasks = computed(() => store.tasks.filter((task) => task.employee_id === id.value)); const currentTask = computed(() => employeeTasks.value.find((task) => ['PENDING', 'RUNNING', 'WAITING', 'FAILED'].includes(task.status)))
-const employeeQueue = computed(() => employeeTasks.value.filter((task) => ['PENDING', 'RUNNING', 'WAITING', 'FAILED'].includes(task.status)).sort((a, b) => { const active = (value: string) => ['PENDING', 'RUNNING', 'WAITING', 'FAILED'].includes(value) ? 0 : 1; return active(a.status) - active(b.status) || ({ VERY_HIGH: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }[b.priority] - { VERY_HIGH: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }[a.priority]) || a.created_at.localeCompare(b.created_at) }))
+const route = useRoute()
+const router = useRouter()
+const store = useAstraStore()
+const id = computed(() => String(route.params.id))
+const usage = ref<EmployeeUsage | null>(null)
+const usageError = ref('')
+const days = ref(7)
+const checking = ref(false)
+const editOpen = ref(false)
+const environmentChecks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
+
+const ACTIVE_STATUSES = ['PENDING', 'RUNNING', 'WAITING', 'FAILED']
+const PRIORITY_WEIGHT: Record<string, number> = { VERY_HIGH: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
+
+const employee = computed(() => store.employees.find((item) => item.id === id.value))
+const employeeTasks = computed(() => store.tasks.filter((task) => task.employee_id === id.value))
+const currentTask = computed(() => employeeTasks.value.find((task) => ACTIVE_STATUSES.includes(task.status)))
+const employeeQueue = computed(() => employeeTasks.value
+  .filter((task) => ACTIVE_STATUSES.includes(task.status))
+  .sort((a, b) => (PRIORITY_WEIGHT[b.priority] ?? 0) - (PRIORITY_WEIGHT[a.priority] ?? 0) || a.created_at.localeCompare(b.created_at)))
 const historicalTasks = computed(() => employeeTasks.value.filter((task) => ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.status)))
 const latestError = computed(() => employeeTasks.value.filter((task) => task.execution_error).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0])
-const averageTaskTokens = computed(() => employee.value?.today_usage.total_tokens != null && employee.value.today_usage.task_count ? formatTokens(Math.round(employee.value.today_usage.total_tokens / employee.value.today_usage.task_count)) : '—')
-const averageTaskTools = computed(() => employee.value?.today_usage.tool_call_count != null && employee.value.today_usage.task_count ? (employee.value.today_usage.tool_call_count / employee.value.today_usage.task_count).toFixed(1) : '—')
-const toolSuccessRate = computed(() => { const summary = usage.value?.summary; if (!summary?.tool_call_count) return '—'; return `${((summary.tool_success_count / summary.tool_call_count) * 100).toFixed(1)}%` })
-const categoryName = (categoryId: string | null) => store.categories.find((item) => item.id === categoryId)?.name ?? '—'
-const statusCount = (status: string) => employeeTasks.value.filter((task) => task.status === status).length
-async function load() { await store.refresh(); usage.value = await api.employeeUsage(id.value, days.value) }
+const latestErrorCopy = computed(() => latestError.value
+  ? `最近异常：${platformCopy(String(latestError.value.execution_error?.reason ?? latestError.value.current_progress))} · ${formatTime(latestError.value.updated_at)}`
+  : '')
+const metrics = computed(() => {
+  const today = employee.value?.today_usage
+  return [
+    { label: '今日 Token', value: formatTokens(today?.total_tokens), unit: '', hint: 'Agent 实际用量' },
+    { label: '工具调用', value: today?.tool_call_count ?? '—', unit: '次', hint: '成功与失败均保留' },
+    { label: '今日完成', value: employee.value?.today_completed ?? '—', unit: '项', hint: '员工已提交结果' },
+    { label: '处理中', value: statusCount('RUNNING'), unit: '项', hint: '当前工作' },
+    { label: '等待人工', value: statusCount('WAITING'), unit: '项', hint: '需要补充信息' },
+    { label: '今日工作时长', value: formatDurationSeconds(today?.duration_seconds), unit: '', hint: '按运行记录汇总' },
+  ]
+})
+const averageTaskTokens = computed(() => {
+  const today = employee.value?.today_usage
+  return today?.total_tokens != null && today.task_count ? formatTokens(Math.round(today.total_tokens / today.task_count)) : '—'
+})
+const averageTaskTools = computed(() => {
+  const today = employee.value?.today_usage
+  return today?.tool_call_count != null && today.task_count ? (today.tool_call_count / today.task_count).toFixed(1) : '—'
+})
+const toolSuccessRate = computed(() => {
+  const summary = usage.value?.summary
+  if (!summary?.tool_call_count) return '—'
+  return `${((summary.tool_success_count / summary.tool_call_count) * 100).toFixed(1)}%`
+})
+
+function categoryName(categoryId: string | null) { return store.categories.find((item) => item.id === categoryId)?.name ?? '—' }
+function statusCount(status: string) { return employeeTasks.value.filter((task) => task.status === status).length }
+function openTask(task: Task) { router.push(`/tasks/${task.id}`) }
+
+async function loadUsage() {
+  usageError.value = ''
+  try { usage.value = await api.employeeUsage(id.value, days.value) }
+  catch (error) { usageError.value = error instanceof Error ? error.message : '用量数据加载失败' }
+}
+async function load() { await store.refresh(); await loadUsage() }
 onMounted(load)
-async function changeDays(value: number) { days.value = value; usage.value = await api.employeeUsage(id.value, value) }
 async function onSaved() { await store.refresh() }
-async function employeeAction(action: 'pause' | 'resume') { await api.employeeAction(id.value, action); await store.refresh() }
-async function testEnvironment() { checking.value = true; try { const result = await api.testEnvironment(id.value); environmentChecks.value = result.checks; await store.refresh() } catch (error) { notify(error instanceof Error ? error.message : '环境检查失败', 'error') } finally { checking.value = false } }
+async function employeeAction(action: 'pause' | 'resume') {
+  try { await api.employeeAction(id.value, action); await store.refresh() }
+  catch (error) { notify(error instanceof Error ? error.message : '员工操作失败', 'error') }
+}
+async function testEnvironment() {
+  checking.value = true
+  try { const result = await api.testEnvironment(id.value); environmentChecks.value = result.checks; await store.refresh() }
+  catch (error) { notify(error instanceof Error ? error.message : '环境检查失败', 'error') }
+  finally { checking.value = false }
+}
 </script>
+
+<style scoped>
+.employee-detail { display: grid; gap: 14px; padding: 20px 24px 24px; }
+.employee-detail__nav { font-size: var(--astra-font-label); }
+.employee-detail__nav :deep(.el-breadcrumb__inner a) { color: var(--astra-text-muted); }
+.employee-detail__nav :deep(.el-breadcrumb__inner.is-link a:hover), .employee-detail__nav :deep(.el-breadcrumb__inner.is-link):hover a { color: var(--astra-primary); }
+.employee-detail__hero { display: flex; align-items: center; gap: 16px; }
+.employee-detail__identity { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.employee-detail__identity-top { display: flex; align-items: center; gap: 10px; }
+.employee-detail__identity-top small { color: var(--astra-primary); font-size: var(--astra-font-helper); letter-spacing: .08em; }
+.employee-detail__identity h2 { margin: 0; font-size: var(--astra-font-section); line-height: normal; }
+.employee-detail :deep(.el-card) { --el-card-border-color: var(--astra-border); --el-card-border-radius: 11px; }
+.employee-detail :deep(.el-card__header) { padding: 11px 15px; }
+.employee-detail :deep(.el-card__body) { padding: 14px 15px; }
+.employee-detail__card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.employee-detail__card-title { display: grid; gap: 2px; min-width: 0; }
+.employee-detail__card-title h3 { margin: 0; font-size: var(--astra-font-label); line-height: normal; }
+.employee-detail__metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.employee-detail__metrics :deep(.el-statistic__head) { color: var(--astra-text-muted); font-size: var(--astra-font-control); }
+.employee-detail__metrics :deep(.el-statistic__content) { color: var(--astra-text-primary); font-size: var(--astra-font-subtitle); font-weight: var(--astra-weight-bold); }
+.employee-detail__metric-hint { margin: 4px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+.employee-detail__panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.employee-detail__panel--wide { grid-column: 1 / -1; }
+.employee-detail__link, .employee-detail__link:hover { color: var(--astra-primary); font-size: var(--astra-font-label); display: inline-flex; align-items: center; gap: 4px; }
+.employee-detail__current-task { display: grid; gap: 2px; margin-bottom: 12px; }
+.employee-detail__current-task small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+.employee-detail__current-task strong { font-size: var(--astra-font-emphasis); }
+.employee-detail__inline-alert { margin-top: 12px; }
+.employee-detail__scope { display: grid; gap: 12px; }
+.employee-detail__scope > div { display: grid; gap: 6px; }
+.employee-detail__tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.employee-detail__checks { display: grid; gap: 8px; margin-top: 12px; }
+.employee-detail__check { display: flex; align-items: flex-start; gap: 8px; }
+.employee-detail__check > svg { flex: none; margin-top: 3px; }
+.employee-detail__check strong { display: block; font-size: var(--astra-font-body); }
+.employee-detail__check-icon.is-passed { color: var(--el-color-success); }
+.employee-detail__check-icon.is-failed { color: var(--el-color-danger); }
+.employee-detail__chart { height: 300px; }
+.employee-detail__chart > * { height: 100%; }
+.employee-detail__panels :deep(.el-table__row) { cursor: pointer; }
+.employee-detail__task-cell { display: grid; min-width: 0; }
+.employee-detail__task-cell strong, .employee-detail__task-cell small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.employee-detail__task-cell strong { color: var(--astra-text-primary); font-size: var(--astra-font-label); }
+.employee-detail__task-cell small { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+@media (max-width: 1280px) { .employee-detail__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1020px) { .employee-detail__panels { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .employee-detail__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .employee-detail__hero { flex-wrap: wrap; } }
+</style>

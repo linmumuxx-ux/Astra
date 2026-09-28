@@ -22,14 +22,14 @@ function render() {
     textStyle: typography,
     backgroundColor: 'transparent',
     grid: { top: 34, right: 14, bottom: 24, left: 48 },
-    legend: { top: 0, right: 0, textStyle: { ...typography, color: '#70839c', fontSize: typography.fontSize } },
-    tooltip: { trigger: 'axis', backgroundColor: '#101c2e', borderColor: '#273c59', textStyle: { ...typography, color: '#dce9fa' } },
-    xAxis: { type: 'category', boundaryGap: false, data: props.data.map((item) => item.date.slice(5)), axisLine: { lineStyle: { color: '#21334c' } }, axisLabel: { ...typography, color: '#70839c', fontSize: typography.fontSize } },
-    yAxis: { type: 'value', axisLabel: { ...typography, color: '#70839c', fontSize: typography.fontSize }, splitLine: { lineStyle: { color: '#17263a' } } },
+    legend: { top: 0, right: 0, textStyle: { ...typography, color: '#617771', fontSize: typography.fontSize } },
+    tooltip: { trigger: 'axis', backgroundColor: '#ffffff', borderColor: '#d7e1dd', textStyle: { ...typography, color: '#102522' } },
+    xAxis: { type: 'category', boundaryGap: false, data: props.data.map((item) => item.date.slice(5)), axisLine: { lineStyle: { color: '#d7e1dd' } }, axisLabel: { ...typography, color: '#617771', fontSize: typography.fontSize } },
+    yAxis: { type: 'value', axisLabel: { ...typography, color: '#617771', fontSize: typography.fontSize }, splitLine: { lineStyle: { color: '#e3eae7' } } },
     series: [
-      { name: '输入', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.input_tokens ?? 0), lineStyle: { color: '#4c8dff', width: 2 }, areaStyle: { color: 'rgba(76,141,255,.08)' } },
-      { name: '输出', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.output_tokens ?? 0), lineStyle: { color: '#32d69b', width: 2 } },
-      { name: '缓存读取', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.cache_read_tokens ?? 0), lineStyle: { color: '#a886ff', width: 1.5 } },
+      { name: '输入', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.input_tokens ?? 0), lineStyle: { color: '#159d65', width: 2 }, areaStyle: { color: 'rgba(21,157,101,.08)' } },
+      { name: '输出', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.output_tokens ?? 0), lineStyle: { color: '#7658d9', width: 2 } },
+      { name: '缓存读取', type: 'line', smooth: true, symbol: 'none', data: props.data.map((item) => item.cache_read_tokens ?? 0), lineStyle: { color: '#e9953f', width: 1.5 } },
     ],
   })
 }
