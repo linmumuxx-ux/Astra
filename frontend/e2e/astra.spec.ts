@@ -34,7 +34,7 @@ test('首页展示数据看板、业务导航和聚合数据', async ({ page }) 
 
   const navigation = page.getByRole('navigation', { name: '主导航' })
   for (const label of ['首页', '数字员工', '任务管理', '数字图书馆', '设置']) {
-    await expect(navigation.getByRole('link', { name: new RegExp(label) })).toBeVisible()
+    await expect(navigation.getByRole('menuitem', { name: new RegExp(label) })).toBeVisible()
   }
   await expect(page.getByRole('link', { name: '消息通知' })).toBeVisible()
   expect(requests).not.toContain('/api/events/stream')
@@ -81,11 +81,39 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
     { link: /^设置$/, testId: 'settings-page', heading: '配置中心' },
   ]
   for (const destination of destinations) {
-    await navigation.getByRole('link', { name: destination.link }).click()
+    await navigation.getByRole('menuitem', { name: destination.link }).click()
     const content = page.getByTestId(destination.testId)
     await expect(content).toBeVisible()
     await expect(content.getByRole('heading', { name: destination.heading, level: 2 })).toBeVisible()
   }
+})
+
+test('导航深层路径保持父级菜单高亮', async ({ page }) => {
+  await page.goto('/employees/astra-01')
+  const navigation = page.getByRole('navigation', { name: '主导航' })
+  await expect(navigation.getByRole('menuitem', { name: /^数字员工/ })).toHaveClass(/is-active/)
+  await expect(navigation.getByRole('menuitem', { name: /^首页/ })).not.toHaveClass(/is-active/)
+})
+
+test('全局搜索与 URL q 参数双向同步并支持清空', async ({ page }) => {
+  await page.goto('/?q=流水线')
+  const search = page.getByLabel('全局搜索')
+  await expect(search).toHaveValue('流水线')
+
+  await search.fill('回调')
+  await search.press('Enter')
+  expect(new URL(page.url()).searchParams.get('q')).toBe('回调')
+
+  await page.goto('/tasks')
+  await expect(search).toHaveValue('回调')
+  await search.press('Enter')
+  await expect(page).toHaveURL(/\?q=/)
+  await expect(page.getByTestId('dashboard-page')).toBeVisible()
+
+  await search.hover()
+  await page.locator('.global-search .el-input__clear').click()
+  await expect(search).toHaveValue('')
+  expect(new URL(page.url()).searchParams.has('q')).toBe(false)
 })
 
 test('数字图书馆支持当前空间搜索、安全 Markdown 弹框和滚动恢复', async ({ page, request }) => {
@@ -252,7 +280,7 @@ test('创建任务仅填写业务事实且高优先级默认人工确认', async
 test('待处理角标与聚合队列一致并提供进入 Workspace 入口', async ({ page }) => {
   await page.goto('/interventions')
   const pending = page.getByTestId('intervention-page')
-  await expect(page.getByRole('link', { name: '消息通知' }).locator('b')).toHaveText('3')
+  await expect(page.getByRole('link', { name: '消息通知' }).locator('.el-badge__content')).toHaveText('3')
   await expect(pending.getByRole('heading', { name: '待处理', exact: true })).toBeVisible()
   // 状态收敛后待处理只保留「等待人工或外部条件」与「执行失败」两类入口。
   await expect(pending.getByRole('button', { name: /等待人工或外部条件 · 3/ })).toBeVisible()
