@@ -68,7 +68,8 @@ test('首页单模块失败不影响其他模块并保留筛选跳转', async ({
 
   await dashboard.locator('.summary-metrics').getByRole('link', { name: '8 工作中' }).click()
   await expect(page).toHaveURL(/\/employees\?status=WORKING$/)
-  await expect(page.getByLabel('员工状态')).toHaveValue('WORKING')
+  await page.locator('.employee-filter__status').click()
+  await expect(page.getByRole('option', { name: '工作中' })).toHaveAttribute('aria-selected', 'true')
 })
 
 test('核心页面可从中文主导航访问', async ({ page }) => {
@@ -294,8 +295,10 @@ test('待处理角标与聚合队列一致并提供进入 Workspace 入口', asy
 
 test('员工管理使用列表、筛选分页并优先打开详情抽屉', async ({ page }) => {
   await page.goto('/employees')
-  await expect(page.getByLabel('员工状态').getByRole('option', { name: '异常' })).toHaveCount(1)
-  await expect(page.getByLabel('数字员工列表').getByRole('table')).toBeVisible()
+  await page.locator('.employee-filter__status').click()
+  await expect(page.getByRole('option', { name: '异常' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('数字员工列表').getByRole('table').first()).toBeVisible()
   await expect(page.getByLabel('员工列表分页')).toBeVisible()
   await page.getByRole('button', { name: '查看 员工-03' }).click()
   const drawer = page.getByRole('dialog', { name: '员工-03 员工详情' })
