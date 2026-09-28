@@ -22,6 +22,9 @@ export const taskTypeLabel = (value: string) => value === 'ISSUE' ? '问题' : v
 export const priorityLabel = (value: string) => ({ VERY_HIGH: '很高', HIGH: '高', MEDIUM: '中', LOW: '低' }[value] ?? '未设置')
 export const acceptanceStatusLabel = (value: string) => ({ SATISFIED: '满足', UNSATISFIED: '未满足', UNCONFIRMED: '无法确认' }[value] ?? '无法确认')
 
+const STATUS_TAG_TYPES = { info: 'primary', success: 'success', warning: 'warning', danger: 'danger', neutral: 'info' } as const
+export const statusTagType = (status: string) => STATUS_TAG_TYPES[statusTone(status)]
+
 export function statusTone(status: string): 'info' | 'success' | 'warning' | 'danger' | 'neutral' {
   if (['WORKING', 'COLLABORATING', 'AVAILABLE'].includes(status)) return 'success'
   if (['WAIT_HUMAN', 'NEED_HUMAN', 'WAITING', 'PAUSED'].includes(status)) return 'warning'

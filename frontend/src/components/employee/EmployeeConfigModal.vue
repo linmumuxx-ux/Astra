@@ -1,10 +1,11 @@
 <template>
-  <ElDialog
+  <ElDrawer
     v-if="open"
+    class="employee-config-drawer"
     data-testid="employee-config-modal"
     :model-value="true"
-    :title="dialogTitle"
-    width="min(880px, 100%)"
+    :title="drawerTitle"
+    size="600px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     :before-close="requestClose"
@@ -25,12 +26,12 @@
         </ElButton>
       </ElSpace>
     </template>
-  </ElDialog>
+  </ElDrawer>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElButton, ElDialog, ElSpace, ElTag } from 'element-plus'
+import { ElButton, ElDrawer, ElSpace, ElTag } from 'element-plus'
 import type { Employee, TaskCategory } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { employeeDisplayName } from '@/utils/format'
@@ -40,11 +41,11 @@ const props = defineProps<{ open: boolean; employee: Employee | null; creating: 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved', id: string): void }>()
 const configRef = ref<InstanceType<typeof EmployeeConfig> | null>(null)
 
-const dialogTitle = computed(() =>
+const drawerTitle = computed(() =>
   props.creating ? '新建数字员工' : `编辑 ${employeeDisplayName(props.employee?.name)}`,
 )
 
-// The config dialog is a form: overlay click and ESC never close it. Only the
+// The config drawer is a form: overlay click and ESC never close it. Only the
 // explicit 取消 / 关闭 actions do, and they confirm first when there are edits.
 // before-close never calls done(), so closing is always driven by the `open`
 // prop after the parent handled the emitted close event.
@@ -63,8 +64,11 @@ async function requestClose() {
 }
 function onSaved(id: string, environmentOk?: boolean) {
   emit('saved', id)
-  // 保存已成功；仅当工作环境检测也通过时才自动关闭，异常时保留弹框以便处理检查项。
+  // 保存已成功；仅当工作环境检测也通过时才自动关闭，异常时保留抽屉以便处理检查项。
   if (environmentOk !== false) emit('close')
 }
 </script>
 
+<style scoped>
+.employee-config-drawer :deep(.el-drawer__footer) { display: flex; align-items: center; justify-content: flex-end; }
+</style>
