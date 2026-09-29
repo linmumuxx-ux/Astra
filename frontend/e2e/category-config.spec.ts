@@ -204,22 +204,18 @@ test('编辑分类预填既有字段，排序与双提示词保存后刷新保�
   await expect(questionPrompt(page)).toHaveValue('')
 })
 
-test('未保存修改在取消与离开页面时都要二次确认', async ({ page }) => {
-  const navigation = page.getByRole('navigation', { name: '主导航' })
+test('抽屉内有未保存修改时取消要二次确认，无改动直接关闭', async ({ page }) => {
   const confirm = page.getByTestId('astra-confirm-dialog')
-  // 抽屉是带遮罩的模态层，会挡住页面上的导航点击；路由离开只能用浏览器前进/后退触发。
-  const openSettings = async () => {
-    await page.goto('/tasks')
-    await navigation.getByRole('menuitem', { name: /设置/ }).click()
-    await expect(page).toHaveURL(/\/settings$/)
-  }
-  await openSettings()
+  const name = `未保存-${Date.now()}`
+  await page.goto('/settings')
   await page.getByTestId('category-create').click()
-  await nameField(page).fill(`未保存-${Date.now()}`)
+  await nameField(page).fill(name)
   await page.getByTestId('category-editor-cancel').click()
   await expect(confirm).toContainText('放弃未保存的分类修改')
   await confirm.getByRole('button', { name: '取消' }).click()
   await expect(drawer(page)).toBeVisible()
+  // 取消确认后抽屉与已填内容都留在原处，不该被清掉。
+  await expect(nameField(page)).toHaveValue(name)
   await page.getByTestId('category-editor-cancel').click()
   await confirm.getByRole('button', { name: '放弃并关闭' }).click()
   await expect(drawer(page)).toHaveCount(0)
@@ -229,17 +225,103 @@ test('未保存修改在取消与离开页面时都要二次确认', async ({ pa
   await page.getByTestId('category-editor-cancel').click()
   await expect(drawer(page)).toHaveCount(0)
   await expect(confirm).toHaveCount(0)
+})
 
-  // 抽屉打开但未改动时离开页面同样直接放行，不弹「放弃修改」。
-  await page.getByTestId('category-create').click()
-  await page.goBack()
-  await expect(page).toHaveURL(/\/tasks?$/)
-  await expect(confirm).toHaveCount(0)
+// 路由守卫只依赖抽屉的 dirty 状态，与分类条数无关：用隔离 mock 数据断言各个状态，
+// 不受本地后端累积的测试分类影响（真实数据的抽屉确认由上一个用例覆盖）。
+async function mockCategoryApi(page: Page) {
+  const categories = [
+    { id: 'cat-nav-1', name: '导航守卫甲', description: '隔离 mock 数据', sort_order: 10, enabled: true, task_prompt: '', question_prompt: '' },
+    { id: 'cat-nav-2', name: '导航守卫乙', description: '隔离 mock 数据', sort_order: 20, enabled: true, task_prompt: '原始任务提示词', question_prompt: '' },
+  ]
+  await page.route((url) => url.pathname.startsWith('/api/'), async route => {
+    const { pathname } = new URL(route.request().url())
+    const method = route.request().method()
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    if (pathname === '/api/task-categories' && method === 'POST') {
+      const created = { id: `cat-nav-new-${categories.length}`, ...route.request().postDataJSON() }
+      categories.push(created)
+      return route.fulfill({ json: created })
+    }
+    if (pathname === '/api/task-categories') return route.fulfill({ json: categories })
+    const target = /^\/api\/task-categories\/(.+)$/.exec(pathname)
+    if (target) {
+      const found = categories.find((item) => item.id === target[1])
+      if (found && method === 'PATCH') Object.assign(found, route.request().postDataJSON())
+      return route.fulfill({ json: found ?? {} })
+    }
+    if (pathname === '/api/employees' || pathname === '/api/tasks' || pathname === '/api/events') return route.fulfill({ json: [] })
+    return route.fulfill({ json: {} })
+  })
+}
 
-  // 改动过提示词再离开，先确认；取消则留在原页面且抽屉内容不丢。
+test('切换菜单路由只在抽屉确有未保存修改时确认', async ({ page }) => {
+  const navigation = page.getByRole('navigation', { name: '主导航' })
+  const confirm = page.getByTestId('astra-confirm-dialog')
+  await mockCategoryApi(page)
+
+  // 每个场景都从 /tasks 出发并用菜单进入配置中心，保证前进后退都是同文档导航，会真正触发路由守卫。
+  const openSettings = async () => {
+    await expect(page).toHaveURL(/\/tasks$/)
+    await navigation.getByRole('menuitem', { name: /^设置$/ }).click()
+    await expect(page).toHaveURL(/\/settings$/)
+    await expect(table(page)).toBeVisible()
+  }
+  const clickTasks = async () => {
+    await navigation.getByRole('menuitem', { name: /^任务管理$/ }).click()
+    await expect(page).toHaveURL(/\/tasks$/)
+    await expect(confirm).toHaveCount(0)
+  }
+  await page.goto('/tasks')
+
+  // 从未打开过抽屉：没有可丢失的内容，点菜单立即离开，不弹「放弃未保存…」。
+  await openSettings()
+  await expect(drawer(page)).toHaveCount(0)
+  await clickTasks()
+
+  // 抽屉打开但没改过：关闭后切菜单同样直接离开。
   await openSettings()
   await page.getByTestId('category-create').click()
-  await nameField(page).fill(`离开未保存-${Date.now()}`)
+  await expect(drawer(page)).toBeVisible()
+  await page.getByTestId('category-editor-cancel').click()
+  await expect(drawer(page)).toHaveCount(0)
+  await expect(confirm).toHaveCount(0)
+  await clickTasks()
+
+  // 改过又确认放弃并关闭：内容已经丢弃，再切菜单不该二次打扰。
+  await openSettings()
+  await page.getByTestId('category-create').click()
+  await nameField(page).fill('已放弃的分类名')
+  await expect(page.getByTestId('category-editor-dirty')).toBeVisible()
+  await page.getByTestId('category-editor-cancel').click()
+  await confirm.getByRole('button', { name: '放弃并关闭' }).click()
+  await expect(drawer(page)).toHaveCount(0)
+  await clickTasks()
+
+  // 新建保存成功后切菜单不误弹。
+  await openSettings()
+  await page.getByTestId('category-create').click()
+  await nameField(page).fill('导航守卫新建')
+  await page.getByTestId('category-editor-submit').click()
+  await expect(page.locator('.el-notification').filter({ hasText: '任务分类已创建' })).toBeVisible()
+  await expect(drawer(page)).toHaveCount(0)
+  await clickTasks()
+
+  // 编辑保存成功后同样不误弹。
+  await openSettings()
+  await rowOf(page, '导航守卫乙').getByRole('button', { name: '编辑分类 导航守卫乙' }).click()
+  await taskPrompt(page).fill('改过的任务提示词')
+  await page.getByTestId('category-editor-submit').click()
+  await expect(page.locator('.el-notification').filter({ hasText: '任务分类已更新' })).toBeVisible()
+  await clickTasks()
+
+  // 确有未保存修改时离开仍要确认：取消则留在配置中心且表单不丢，确认后才离开。
+  // 抽屉遮罩会挡住菜单点击，因此这一步用浏览器后退触发路由离开。
+  await openSettings()
+  await page.getByTestId('category-create').click()
+  await nameField(page).fill('离开未保存')
   await taskPrompt(page).fill('离开前写的任务提示词')
   await page.goBack()
   await expect(confirm).toContainText('放弃未保存的分类修改')
@@ -249,20 +331,25 @@ test('未保存修改在取消与离开页面时都要二次确认', async ({ pa
   await expect(taskPrompt(page)).toHaveValue('离开前写的任务提示词')
   await page.goBack()
   await confirm.getByRole('button', { name: '放弃并离开' }).click()
-  await expect(page).toHaveURL(/\/tasks?$/)
+  await expect(page).toHaveURL(/\/tasks$/)
+
+  // 抽屉打开但未改动时离开同样直接放行。
+  await openSettings()
+  await page.getByTestId('category-create').click()
+  await page.goBack()
+  await expect(page).toHaveURL(/\/tasks$/)
+  await expect(confirm).toHaveCount(0)
 
   // 改动后改回原值视为没有未保存修改，离开不打扰。
   await openSettings()
-  await keywordFilter(page).fill('防线运营')
-  await page.getByTestId('category-search').click()
-  await rowOf(page, '防线运营').getByRole('button', { name: '编辑分类 防线运营' }).click()
+  await rowOf(page, '导航守卫乙').getByRole('button', { name: '编辑分类 导航守卫乙' }).click()
   const original = await taskPrompt(page).inputValue()
   await taskPrompt(page).fill('临时改动')
   await expect(page.getByTestId('category-editor-dirty')).toBeVisible()
   await taskPrompt(page).fill(original)
   await expect(page.getByTestId('category-editor-dirty')).toHaveCount(0)
   await page.goBack()
-  await expect(page).toHaveURL(/\/tasks?$/)
+  await expect(page).toHaveURL(/\/tasks$/)
   await expect(confirm).toHaveCount(0)
 })
 

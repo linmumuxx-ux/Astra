@@ -96,7 +96,10 @@ const formRef = ref<FormInstance | null>(null)
 const form = reactive({ name: '', description: '', sort_order: 0, enabled: true, task_prompt: '', question_prompt: '' })
 const snapshot = ref('')
 const isEdit = computed(() => Boolean(props.category))
-const dirty = computed(() => JSON.stringify(form) !== snapshot.value)
+// dirty 的有效范围就是抽屉本身：关闭时没有可丢失的内容（从未打开、已保存或已确认放弃）。
+// snapshot 只在打开时播种，没打开过就一直是初始空串，与 form 的默认值不等 ——
+// 不看 open 就会被判成「有未保存修改」，让路由守卫在没有任何改动时也弹放弃确认。
+const dirty = computed(() => props.open && JSON.stringify(form) !== snapshot.value)
 
 const rules: FormRules = {
   name: [{ required: true, message: '请输入分类名称', trigger: 'blur' }],
