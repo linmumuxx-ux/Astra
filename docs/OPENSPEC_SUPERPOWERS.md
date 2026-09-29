@@ -36,7 +36,6 @@ openspec/schemas/spec-driven/     本项目已提交的 workflow 与模板
 ```bash
 # 从仓库根目录执行
 node .opencode/tools/openspec.mjs templates
-node .opencode/tools/openspec.mjs schema which spec-driven
 opencode debug skill
 opencode debug config
 ```
