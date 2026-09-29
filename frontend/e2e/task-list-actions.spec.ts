@@ -141,104 +141,79 @@ function trackConsoleErrors(page: Page) {
 async function gotoTaskList(page: Page) {
   await page.goto('/tasks')
   await expect(page.getByTestId('task-list-page')).toBeVisible()
-  await expect(page.locator('.task-row')).toHaveCount(TASKS.length)
+  await expect(page.locator('.el-table__row')).toHaveCount(TASKS.length)
 }
 
-async function openMenu(page: Page, title: string) {
-  const row = page.locator('.task-row').filter({ hasText: title })
-  await expect(row).toHaveCount(1)
-  await row.getByRole('button', { name: '更多操作' }).click()
-  const menu = row.locator('.task-menu')
-  await expect(menu).toBeVisible()
-  return menu
+function taskRow(page: Page, title: string) {
+  return page.locator('.el-table__row').filter({ hasText: title })
 }
 
-test('任务列表所有状态统一显示「查看详情」主按钮', async ({ page }) => {
-  await mockTaskApi(page)
+async function openTaskList(page: Page, calls: ApiCall[] = []) {
+  await mockTaskApi(page, calls)
   await gotoTaskList(page)
+}
 
-  const primaryButtons = page.locator('.task-primary-btn')
-  await expect(primaryButtons).toHaveCount(TASKS.length)
-  for (const title of TASKS.map((task) => task.title)) {
-    const row = page.locator('.task-row').filter({ hasText: title })
-    await expect(row.getByRole('button', { name: '查看详情', exact: true })).toBeVisible()
+async function expectRowActions(page: Page, title: string, labels: string[]) {
+  const row = taskRow(page, title)
+  await expect(row).toHaveCount(1)
+  await expect(row.getByRole('button')).toHaveCount(labels.length)
+  const task = TASKS.find((item) => item.title === title)!
+  const all = ['查看', '启动', '取消', '重新执行', '删除']
+  for (const label of all) {
+    const expectation = row.getByRole('button', { name: `${label} ${task.id}` })
+    if (labels.includes(label)) await expect(expectation).toBeVisible()
+    else await expect(expectation).toHaveCount(0)
+  }
+}
+
+test('任务列表所有状态统一提供查看操作', async ({ page }) => {
+  await openTaskList(page)
+  for (const task of TASKS) {
+    await expect(taskRow(page, task.title).getByRole('button', { name: `查看 ${task.id}` })).toBeVisible()
   }
 })
 
-test('待执行任务菜单包含开始执行、取消任务、删除任务', async ({ page }) => {
-  await mockTaskApi(page)
-  await gotoTaskList(page)
-
-  const menu = await openMenu(page, '待执行任务')
-  await expect(menu.getByRole('button', { name: '开始执行' })).toBeVisible()
-  await expect(menu.getByRole('button', { name: '取消任务' })).toBeVisible()
-  await expect(menu.getByRole('button', { name: '删除任务' })).toBeVisible()
-  await expect(menu.getByRole('button')).toHaveCount(3)
-  await expect(menu.getByRole('button', { name: '重新执行' })).toHaveCount(0)
+test('待执行任务操作列提供启动、取消、删除', async ({ page }) => {
+  await openTaskList(page)
+  await expectRowActions(page, '待执行任务', ['查看', '启动', '取消', '删除'])
 })
 
-test('执行中任务菜单只有取消任务', async ({ page }) => {
-  await mockTaskApi(page)
-  await gotoTaskList(page)
-
-  const menu = await openMenu(page, '执行中任务')
-  await expect(menu.getByRole('button', { name: '取消任务' })).toBeVisible()
-  await expect(menu.getByRole('button')).toHaveCount(1)
-  await expect(menu.getByRole('button', { name: '删除任务' })).toHaveCount(0)
-  await expect(menu.getByRole('button', { name: '重新执行' })).toHaveCount(0)
-  await expect(menu.getByRole('button', { name: '开始执行' })).toHaveCount(0)
+test('执行中任务操作列只有查看与取消', async ({ page }) => {
+  await openTaskList(page)
+  await expectRowActions(page, '执行中任务', ['查看', '取消'])
 })
 
-test('等待人工任务菜单只有取消任务', async ({ page }) => {
-  await mockTaskApi(page)
-  await gotoTaskList(page)
-
-  const menu = await openMenu(page, '等待人工任务')
-  await expect(menu.getByRole('button', { name: '取消任务' })).toBeVisible()
-  await expect(menu.getByRole('button')).toHaveCount(1)
-  await expect(menu.getByRole('button', { name: '继续执行' })).toHaveCount(0)
-  await expect(menu.getByRole('button', { name: '删除任务' })).toHaveCount(0)
+test('等待人工任务操作列只有查看与取消', async ({ page }) => {
+  await openTaskList(page)
+  await expectRowActions(page, '等待人工任务', ['查看', '取消'])
 })
 
 for (const title of ['已完成任务', '执行失败任务', '已取消任务']) {
-  test(`${title}菜单包含重新执行和删除任务`, async ({ page }) => {
-    await mockTaskApi(page)
-    await gotoTaskList(page)
-
-    const menu = await openMenu(page, title)
-    await expect(menu.getByRole('button', { name: '重新执行' })).toBeVisible()
-    await expect(menu.getByRole('button', { name: '删除任务' })).toBeVisible()
-    await expect(menu.getByRole('button')).toHaveCount(2)
-    await expect(menu.getByRole('button', { name: '开始执行' })).toHaveCount(0)
-    await expect(menu.getByRole('button', { name: '取消任务' })).toHaveCount(0)
+  test(`${title}操作列提供重新执行和删除`, async ({ page }) => {
+    await openTaskList(page)
+    await expectRowActions(page, title, ['查看', '重新执行', '删除'])
   })
 }
 
-test('点击查看详情进入对应任务，不会跳错', async ({ page }) => {
-  await mockTaskApi(page)
-  await gotoTaskList(page)
-
-  const rowA = page.locator('.task-row').filter({ hasText: '待执行任务' })
-  await rowA.getByRole('button', { name: '查看详情', exact: true }).click()
+test('点击查看按钮进入对应任务，不会跳错', async ({ page }) => {
+  await openTaskList(page)
+  await taskRow(page, '待执行任务').getByRole('button', { name: '查看 T-MOCK-PENDING' }).click()
   await page.waitForURL('**/tasks/T-MOCK-PENDING')
   await expect(page.getByTestId('task-workspace').getByRole('heading', { name: '待执行任务' })).toBeVisible()
 
   await page.goBack()
-  await expect(page.locator('.task-row')).toHaveCount(TASKS.length)
+  await expect(page.locator('.el-table__row')).toHaveCount(TASKS.length)
 
-  const rowB = page.locator('.task-row').filter({ hasText: '执行失败任务' })
-  await rowB.getByRole('button', { name: '查看详情', exact: true }).click()
+  await taskRow(page, '执行失败任务').getByRole('button', { name: '查看 T-MOCK-FAILED' }).click()
   await page.waitForURL('**/tasks/T-MOCK-FAILED')
   await expect(page.getByTestId('task-workspace').getByRole('heading', { name: '执行失败任务' })).toBeVisible()
 })
 
 test('删除任务需要二次确认，且只作用于当前行任务', async ({ page }) => {
   const calls: ApiCall[] = []
-  await mockTaskApi(page, calls)
-  await gotoTaskList(page)
+  await openTaskList(page, calls)
 
-  const menu = await openMenu(page, '已完成任务')
-  await menu.getByRole('button', { name: '删除任务' }).click()
+  await taskRow(page, '已完成任务').getByRole('button', { name: '删除 T-MOCK-SUCCEEDED' }).click()
 
   const confirm = page.getByTestId('task-action-confirm')
   await expect(confirm).toBeVisible()
@@ -253,11 +228,9 @@ test('删除任务需要二次确认，且只作用于当前行任务', async ({
 
 test('取消任务需要二次确认，且只作用于当前行任务', async ({ page }) => {
   const calls: ApiCall[] = []
-  await mockTaskApi(page, calls)
-  await gotoTaskList(page)
+  await openTaskList(page, calls)
 
-  const menu = await openMenu(page, '执行中任务')
-  await menu.getByRole('button', { name: '取消任务' }).click()
+  await taskRow(page, '执行中任务').getByRole('button', { name: '取消 T-MOCK-RUNNING' }).click()
 
   const confirm = page.getByTestId('task-action-confirm')
   await expect(confirm).toBeVisible()
@@ -269,23 +242,24 @@ test('取消任务需要二次确认，且只作用于当前行任务', async ({
 })
 
 test('任务列表不再出现 Workspace 等旧文案', async ({ page }) => {
-  await mockTaskApi(page)
-  await gotoTaskList(page)
-
+  await openTaskList(page)
   const list = page.getByTestId('task-list-page')
-  for (const forbidden of ['Workspace', '进入 Workspace', 'Enter Workspace', 'Session Workspace', 'OpenCode Workspace', '查看进展', '查看结果', '查看问题', '启动']) {
+  for (const forbidden of ['Workspace', '进入 Workspace', 'Enter Workspace', 'Session Workspace', 'OpenCode Workspace', '查看进展', '查看结果', '查看问题', '更多操作', '查看详情']) {
     await expect(list.getByText(forbidden, { exact: false })).toHaveCount(0)
   }
 })
 
 test('任务列表操作没有新增 console error', async ({ page }) => {
   const errors = trackConsoleErrors(page)
-  await mockTaskApi(page)
-  await gotoTaskList(page)
+  await openTaskList(page)
 
-  await openMenu(page, '待执行任务')
-  await openMenu(page, '已完成任务')
-  await page.locator('.task-row').filter({ hasText: '待执行任务' }).getByRole('button', { name: '查看详情', exact: true }).click()
+  await taskRow(page, '已完成任务').getByRole('button', { name: '删除 T-MOCK-SUCCEEDED' }).click()
+  const confirm = page.getByTestId('task-action-confirm')
+  await expect(confirm).toBeVisible()
+  await confirm.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(confirm).toHaveCount(0)
+
+  await taskRow(page, '待执行任务').getByRole('button', { name: '查看 T-MOCK-PENDING' }).click()
   await page.waitForURL('**/tasks/T-MOCK-PENDING')
 
   expect(errors).toEqual([])

@@ -116,15 +116,11 @@ async function mockApi(page: Page, options: MockOptions = {}) {
 async function gotoTaskList(page: Page) {
   await page.goto('/tasks')
   await expect(page.getByTestId('task-list-page')).toBeVisible()
-  await expect(page.locator('.task-row')).toHaveCount(TASKS.length)
+  await expect(page.locator('.el-table__row')).toHaveCount(TASKS.length)
 }
 
-async function openMenu(page: Page, title: string) {
-  const row = page.locator('.task-row').filter({ hasText: title })
-  await row.getByRole('button', { name: '更多操作' }).click()
-  const menu = row.locator('.task-menu')
-  await expect(menu).toBeVisible()
-  return menu
+function taskRow(page: Page, title: string) {
+  return page.locator('.el-table__row').filter({ hasText: title })
 }
 
 test('创建任务表单点击遮罩与 ESC 都不会关闭', async ({ page }) => {
@@ -169,8 +165,7 @@ test('危险操作确认框不会因点击空白或 ESC 误关闭', async ({ pag
   await mockApi(page, { deletes })
   await gotoTaskList(page)
 
-  const menu = await openMenu(page, '已完成任务')
-  await menu.getByRole('button', { name: '删除任务' }).click()
+  await taskRow(page, '已完成任务').getByRole('button', { name: '删除 T-DIALOG-SUCCEEDED' }).click()
 
   const confirm = page.getByTestId('task-action-confirm')
   await expect(confirm).toBeVisible()
@@ -210,8 +205,7 @@ test('任务操作失败使用统一提示而非浏览器原生弹框', async ({
   await page.route('**/api/tasks/*/restart', (route) => route.fulfill({ status: 500, json: { detail: '重新执行失败' } }))
   await gotoTaskList(page)
 
-  const menu = await openMenu(page, '已完成任务')
-  await menu.getByRole('button', { name: '重新执行' }).click()
+  await taskRow(page, '已完成任务').getByRole('button', { name: '重新执行 T-DIALOG-SUCCEEDED' }).click()
 
   await expect(page.locator('.el-notification:has(.el-notification--error)')).toContainText('重新执行失败')
   expect(nativeDialogs).toEqual([])

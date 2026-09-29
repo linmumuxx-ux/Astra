@@ -1,84 +1,115 @@
 <template>
-  <div class="page task-list-page" data-testid="task-list-page">
-    <section class="task-head">
-      <div><h2>任务管理</h2><p>现在有哪些任务，哪些正在正常运行，哪些需要人工处理。</p></div>
-      <button class="button button--primary" @click="dialogOpen = true"><Plus :size="15" /> 创建任务</button>
+  <div class="task-page" data-testid="task-list-page">
+    <header class="task-page__intro">
+      <div>
+        <h2>任务管理</h2>
+        <ElText size="small" type="info">现在有哪些任务，哪些正在正常运行，哪些需要人工处理。</ElText>
+      </div>
+      <ElSpace :size="10">
+        <ElButton :icon="RefreshCw" :loading="store.loading" @click="store.refresh()">刷新</ElButton>
+        <ElButton type="primary" :icon="Plus" @click="dialogOpen = true">创建任务</ElButton>
+      </ElSpace>
+    </header>
+
+    <section class="task-filter" aria-label="任务筛选">
+      <ElSelect v-model="filters.type" class="task-filter__select" aria-label="任务类型" placeholder="类型：全部" clearable>
+        <ElOption value="ISSUE" label="问题" />
+        <ElOption value="REQUIREMENT" label="需求" />
+      </ElSelect>
+      <ElSelect v-model="filters.category" class="task-filter__select" aria-label="任务分类" placeholder="分类：全部" clearable>
+        <ElOption v-for="item in store.categories" :key="item.id" :value="item.id" :label="item.name" />
+      </ElSelect>
+      <ElSelect v-model="filters.status" class="task-filter__select task-filter__status" aria-label="任务状态" placeholder="状态：全部" clearable>
+        <ElOption value="ABNORMAL" label="执行失败" />
+        <ElOption v-for="item in statuses" :key="item" :value="item" :label="runtimeStatusLabel(item)" />
+      </ElSelect>
+      <ElSelect v-model="filters.employee" class="task-filter__select" aria-label="执行员工" placeholder="员工：全部" clearable>
+        <ElOption v-for="item in store.employees" :key="item.id" :value="item.id" :label="employeeDisplayName(item.name)" />
+      </ElSelect>
+      <ElInput v-model="filters.query" class="task-filter__search" aria-label="搜索任务" placeholder="搜索任务编号 / 标题" clearable>
+        <template #prefix><Search :size="15" /></template>
+      </ElInput>
+      <ElButton type="primary" plain :icon="Search" @click="applySearch">搜索</ElButton>
+      <ElButton :plain="!showMore" :type="showMore ? 'primary' : 'default'" :icon="SlidersHorizontal" @click="showMore = !showMore">高级筛选</ElButton>
+      <ElButton :icon="RotateCcw" @click="resetFilters">重置</ElButton>
+      <template v-if="showMore">
+        <span class="task-filter__break" aria-hidden="true" />
+        <ElSelect v-model="filters.priority" class="task-filter__select" aria-label="优先级" placeholder="优先级：全部" clearable>
+          <ElOption v-for="item in priorities" :key="item" :value="item" :label="priorityLabel(item)" />
+        </ElSelect>
+        <ElSelect v-model="filters.timeType" class="task-filter__select" aria-label="时间类型">
+          <ElOption value="updated" label="按更新时间" />
+          <ElOption value="created" label="按创建时间" />
+        </ElSelect>
+        <ElDatePicker class="task-filter__date" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" :model-value="filters.dateFrom" @update:model-value="setDateFrom" />
+        <span class="task-filter__dash">–</span>
+        <ElDatePicker class="task-filter__date" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" :model-value="filters.dateTo" @update:model-value="setDateTo" />
+      </template>
     </section>
 
-    <nav class="task-tabs" aria-label="任务状态筛选">
-      <button type="button" :class="{ active: filters.status === '' }" @click="setStatus('')">全部 <b>{{ store.tasks.length }}</b></button>
-      <button v-for="state in statuses" :key="state" type="button" :class="{ active: filters.status === state }" @click="setStatus(state)">{{ runtimeStatusLabel(state) }} <b>{{ runtimeCount(state) }}</b></button>
-    </nav>
+    <section class="task-table-panel" aria-label="任务列表">
+      <ElTable v-loading="store.loading" :data="paged" size="small" height="100%" row-key="id" @row-click="(row: Task) => openTask(row.id)">
+        <ElTableColumn label="任务标题" min-width="230">
+          <template #default="{ row }">
+            <div class="task-title-cell">
+              <ElTag v-if="isHigh(row.priority)" size="small" :type="row.priority === 'VERY_HIGH' ? 'danger' : 'warning'" effect="light">{{ priorityLabel(row.priority) }}</ElTag>
+              <strong :title="row.title">{{ row.title }}</strong>
+            </div>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="编号" prop="id" width="150" show-overflow-tooltip />
+        <ElTableColumn label="类型" width="72">
+          <template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="分类" width="110" show-overflow-tooltip>
+          <template #default="{ row }">{{ categoryName(row.category_id) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="状态" width="130">
+          <template #default="{ row }"><RuntimeStatusBadge :projection="row as Task" :show-detail="false" /></template>
+        </ElTableColumn>
+        <ElTableColumn label="执行员工" width="140" show-overflow-tooltip>
+          <template #default="{ row }">{{ employeeName(row.employee_id) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="当前进展" min-width="180">
+          <template #default="{ row }">
+            <ElText size="small" type="info" truncated :title="progressCopy(row as Task)">{{ progressCopy(row as Task) }}</ElText>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="更新时间" width="140">
+          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="158" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions" @click.stop>
+              <ElTooltip content="查看" placement="top">
+                <ElButton text type="primary" :icon="Eye" :aria-label="`查看 ${row.id}`" @click="openTask(row.id)" />
+              </ElTooltip>
+              <ElTooltip v-for="item in actionsFor(row as Task)" :key="item.action" :content="item.tip" placement="top">
+                <ElButton text :type="item.danger ? 'danger' : 'primary'" :icon="item.icon" :aria-label="`${item.tip} ${row.id}`" @click="onAction(row as Task, item)" />
+              </ElTooltip>
+            </div>
+          </template>
+        </ElTableColumn>
+        <template #empty>
+          <ElEmpty v-if="store.error && !store.tasks.length" :image-size="72" description="任务数据加载失败">
+            <ElText size="small" type="info">{{ store.error }}</ElText>
+            <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
+          </ElEmpty>
+          <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.tasks.length ? '暂无符合条件的任务' : '暂无任务'">
+            <ElText size="small" type="info">{{ store.tasks.length ? '当前筛选条件下没有找到任务。' : '创建第一个任务后即可开始管理。' }}</ElText>
+            <ElButton v-if="store.tasks.length" @click="resetFilters">清除筛选</ElButton>
+            <ElButton v-else type="primary" :icon="Plus" @click="dialogOpen = true">创建任务</ElButton>
+          </ElEmpty>
+        </template>
+      </ElTable>
+    </section>
 
-    <div class="filter-bar task-filters">
-      <div class="search-box"><Search :size="15" /><input v-model="filters.query" placeholder="搜索任务 ID 或标题" aria-label="搜索任务" /></div>
-      <select v-model="filters.type" aria-label="类型"><option value="">全部类型</option><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select>
-      <select v-model="filters.category" aria-label="分类"><option value="">全部分类</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
-      <select v-model="filters.status" aria-label="状态"><option value="">全部状态</option><option value="ABNORMAL">执行失败</option><option v-for="item in statuses" :key="item" :value="item">{{ runtimeStatusLabel(item) }}</option></select>
-      <select v-model="filters.employee" aria-label="执行员工"><option value="">全部员工</option><option v-for="item in store.employees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }}</option></select>
-      <button class="button button--ghost" type="button" @click="showMore = !showMore"><SlidersHorizontal :size="14" /> 更多筛选 <ChevronDown :size="14" :class="{ rot: showMore }" /></button>
-      <button class="button button--ghost" type="button" @click="resetFilters"><RotateCcw :size="14" /> 重置</button>
-    </div>
-
-    <div v-if="showMore" class="filter-bar task-filters task-filters--more">
-      <select v-model="filters.priority" aria-label="优先级"><option value="">全部优先级</option><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}</option></select>
-      <select v-model="filters.timeType" aria-label="时间类型"><option value="updated">按更新时间</option><option value="created">按创建时间</option></select>
-      <input v-model="filters.dateFrom" class="date-filter" type="date" aria-label="开始日期" />
-      <span class="range-sep">–</span>
-      <input v-model="filters.dateTo" class="date-filter" type="date" aria-label="结束日期" />
-    </div>
-
-    <AstraPanel flush class="task-table-panel">
-      <template #title><div class="table-title"><h2>任务列表</h2><span>{{ total }} 项</span></div></template>
-      <div class="table-wrap task-table-wrap">
-        <table class="task-workbench-table">
-          <thead><tr><th>任务</th><th>分类 / 类型</th><th>状态</th><th>执行员工</th><th>当前进展</th><th>更新时间</th><th>操作</th></tr></thead>
-          <tbody>
-            <template v-if="isInitialLoading">
-              <tr v-for="index in 8" :key="index" class="task-row--loading"><td colspan="7"><span /></td></tr>
-            </template>
-            <template v-else>
-              <tr v-for="task in paged" :key="task.id" class="task-row" @click="openTask(task.id)">
-                <td class="task-cell">
-                  <div class="task-cell__title"><span v-if="isHigh(task.priority)" class="task-priority" :data-p="task.priority">{{ priorityLabel(task.priority) }}</span><strong :title="task.title">{{ task.title }}</strong></div>
-                  <div class="task-cell__meta"><span>{{ task.id }}</span><em :title="taskTypeLabel(task.task_type)">{{ taskTypeLabel(task.task_type) }}</em></div>
-                </td>
-                <td class="type-cell"><span :title="typeCopy(task)">{{ typeCopy(task) }}</span></td>
-                <td class="status-cell"><RuntimeStatusBadge :projection="task" :show-detail="false" /></td>
-                <td class="employee-cell"><span :title="employeeName(task.employee_id)">{{ employeeName(task.employee_id) }}</span></td>
-                <td class="progress-cell"><span :title="progressCopy(task)">{{ progressCopy(task) }}</span></td>
-                <td class="time-cell"><time :title="formatTime(task.updated_at)">{{ formatTime(task.updated_at) }}</time></td>
-                <td class="actions-cell" @click.stop>
-                  <div class="actions-wrap">
-                    <button class="task-primary-btn" type="button" @click="openTask(task.id)">查看详情</button>
-                    <div class="menu-wrap">
-                      <button class="task-menu-btn" type="button" aria-label="更多操作" @click="toggleMenu(task.id)"><MoreHorizontal :size="17" /></button>
-                      <div v-if="openMenu === task.id" class="task-menu">
-                        <button v-for="item in menuItems(task)" :key="item.label" type="button" :class="{ danger: item.danger }" @click="onMenu(item, task)">{{ item.label }}</button>
-                      </div>
-                    </div>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!paged.length"><td colspan="7"><AstraEmptyState :icon="SearchX" title="暂无符合条件的任务" description="当前筛选条件下没有找到任务。"><button class="button button--ghost" type="button" @click="resetFilters">清除筛选</button></AstraEmptyState></td></tr>
-            </template>
-          </tbody>
-        </table>
-      </div>
-      <footer class="task-table__foot">
-        <span class="foot-total">共 {{ total }} 条</span>
-        <div class="foot-right">
-          <label class="page-size">每页<select v-model.number="pageSize"><option :value="20">20 条</option><option :value="50">50 条</option><option :value="100">100 条</option></select></label>
-          <nav class="task-page-nav" aria-label="分页">
-            <button type="button" :disabled="currentPage <= 1" @click="currentPage -= 1"><ChevronLeft :size="15" /></button>
-            <template v-for="page in pageWindow" :key="page">
-              <button type="button" :class="{ active: Number(page) === currentPage }" :disabled="page === '…'" @click="goPage(Number(page))">{{ page }}</button>
-            </template>
-            <button type="button" :disabled="currentPage >= pageCount" @click="currentPage += 1"><ChevronRight :size="15" /></button>
-          </nav>
-        </div>
-      </footer>
-    </AstraPanel>
+    <footer class="task-page__footer">
+      <ElText size="small" type="info">共 {{ total }} 条</ElText>
+      <nav aria-label="任务列表分页">
+        <ElPagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20, 50, 100]" layout="sizes, prev, pager, next" />
+      </nav>
+    </footer>
 
     <AstraDialog
       v-if="dialogOpen"
@@ -127,14 +158,13 @@
 
 <script setup lang="ts">
 import FormField from '@/components/forms/FormField.vue'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronLeft, ChevronRight, FileText, LoaderCircle, MoreHorizontal, Paperclip, Plus, RotateCcw, Search, SearchX, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { ArrowDown, ArrowUp, Ban, Eye, FileText, LoaderCircle, Paperclip, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElButton, ElDatePicker, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
-import AstraEmptyState from '@/components/astra/AstraEmptyState.vue'
-import AstraPanel from '@/components/astra/AstraPanel.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
@@ -156,10 +186,9 @@ const createError = ref('')
 const showMore = ref(false)
 const pageSize = ref(20)
 const currentPage = ref(1)
-const openMenu = ref<string | null>(null)
-type MenuAction = 'start' | 'cancel' | 'rerun' | 'delete'
-interface MenuItem { label: string; action: MenuAction; danger?: boolean }
-const pending = ref<{ task: Task; name: MenuAction; label: string } | null>(null)
+type ListAction = 'start' | 'cancel' | 'rerun' | 'delete'
+interface ActionItem { action: ListAction; tip: string; label: string; icon: Component; danger?: boolean; confirm?: boolean }
+const pending = ref<{ task: Task; name: ListAction; label: string } | null>(null)
 const acting = ref(false)
 
 const statuses = TASK_RUNTIME_FILTER_STATES
@@ -171,9 +200,9 @@ const filters = reactive({
   type: '',
   category: '',
   priority: '',
-  status: (typeof route.query.status === 'string' ? route.query.status : '') as RuntimeStatusFilter,
+  status: typeof route.query.status === 'string' ? route.query.status : '',
   employee: typeof route.query.employee === 'string' ? route.query.employee : '',
-  timeType: 'updated' as 'updated' | 'created',
+  timeType: 'updated',
   dateFrom: '',
   dateTo: '',
 })
@@ -181,7 +210,6 @@ const form = reactive({ title: '', task_type: 'ISSUE' as 'ISSUE' | 'REQUIREMENT'
 const criteria = ref([{ key: safeUUID(), content: '' }])
 const attachments = ref<Array<{ name: string; size: number; content_type: string; content: string }>>([])
 const fileInput = ref<HTMLInputElement | null>(null)
-const isInitialLoading = computed(() => store.loading && !store.tasks.length)
 
 watch(() => filters, () => { currentPage.value = 1 }, { deep: true })
 watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
@@ -189,14 +217,7 @@ watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH'
 onMounted(async () => {
   await store.refresh()
   form.category_id = store.categories[0]?.id ?? ''
-  document.addEventListener('click', closeMenu)
 })
-onBeforeUnmount(() => { document.removeEventListener('click', closeMenu) })
-
-function closeMenu() { openMenu.value = null }
-function toggleMenu(id: string) { openMenu.value = openMenu.value === id ? null : id }
-const runtimeCount = (state: string) => store.tasks.filter((task) => task.runtime_state === state).length
-
 
 const filtered = computed(() => store.tasks.filter((task) => {
   const query = filters.query.toLowerCase().trim()
@@ -205,80 +226,68 @@ const filtered = computed(() => store.tasks.filter((task) => {
     && (!filters.type || task.task_type === filters.type)
     && (!filters.category || task.category_id === filters.category)
     && (!filters.priority || task.priority === filters.priority)
-    && runtimeStatusMatchesFilter(task.runtime_state, filters.status)
+    && runtimeStatusMatchesFilter(task.runtime_state, filters.status as RuntimeStatusFilter)
     && (!filters.employee || task.employee_id === filters.employee)
     && (!filters.dateFrom || timeField.slice(0, 10) >= filters.dateFrom)
     && (!filters.dateTo || timeField.slice(0, 10) <= filters.dateTo)
 }))
 
 const total = computed(() => filtered.value.length)
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const paged = computed(() => filtered.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
-const pageWindow = computed<string[]>(() => {
-  const pages = pageCount.value
-  const current = currentPage.value
-  if (pages <= 7) return Array.from({ length: pages }, (_, i) => String(i + 1))
-  const seen = new Set<number | '…'>([1])
-  for (let p = current - 1; p <= current + 1; p += 1) if (p > 1 && p < pages) seen.add(p)
-  seen.add(pages)
-  const sorted = [...seen].sort((a, b) => a === '…' ? 1 : b === '…' ? -1 : (a as number) - (b as number))
-  return sorted.reduce<string[]>((result, value, index) => {
-    const prev = sorted[index - 1]
-    if (value === '…') return [...result, '…']
-    if (typeof prev === 'number' && (value as number) - prev > 1) return [...result, '…', String(value)]
-    return [...result, String(value)]
-  }, [])
-})
+watch(totalPages, (value) => { currentPage.value = Math.min(currentPage.value, value) })
 
-function setStatus(value: RuntimeStatusFilter) { filters.status = value; currentPage.value = 1 }
-function goPage(page: number) { if (!Number.isNaN(page)) currentPage.value = page }
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
 const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '自动分配')
-const typeCopy = (task: Task) => [categoryName(task.category_id), taskTypeLabel(task.task_type)].filter((item) => item !== '—').join(' · ') || '—'
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
 const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
 const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
 const shortTitle = (value: string) => value.length > 24 ? `${value.slice(0, 24)}…` : value
 
+const setDateFrom = (value: unknown) => { filters.dateFrom = typeof value === 'string' ? value : '' }
+const setDateTo = (value: unknown) => { filters.dateTo = typeof value === 'string' ? value : '' }
 const resetFilters = () => Object.assign(filters, { query: '', type: '', category: '', priority: '', status: '', employee: '', timeType: 'updated', dateFrom: '', dateTo: '' })
 const openTask = (id: string) => router.push(`/tasks/${id}`)
+function applySearch() {
+  currentPage.value = 1
+  if (!store.loading) void store.refresh()
+}
 
-const ACTION_ENDPOINT: Record<Exclude<MenuAction, 'delete'>, string> = { start: 'start', cancel: 'stop', rerun: 'restart' }
+const ACTION_ENDPOINT: Record<Exclude<ListAction, 'delete'>, string> = { start: 'start', cancel: 'stop', rerun: 'restart' }
 
-function menuItems(task: Task): MenuItem[] {
+function actionsFor(task: Task): ActionItem[] {
   if (task.status === 'PENDING') {
     return [
-      { label: '开始执行', action: 'start' },
-      { label: '取消任务', action: 'cancel', danger: true },
-      { label: '删除任务', action: 'delete', danger: true },
+      { action: 'start', tip: '启动', label: '启动', icon: Play },
+      { action: 'cancel', tip: '取消', label: '取消任务', icon: Ban, danger: true, confirm: true },
+      { action: 'delete', tip: '删除', label: '删除任务', icon: Trash2, danger: true, confirm: true },
     ]
   }
   if (task.status === 'RUNNING' || task.status === 'WAITING') {
-    return [{ label: '取消任务', action: 'cancel', danger: true }]
+    return [{ action: 'cancel', tip: '取消', label: '取消任务', icon: Ban, danger: true, confirm: true }]
   }
   if (isTerminal(task.status)) {
     return [
-      { label: '重新执行', action: 'rerun' },
-      { label: '删除任务', action: 'delete', danger: true },
+      { action: 'rerun', tip: '重新执行', label: '重新执行', icon: RotateCw },
+      { action: 'delete', tip: '删除', label: '删除任务', icon: Trash2, danger: true, confirm: true },
     ]
   }
   return []
 }
-function onMenu(item: MenuItem, task: Task) {
-  openMenu.value = null
-  if (item.action === 'cancel' || item.action === 'delete') {
+function onAction(task: Task, item: ActionItem) {
+  if (item.confirm) {
     pending.value = { task, name: item.action, label: item.label }
     return
   }
   void runAction(task, item.action)
 }
-async function dispatchAction(task: Task, action: MenuAction) {
+async function dispatchAction(task: Task, action: ListAction) {
   if (action === 'delete') await api.deleteTask(task.id)
   else await api.taskAction(task.id, ACTION_ENDPOINT[action], { reason: '从任务中心操作' })
 }
-async function runAction(task: Task, action: MenuAction) {
+async function runAction(task: Task, action: ListAction) {
   try {
     await dispatchAction(task, action)
     await store.refresh()
@@ -341,77 +350,25 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 </script>
 
 <style scoped>
-.task-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
-.task-head h2 { margin: 7px 0 5px; line-height: normal; letter-spacing: -.02em; }
-.task-head p { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-body); }
+.task-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 14px; height: calc(100vh - 69px); min-height: 620px; padding: 20px 24px 18px; overflow: hidden; }
+.task-page__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.task-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
 
-.task-tabs { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; padding: 5px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); white-space: nowrap; overflow-x: auto; }
-.task-tabs button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 13px; color: var(--astra-text-secondary); border: 0; border-radius: 7px; background: transparent; font-size: var(--astra-font-control); cursor: pointer; transition: .14s ease; }
-.task-tabs button:hover { background: rgba(101,121,145,.08); }
-.task-tabs button.active { color: var(--astra-primary-bright); background: var(--astra-primary-soft); font-weight: var(--astra-weight-bold); }
-.task-tabs b { min-width: 16px; padding: 1px 6px; border-radius: 8px; color: var(--astra-text-muted); background: rgba(101,121,145,.12); font-size: var(--astra-font-helper); font-weight: var(--astra-weight-bold); text-align: center; }
-.task-tabs button.active b { color: var(--astra-primary-bright); background: rgba(24,184,117,.16); }
+.task-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.task-filter__select { flex: none; width: 148px; }
+.task-filter__status { width: 188px; }
+.task-filter__search { flex: 1; min-width: 210px; max-width: 320px; }
+.task-filter__break { flex-basis: 100%; height: 0; }
+.task-filter__date { flex: none; width: 148px; }
+.task-filter__dash { color: var(--astra-text-muted); }
 
-.task-filters--more { margin-top: -6px; padding-top: 12px; border-top: 1px dashed var(--astra-border); }
-.task-filters .button--ghost { gap: 6px; }
-.task-filters .button--ghost svg.rot, .task-filters .button--ghost .rot { transform: rotate(180deg); }
-.range-sep { color: var(--astra-text-muted); }
+.task-table-panel { min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
+.task-table-panel :deep(.el-table__row) { cursor: pointer; }
+.task-title-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.task-title-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 
-.task-table-panel { width: 100%; }
-.task-table-wrap { position: relative; max-height: min(620px, calc(100vh - 360px)); overflow: auto; }
-.task-workbench-table { min-width: 1020px; table-layout: fixed; }
-.task-workbench-table thead th { position: sticky; top: 0; z-index: 6; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--astra-border); background: #f7faf8; color: var(--astra-text-muted); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); white-space: nowrap; }
-.task-workbench-table th:nth-child(1) { width: auto; }
-.task-workbench-table th:nth-child(2) { width: 148px; }
-.task-workbench-table th:nth-child(3) { width: 116px; }
-.task-workbench-table th:nth-child(4) { width: 148px; }
-.task-workbench-table th:nth-child(5) { width: auto; }
-.task-workbench-table th:nth-child(6) { width: 128px; }
-.task-workbench-table th:nth-child(7) { width: 150px; }
-.task-workbench-table td { height: 66px; padding: 8px 14px; vertical-align: middle; border-top: 1px solid var(--astra-border); font-size: var(--astra-font-body); }
-.task-workbench-table tbody tr { cursor: pointer; transition: background-color .14s ease; }
-.task-workbench-table tbody tr:hover { background: rgba(24,93,62,.035); }
-.task-row--loading td { height: 60px; }
-.task-row--loading span { display: block; width: 100%; height: 18px; border-radius: 6px; background: linear-gradient(90deg,#edf3f0,#f8fbf9,#edf3f0); background-size: 200% 100%; animation: task-shimmer 1.35s linear infinite; }
-
-.task-cell { min-width: 0; }
-.task-cell__title { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
-.task-cell__title strong { display: -webkit-box; overflow: hidden; color: var(--astra-text-primary); font-weight: var(--astra-weight-bold); line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; word-break: break-word; }
-.task-priority { flex: none; align-self: flex-start; margin-top: 1px; display: inline-flex; align-items: center; min-height: 17px; padding: 0 6px; border-radius: 5px; font-size: var(--astra-font-micro); font-weight: var(--astra-weight-bold); }
-.task-priority[data-p='VERY_HIGH'] { color: var(--astra-danger); background: var(--astra-danger-soft); }
-.task-priority[data-p='HIGH'] { color: var(--astra-warning); background: var(--astra-warning-soft); }
-.task-cell__meta { display: flex; align-items: center; gap: 7px; margin-top: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); white-space: nowrap; }
-.task-cell__meta span { font-family: var(--astra-font-family); }
-.task-cell__meta em { font-style: normal; }
-.task-cell__meta em:not(:empty)::before { content: '·'; margin-right: 7px; color: var(--astra-border-hover); }
-.task-cell__meta em:empty { display: none; }
-
-.type-cell, .employee-cell, .time-cell, .status-cell { white-space: nowrap; }
-.type-cell span, .employee-cell span, .progress-cell span, .time-cell time { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.progress-cell span, .time-cell time { color: var(--astra-text-muted); }
-
-.actions-wrap { display: flex; align-items: center; gap: 6px; }
-.task-primary-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 12px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); font-size: var(--astra-font-control); font-weight: var(--astra-weight-bold); cursor: pointer; white-space: nowrap; transition: .14s ease; }
-.task-primary-btn:hover { border-color: var(--astra-border-hover); }
-.menu-wrap { position: relative; }
-.task-menu-btn { display: grid; place-items: center; width: 30px; height: 30px; color: var(--astra-text-muted); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); cursor: pointer; }
-.task-menu-btn:hover { color: var(--astra-text-primary); border-color: var(--astra-border-hover); }
-.task-menu { position: absolute; right: 0; top: calc(100% + 5px); z-index: 40; min-width: 148px; padding: 5px; border: 1px solid var(--astra-border); border-radius: 9px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
-.task-menu button { display: block; width: 100%; min-height: 32px; padding: 0 9px; color: var(--astra-text-secondary); border: 0; border-radius: 6px; background: transparent; font-size: var(--astra-font-control); text-align: left; cursor: pointer; }
-.task-menu button:hover { background: var(--astra-primary-soft); }
-.task-menu button.danger { color: var(--astra-danger); }
-.task-menu button.danger:hover { background: var(--astra-danger-soft); }
-
-.task-table__foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 15px; border-top: 1px solid var(--astra-border); background: #fbfdfc; }
-.foot-total { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.foot-right { display: flex; align-items: center; gap: 16px; }
-.page-size { display: flex; align-items: center; gap: 7px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.page-size select { height: 30px; padding: 0 26px 0 9px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; outline: none; background: var(--astra-bg-panel); font-size: var(--astra-font-control); }
-.task-page-nav { display: flex; align-items: center; gap: 5px; }
-.task-page-nav button { display: grid; place-items: center; min-width: 30px; height: 30px; padding: 0 7px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 7px; background: var(--astra-bg-panel); font-size: var(--astra-font-control); cursor: pointer; }
-.task-page-nav button:hover:not(:disabled):not(.active) { color: var(--astra-primary-bright); border-color: var(--astra-primary-border); }
-.task-page-nav button.active { color: #fff; border-color: var(--astra-primary); background: var(--astra-primary); }
-.task-page-nav button:disabled { opacity: .4; cursor: default; }
+.row-actions { display: flex; align-items: center; gap: 2px; }
+.task-page__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
 .confirm-action-card { width: min(440px,100%); }
 .confirm-action-card header p { margin: 5px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.55; }
@@ -431,11 +388,8 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 .attachment-chips button { display: grid; place-items: center; flex: none; width: 20px; height: 20px; padding: 0; color: var(--astra-text-muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
 .attachment-chips button:hover { color: var(--astra-danger); background: var(--astra-danger-soft); }
 
-@keyframes task-shimmer { to { background-position: -200% 0; } }
-
-@media (max-width: 760px) {
-  .task-head { flex-wrap: wrap; align-items: flex-start; }
-  .task-workbench-table { min-width: 980px; }
-  .task-table-wrap { max-height: calc(100vh - 380px); }
+@media (max-width: 900px) {
+  .task-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; }
+  .task-table-panel { min-height: 480px; }
 }
 </style>
