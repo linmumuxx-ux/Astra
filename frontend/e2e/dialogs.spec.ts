@@ -123,20 +123,38 @@ function taskRow(page: Page, title: string) {
   return page.locator('.el-table__row').filter({ hasText: title })
 }
 
-test('创建任务表单点击遮罩与 ESC 都不会关闭', async ({ page }) => {
+test('创建任务抽屉点击遮罩与 ESC 都不会关闭', async ({ page }) => {
   await mockApi(page)
   await gotoTaskList(page)
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
 
-  const modal = page.getByTestId('task-create-modal')
-  await expect(modal).toBeVisible()
-  await modal.getByLabel('任务标题 *').fill('保护中的草稿')
+  const drawer = page.getByTestId('task-create-modal')
+  await expect(drawer).toBeVisible()
+  await drawer.getByLabel('任务标题').fill('保护中的草稿')
 
-  await page.locator('.el-overlay-dialog').click({ position: { x: 6, y: 6 } })
-  await expect(modal).toBeVisible()
+  await page.locator('.el-overlay').click({ position: { x: 6, y: 6 } })
+  await expect(drawer).toBeVisible()
   await page.keyboard.press('Escape')
-  await expect(modal).toBeVisible()
-  await expect(modal.getByLabel('任务标题 *')).toHaveValue('保护中的草稿')
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByLabel('任务标题')).toHaveValue('保护中的草稿')
+})
+
+test('创建任务必填校验拦截提交并在字段下显示错误', async ({ page }) => {
+  await mockApi(page)
+  const createRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/tasks') createRequests.push(request.url())
+  })
+  await gotoTaskList(page)
+  await page.getByRole('button', { name: '创建任务', exact: true }).click()
+
+  const drawer = page.getByTestId('task-create-modal')
+  await drawer.getByRole('button', { name: '创建任务', exact: true }).click()
+  await expect(drawer.getByText('请输入任务标题')).toBeVisible()
+  await expect(drawer.getByText('请输入任务描述')).toBeVisible()
+  await expect(drawer.getByText('请输入验收标准内容')).toBeVisible()
+  await expect(drawer).toBeVisible()
+  expect(createRequests).toEqual([])
 })
 
 test('有未保存修改时关闭需二次确认，取消确认后草稿保留', async ({ page }) => {
@@ -144,20 +162,22 @@ test('有未保存修改时关闭需二次确认，取消确认后草稿保留',
   await gotoTaskList(page)
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
 
-  const modal = page.getByTestId('task-create-modal')
-  await modal.getByLabel('任务标题 *').fill('需要确认的草稿')
-  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  const drawer = page.getByTestId('task-create-modal')
+  await drawer.getByLabel('任务标题').fill('需要确认的草稿')
+  await expect(drawer.getByText('有未保存修改')).toBeVisible()
+  await drawer.getByRole('button', { name: '取消', exact: true }).click()
 
   const confirm = page.getByTestId('astra-confirm-dialog')
   await expect(confirm).toBeVisible()
   await expect(confirm).toContainText('放弃未保存的任务草稿')
   await confirm.getByRole('button', { name: '取消', exact: true }).click()
   await expect(confirm).toHaveCount(0)
-  await expect(modal).toBeVisible()
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByLabel('任务标题')).toHaveValue('需要确认的草稿')
 
-  await modal.getByRole('button', { name: '取消', exact: true }).click()
+  await drawer.getByRole('button', { name: '取消', exact: true }).click()
   await confirm.getByRole('button', { name: '放弃并关闭' }).click()
-  await expect(modal).toHaveCount(0)
+  await expect(drawer).toHaveCount(0)
 })
 
 test('危险操作确认框不会因点击空白或 ESC 误关闭', async ({ page }) => {
@@ -184,15 +204,15 @@ test('表单提交失败后弹窗与用户输入仍然保留，错误在弹窗�
   await gotoTaskList(page)
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
 
-  const modal = page.getByTestId('task-create-modal')
-  await modal.getByLabel('任务标题 *').fill('失败的创建草稿')
-  await modal.getByLabel('任务描述 *').fill('描述内容')
-  await modal.getByPlaceholder('验收标准 1').fill('验收内容')
-  await modal.getByRole('button', { name: '创建任务', exact: true }).click()
+  const drawer = page.getByTestId('task-create-modal')
+  await drawer.getByLabel('任务标题').fill('失败的创建草稿')
+  await drawer.getByLabel('任务描述').fill('描述内容')
+  await drawer.getByPlaceholder('验收标准 1').fill('验收内容')
+  await drawer.getByRole('button', { name: '创建任务', exact: true }).click()
 
-  await expect(modal).toBeVisible()
-  await expect(modal.locator('.form-message[data-error="true"]')).toContainText('创建任务失败')
-  await expect(modal.getByLabel('任务标题 *')).toHaveValue('失败的创建草稿')
+  await expect(drawer).toBeVisible()
+  await expect(drawer.locator('.form-message[data-error="true"]')).toContainText('创建任务失败')
+  await expect(drawer.getByLabel('任务标题')).toHaveValue('失败的创建草稿')
 })
 
 test('任务操作失败使用统一提示而非浏览器原生弹框', async ({ page }) => {

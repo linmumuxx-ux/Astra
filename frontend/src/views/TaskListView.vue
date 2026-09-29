@@ -7,7 +7,7 @@
       </div>
       <ElSpace :size="10">
         <ElButton :icon="RefreshCw" :loading="store.loading" @click="store.refresh()">刷新</ElButton>
-        <ElButton type="primary" :icon="Plus" @click="dialogOpen = true">创建任务</ElButton>
+        <ElButton type="primary" :icon="Plus" @click="createOpen = true">创建任务</ElButton>
       </ElSpace>
     </header>
 
@@ -98,7 +98,7 @@
           <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.tasks.length ? '暂无符合条件的任务' : '暂无任务'">
             <ElText size="small" type="info">{{ store.tasks.length ? '当前筛选条件下没有找到任务。' : '创建第一个任务后即可开始管理。' }}</ElText>
             <ElButton v-if="store.tasks.length" @click="resetFilters">清除筛选</ElButton>
-            <ElButton v-else type="primary" :icon="Plus" @click="dialogOpen = true">创建任务</ElButton>
+            <ElButton v-else type="primary" :icon="Plus" @click="createOpen = true">创建任务</ElButton>
           </ElEmpty>
         </template>
       </ElTable>
@@ -111,30 +111,7 @@
       </nav>
     </footer>
 
-    <AstraDialog
-      v-if="dialogOpen"
-      :open="true"
-      title="创建任务"
-      subtitle="定义目标和验收标准，执行方式由数字员工决定。"
-      :dismissible="false"
-      :busy="submitting"
-      testid="task-create-modal"
-      card-class="task-create-card"
-      width="min(620px,100%)"
-      @close="requestCloseCreate"
-    >
-      <form id="task-create-form" @submit.prevent="createTask">
-        <section class="form-section"><h4>基本信息</h4><label>任务标题 *<input v-model.trim="form.title" required placeholder="例如：修复用户登录接口偶发 500 问题" /></label><div class="form-grid"><label>任务类型 *<select v-model="form.task_type" required><option value="ISSUE">问题</option><option value="REQUIREMENT">需求</option></select></label><label>任务分类 *<select v-model="form.category_id" required><option value="" disabled>请选择</option><option v-for="item in store.categories" :key="item.id" :value="item.id">{{ item.name }}</option></select></label></div><div class="form-grid"><label>优先级 *<select v-model="form.priority"><option v-for="item in priorities" :key="item" :value="item">{{ priorityLabel(item) }}：{{ priorityHint(item) }}</option></select></label><FormField label="完成策略" help="很高/高优先级默认人工确认。" v-slot="{ id }"><select :id="id" v-model="form.completion_policy"><option value="AUTO">员工提交后自动完成</option><option value="MANUAL_CONFIRM">需人工确认</option></select></FormField></div></section>
-        <section class="form-section"><h4>任务内容</h4><label>任务描述 *<textarea v-model.trim="form.description" required rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" /></label><div class="attachment-field" role="group" aria-label="附件"><span class="attachment-field__label">附件</span><div class="attachment-field__row"><button type="button" class="button button--ghost attachment-add" @click="pickFiles"><Paperclip :size="14" /> 上传附件</button><small class="attachment-field__hint">可选，支持一次选择多个文件</small></div><input ref="fileInput" class="attachment-input" type="file" multiple @change="selectFiles" /><ul v-if="attachments.length" class="attachment-chips"><li v-for="(item, index) in attachments" :key="`${item.name}-${index}`"><FileText :size="13" /><span :title="item.name">{{ item.name }}</span><em>{{ fileSizeLabel(item.size) }}</em><button type="button" :aria-label="`移除附件 ${item.name}`" @click="removeAttachment(index)"><X :size="13" /></button></li></ul></div></section>
-        <section class="form-section"><h4>验收标准</h4><div class="criteria-editor"><div v-for="(item, index) in criteria" :key="item.key"><span>{{ index + 1 }}</span><input v-model.trim="item.content" required :placeholder="`验收标准 ${index + 1}`" /><button type="button" title="上移" :disabled="index === 0" @click="moveCriterion(index, -1)"><ArrowUp :size="14" /></button><button type="button" title="下移" :disabled="index === criteria.length - 1" @click="moveCriterion(index, 1)"><ArrowDown :size="14" /></button><button type="button" title="删除" :disabled="criteria.length === 1" @click="criteria.splice(index, 1)"><Trash2 :size="14" /></button></div></div><button type="button" class="button button--ghost" @click="addCriterion"><Plus :size="14" /> 添加验收标准</button></section>
-        <section class="form-section"><h4>执行员工</h4><FormField label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" v-slot="{ id }"><select :id="id" v-model="form.employee_id"><option value="">自动分配</option><option v-for="item in compatibleEmployees" :key="item.id" :value="item.id">{{ employeeDisplayName(item.name) }} · {{ item.role }}</option></select></FormField></section>
-        <div v-if="createError" class="form-message" data-error="true">{{ createError }}</div>
-      </form>
-      <template #footer>
-        <button type="button" class="button" :disabled="submitting" @click="requestCloseCreate">取消</button>
-        <button type="submit" form="task-create-form" class="button button--primary" :disabled="submitting"><LoaderCircle v-if="submitting" :size="14" class="spin" /> 创建任务</button>
-      </template>
-    </AstraDialog>
+    <TaskCreateDrawer :open="createOpen" @close="createOpen = false" @created="onTaskCreated" />
 
     <AstraDialog
       v-if="pending"
@@ -157,8 +134,7 @@
 </template>
 
 <script setup lang="ts">
-import FormField from '@/components/forms/FormField.vue'
-import { ArrowDown, ArrowUp, Ban, Eye, FileText, LoaderCircle, Paperclip, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, SlidersHorizontal, Trash2, X } from 'lucide-vue-next'
+import { Ban, Eye, LoaderCircle, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, SlidersHorizontal, Trash2 } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElButton, ElDatePicker, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
@@ -166,7 +142,7 @@ import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
-import { confirmDialog } from '@/composables/useConfirm'
+import TaskCreateDrawer from '@/components/task/TaskCreateDrawer.vue'
 import { notify } from '@/composables/useToast'
 import {
   TASK_RUNTIME_FILTER_STATES,
@@ -175,14 +151,12 @@ import {
   type RuntimeStatusFilter,
 } from '@/features/runtime/status'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, platformCopy, priorityLabel, safeUUID, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, formatTime, platformCopy, priorityLabel, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore()
 const route = useRoute()
 const router = useRouter()
-const dialogOpen = ref(false)
-const submitting = ref(false)
-const createError = ref('')
+const createOpen = ref(false)
 const showMore = ref(false)
 const pageSize = ref(20)
 const currentPage = ref(1)
@@ -206,18 +180,9 @@ const filters = reactive({
   dateFrom: '',
   dateTo: '',
 })
-const form = reactive({ title: '', task_type: 'ISSUE' as 'ISSUE' | 'REQUIREMENT', category_id: '', priority: 'MEDIUM' as TaskPriority, completion_policy: 'AUTO' as 'AUTO' | 'MANUAL_CONFIRM', description: '', employee_id: '' })
-const criteria = ref([{ key: safeUUID(), content: '' }])
-const attachments = ref<Array<{ name: string; size: number; content_type: string; content: string }>>([])
-const fileInput = ref<HTMLInputElement | null>(null)
-
 watch(() => filters, () => { currentPage.value = 1 }, { deep: true })
-watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
 
-onMounted(async () => {
-  await store.refresh()
-  form.category_id = store.categories[0]?.id ?? ''
-})
+onMounted(async () => { await store.refresh() })
 
 const filtered = computed(() => store.tasks.filter((task) => {
   const query = filters.query.toLowerCase().trim()
@@ -237,13 +202,11 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.v
 const paged = computed(() => filtered.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
 watch(totalPages, (value) => { currentPage.value = Math.min(currentPage.value, value) })
 
-const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
 const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '自动分配')
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
 const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
-const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
 const shortTitle = (value: string) => value.length > 24 ? `${value.slice(0, 24)}…` : value
 
 const setDateFrom = (value: unknown) => { filters.dateFrom = typeof value === 'string' ? value : '' }
@@ -311,42 +274,11 @@ async function runPendingAction() {
   }
 }
 
-const createDirty = computed(() => Boolean(
-  form.title.trim()
-  || form.description.trim()
-  || form.employee_id
-  || attachments.value.length
-  || criteria.value.some((item) => item.content.trim()),
-))
-async function requestCloseCreate() {
-  if (submitting.value) return
-  if (createDirty.value) {
-    const confirmed = await confirmDialog({
-      title: '放弃未保存的任务草稿？',
-      message: '创建任务的内容尚未提交，关闭后将无法恢复。',
-      confirmLabel: '放弃并关闭',
-      danger: true,
-    })
-    if (!confirmed) return
-  }
-  dialogOpen.value = false
+async function onTaskCreated(id: string) {
+  createOpen.value = false
+  await store.refresh()
+  openTask(id)
 }
-
-const addCriterion = () => criteria.value.push({ key: safeUUID(), content: '' })
-function moveCriterion(index: number, direction: number) { const target = index + direction; if (target < 0 || target >= criteria.value.length) return; [criteria.value[index], criteria.value[target]] = [criteria.value[target], criteria.value[index]] }
-function pickFiles() { fileInput.value?.click() }
-function removeAttachment(index: number) { attachments.value.splice(index, 1) }
-const fileSizeLabel = (size: number) => size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1048576).toFixed(1)} MB`
-async function selectFiles(event: Event) {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  input.value = ''
-  if (!files.length) return
-  const picked = await Promise.all(files.map(async (file) => ({ name: file.name, size: file.size, content_type: file.type || 'application/octet-stream', content: await readFile(file) })))
-  attachments.value = [...attachments.value, ...picked.filter((item) => !attachments.value.some((existing) => existing.name === item.name && existing.size === item.size))]
-}
-const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
-async function createTask() { submitting.value = true; createError.value = ''; try { const task = await api.createTask({ source: 'manual', title: form.title, task_type: form.task_type, category_id: form.category_id, priority: form.priority, completion_policy: form.completion_policy, description: form.description, acceptance_criteria: criteria.value.map((item) => ({ content: item.content })), attachments: attachments.value, employee_id: form.employee_id || null }); dialogOpen.value = false; await store.refresh(); openTask(task.id) } catch (error) { createError.value = error instanceof Error ? error.message : '创建失败' } finally { submitting.value = false } }
 </script>
 
 <style scoped>
@@ -372,21 +304,6 @@ async function createTask() { submitting.value = true; createError.value = ''; t
 
 .confirm-action-card { width: min(440px,100%); }
 .confirm-action-card header p { margin: 5px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.55; }
-
-.attachment-field { display: grid; gap: 7px; min-width: 0; }
-.attachment-field__label { color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
-.attachment-field__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.attachment-field__hint { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.attachment-add { gap: 6px; min-height: var(--astra-control-height-compact); padding: 0 12px; color: var(--astra-primary-bright); border-style: dashed; border-color: var(--astra-primary-border); background: var(--astra-primary-soft); }
-.attachment-add:hover:not(:disabled) { color: var(--astra-primary-bright); border-color: var(--astra-primary-border); background: rgba(24,184,117,.16); }
-.attachment-input { display: none; }
-.attachment-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
-.attachment-chips li { display: flex; align-items: center; gap: 6px; max-width: 280px; height: 30px; padding: 0 5px 0 9px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 8px; background: #f8fbf9; font-size: var(--astra-font-helper); }
-.attachment-chips li > svg { flex: none; color: var(--astra-primary-bright); }
-.attachment-chips span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-chips em { flex: none; color: var(--astra-text-muted); font-style: normal; }
-.attachment-chips button { display: grid; place-items: center; flex: none; width: 20px; height: 20px; padding: 0; color: var(--astra-text-muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
-.attachment-chips button:hover { color: var(--astra-danger); background: var(--astra-danger-soft); }
 
 @media (max-width: 900px) {
   .task-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; }

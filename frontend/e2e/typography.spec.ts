@@ -70,9 +70,9 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
   }
   await page.goto('/tasks')
   await page.getByRole('button', { name: /创建任务/ }).first().click()
-  const dialog = page.locator('.el-dialog').first()
-  await expect(dialog).toBeVisible()
-  await expect(dialog.locator('input').first()).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
+  const drawer = page.getByTestId('task-create-modal')
+  await expect(drawer).toBeVisible()
+  await expect(drawer.locator('input').first()).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
   await page.screenshot({ path: '../artifacts/typography/task-dialog.png', fullPage: true })
 })
 

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 async function checkHelp(page: Page, label: string, text: string) {
   const icon = page.getByRole('button', { name: `${label}说明`, exact: true })
@@ -35,32 +35,10 @@ async function checkHelp(page: Page, label: string, text: string) {
   await icon.blur()
 }
 
-// 旧的 .form-grid 两列布局随全局 theme/forms CSS 一起移除，业务页面允许视觉变化。
-// 基础框架层面的校验收敛为：成对字段控件仍然可见、可交互，并继承全局字体主题。
-async function expectFormControlsUsable(page: Page) {
-  const grids = page.locator('.config-form .form-grid, .task-create-card .form-grid')
-  let checked = 0
-  for (const grid of await grids.all()) {
-    const controls = grid.locator(':scope > label > input, :scope > label > select, :scope > .astra-form-field > input, :scope > .astra-form-field > select')
-    if (await controls.count() !== 2) continue
-    for (const control of await controls.all()) {
-      await expect(control).toBeVisible()
-      const box = await control.boundingBox()
-      expect(box, 'paired control renders').not.toBeNull()
-      expect(box!.width, 'paired control width').toBeGreaterThan(0)
-      expect(box!.height, 'paired control height').toBeGreaterThan(0)
-      await expect(control).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')
-      checked += 1
-    }
-  }
-  expect(checked, 'paired form controls found').toBeGreaterThan(0)
-}
-
 // 抽屉表单：单列、标签左对齐且同宽、字段控件统一高度。
-async function expectDrawerLayoutUnified(page: Page) {
-  const drawer = page.getByTestId('employee-config-modal')
+async function expectDrawerLayoutUnified(drawer: Locator, minItems = 12, minControls = 5) {
   const items = drawer.locator('.el-form-item')
-  expect(await items.count(), 'grouped form items').toBeGreaterThan(12)
+  expect(await items.count(), 'grouped form items').toBeGreaterThan(minItems)
   const labelWidths = new Set<number>()
   for (const label of await drawer.locator('.el-form-item__label').all()) {
     const box = await label.boundingBox()
@@ -69,7 +47,9 @@ async function expectDrawerLayoutUnified(page: Page) {
     await expect(label).toHaveCSS('text-align', 'left')
   }
   expect(labelWidths.size, 'uniform label column').toBe(1)
-  let lastBottom = 0
+  // 说明悬停会让抽屉内容滚动；测量基线归零到内容顶部，保证单列堆叠断言只看表单自身顺序。
+  await drawer.locator('.el-drawer__body').evaluate((el) => { el.scrollTop = 0 })
+  let lastBottom = Number.NEGATIVE_INFINITY
   const leftEdges = new Set<number>()
   for (const item of await items.all()) {
     const box = await item.boundingBox()
@@ -87,7 +67,7 @@ async function expectDrawerLayoutUnified(page: Page) {
     expect(box!.width, 'control fills row').toBeGreaterThan(100)
     heights.add(Math.round(box!.height))
   }
-  expect(wrappers.length, 'controls found').toBeGreaterThan(5)
+  expect(wrappers.length, 'controls found').toBeGreaterThan(minControls)
   expect(heights.size, 'uniform control height').toBe(1)
 }
 
@@ -99,7 +79,7 @@ test('员工配置抽屉分组布局、说明悬停与环境检测保持可见',
     await expect(drawer.getByText(section, { exact: true })).toBeVisible()
   }
   await checkHelp(page, '默认办公区域', '无特定任务场景')
-  await expectDrawerLayoutUnified(page)
+  await expectDrawerLayoutUnified(drawer)
   const enabled = drawer.getByRole('switch', { name: '启用员工', exact: true })
   const before = await enabled.getAttribute('aria-checked')
   await drawer.getByRole('button', { name: '启用员工说明', exact: true }).click()
@@ -159,13 +139,23 @@ test('员工配置抽屉必填校验、工作范围校验与未保存关闭', as
 
 test('任务创建和系统偏好使用统一提示，附件反馈保持可见', async ({ page }) => {
   await page.goto('/tasks')
+  await expect(page.getByTestId('task-list-page')).toBeVisible()
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
+  const drawer = page.getByTestId('task-create-modal')
+  await expect(drawer).toBeVisible()
   await checkHelp(page, '完成策略', '很高/高优先级默认人工确认')
-  await expectFormControlsUsable(page)
   await checkHelp(page, '分配方式', '员工启用状态')
-  await page.locator('.task-create-card input[type=file]').setInputFiles({ name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('测试附件') })
-  await expect(page.locator('.task-create-card .attachment-chips li')).toHaveCount(1)
-  await expect(page.locator('.task-create-card .attachment-chips li')).toContainText('说明.txt')
+  await expectDrawerLayoutUnified(drawer, 9, 4)
+  await drawer.locator('.el-upload input[type=file]').setInputFiles({ name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('测试附件') })
+  await expect(drawer.locator('.el-upload-list__item')).toHaveCount(1)
+  await expect(drawer.locator('.el-upload-list__item')).toContainText('说明.txt')
+  await drawer.locator('.el-upload input[type=file]').setInputFiles([
+    { name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('测试附件') },
+    { name: '需求.md', mimeType: 'text/markdown', buffer: Buffer.from('需求补充') },
+  ])
+  await expect(drawer.locator('.el-upload-list__item')).toHaveCount(2)
+  await expect(drawer.locator('.el-upload-list__item').filter({ hasText: '说明.txt' })).toHaveCount(1)
+  await expect(drawer.locator('.el-upload-list__item').filter({ hasText: '需求.md' })).toHaveCount(1)
   await page.getByRole('button', { name: '完成策略说明', exact: true }).hover()
   await page.screenshot({ path: '../artifacts/form-help/task-create-tooltip.png', fullPage: true })
   await page.goto('/settings?tab=system')

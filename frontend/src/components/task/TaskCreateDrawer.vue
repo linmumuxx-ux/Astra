@@ -1,0 +1,246 @@
+<template>
+  <ElDrawer
+    v-if="open"
+    class="task-create-drawer"
+    data-testid="task-create-modal"
+    :model-value="true"
+    title="创建任务"
+    size="600px"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :before-close="requestClose"
+  >
+    <ElForm
+      ref="formRef"
+      class="task-create-form"
+      :model="form"
+      :rules="formRules"
+      label-position="left"
+      label-width="160px"
+      scroll-to-error
+    >
+      <ElDivider content-position="left">基本信息</ElDivider>
+
+      <ElFormItem label="任务标题" prop="title">
+        <ElInput v-model.trim="form.title" placeholder="例如：修复用户登录接口偶发 500 问题" />
+      </ElFormItem>
+      <ElFormItem label="任务类型" prop="task_type">
+        <ElRadioGroup v-model="form.task_type">
+          <ElRadioButton value="ISSUE">问题</ElRadioButton>
+          <ElRadioButton value="REQUIREMENT">需求</ElRadioButton>
+        </ElRadioGroup>
+      </ElFormItem>
+      <ElFormItem label="任务分类" prop="category_id">
+        <ElSelect v-model="form.category_id" placeholder="请选择">
+          <ElOption v-for="item in store.categories" :key="item.id" :value="item.id" :label="item.name" />
+        </ElSelect>
+      </ElFormItem>
+      <ElFormItem label="优先级" prop="priority">
+        <ElSelect v-model="form.priority">
+          <ElOption v-for="item in priorities" :key="item" :value="item" :label="`${priorityLabel(item)}：${priorityHint(item)}`" />
+        </ElSelect>
+      </ElFormItem>
+      <ElFormItem prop="completion_policy">
+        <template #label>完成策略 <FieldHelp label="完成策略" help="很高/高优先级默认人工确认。" /></template>
+        <ElRadioGroup v-model="form.completion_policy">
+          <ElRadio value="AUTO">员工提交后自动完成</ElRadio>
+          <ElRadio value="MANUAL_CONFIRM">需人工确认</ElRadio>
+        </ElRadioGroup>
+      </ElFormItem>
+
+      <ElDivider content-position="left">任务内容</ElDivider>
+
+      <ElFormItem label="任务描述" prop="description">
+        <ElInput v-model.trim="form.description" type="textarea" :rows="4" placeholder="说明背景、当前情况、需要实现的能力和必要限制" />
+      </ElFormItem>
+      <ElFormItem label="附件">
+        <ElUpload v-model:file-list="fileList" multiple :auto-upload="false" :on-change="onFileChange">
+          <ElButton :icon="Paperclip" plain>上传附件</ElButton>
+          <template #tip><div class="el-upload__tip">可选，支持一次选择多个文件。</div></template>
+        </ElUpload>
+      </ElFormItem>
+
+      <ElDivider content-position="left">验收标准</ElDivider>
+
+      <ElFormItem
+        v-for="(item, index) in form.criteria"
+        :key="item.key"
+        :label="`验收标准 ${index + 1}`"
+        :prop="`criteria.${index}.content`"
+        :rules="criterionRules"
+      >
+        <div class="criterion-row">
+          <ElInput v-model.trim="item.content" :placeholder="`验收标准 ${index + 1}`" />
+          <ElButton size="small" text bg :icon="ArrowUp" title="上移" :disabled="index === 0" :aria-label="`验收标准 ${index + 1} 上移`" @click="moveCriterion(index, -1)" />
+          <ElButton size="small" text bg :icon="ArrowDown" title="下移" :disabled="index === form.criteria.length - 1" :aria-label="`验收标准 ${index + 1} 下移`" @click="moveCriterion(index, 1)" />
+          <ElButton size="small" text bg type="danger" :icon="Trash2" title="删除" :disabled="form.criteria.length === 1" :aria-label="`删除验收标准 ${index + 1}`" @click="removeCriterion(index)" />
+        </div>
+      </ElFormItem>
+      <ElFormItem>
+        <ElButton :icon="Plus" plain @click="addCriterion">添加验收标准</ElButton>
+      </ElFormItem>
+
+      <ElDivider content-position="left">执行员工</ElDivider>
+
+      <ElFormItem prop="employee_id">
+        <template #label>分配方式 <FieldHelp label="分配方式" help="自动分配会综合员工启用状态、空闲状态、任务类型和任务分类。" /></template>
+        <ElSelect v-model="form.employee_id">
+          <ElOption value="" label="自动分配" />
+          <ElOption v-for="item in compatibleEmployees" :key="item.id" :value="item.id" :label="`${employeeDisplayName(item.name)} · ${item.role}`" />
+        </ElSelect>
+      </ElFormItem>
+
+      <ElAlert
+        v-if="createError"
+        data-testid="task-create-error"
+        class="form-message"
+        type="error"
+        data-error="true"
+        :closable="false"
+        show-icon
+        :title="createError"
+      />
+    </ElForm>
+
+    <template #footer>
+      <ElSpace :size="10">
+        <ElTag v-if="createDirty" type="warning" effect="light">有未保存修改</ElTag>
+        <ElButton :disabled="submitting" @click="requestClose">取消</ElButton>
+        <ElButton type="primary" :loading="submitting" @click="submit">创建任务</ElButton>
+      </ElSpace>
+    </template>
+  </ElDrawer>
+</template>
+
+<script setup lang="ts">
+import { ArrowDown, ArrowUp, Paperclip, Plus, Trash2 } from 'lucide-vue-next'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { ElAlert, ElButton, ElDivider, ElDrawer, ElForm, ElFormItem, ElInput, ElOption, ElRadio, ElRadioButton, ElRadioGroup, ElSelect, ElSpace, ElTag, ElUpload } from 'element-plus'
+import type { FormInstance, FormItemRule, FormRules, UploadFile, UploadFiles, UploadUserFile } from 'element-plus'
+import { api } from '@/api/client'
+import type { CompletionPolicy, TaskPriority, TaskType } from '@/api/types'
+import FieldHelp from '@/components/forms/FieldHelp.vue'
+import { confirmDialog } from '@/composables/useConfirm'
+import { useAstraStore } from '@/stores/astra'
+import { employeeDisplayName, priorityLabel, safeUUID } from '@/utils/format'
+
+defineProps<{ open: boolean }>()
+const emit = defineEmits<{ (e: 'close'): void; (e: 'created', id: string): void }>()
+const store = useAstraStore()
+
+const formRef = ref<FormInstance | null>(null)
+const submitting = ref(false)
+const createError = ref('')
+const fileList = ref<UploadUserFile[]>([])
+
+const priorities: TaskPriority[] = ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW']
+const priorityHint = (value: TaskPriority) => ({ VERY_HIGH: '重要且紧急', HIGH: '重要但可以计划处理', MEDIUM: '有一定影响或时效要求', LOW: '一般优化或可延期事项' }[value])
+const form = reactive({
+  title: '',
+  task_type: 'ISSUE' as TaskType,
+  category_id: store.categories[0]?.id ?? '',
+  priority: 'MEDIUM' as TaskPriority,
+  completion_policy: 'AUTO' as CompletionPolicy,
+  description: '',
+  criteria: [{ key: safeUUID(), content: '' }] as Array<{ key: string; content: string }>,
+  employee_id: '',
+})
+
+const formRules: FormRules = {
+  title: [{ required: true, message: '请输入任务标题', trigger: 'blur' }],
+  category_id: [{ required: true, message: '请选择任务分类', trigger: 'change' }],
+  description: [{ required: true, message: '请输入任务描述', trigger: 'blur' }],
+}
+const criterionRules: FormItemRule[] = [{ required: true, message: '请输入验收标准内容', trigger: 'blur' }]
+
+// 分类默认选中第一项沿用旧表单逻辑；列表数据晚于抽屉打开时补齐。
+watch(() => store.categories.length, () => { if (!form.category_id) form.category_id = store.categories[0]?.id ?? '' })
+watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
+
+const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
+watch(() => [form.task_type, form.category_id], () => {
+  if (form.employee_id && !compatibleEmployees.value.some((item) => item.id === form.employee_id)) form.employee_id = ''
+})
+
+const createDirty = computed(() => Boolean(
+  form.title.trim()
+  || form.description.trim()
+  || form.employee_id
+  || fileList.value.length
+  || form.criteria.some((item) => item.content.trim()),
+))
+
+// 创建表单是草稿：遮罩点击与 ESC 不关闭，只走显式取消/关闭，且有未保存内容时先二次确认。
+// before-close 不调用 done()，关闭始终由父级把 open 置为 false 驱动。
+async function requestClose() {
+  if (submitting.value) return
+  if (createDirty.value) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存的任务草稿？',
+      message: '创建任务的内容尚未提交，关闭后将无法恢复。',
+      confirmLabel: '放弃并关闭',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  emit('close')
+}
+
+function addCriterion() { form.criteria.push({ key: safeUUID(), content: '' }) }
+function removeCriterion(index: number) { form.criteria.splice(index, 1) }
+function moveCriterion(index: number, direction: number) {
+  const target = index + direction
+  if (target < 0 || target >= form.criteria.length) return
+  const items = form.criteria
+  ;[items[index], items[target]] = [items[target], items[index]]
+  const paths = items.map((_, i) => `criteria.${i}.content`)
+  nextTick(() => formRef.value?.clearValidate(paths))
+}
+
+const readFile = (file: File) => new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
+function onFileChange(file: UploadFile, files: UploadFiles) {
+  if (files.some((item) => item.uid !== file.uid && item.name === file.name && item.size === file.size)) {
+    fileList.value = files.filter((item) => item.uid !== file.uid)
+  }
+}
+function attachmentPayload() {
+  return Promise.all(fileList.value.map(async (file) => {
+    const raw = file.raw
+    return { name: file.name, size: raw?.size ?? file.size ?? 0, content_type: raw?.type || 'application/octet-stream', content: raw ? await readFile(raw) : '' }
+  }))
+}
+
+async function submit() {
+  const valid = formRef.value ? await formRef.value.validate().catch(() => false) : false
+  if (!valid) return
+  submitting.value = true
+  createError.value = ''
+  try {
+    const task = await api.createTask({
+      source: 'manual',
+      title: form.title,
+      task_type: form.task_type,
+      category_id: form.category_id,
+      priority: form.priority,
+      completion_policy: form.completion_policy,
+      description: form.description,
+      acceptance_criteria: form.criteria.map((item) => ({ content: item.content })),
+      attachments: await attachmentPayload(),
+      employee_id: form.employee_id || null,
+    })
+    emit('created', task.id)
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : '创建失败'
+  } finally {
+    submitting.value = false
+  }
+}
+</script>
+
+<style scoped>
+.task-create-drawer :deep(.el-drawer__footer) { display: flex; align-items: center; justify-content: flex-end; }
+.task-create-form :deep(.el-select__wrapper) { min-height: var(--el-component-size); }
+.criterion-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.criterion-row .el-input { flex: 1; min-width: 0; }
+.form-message { margin-top: 4px; }
+</style>

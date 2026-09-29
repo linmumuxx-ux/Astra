@@ -241,21 +241,31 @@ test('数字图书馆目录创建保持在树内原位置并自动进入新目�
 
 test('创建任务仅填写业务事实且高优先级默认人工确认', async ({ page, request }) => {
   await page.goto('/tasks')
+  await expect(page.getByTestId('task-list-page')).toBeVisible()
+  await expect(page.locator('.el-table__row').first()).toBeVisible()
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
   const modal = page.getByTestId('task-create-modal')
   await expect(modal).toBeVisible()
   await expect(modal.getByText('工程路径')).toHaveCount(0)
   await expect(modal.getByText('验证脚本')).toHaveCount(0)
 
-  const priority = modal.getByLabel('优先级 *')
-  const completionPolicy = modal.getByLabel('完成策略', { exact: true })
-  await priority.selectOption('HIGH')
-  await expect(completionPolicy).toHaveValue('MANUAL_CONFIRM')
+  await modal.locator('.el-form-item').filter({ hasText: '优先级' }).locator('.el-select__wrapper').click()
+  await page.getByRole('option', { name: '高：重要但可以计划处理' }).click()
+  await expect(modal.getByRole('radio', { name: '需人工确认', exact: true })).toBeChecked()
 
   const title = `V0.4 E2E 任务 ${Date.now()}`
-  await modal.getByLabel('任务标题 *').fill(title)
-  await modal.getByLabel('任务描述 *').fill('验证任务定义、分类、优先级和验收标准。')
+  await modal.getByLabel('任务标题').fill(title)
+  await modal.getByLabel('任务描述').fill('验证任务定义、分类、优先级和验收标准。')
   await modal.getByPlaceholder('验收标准 1').fill('任务信息正确保存')
+  await modal.getByRole('button', { name: '添加验收标准' }).click()
+  await modal.getByPlaceholder('验收标准 2').fill('标准顺序可调整')
+  await modal.getByRole('button', { name: '验收标准 2 上移' }).click()
+  await modal.locator('.el-upload input[type=file]').setInputFiles([
+    { name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('E2E 附件说明') },
+    { name: '数据.csv', mimeType: 'text/csv', buffer: Buffer.from('列,值\n1,2') },
+    { name: '说明.txt', mimeType: 'text/plain', buffer: Buffer.from('E2E 附件说明') },
+  ])
+  await expect(modal.locator('.el-upload-list__item')).toHaveCount(2)
   await modal.getByRole('button', { name: '创建任务', exact: true }).click()
 
   await page.waitForURL(/\/tasks\/T-[A-Z0-9-]+$/)
@@ -275,7 +285,9 @@ test('创建任务仅填写业务事实且高优先级默认人工确认', async
   expect(task).not.toHaveProperty('current_phase')
   expect(task).not.toHaveProperty('progress')
   expect(task.completion_policy).toBe('MANUAL_CONFIRM')
-  expect(task.acceptance_criteria).toHaveLength(1)
+  expect(task.priority).toBe('HIGH')
+  expect(task.acceptance_criteria.map((item: { content: string }) => item.content)).toEqual(['标准顺序可调整', '任务信息正确保存'])
+  expect(task.attachments.map((item: { name: string }) => item.name)).toEqual(['说明.txt', '数据.csv'])
 })
 
 test('待处理角标与聚合队列一致并提供进入 Workspace 入口', async ({ page }) => {
