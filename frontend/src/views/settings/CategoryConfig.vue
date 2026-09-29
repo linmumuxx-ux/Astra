@@ -7,6 +7,7 @@
       </div>
       <ElSpace :size="10">
         <ElButton :icon="RefreshCw" :loading="loading" data-testid="category-refresh" @click="load">刷新</ElButton>
+        <ElButton type="primary" :icon="Plus" data-testid="category-create" @click="beginCreate">新增分类</ElButton>
       </ElSpace>
     </header>
 
@@ -63,9 +64,19 @@
             </ElSpace>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
+              <ElTooltip content="编辑分类与提示词" placement="top">
+                <ElButton
+                  text
+                  type="primary"
+                  :icon="Pencil"
+                  :aria-label="`编辑分类 ${row.name}`"
+                  data-testid="category-edit"
+                  @click="beginEdit(row as TaskCategory)"
+                />
+              </ElTooltip>
               <ElTooltip :content="row.enabled ? '停用该分类' : '启用该分类'" placement="top">
                 <ElButton
                   text
@@ -103,12 +114,23 @@
         data-testid="category-pagination"
       />
     </footer>
+    <CategoryEditorDrawer
+      ref="drawerRef"
+      :open="drawerOpen"
+      :category="editing"
+      :default-sort-order="defaultSortOrder"
+      :saving="saving"
+      :error="saveError"
+      @close="closeDrawer"
+      @save="submitCategory"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { Pause, Play, RefreshCw, Search } from 'lucide-vue-next'
+import { Pause, Pencil, Play, Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import {
   ElAlert,
   ElButton,
@@ -126,8 +148,10 @@ import {
   vLoading,
 } from 'element-plus'
 import { api } from '@/api/client'
-import type { TaskCategory } from '@/api/types'
+import type { TaskCategory, TaskCategoryWrite } from '@/api/types'
+import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
+import CategoryEditorDrawer from '@/views/settings/CategoryEditorDrawer.vue'
 import { useAstraStore } from '@/stores/astra'
 
 const store = useAstraStore()
@@ -141,6 +165,11 @@ const status = ref('')
 const keywordDraft = ref('')
 const keyword = ref('')
 const page = ref(1)
+const drawerOpen = ref(false)
+const editing = ref<TaskCategory | null>(null)
+const saving = ref(false)
+const saveError = ref('')
+const drawerRef = ref<InstanceType<typeof CategoryEditorDrawer> | null>(null)
 
 const filtered = computed(() => categories.value.filter((item) => {
   if (status.value && item.enabled !== (status.value === 'enabled')) return false
@@ -150,6 +179,8 @@ const filtered = computed(() => categories.value.filter((item) => {
 }))
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize)))
 const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+// 新分类默认排在现有分类之后，与旧的行内新增保持同一套排序语义。
+const defaultSortOrder = computed(() => Math.max(0, ...categories.value.map((item) => item.sort_order ?? 0)) + 10)
 
 async function load() {
   loading.value = true
@@ -167,6 +198,57 @@ function applyKeyword() {
   keyword.value = keywordDraft.value
   page.value = 1
 }
+
+function beginCreate() {
+  editing.value = null
+  saveError.value = ''
+  drawerOpen.value = true
+}
+
+function beginEdit(row: TaskCategory) {
+  editing.value = row
+  saveError.value = ''
+  drawerOpen.value = true
+}
+
+function closeDrawer() {
+  drawerOpen.value = false
+  editing.value = null
+}
+
+async function submitCategory(payload: TaskCategoryWrite) {
+  if (saving.value) return
+  const isEdit = Boolean(editing.value)
+  const target = editing.value
+  saving.value = true
+  saveError.value = ''
+  try {
+    if (target) await api.updateCategory(target.id, payload)
+    else await api.createCategory(payload)
+    await load()
+    // 分类在任务、员工与自动分配里被引用，保存后同步刷新平台缓存。
+    await store.refresh()
+    notify(isEdit ? '任务分类已更新' : '任务分类已创建')
+    closeDrawer()
+  } catch (reason) {
+    saveError.value = reason instanceof Error ? reason.message : '任务分类保存失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+// 抽屉内未保存的内容在离开配置中心时同样需要确认，避免整页导航绕过抽屉的关闭确认。
+// 判定复用抽屉自身的 dirty，而不是「抽屉是否打开」：没改过就不打扰用户。
+onBeforeRouteLeave(async () => {
+  if (!drawerRef.value?.getDirty()) return true
+  const confirmed = await confirmDialog({
+    title: '放弃未保存的分类修改？',
+    message: '离开配置中心后未保存的分类修改将丢失。',
+    confirmLabel: '放弃并离开',
+    danger: true,
+  })
+  return confirmed
+})
 
 // 启停是列表级即时操作：只改 enabled 并立即落库，其余字段按服务端返回值原样带回。
 async function toggleEnabled(row: TaskCategory) {
