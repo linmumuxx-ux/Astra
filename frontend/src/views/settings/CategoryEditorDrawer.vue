@@ -28,7 +28,7 @@
 
       <ElFormItem label="排序" prop="sort_order">
         <ElInputNumber v-model="form.sort_order" class="category-editor-form__sort" :min="0" :step="10" :precision="0" controls-position="right" />
-        <ElText class="category-editor-form__hint" size="small" type="info">数字越小越靠前，任务与员工配置按此顺序展示。</ElText>
+        <ElText class="category-editor-form__hint" type="info">数字越小越靠前，任务与员工配置按此顺序展示。</ElText>
       </ElFormItem>
 
       <ElFormItem label="启用" prop="enabled">
@@ -71,11 +71,13 @@
     </ElForm>
 
     <template #footer>
-      <ElSpace :size="10">
-        <ElTag v-if="dirty" type="warning" effect="light" data-testid="category-editor-dirty">有未保存修改</ElTag>
-        <ElButton :disabled="saving" data-testid="category-editor-cancel" @click="requestClose">取消</ElButton>
-        <ElButton type="primary" :loading="saving" data-testid="category-editor-submit" @click="submit">保存</ElButton>
-      </ElSpace>
+      <div class="category-editor-footer">
+        <ElSpace :size="8">
+          <ElTag v-if="dirty" type="warning" effect="light" data-testid="category-editor-dirty">有未保存修改</ElTag>
+          <ElButton :disabled="saving" data-testid="category-editor-cancel" @click="requestClose">取消</ElButton>
+          <ElButton type="primary" :loading="saving" data-testid="category-editor-submit" @click="submit">保存</ElButton>
+        </ElSpace>
+      </div>
     </template>
   </ElDrawer>
 </template>
@@ -147,10 +149,13 @@ defineExpose({ getDirty: () => dirty.value })
 </script>
 
 <style scoped>
-.category-editor-drawer :deep(.el-drawer__footer) { display: flex; align-items: center; justify-content: flex-end; }
+/* footer 槽位内容写在本组件模板里，会带上 scoped 标记；直接用真实元素排版，
+   不用 .el-drawer :deep(.el-drawer__footer) —— 抽屉根节点由 Element Plus 渲染，
+   不带本组件的 data-v，:deep 选择器匹配不到。 */
+.category-editor-footer { display: flex; align-items: center; justify-content: flex-end; }
 .category-editor-form { display: grid; gap: 2px; }
 .category-editor-form__sort { width: 160px; }
 .category-editor-form__hint { flex-basis: 100%; margin-top: 2px; }
-.category-editor-form__prompt :deep(.el-textarea__inner) { min-height: 168px; line-height: 1.6; }
+.category-editor-form__prompt :deep(.el-textarea__inner) { line-height: 1.6; }
 .category-editor-form__error { margin-top: 4px; }
 </style>

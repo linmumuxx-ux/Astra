@@ -3,16 +3,16 @@
     <header class="category-page__intro">
       <div>
         <h2>任务分类</h2>
-        <ElText size="small" type="info">分类用于表示任务所属的业务领域；排序小的排在前面，提示词随分类下发给对应数字员工。</ElText>
+        <ElText type="info">分类用于表示任务所属的业务领域；排序小的排在前面，提示词随分类下发给对应数字员工。</ElText>
       </div>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElButton :icon="RefreshCw" :loading="loading" data-testid="category-refresh" @click="load">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" data-testid="category-create" @click="beginCreate">新增分类</ElButton>
       </ElSpace>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="category-error">
-      <ElButton size="small" type="primary" data-testid="category-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="category-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <div class="category-filter" aria-label="任务分类筛选">
@@ -38,7 +38,6 @@
       <ElTable
         v-loading="loading"
         :data="paged"
-        size="small"
         height="100%"
         row-key="id"
         element-loading-text="正在加载任务分类"
@@ -53,23 +52,23 @@
         </ElTableColumn>
         <ElTableColumn label="启用" width="96">
           <template #default="{ row }">
-            <ElTag size="small" :type="row.enabled ? 'success' : 'info'" :effect="row.enabled ? 'light' : 'plain'">{{ row.enabled ? '已启用' : '已停用' }}</ElTag>
+            <ElTag :type="row.enabled ? 'success' : 'info'" :effect="row.enabled ? 'light' : 'plain'">{{ row.enabled ? '已启用' : '已停用' }}</ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn label="任务 / 问题 Prompt" min-width="230">
           <template #default="{ row }">
             <ElSpace :size="6">
-              <ElTag size="small" effect="plain" :type="row.task_prompt?.trim() ? 'success' : 'info'">任务 {{ row.task_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
-              <ElTag size="small" effect="plain" :type="row.question_prompt?.trim() ? 'success' : 'info'">问题 {{ row.question_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
+              <ElTag effect="plain" :type="row.task_prompt?.trim() ? 'success' : 'info'">任务 {{ row.task_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
+              <ElTag effect="plain" :type="row.question_prompt?.trim() ? 'success' : 'info'">问题 {{ row.question_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
             </ElSpace>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="120" fixed="right">
+        <ElTableColumn label="操作" width="88" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions">
+            <ElSpace class="row-actions" :size="4">
               <ElTooltip content="编辑分类与提示词" placement="top">
                 <ElButton
-                  text
+                  circle
                   type="primary"
                   :icon="Pencil"
                   :aria-label="`编辑分类 ${row.name}`"
@@ -79,7 +78,7 @@
               </ElTooltip>
               <ElTooltip :content="row.enabled ? '停用该分类' : '启用该分类'" placement="top">
                 <ElButton
-                  text
+                  circle
                   type="primary"
                   :icon="row.enabled ? Pause : Play"
                   :aria-label="`${row.enabled ? '停用' : '启用'}分类 ${row.name}`"
@@ -88,23 +87,23 @@
                   @click="toggleEnabled(row as TaskCategory)"
                 />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
           <ElEmpty v-if="error && !categories.length" :image-size="72" description="任务分类加载失败">
-            <ElText size="small" type="info">{{ error }}</ElText>
+            <ElText type="info">{{ error }}</ElText>
             <ElButton :icon="RefreshCw" data-testid="category-empty-retry" @click="load">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!loading" :image-size="72" :description="categories.length ? '没有匹配的任务分类' : '暂无任务分类'">
-            <ElText size="small" type="info">{{ categories.length ? '调整状态或搜索条件后重试。' : '任务分类用于给任务归类，创建后即可分配给数字员工。' }}</ElText>
+            <ElText type="info">{{ categories.length ? '调整状态或搜索条件后重试。' : '任务分类用于给任务归类，创建后即可分配给数字员工。' }}</ElText>
           </ElEmpty>
         </template>
       </ElTable>
     </section>
 
     <footer class="category-page__footer">
-      <ElText size="small" type="info" data-testid="category-total">共 {{ filtered.length }} 条</ElText>
+      <ElText type="info" data-testid="category-total">共 {{ filtered.length }} 条</ElText>
       <ElPagination
         v-model:current-page="page"
         :page-size="pageSize"
@@ -284,12 +283,12 @@ onMounted(load)
 .category-page { display: flex; flex-direction: column; gap: 14px; height: calc(100vh - 69px); min-height: 620px; padding: 20px 24px 18px; overflow: hidden; }
 .category-page__intro { display: flex; flex: none; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .category-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
-.category-filter { display: flex; flex: none; align-items: center; gap: 10px; }
+.category-filter { display: flex; flex: none; align-items: center; gap: 8px; }
 .category-filter__status { flex: none; width: 148px; }
-.category-filter__search { flex: 1; min-width: 210px; max-width: 320px; }
+.category-filter__search { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .category-table-panel { flex: 1 1 auto; min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
 .category-num { font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
-.row-actions { display: flex; align-items: center; gap: 2px; }
+.row-actions { justify-content: flex-end; }
 .category-page__footer { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
 @media (max-width: 900px) { .category-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; } .category-table-panel { min-height: 480px; } }
 </style>
