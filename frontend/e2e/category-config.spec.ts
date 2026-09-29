@@ -8,7 +8,7 @@ test('分类初始化、展开、还原不误报；双提示词保存后刷新�
     await new Promise(resolve => setTimeout(resolve, 500))
     await route.continue()
   })
-  await page.goto('/settings?tab=categories')
+  await page.goto('/settings')
   await expect(page.getByText('正在加载任务分类…')).toBeVisible()
   await expect(page.getByRole('button', { name: '保存分类', exact: true })).toHaveCount(0)
   const row = page.locator(`[data-category-id="${category.id}"]`)
@@ -32,7 +32,7 @@ test('分类初始化、展开、还原不误报；双提示词保存后刷新�
   await expect(page.getByRole('status')).toHaveText('任务分类已保存。')
   await expect(page.getByRole('button', { name: '保存分类', exact: true })).toHaveCount(0)
   await page.reload()
-  await expect(page).toHaveURL(/tab=categories/)
+  await expect(page).toHaveURL(/\/settings$/)
   await row.getByRole('button', { name: '编辑', exact: true }).click()
   await expect(task).toHaveValue(taskText)
   await expect(question).toHaveValue(questionText)
@@ -54,7 +54,7 @@ test('初次加载失败保持非修改状态，重试成功', async ({ page }) 
     if (!failed) { failed = true; await route.fulfill({ status: 500, json: { detail: '分类加载失败测试' } }) }
     else await route.continue()
   })
-  await page.goto('/settings?tab=categories')
+  await page.goto('/settings')
   await expect(page.getByRole('button', { name: '重新加载' })).toBeVisible()
   await expect(page.getByRole('button', { name: '保存分类', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '重新加载' }).click()
@@ -63,7 +63,7 @@ test('初次加载失败保持非修改状态，重试成功', async ({ page }) 
 })
 
 test('部分保存失败后重试不重复创建，失败内容保留', async ({ page, request }) => {
-  await page.goto('/settings?tab=categories')
+  await page.goto('/settings')
   await expect(page.locator('[data-category-id]').first()).toBeVisible()
   const prefix = `重试-${Date.now()}`
   for (const suffix of ['A', 'B']) {

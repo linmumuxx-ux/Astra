@@ -97,11 +97,9 @@ test('知识正文与设置各页签使用全局字体，代码块保持等宽',
     expect(await element.evaluate((el) => getComputedStyle(el).fontFamily), 'code block stays monospace').toContain('monospace')
   }
   await page.screenshot({ path: '../artifacts/typography/knowledge-dialog.png', fullPage: true })
-  for (const tab of ['categories', 'sources', 'system']) {
-    await page.goto(`/settings?tab=${tab}`)
-    await expect(page.locator('.settings-tabs button.active')).toBeVisible()
-    await page.screenshot({ path: `../artifacts/typography/settings-${tab}.png`, fullPage: true })
-  }
+  await page.goto('/settings')
+  await expect(page.getByTestId('settings-page')).toBeVisible()
+  await page.screenshot({ path: '../artifacts/typography/settings-categories.png', fullPage: true })
   await page.goto('/employees')
   await page.getByRole('button', { name: '查看 员工-01' }).click()
   await expect(page.getByRole('dialog')).toBeVisible()

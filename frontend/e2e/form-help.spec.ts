@@ -137,7 +137,7 @@ test('员工配置抽屉必填校验、工作范围校验与未保存关闭', as
   await expect(page.getByTestId('form-message')).toBeVisible()
 })
 
-test('任务创建和系统偏好使用统一提示，附件反馈保持可见', async ({ page }) => {
+test('任务创建使用统一提示，附件反馈保持可见', async ({ page }) => {
   await page.goto('/tasks')
   await expect(page.getByTestId('task-list-page')).toBeVisible()
   await page.getByRole('button', { name: '创建任务', exact: true }).click()
@@ -158,17 +158,10 @@ test('任务创建和系统偏好使用统一提示，附件反馈保持可见',
   await expect(drawer.locator('.el-upload-list__item').filter({ hasText: '需求.md' })).toHaveCount(1)
   await page.getByRole('button', { name: '完成策略说明', exact: true }).hover()
   await page.screenshot({ path: '../artifacts/form-help/task-create-tooltip.png', fullPage: true })
-  await page.goto('/settings?tab=system')
-  const icon = page.locator('.astra-form-help').first()
-  await icon.hover()
-  await expect(page.getByRole('tooltip')).toContainText('关闭数字办公室的工作动画')
-  await page.mouse.move(0, 0)
-  await expect(page.getByRole('tooltip')).toHaveCount(0)
-  await page.screenshot({ path: '../artifacts/form-help/system-settings.png', fullPage: true })
 })
 
 
-test('知识编辑、分类、来源表单保留字段，待处理进入 Workspace', async ({ page }) => {
+test('知识编辑与任务分类保留字段，待处理进入 Workspace', async ({ page }) => {
   await page.goto('/library')
   await page.getByRole('button', { name: '新建知识', exact: true }).first().click()
   const editor = page.getByTestId('knowledge-editor-drawer')
@@ -179,11 +172,9 @@ test('知识编辑、分类、来源表单保留字段，待处理进入 Workspa
   await expect(editor.getByRole('button', { name: '导入 .md' })).toBeVisible()
   await expect(editor.getByText('预览', { exact: true })).toBeVisible()
   await page.screenshot({ path: '../artifacts/form-help/knowledge-editor.png', fullPage: true })
-  for (const tab of ['categories', 'sources']) {
-    await page.goto(`/settings?tab=${tab}`)
-    await expect(page.locator('.config-table')).toBeVisible()
-    await page.screenshot({ path: `../artifacts/form-help/settings-${tab}.png`, fullPage: true })
-  }
+  await page.goto('/settings')
+  await expect(page.locator('.config-table')).toBeVisible()
+  await page.screenshot({ path: '../artifacts/form-help/settings-categories.png', fullPage: true })
   await page.goto('/interventions')
   const pending = page.getByTestId('intervention-page')
   await expect(pending.getByRole('heading', { name: '待处理', exact: true }).first()).toBeVisible()

@@ -79,7 +79,7 @@ test('核心页面可从中文主导航访问', async ({ page }) => {
     { link: /^数字员工/, testId: 'employee-list-page', heading: '数字员工' },
     { link: /^任务管理$/, testId: 'task-list-page', heading: '任务管理' },
     { link: /^数字图书馆/, testId: 'digital-library-page', heading: '数字图书馆' },
-    { link: /^设置$/, testId: 'settings-page', heading: '配置中心' },
+    { link: /^设置$/, testId: 'settings-page', heading: '任务分类' },
   ]
   for (const destination of destinations) {
     await navigation.getByRole('menuitem', { name: destination.link }).click()
