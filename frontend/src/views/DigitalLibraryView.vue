@@ -59,6 +59,7 @@
             @search="onListSearch"
             @create="beginCreate"
             @open="openDetail"
+            @edit="beginEdit($event.id)"
             @move="openMoveDialog"
             @publish="publishFromList"
             @archive="archiveFromList"
@@ -74,8 +75,8 @@
       <KnowledgeUsageSummary :summary="usage" />
     </ElMain>
 
-    <KnowledgeEditorDialog :open="editorOpen" :directories="directoryOptions" :saving="editorSaving" :error="editorError" :initial-content="editorInitialContent" :initial-title="editorInitialTitle" :initial-space-id="editorInitialSpaceId" @close="editorOpen = false" @save="saveKnowledge" />
-    <KnowledgeDetailDialog :open="detailOpen" :detail="detail" :directories="directoryOptions" :can-review="Boolean(permissions?.can_review)" :working="detailWorking" :error="detailError" :related-tasks="relatedTasks" :related-loading="relatedLoading" :usages="usages" :usages-loading="usagesLoading" @close="closeDetail" @favorite="favorite" @helpful="helpful" @related="loadRelatedTasks" @publish="publish" @reject="reject" @supplement="supplement" />
+    <KnowledgeEditorDialog :open="editorOpen" :directories="directoryOptions" :saving="editorSaving" :error="editorError" :editing="editorEditing" :initial-content="editorInitialContent" :initial-title="editorInitialTitle" :initial-space-id="editorInitialSpaceId" @close="editorOpen = false" @save="saveKnowledge" />
+    <KnowledgeDetailDialog :open="detailOpen" :detail="detail" :directories="directoryOptions" :can-review="Boolean(permissions?.can_review)" :can-manage="Boolean(permissions?.can_manage)" :working="detailWorking" :error="detailError" :related-tasks="relatedTasks" :related-loading="relatedLoading" :usages="usages" :usages-loading="usagesLoading" @close="closeDetail" @favorite="favorite" @helpful="helpful" @related="loadRelatedTasks" @edit="detail && beginEdit(detail.id)" @publish="publish" @reject="reject" @supplement="supplement" />
 
     <DirectoryPickerDialog
       :open="Boolean(moveDialog)"
@@ -199,6 +200,7 @@ const editorError = ref('')
 const editorInitialContent = ref('')
 const editorInitialTitle = ref('')
 const editorInitialSpaceId = ref('')
+const editorEditing = ref<KnowledgeDetail | null>(null)
 const editorSourceType = ref<'manual' | 'import'>('manual')
 const importInput = ref<HTMLInputElement | null>(null)
 const detailOpen = ref(false)
@@ -306,13 +308,33 @@ function selectSpace(id: string | null) { filters.spaceId = id; filters.page = 1
 function setPage(value: number) { filters.page = value; loadList() }
 function setFilter(key: 'type' | 'status' | 'source' | 'tag' | 'sort', value: string) { filters[key] = value; filters.page = 1; statsActive.value = value === 'candidate' ? 'candidate' : 'filter'; loadList() }
 function clearFilters() { filters.type = ''; filters.status = ''; filters.source = ''; filters.tag = ''; filters.sort = 'updated_desc'; filters.keyword = ''; filters.page = 1; queryInput.value = ''; statsActive.value = 'all'; loadList() }
-function beginCreate() { editorInitialContent.value = ''; editorInitialTitle.value = ''; editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorSourceType.value = 'manual'; editorError.value = ''; editorOpen.value = true }
+function beginCreate() { editorInitialContent.value = ''; editorInitialTitle.value = ''; editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorEditing.value = null; editorSourceType.value = 'manual'; editorError.value = ''; editorOpen.value = true }
+async function beginEdit(id: string) {
+  editorError.value = ''
+  try {
+    const latest = await api.libraryKnowledgeDetail(id)
+    editorInitialContent.value = ''; editorInitialTitle.value = ''; editorInitialSpaceId.value = ''
+    editorEditing.value = latest
+    editorSourceType.value = 'manual'
+    editorOpen.value = true
+  } catch (error) { notify(message(error, '知识加载失败，无法编辑'), 'error') }
+}
 function publishFromList(item: KnowledgeListItem) { openDetail(item.id) }
 function triggerImport() { importInput.value?.click() }
-async function importMarkdown(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return; editorInitialContent.value = await file.text(); editorInitialTitle.value = file.name.replace(/\.md$/i, ''); editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorSourceType.value = 'import'; editorError.value = ''; editorOpen.value = true; (event.target as HTMLInputElement).value = '' }
+async function importMarkdown(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return; editorInitialContent.value = await file.text(); editorInitialTitle.value = file.name.replace(/\.md$/i, ''); editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorEditing.value = null; editorSourceType.value = 'import'; editorError.value = ''; editorOpen.value = true; (event.target as HTMLInputElement).value = '' }
 async function saveKnowledge(payload: Record<string, unknown>) {
   editorSaving.value = true; editorError.value = ''
   try {
+    const editing = editorEditing.value
+    if (editing) {
+      const updated = await api.updateLibraryKnowledge(editing.id, payload)
+      editorOpen.value = false
+      notify(updated.status === 'published' ? '知识修改已保存，已进入同步准备' : '知识修改已保存')
+      await Promise.all([refreshOverview(), loadList()])
+      if (detailOpen.value && detail.value?.id === updated.id) detail.value = updated
+      editorEditing.value = null
+      return
+    }
     const created = await api.createLibraryKnowledge({ ...payload, source_type: editorSourceType.value })
     editorOpen.value = false; notify('知识草稿已保存')
     await Promise.all([refreshOverview(), loadList()])

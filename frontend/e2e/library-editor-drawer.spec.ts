@@ -81,7 +81,7 @@ test('创建知识保存草稿：按 payload 提交并携带 manual 来源，成
   await drawer.getByLabel('知识标题').fill('接口超时复盘')
   await drawer.getByLabel('标签').fill('超时, 重试 ，网络')
   await drawer.getByLabel('摘要').fill('一次典型超时问题的处理记录')
-  await drawer.locator('.markdown-editor__input textarea').fill('## 现象\n\n50004 超时')
+  await drawer.getByLabel('Markdown 正文编辑区').fill('## 现象\n\n50004 超时')
   await drawer.getByRole('button', { name: '保存草稿', exact: true }).click()
 
   await expect(page.locator('.el-notification').filter({ hasText: '知识草稿已保存' })).toBeVisible()
@@ -118,7 +118,7 @@ test('校验：标题与正文为空时阻止保存并给出字段级提示', as
 test('Markdown 预览渲染标题并过滤脚本，切回编辑保留内容', async ({ page }) => {
   await mockLibrary(page)
   const drawer = await openEditor(page)
-  await drawer.locator('.markdown-editor__input textarea').fill('## 问题现象\n\n返回 50004。\n\n<script>window.__xss=1</script>')
+  await drawer.getByLabel('Markdown 正文编辑区').fill('## 问题现象\n\n返回 50004。\n\n<script>window.__xss=1</script>')
   await drawer.locator('label.el-radio-button', { hasText: '预览' }).click()
   const preview = drawer.locator('.markdown-editor__preview')
   await expect(preview).toBeVisible()
@@ -126,7 +126,7 @@ test('Markdown 预览渲染标题并过滤脚本，切回编辑保留内容', as
   await expect(preview.locator('script')).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined()
   await drawer.locator('label.el-radio-button', { hasText: '编辑' }).click()
-  await expect(drawer.locator('.markdown-editor__input textarea')).toHaveValue(/问题现象/)
+  await expect(drawer.getByLabel('Markdown 正文编辑区')).toHaveValue(/问题现象/)
 })
 
 test('导入 .md：填充正文并在标题为空时用文件名补全', async ({ page }) => {
@@ -134,7 +134,7 @@ test('导入 .md：填充正文并在标题为空时用文件名补全', async (
   const drawer = await openEditor(page)
   await drawer.getByRole('button', { name: '导入 .md' }).click()
   await drawer.locator('.markdown-editor__file').setInputFiles({ name: '故障复盘.md', mimeType: 'text/markdown', buffer: Buffer.from('# 故障复盘\n\n导入的正文') })
-  await expect(drawer.locator('.markdown-editor__input textarea')).toHaveValue(/导入的正文/)
+  await expect(drawer.getByLabel('Markdown 正文编辑区')).toHaveValue(/导入的正文/)
   await expect(drawer.getByLabel('知识标题')).toHaveValue('故障复盘')
 })
 
@@ -163,7 +163,7 @@ test('保存失败反馈：接口 500 时抽屉保持打开并展示错误', asy
   await mockLibrary(page, { createStatus: 500, createDetail: '同目录下标题已存在' })
   const drawer = await openEditor(page)
   await drawer.getByLabel('知识标题').fill('重复标题')
-  await drawer.locator('.markdown-editor__input textarea').fill('## 正文')
+  await drawer.getByLabel('Markdown 正文编辑区').fill('## 正文')
   await drawer.getByRole('button', { name: '保存草稿', exact: true }).click()
 
   const error = drawer.getByTestId('knowledge-editor-error')
@@ -182,7 +182,7 @@ test('顶部导入知识走编辑器并标记 import 来源', async ({ page }) =
   const drawer = page.getByTestId('knowledge-editor-drawer')
   await expect(drawer).toBeVisible()
   await expect(drawer.getByLabel('知识标题')).toHaveValue('运维手册')
-  await expect(drawer.locator('.markdown-editor__input textarea')).toHaveValue(/导入内容/)
+  await expect(drawer.getByLabel('Markdown 正文编辑区')).toHaveValue(/导入内容/)
   await drawer.getByRole('button', { name: '保存草稿', exact: true }).click()
   await expect(drawer).toHaveCount(0)
   expect(mock.createCalls.at(-1)).toMatchObject({ source_type: 'import', title: '运维手册' })

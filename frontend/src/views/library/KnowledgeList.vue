@@ -126,11 +126,14 @@
         <ElTableColumn label="更新时间" width="132">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="184" fixed="right">
+        <ElTableColumn label="操作" width="212" fixed="right">
           <template #default="{ row }">
             <div class="row-actions" @click.stop>
               <ElTooltip content="查看" placement="top">
                 <ElButton text type="primary" :icon="Eye" :aria-label="`查看 ${row.title}`" @click="openRow(row)" />
+              </ElTooltip>
+              <ElTooltip v-if="canManage" content="编辑" placement="top">
+                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.title}`" @click="editRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canManage" content="移动到其他目录" placement="top">
                 <ElButton text type="primary" :icon="FolderInput" :aria-label="`移动 ${row.title}`" @click="moveRow(row)" />
@@ -174,7 +177,7 @@
 </template>
 
 <script setup lang="ts">
-import { Archive, Eye, FolderInput, Plus, Search, SlidersHorizontal, Stamp, Trash2 } from 'lucide-vue-next'
+import { Archive, Eye, FolderInput, Pencil, Plus, Search, SlidersHorizontal, Stamp, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
 import type { TableInstance } from 'element-plus'
@@ -195,6 +198,7 @@ const emit = defineEmits<{
   search: [value: string]
   create: []
   open: [id: string]
+  edit: [item: KnowledgeListItem]
   move: [item: KnowledgeListItem]
   publish: [item: KnowledgeListItem]
   archive: [item: KnowledgeListItem]
@@ -258,6 +262,7 @@ function onSelectionChange(rows: Row[]) { selectedRows.value = rows as Knowledge
 function clearSelection() { tableRef.value?.clearSelection() }
 function emitBatch(action: 'move' | 'archive' | 'publish' | 'delete') { const ids = selectedRows.value.map((item) => item.id); clearSelection(); emit('batch', ids, action) }
 function openRow(row: Row) { emit('open', row.id) }
+function editRow(row: Row) { emit('edit', row as KnowledgeListItem) }
 function moveRow(row: Row) { emit('move', row as KnowledgeListItem) }
 function publishRow(row: Row) { emit('publish', row as KnowledgeListItem) }
 function archiveRow(row: Row) { emit('archive', row as KnowledgeListItem) }

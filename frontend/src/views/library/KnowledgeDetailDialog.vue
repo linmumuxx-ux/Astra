@@ -65,6 +65,7 @@
             <button type="button" :class="{ active: detail.user_helpful }" @click="$emit('helpful')"><ThumbsUp :size="15" />有帮助 ({{ detail.helpful_count }})</button>
             <button type="button" @click="share"><Share2 :size="15" />分享</button><button type="button" @click="copyLink"><Link2 :size="15" />{{ copied ? '已复制' : '复制链接' }}</button>
             <button type="button" @click="openRelated"><ListTree :size="15" />查看关联任务</button>
+            <button v-if="canManage" type="button" data-testid="knowledge-detail-edit" @click="$emit('edit')"><Pencil :size="15" />编辑</button>
           </div>
           <div v-if="canReview && ['candidate','draft'].includes(detail.status)" class="review-actions">
             <button type="button" class="button" @click="reviewEditing = !reviewEditing"><Pencil :size="14" />{{ reviewEditing ? '预览正文' : '编辑' }}</button>
@@ -87,8 +88,8 @@ import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { KnowledgeDetail, KnowledgeUsageRecord, RelatedTask } from '@/api/types'
 
-const props = defineProps<{ open: boolean; detail: KnowledgeDetail | null; directories: Array<{ id: string; name: string; level: number }>; canReview: boolean; working: boolean; error: string; relatedTasks: RelatedTask[]; relatedLoading: boolean; usages: KnowledgeUsageRecord[]; usagesLoading: boolean }>()
-const emit = defineEmits<{ close: []; favorite: []; helpful: []; related: []; publish: [payload: Record<string, unknown>]; reject: [reason: string]; supplement: [reason: string] }>()
+const props = defineProps<{ open: boolean; detail: KnowledgeDetail | null; directories: Array<{ id: string; name: string; level: number }>; canReview: boolean; canManage: boolean; working: boolean; error: string; relatedTasks: RelatedTask[]; relatedLoading: boolean; usages: KnowledgeUsageRecord[]; usagesLoading: boolean }>()
+const emit = defineEmits<{ close: []; favorite: []; helpful: []; related: []; edit: []; publish: [payload: Record<string, unknown>]; reject: [reason: string]; supplement: [reason: string] }>()
 const reviewEditing = ref(false)
 const relatedOpen = ref(false)
 const copied = ref(false)

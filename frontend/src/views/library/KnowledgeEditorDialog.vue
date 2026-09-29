@@ -4,7 +4,7 @@
     class="knowledge-editor-drawer"
     data-testid="knowledge-editor-drawer"
     :model-value="true"
-    title="新建知识"
+    :title="editing ? '编辑知识' : '新建知识'"
     size="min(720px, 100%)"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
@@ -18,7 +18,7 @@
       label-position="top"
       scroll-to-error
     >
-      <ElText class="editor-hint" type="info">知识先保存为草稿，经审核发布后才对数字员工可见。</ElText>
+      <ElText class="editor-hint" type="info">{{ editorHint }}</ElText>
 
       <ElFormItem label="知识标题" prop="title">
         <ElInput v-model.trim="form.title" maxlength="240" show-word-limit placeholder="请输入清晰、可检索的知识标题" />
@@ -62,7 +62,7 @@
             <ElButton :icon="Upload" plain @click="pickMarkdown">导入 .md</ElButton>
             <input ref="fileInput" class="markdown-editor__file" type="file" accept=".md,text/markdown,text/plain" @change="readMarkdown" />
           </div>
-          <ElInput v-if="markdownMode === 'edit'" v-model="form.content_md" class="markdown-editor__input" type="textarea" :rows="16" resize="vertical" placeholder="## 问题现象&#10;&#10;说明知识内容……" />
+          <ElInput v-if="markdownMode === 'edit'" v-model="form.content_md" class="markdown-editor__input" type="textarea" :rows="16" resize="vertical" aria-label="Markdown 正文编辑区" placeholder="## 问题现象&#10;&#10;说明知识内容……" />
           <div v-else class="markdown-editor__preview markdown-body" v-html="safeMarkdown" />
         </div>
       </ElFormItem>
@@ -82,7 +82,7 @@
       <ElSpace :size="10">
         <ElTag v-if="dirty" type="warning" effect="light">有未保存修改</ElTag>
         <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
-        <ElButton type="primary" :loading="saving" @click="submit">保存草稿</ElButton>
+        <ElButton type="primary" :loading="saving" data-testid="knowledge-editor-submit" @click="submit">{{ isEdit ? '保存修改' : '保存草稿' }}</ElButton>
       </ElSpace>
     </template>
   </ElDrawer>
@@ -96,9 +96,18 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElAlert, ElButton, ElDrawer, ElForm, ElFormItem, ElInput, ElOption, ElRadioGroup, ElRadioButton, ElSelect, ElSpace, ElTag, ElText } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { confirmDialog } from '@/composables/useConfirm'
+import type { KnowledgeDetail } from '@/api/types'
 
-const props = defineProps<{ open: boolean; directories: Array<{ id: string; name: string; level: number }>; saving: boolean; error: string; initialContent?: string; initialTitle?: string; initialSpaceId?: string }>()
+const props = defineProps<{ open: boolean; directories: Array<{ id: string; name: string; level: number }>; saving: boolean; error: string; editing?: KnowledgeDetail | null; initialContent?: string; initialTitle?: string; initialSpaceId?: string }>()
 const emit = defineEmits<{ close: []; save: [payload: Record<string, unknown>] }>()
+
+const isEdit = computed(() => Boolean(props.editing))
+const editorHint = computed(() => {
+  if (!props.editing) return '知识先保存为草稿，经审核发布后才对数字员工可见。'
+  return props.editing.status === 'published'
+    ? '这条知识已发布，保存后将进入同步准备；同步完成前数字员工看到的仍是已同步版本。'
+    : '保存后修改立即生效，审核状态保持不变。'
+})
 
 const types = [
   { value: 'document', label: '文档' },
@@ -128,24 +137,41 @@ const safeMarkdown = computed(() => DOMPurify.sanitize(marked.parse(form.content
 
 watch(() => props.open, (open) => {
   if (!open) return
-  Object.assign(form, {
-    space_id: props.initialSpaceId || props.directories[0]?.id || '',
-    title: props.initialTitle ?? '',
-    type: 'document',
-    verification_status: 'unverified',
-    tags: '',
-    summary: '',
-    content_md: props.initialContent ?? '',
-  })
+  const editing = props.editing
+  if (editing) {
+    Object.assign(form, {
+      space_id: editing.space_id || props.directories[0]?.id || '',
+      title: editing.title ?? '',
+      type: editing.type ?? 'document',
+      verification_status: editing.verification_status ?? 'unverified',
+      tags: (editing.tags ?? []).join(', '),
+      summary: editing.summary ?? '',
+      content_md: editing.content_md ?? '',
+    })
+  } else {
+    Object.assign(form, {
+      space_id: props.initialSpaceId || props.directories[0]?.id || '',
+      title: props.initialTitle ?? '',
+      type: 'document',
+      verification_status: 'unverified',
+      tags: '',
+      summary: '',
+      content_md: props.initialContent ?? '',
+    })
+  }
   markdownMode.value = 'edit'
   snapshot.value = JSON.stringify(form)
   formRef.value?.clearValidate()
-})
+}, { immediate: true })
 
 async function requestClose() {
   if (props.saving) return
   if (dirty.value) {
-    const confirmed = await confirmDialog({ title: '放弃未保存的知识草稿？', message: '编辑内容尚未保存，关闭后将无法恢复。', confirmLabel: '放弃并关闭', danger: true })
+    const confirmed = await confirmDialog(
+      isEdit.value
+        ? { title: '放弃未保存的知识修改？', message: '对该知识的修改尚未保存，关闭后将无法恢复。', confirmLabel: '放弃并关闭', danger: true }
+        : { title: '放弃未保存的知识草稿？', message: '编辑内容尚未保存，关闭后将无法恢复。', confirmLabel: '放弃并关闭', danger: true },
+    )
     if (!confirmed) return
   }
   emit('close')
