@@ -141,10 +141,10 @@ test('清除标签筛选后保留当前空间', async ({ page }) => {
   const requests = await mockLibraryApi(page)
   await page.goto('/library')
 
-  const rootRow = page.locator('.space-row').filter({ hasText: '公共知识库' })
-  await rootRow.locator('.space-caret').first().click()
-  const childRow = page.locator('.space-row').filter({ hasText: '工程目录' })
-  await childRow.locator('.space-main').click()
+  const rootRow = page.locator('.space-panel .el-tree-node__content').filter({ hasText: '公共知识库' })
+  await rootRow.locator('.el-tree-node__expand-icon').click()
+  const childRow = page.locator('.space-panel .el-tree-node__content').filter({ hasText: '工程目录' })
+  await childRow.locator('.space-node__name').click()
   await expect(page.locator('.knowledge-list__header h3')).toHaveText('公共知识库 / 工程目录')
 
   await openMoreFilters(page)

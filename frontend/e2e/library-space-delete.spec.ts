@@ -95,17 +95,18 @@ async function mockLibraryApi(page: Page, deletes: string[]) {
 async function expandRoot(page: Page) {
   await page.goto('/library')
   await expect(page.getByTestId('digital-library-page').getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
-  const rootRow = page.locator('.space-row').filter({ hasText: '公共知识库' })
-  await rootRow.locator('.space-caret').first().click()
-  await expect(page.locator('.space-row').filter({ hasText: '工程目录' })).toBeVisible()
+  const rootRow = page.locator('.space-panel .el-tree-node__content').filter({ hasText: '公共知识库' })
+  await rootRow.locator('.el-tree-node__expand-icon').click()
+  await expect(page.locator('.space-panel .el-tree-node__content').filter({ hasText: '工程目录' })).toBeVisible()
 }
 
 async function openDeleteMenu(page: Page, name: string) {
-  const row = page.locator('.space-row').filter({ hasText: name })
+  const row = page.locator('.space-panel .el-tree-node__content').filter({ hasText: name })
   await row.getByRole('button', { name: `管理目录 ${name}` }).click()
-  const menu = row.locator('.space-menu')
+  const menu = page.locator('.el-dropdown-menu:visible')
   await expect(menu).toBeVisible()
-  await menu.getByRole('button', { name: '删除' }).click()
+  await menu.getByText('删除', { exact: true }).click()
+  await expect(menu).toHaveCount(0)
 }
 
 test('删除非空目录只展示计数与指导，不发删除请求', async ({ page }) => {

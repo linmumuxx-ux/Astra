@@ -82,20 +82,20 @@ test('左树数量与右侧同一视图的列表总数保持一致', async ({ pa
   await expect(rootButton).toHaveAttribute('title', /可见的全部知识 39 条/)
 
   // 展开根空间，目录节点展示与查询范围一致的子树数
-  const rootRow = page.locator('.space-row').filter({ hasText: '公共知识库' })
-  await rootRow.locator('.space-caret').first().click()
-  await expect(rootRow.locator('strong')).toHaveText('3')
-  await expect(rootRow.locator('strong')).toHaveAttribute('title', /含子目录/)
+  const rootRow = page.locator('.space-panel .el-tree-node__content').filter({ hasText: '公共知识库' })
+  await rootRow.locator('.el-tree-node__expand-icon').click()
+  await expect(rootRow.locator('.space-node__count')).toHaveText('3')
+  await expect(rootRow.locator('.space-node__count')).toHaveAttribute('title', /含子目录/)
 
-  const childRow = page.locator('.space-row').filter({ hasText: '工程目录' })
+  const childRow = page.locator('.space-panel .el-tree-node__content').filter({ hasText: '工程目录' })
   await expect(childRow).toBeVisible()
-  await expect(childRow.locator('strong')).toHaveText('1')
+  await expect(childRow.locator('.space-node__count')).toHaveText('1')
 
   // 选中根空间：查询包含子目录，右侧总数与节点展示的子树数一致
-  await rootRow.locator('.space-main').click()
+  await rootRow.locator('.space-node__name').click()
   await expect(page.locator('.knowledge-list__header p')).toHaveText('3 条知识')
 
   // 选中子目录：查询范围收窄，右侧总数同步为子树内的数量
-  await childRow.locator('.space-main').click()
+  await childRow.locator('.space-node__name').click()
   await expect(page.locator('.knowledge-list__header p')).toHaveText('1 条知识')
 })

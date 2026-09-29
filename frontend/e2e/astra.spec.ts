@@ -193,7 +193,7 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
   const library = page.getByTestId('digital-library-page')
   await expect(library.getByText('公共知识库', { exact: true })).toBeVisible()
   await expect(library.locator('.library-error')).toHaveCount(0)
-  await expect(library.getByText('新建子目录', { exact: true })).toHaveCount(0)
+  await expect(page.locator('.el-dropdown-menu:visible')).toHaveCount(0)
 
   const row = library.locator('.knowledge-table-wrap tbody tr').filter({ hasText: title })
   await expect(row).toBeVisible()
@@ -204,8 +204,10 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
   await detail.getByRole('button', { name: '关闭知识详情' }).click()
 
   await library.getByRole('button', { name: /^管理目录 / }).first().click()
-  await expect(library.getByText('新建子目录', { exact: true })).toBeVisible()
-  await expect(library.getByText('移动到…', { exact: true })).toHaveCount(0)
+  const openedMenu = page.locator('.el-dropdown-menu:visible')
+  await expect(openedMenu).toBeVisible()
+  await expect(openedMenu.getByText('新建子目录', { exact: true })).toBeVisible()
+  await expect(openedMenu.getByText('移动到…', { exact: true })).toHaveCount(0)
 
   await page.route('**/api/library/permissions', (route) => route.fulfill({
     json: { user_id: 'viewer-e2e', role: 'viewer', can_manage: false, can_review: false },
@@ -221,22 +223,23 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
 test('数字图书馆目录创建保持在树内原位置并自动进入新目录', async ({ page }) => {
   await page.goto('/library')
   const library = page.getByTestId('digital-library-page')
-  const rootRow = library.locator('.tree-node').first()
-  const rootName = (await rootRow.locator('.space-label em').first().textContent())?.trim()
+  const rootRow = library.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content').first()
+  const rootName = (await rootRow.locator('.space-node__name').textContent())?.trim()
   expect(rootName).toBeTruthy()
 
   await rootRow.getByRole('button', { name: /^管理目录 / }).click()
-  await rootRow.getByRole('button', { name: '新建子目录' }).click()
+  await page.locator('.el-dropdown-menu:visible').getByText('新建子目录', { exact: true }).click()
 
   const childName = `E2E 子目录 ${Date.now()}`
-  const inlineInput = rootRow.getByLabel('子目录名称')
-  await expect(inlineInput).toBeVisible()
-  await inlineInput.fill(childName)
-  await inlineInput.press('Enter')
+  const nameInput = library.getByLabel('子目录名称')
+  await expect(nameInput).toBeVisible()
+  await nameInput.fill(childName)
+  await nameInput.press('Enter')
 
-  await expect(library.getByText(childName, { exact: true })).toBeVisible()
+  await expect(nameInput).toHaveCount(0)
+  const childRow = library.locator('.space-panel .el-tree-node.is-current > .el-tree-node__content').filter({ hasText: childName })
+  await expect(childRow).toBeVisible()
   await expect(library.getByRole('heading', { name: new RegExp(childName) })).toBeVisible()
-  await expect(library.getByLabel('子目录名称')).toHaveCount(0)
 })
 
 test('创建任务仅填写业务事实且高优先级默认人工确认', async ({ page, request }) => {

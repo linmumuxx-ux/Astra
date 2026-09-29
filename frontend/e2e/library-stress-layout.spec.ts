@@ -144,12 +144,12 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   await expect(list.locator('footer')).toContainText(`第 1 / ${ALL_TOTAL / PAGE_SIZE} 页`)
 
   // 展开全部顶层空间，形成 10 + 120 = 130 个可见树节点
-  const topSpaces = page.locator('.space-panel nav > .tree-node > .space-row > .space-main')
+  const topSpaces = page.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content')
   await expect(topSpaces).toHaveCount(TOP_SPACE_COUNT)
   for (let index = 0; index < TOP_SPACE_COUNT; index += 1) {
-    await topSpaces.nth(index).locator('.space-caret').click()
+    await topSpaces.nth(index).locator('.el-tree-node__expand-icon').click()
   }
-  const treeRows = page.locator('.space-panel nav .space-row')
+  const treeRows = page.locator('.space-panel .el-tree-node__content')
   await expect(treeRows).toHaveCount(TOP_SPACE_COUNT * (SUBDIRS_PER_SPACE + 1))
   expect(await treeRows.count()).toBeGreaterThanOrEqual(120)
 
@@ -198,11 +198,11 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   expect(overflow.pageScrollWidth).toBeLessThanOrEqual(overflow.pageClientWidth + 1)
 
   // 超长目录名以省略号收尾，且操作菜单按钮仍处于可点击的最上层
-  const longRow = page.locator('.space-panel nav > .tree-node > .space-row').filter({
-    has: page.locator(`.space-label em[title="${LONG_SPACE_NAME}"]`),
+  const longRow = page.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content').filter({
+    has: page.locator(`.space-node__name[title="${LONG_SPACE_NAME}"]`),
   })
   await expect(longRow).toBeVisible()
-  const longLabel = longRow.locator('.space-label em')
+  const longLabel = longRow.locator('.space-node__name')
   const labelMetrics = await longLabel.evaluate((element) => ({
     scrollWidth: element.scrollWidth,
     clientWidth: element.clientWidth,
@@ -214,7 +214,7 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   expect(labelMetrics.scrollWidth).toBeGreaterThan(labelMetrics.clientWidth)
 
   await longRow.scrollIntoViewIfNeeded()
-  const menuButton = longRow.locator('.space-actions button')
+  const menuButton = longRow.getByRole('button', { name: `管理目录 ${LONG_SPACE_NAME}` })
   await expect(menuButton).toBeVisible()
   const menuHit = await menuButton.evaluate((element) => {
     const rect = element.getBoundingClientRect()
@@ -224,16 +224,16 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   expect(menuHit, '超长目录名不应遮挡其操作菜单按钮').toBe(true)
 
   // 空间切换后路径与数量同步更新
-  await longRow.locator('.space-main').click()
+  await longRow.locator('.space-node__name').click()
   await expect(listHeader.locator('h3')).toHaveText(LONG_SPACE_NAME)
   await expect(listHeader.locator('p')).toHaveText('240 条知识')
   await expect(list.locator('footer')).toContainText('第 1 / 12 页')
   await expect(list.locator('tbody tr')).toHaveCount(PAGE_SIZE)
 
-  const firstSpaceRow = page.locator('.space-panel nav > .tree-node > .space-row').filter({
-    has: page.locator('.space-label em[title="知识空间 1"]'),
+  const firstSpaceRow = page.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content').filter({
+    has: page.locator('.space-node__name[title="知识空间 1"]'),
   })
-  await firstSpaceRow.locator('.space-main').click()
+  await firstSpaceRow.locator('.space-node__name').click()
   await expect(listHeader.locator('h3')).toHaveText('知识空间 1')
   await expect(listHeader.locator('p')).toHaveText(`${ALL_TOTAL} 条知识`)
 })
