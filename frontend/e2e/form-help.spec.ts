@@ -173,7 +173,7 @@ test('知识编辑与任务分类保留字段，待处理进入 Workspace', asyn
   await expect(editor.getByText('预览', { exact: true })).toBeVisible()
   await page.screenshot({ path: '../artifacts/form-help/knowledge-editor.png', fullPage: true })
   await page.goto('/settings')
-  await expect(page.locator('.config-table')).toBeVisible()
+  await expect(page.getByTestId('category-table')).toBeVisible()
   await page.screenshot({ path: '../artifacts/form-help/settings-categories.png', fullPage: true })
   await page.goto('/interventions')
   const pending = page.getByTestId('intervention-page')
