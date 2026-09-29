@@ -1,69 +1,78 @@
 <template>
-  <div class="page digital-library-page" data-testid="digital-library-page">
-    <section class="library-intro">
-      <div>
+  <ElContainer direction="vertical" class="digital-library-page" data-testid="digital-library-page">
+    <ElHeader class="library-header">
+      <div class="library-title">
         <h2>数字图书馆</h2>
-        <p>管理团队知识、经验与项目资料。</p>
+        <ElText size="small" type="info">管理团队知识、经验与项目资料。</ElText>
       </div>
-      <div class="library-head-actions">
-        <button v-if="permissions?.can_manage" type="button" class="button" @click="triggerImport"><Upload :size="15" />导入知识</button>
-        <button v-if="permissions?.can_manage" type="button" class="button button--primary" @click="beginCreate"><Plus :size="15" />新建知识</button>
+      <div class="library-actions">
+        <ElButton :icon="RefreshCw" :loading="refreshing" @click="refreshAll">刷新</ElButton>
+        <template v-if="permissions?.can_manage">
+          <ElButton :icon="Upload" @click="triggerImport">导入知识</ElButton>
+          <ElButton type="primary" :icon="Plus" @click="beginCreate">新建知识</ElButton>
+        </template>
         <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
       </div>
-    </section>
+    </ElHeader>
 
-    <section class="library-status-row">
-      <section class="knowledge-service" :data-state="serviceError || serviceStatus?.healthy === false ? 'error' : 'ok'" aria-label="知识服务状态">
+    <ElMain class="library-body">
+      <section class="library-service-bar" :data-state="serviceError || serviceStatus?.healthy === false ? 'error' : 'ok'" aria-label="知识服务状态">
         <span class="service-dot" />
         <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
         <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
-        <span v-if="(serviceStatus?.pending_count ?? 0) || (serviceStatus?.failed_count ?? 0)">待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
-        <button v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" type="button" class="text-action" :disabled="resyncing || !serviceStatus?.enabled" @click="resyncKnowledge">{{ resyncing ? '提交中…' : '重新同步' }}</button>
+        <span>待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
+        <ElButton v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" size="small" text type="primary" :loading="resyncing" :disabled="!serviceStatus?.enabled" @click="resyncKnowledge">重新同步</ElButton>
         <small v-if="serviceError || serviceStatus?.healthy === false" role="status">{{ serviceError || serviceStatus?.message }}</small>
+        <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
+          待审核经验 <strong>{{ stats?.candidate_experiences ?? 0 }}</strong><ChevronRight :size="14" />
+        </button>
       </section>
-      <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
-        待审核经验 <strong>{{ stats?.candidate_experiences ?? 0 }}</strong><ChevronRight :size="14" />
-      </button>
-    </section>
 
-    <div v-if="pageError" class="library-error"><TriangleAlert :size="16" />{{ pageError }}<button type="button" @click="loadAll">重试</button></div>
+      <ElAlert v-if="pageError" class="library-error" type="error" show-icon :closable="false" :title="pageError">
+        <ElButton size="small" @click="loadAll">重试</ElButton>
+      </ElAlert>
 
-    <section class="library-workspace">
-      <KnowledgeSpacePanel
-        :spaces="spaces"
-        :selected-id="filters.spaceId"
-        :total="stats?.visible_knowledge_total ?? 0"
-        :can-manage="Boolean(permissions?.can_manage)"
-        @select="selectSpace"
-        @create="createSpace"
-        @rename="renameSpace"
-        @move="moveSpace"
-        @delete="deleteSpace"
-      />
-      <KnowledgeList
-        :page="page"
-        :filters="filters"
-        :loading="listLoading"
-        :can-manage="Boolean(permissions?.can_manage)"
-        :can-review="Boolean(permissions?.can_review)"
-        :space-path="selectedPath"
-        :keyword="queryInput"
-        :filter-label="activeFilterLabel"
-        @search="queryInput = $event"
-        @create="beginCreate"
-        @open="openDetail"
-        @move="openMoveDialog"
-        @publish="publishFromList"
-        @archive="archiveFromList"
-        @delete="deleteFromList"
-        @batch="onBatch"
-        @page="setPage"
-        @filter="setFilter"
-        @clear-filter="clearFilters"
-      />
-    </section>
+      <ElContainer class="library-workspace" direction="horizontal">
+        <ElAside class="library-aside">
+          <KnowledgeSpacePanel
+            :spaces="spaces"
+            :selected-id="filters.spaceId"
+            :total="stats?.visible_knowledge_total ?? 0"
+            :can-manage="Boolean(permissions?.can_manage)"
+            @select="selectSpace"
+            @create="createSpace"
+            @rename="renameSpace"
+            @move="moveSpace"
+            @delete="deleteSpace"
+          />
+        </ElAside>
+        <ElMain class="library-content">
+          <KnowledgeList
+            :page="page"
+            :filters="filters"
+            :loading="listLoading"
+            :can-manage="Boolean(permissions?.can_manage)"
+            :can-review="Boolean(permissions?.can_review)"
+            :space-path="selectedPath"
+            :keyword="queryInput"
+            :filter-label="activeFilterLabel"
+            @search="queryInput = $event"
+            @create="beginCreate"
+            @open="openDetail"
+            @move="openMoveDialog"
+            @publish="publishFromList"
+            @archive="archiveFromList"
+            @delete="deleteFromList"
+            @batch="onBatch"
+            @page="setPage"
+            @filter="setFilter"
+            @clear-filter="clearFilters"
+          />
+        </ElMain>
+      </ElContainer>
 
-    <KnowledgeUsageSummary :summary="usage" />
+      <KnowledgeUsageSummary :summary="usage" />
+    </ElMain>
 
     <KnowledgeEditorDialog :open="editorOpen" :directories="directoryOptions" :saving="editorSaving" :error="editorError" :initial-content="editorInitialContent" :initial-title="editorInitialTitle" :initial-space-id="editorInitialSpaceId" @close="editorOpen = false" @save="saveKnowledge" />
     <KnowledgeDetailDialog :open="detailOpen" :detail="detail" :directories="directoryOptions" :can-review="Boolean(permissions?.can_review)" :working="detailWorking" :error="detailError" :related-tasks="relatedTasks" :related-loading="relatedLoading" :usages="usages" :usages-loading="usagesLoading" @close="closeDetail" @favorite="favorite" @helpful="helpful" @related="loadRelatedTasks" @publish="publish" @reject="reject" @supplement="supplement" />
@@ -97,8 +106,8 @@
         <label>验证状态<select v-model="publishVerification"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label>
       </form>
       <template #footer>
-        <button type="button" class="button" :disabled="working" @click="publishDialog = null">取消</button>
-        <button type="submit" form="knowledge-publish-form" class="button button--primary" :disabled="!publishSpaceId || working"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
+        <ElButton :disabled="working" @click="publishDialog = null">取消</ElButton>
+        <ElButton native-type="submit" form="knowledge-publish-form" type="primary" :loading="working" :disabled="!publishSpaceId">发布</ElButton>
       </template>
     </AstraDialog>
 
@@ -117,16 +126,17 @@
         <p>请先删除或移动这些子目录与知识，待目录为空后再删除本目录。</p>
       </div>
       <template #footer>
-        <button type="button" class="button button--primary" @click="deleteBlocked = null">知道了</button>
+        <ElButton type="primary" @click="deleteBlocked = null">知道了</ElButton>
       </template>
     </AstraDialog>
-  </div>
+  </ElContainer>
 </template>
 
 <script setup lang="ts">
-import { ChevronRight, LoaderCircle, Plus, TriangleAlert, Upload } from 'lucide-vue-next'
+import { ChevronRight, Plus, RefreshCw, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElAlert, ElAside, ElButton, ElContainer, ElHeader, ElMain, ElText } from 'element-plus'
 import { api } from '@/api/client'
 import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
@@ -149,6 +159,7 @@ const usage = ref<LibraryUsageSummary | null>(null)
 const serviceStatus = ref<LibraryServiceStatus | null>(null)
 const serviceError = ref('')
 const resyncing = ref(false)
+const refreshing = ref(false)
 let serviceTimer = 0
 let serviceLoading = false
 let disposed = false
@@ -161,6 +172,10 @@ async function loadServiceStatus() {
     serviceLoading = false
     if (!disposed) serviceTimer = window.setTimeout(loadServiceStatus, 10000)
   }
+}
+async function refreshAll() {
+  refreshing.value = true
+  try { await Promise.all([loadAll(), loadServiceStatus()]) } finally { refreshing.value = false }
 }
 async function resyncKnowledge() {
   resyncing.value = true
@@ -413,8 +428,29 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
-.digital-library-page{position:relative;display:flex;flex-direction:column;gap:12px;height:calc(100vh - 92px);min-height:620px;overflow-y:auto}.digital-library-page>*{flex:0 0 auto}.library-intro{display:flex;align-items:center;justify-content:space-between;gap:18px}.library-intro h2,.library-intro p{margin:0}.library-intro h2{color:var(--astra-text-primary)}.library-intro p{margin-top:4px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.library-head-actions{display:flex;align-items:center;gap:8px}.hidden-input{display:none}.library-status-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}.knowledge-service{display:flex;align-items:center;min-width:0;gap:8px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-service strong{color:var(--astra-text-secondary)}.knowledge-service[data-state='error'] strong,.knowledge-service[data-state='error'] .service-dot{color:var(--astra-danger);background:var(--astra-danger)}.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}.knowledge-service small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}.text-action{padding:0;color:var(--astra-primary-bright);border:0;background:transparent;font-size:inherit;cursor:pointer}.text-action:disabled{cursor:default;opacity:.5}.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}.review-queue strong{font-size:var(--astra-font-label)}.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}.library-workspace{display:grid;grid-template-columns:300px minmax(0,1fr);flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}.library-error{display:flex;align-items:center;gap:8px;padding:9px 12px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.18);border-radius:9px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.library-error button{margin-left:auto;color:inherit;border:0;background:transparent;text-decoration:underline;cursor:pointer}.move-knowledge-card{width:min(460px,100%)}.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white}.move-knowledge-card footer{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
-@media(max-width:1100px){.digital-library-page{height:auto;min-height:0;overflow:visible}.library-intro{align-items:flex-start;flex-direction:column}.library-head-actions{width:100%;flex-wrap:wrap}.library-workspace{grid-template-columns:270px minmax(0,1fr);min-height:620px}.library-status-row{align-items:flex-start;flex-direction:column}}
-@media(max-width:780px){.library-workspace{grid-template-columns:1fr;overflow:visible}.library-head-actions .button{flex:1}.knowledge-service{flex-wrap:wrap}}
+.digital-library-page{height:calc(100vh - 92px);min-height:620px;overflow:hidden;background:var(--astra-bg-base)}
+.library-header{--el-header-height:auto;--el-header-padding:0;display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
+.library-title{display:grid;min-width:0;gap:3px;margin-right:auto}
+.library-title h2{margin:0;color:var(--astra-text-primary);font-size:var(--astra-font-section);line-height:normal}
+.library-actions{display:flex;flex:none;align-items:center;gap:8px}
+.hidden-input{display:none}
+.library-body{--el-main-padding:0;display:flex;flex-direction:column;gap:12px;padding:12px 20px}
+.library-service-bar{display:flex;flex:none;align-items:center;min-width:0;gap:12px;padding:7px 12px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-panel);font-size:var(--astra-font-helper)}
+.library-service-bar strong{color:var(--astra-text-secondary)}
+.library-service-bar[data-state='error']{border-color:rgba(228,93,106,.3);background:var(--astra-danger-soft)}
+.library-service-bar[data-state='error'] strong,.library-service-bar[data-state='error'] .service-dot{color:var(--astra-danger)}
+.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}
+.library-service-bar small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}
+.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;margin-left:auto;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}
+.review-queue strong{font-size:var(--astra-font-label)}
+.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}
+.library-workspace{flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}
+.library-aside{--el-aside-width:300px;overflow:hidden;border-right:1px solid var(--astra-border)}
+.library-content{--el-main-padding:0;min-width:0;overflow:hidden}
+.library-error{flex:none}
+.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}
+.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff}
+@media(max-width:1100px){.library-aside{--el-aside-width:270px}}
+@media(max-width:780px){.library-header{align-items:flex-start;flex-wrap:wrap}.library-workspace{flex-direction:column}.library-aside{flex:none;height:300px;--el-aside-width:auto}.library-content{min-height:420px}.library-service-bar{flex-wrap:wrap}.review-queue{margin-left:0}}
 .delete-blocked{display:grid;gap:8px}.delete-blocked p{margin:0;color:var(--astra-text-secondary);line-height:1.6}.delete-blocked p strong{color:var(--astra-text-primary)}
 </style>
