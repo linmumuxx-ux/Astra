@@ -45,11 +45,8 @@
 
 .el-input-number--small.is-controls-right .el-input--small .el-input__wrapper { padding-right: 42px; }
 
-.el-input-number.is-controls-right.el-input-number--small .el-input-number__increase,
-.el-input-number.is-controls-right.el-input-number--small .el-input-number__decrease {
-  --el-input-number-controls-height: 15px;
-}
-
+/* controls-right 模式 Element Plus 自己就把 --el-input-number-controls-height 设为 15px，
+   这里只保留取消 .is-controls-right 的图标缩放，控件高度不再重复声明。 */
 .el-input-number--small .el-input-number__increase [class*='el-icon'],
 .el-input-number--small .el-input-number__decrease [class*='el-icon'] { transform: none; }
 
@@ -88,16 +85,16 @@
 
 .el-checkbox.el-checkbox--small .el-checkbox__inner::after { width: 3px; height: 7px; }
 
-.el-checkbox-button--small .el-checkbox-button__inner,
-.el-radio-button--small .el-radio-button__inner { padding: 8px 15px; font-size: var(--el-font-size-base); }
-
-/* 单选/多选按钮组：内容里的 15px 图标会把行盒撑到 34px，这里锁回控件基准。 */
+/* 单选/多选按钮组：small 档 padding 5px 11px / 12px 字号；内容里的 15px 图标会把行盒
+   撑到 34px，这里连同内边距一起锁回控件基准。 */
 .el-checkbox-button--small .el-checkbox-button__inner,
 .el-radio-button--small .el-radio-button__inner {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   height: var(--astra-control-height);
+  padding: 8px 15px;
+  font-size: var(--el-font-size-base);
 }
 
 /* 分页：small 档按钮 24px / 12px。 */
