@@ -39,7 +39,7 @@
       <ElEmpty v-else-if="binding" :image-size="80" :description="task?.current_session_id ? 'Session 绑定异常，请重连检查；系统不会自动创建新 Session。' : '任务尚未创建 Session，请先启动任务。'" />
     </ElMain>
 
-    <ElDrawer v-if="task" v-model="showInfo" class="task-info" title="任务信息" size="480px">
+    <ElDrawer v-if="task" v-model="showInfo" class="task-info" title="任务信息" size="min(480px, 100%)">
       <ElDescriptions :column="1" border size="small">
         <ElDescriptionsItem label="任务编号">{{ task.id }}</ElDescriptionsItem>
         <ElDescriptionsItem label="任务类型">{{ taskTypeLabel(task.task_type) }}</ElDescriptionsItem>

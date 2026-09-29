@@ -113,34 +113,34 @@
 
     <TaskCreateDrawer :open="createOpen" @close="createOpen = false" @created="onTaskCreated" />
 
-    <AstraDialog
+    <ElDialog
       v-if="pending"
-      :open="true"
+      data-testid="task-action-confirm"
+      :model-value="true"
       :title="pending.label"
-      :subtitle="`确认对「${shortTitle(pending.task.title)}」执行该操作？`"
-      :dismissible="false"
-      :busy="acting"
-      testid="task-action-confirm"
-      card-class="confirm-action-card"
       width="min(440px,100%)"
-      @close="pending = null"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :before-close="closePendingAction"
     >
+      <ElText size="small" type="info">{{ `确认对「${shortTitle(pending.task.title)}」执行该操作？` }}</ElText>
       <template #footer>
-        <button type="button" class="button" :disabled="acting" @click="pending = null">取消</button>
-        <button type="button" class="button button--primary" :disabled="acting" @click="runPendingAction"><LoaderCircle v-if="acting" :size="14" class="spin" /> 确认{{ pending.label }}</button>
+        <ElSpace :size="10">
+          <ElButton :disabled="acting" @click="pending = null">取消</ElButton>
+          <ElButton type="primary" :disabled="acting" :loading="acting" @click="runPendingAction">确认{{ pending.label }}</ElButton>
+        </ElSpace>
       </template>
-    </AstraDialog>
+    </ElDialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { Ban, Eye, LoaderCircle, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, SlidersHorizontal, Trash2 } from 'lucide-vue-next'
+import { Ban, Eye, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, SlidersHorizontal, Trash2 } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElButton, ElDatePicker, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
+import { ElButton, ElDatePicker, ElDialog, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import TaskCreateDrawer from '@/components/task/TaskCreateDrawer.vue'
 import { notify } from '@/composables/useToast'
@@ -258,6 +258,9 @@ async function runAction(task: Task, action: ListAction) {
     notify(error instanceof Error ? error.message : '操作失败', 'error')
   }
 }
+function closePendingAction() {
+  if (!acting.value) pending.value = null
+}
 async function runPendingAction() {
   if (!pending.value) return
   acting.value = true
@@ -301,9 +304,6 @@ async function onTaskCreated(id: string) {
 
 .row-actions { display: flex; align-items: center; gap: 2px; }
 .task-page__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-
-.confirm-action-card { width: min(440px,100%); }
-.confirm-action-card header p { margin: 5px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.55; }
 
 @media (max-width: 900px) {
   .task-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; }
