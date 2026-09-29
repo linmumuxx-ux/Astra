@@ -30,7 +30,9 @@
   /* Latin/digits/punctuation use Times New Roman; CJK uses Microsoft YaHei.
      Both fonts must be installed on the client. Keep the existing UI size scale. */
   --astra-font-micro: 9px;
-  --astra-font-helper: 11px;
+  /* 辅助说明文字（副标题、计数、提示行）。11px 在 1280×720 下已不可读，
+     与控件字号取同一档；更小的场景仍用 --astra-font-micro。 */
+  --astra-font-helper: 13px;
   --astra-font-control: 13px;
   --astra-font-body: 14px;
   --astra-font-label: 14px;
