@@ -170,12 +170,14 @@ test('任务创建和系统偏好使用统一提示，附件反馈保持可见',
 
 test('知识编辑、分类、来源表单保留字段，待处理进入 Workspace', async ({ page }) => {
   await page.goto('/library')
-  await page.getByRole('button', { name: '新建知识', exact: true }).click()
-  const editor = page.locator('.knowledge-editor')
+  await page.getByRole('button', { name: '新建知识', exact: true }).first().click()
+  const editor = page.getByTestId('knowledge-editor-drawer')
   await expect(editor).toBeVisible()
-  await expect(editor.getByLabel('知识标题 *')).toHaveAttribute('required', '')
+  await expect(editor.getByLabel('知识标题')).toBeVisible()
+  await expect(editor.getByLabel('所属目录')).toBeVisible()
   await expect(editor.getByLabel('摘要')).toBeVisible()
-  await expect(editor.locator('label > small')).toHaveCount(0)
+  await expect(editor.getByRole('button', { name: '导入 .md' })).toBeVisible()
+  await expect(editor.getByText('预览', { exact: true })).toBeVisible()
   await page.screenshot({ path: '../artifacts/form-help/knowledge-editor.png', fullPage: true })
   for (const tab of ['categories', 'sources']) {
     await page.goto(`/settings?tab=${tab}`)

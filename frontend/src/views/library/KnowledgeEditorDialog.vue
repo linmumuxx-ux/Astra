@@ -1,45 +1,147 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="editor-backdrop">
-      <form class="knowledge-editor" role="dialog" aria-modal="true" aria-labelledby="knowledge-editor-title" @submit.prevent="save">
-        <header><div><h3 id="knowledge-editor-title">新建知识</h3><p>知识先保存为草稿，经审核发布后才对数字员工可见。</p></div><button type="button" aria-label="关闭" @click="requestClose"><X :size="18" /></button></header>
-        <div class="editor-body">
-          <div class="editor-grid"><label>知识标题 *<input v-model.trim="form.title" required maxlength="240" placeholder="请输入清晰、可检索的知识标题" /></label><label>所属目录 *<select v-model="form.space_id" required><option value="" disabled>请选择</option><option v-for="dir in directories" :key="dir.id" :value="dir.id">{{ dir.name }}</option></select></label></div>
-          <div class="editor-grid editor-grid--three"><label>知识类型<select v-model="form.type"><option v-for="item in types" :key="item.value" :value="item.value">{{ item.label }}</option></select></label><label>验证状态<select v-model="form.verification_status"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label><label>标签<input v-model="form.tags" placeholder="用逗号分隔" /></label></div>
-          <label>摘要<textarea v-model.trim="form.summary" rows="2" maxlength="4000" placeholder="用于列表与搜索结果的简短说明" /></label>
-          <label class="markdown-field"><span>Markdown 正文 *<label class="file-button"><Upload :size="13" />导入 .md<input type="file" accept=".md,text/markdown,text/plain" @change="readMarkdown" /></label></span><textarea v-model="form.content_md" required rows="16" placeholder="## 问题现象\n\n说明知识内容……" /></label>
-          <p v-if="error" class="editor-error">{{ error }}</p>
+  <ElDrawer
+    v-if="open"
+    class="knowledge-editor-drawer"
+    data-testid="knowledge-editor-drawer"
+    :model-value="true"
+    title="新建知识"
+    size="min(720px, 100%)"
+    :close-on-click-modal="false"
+    :close-on-press-escape="false"
+    :before-close="requestClose"
+  >
+    <ElForm
+      ref="formRef"
+      class="knowledge-editor-form"
+      :model="form"
+      :rules="rules"
+      label-position="top"
+      scroll-to-error
+    >
+      <ElText class="editor-hint" type="info">知识先保存为草稿，经审核发布后才对数字员工可见。</ElText>
+
+      <ElFormItem label="知识标题" prop="title">
+        <ElInput v-model.trim="form.title" maxlength="240" show-word-limit placeholder="请输入清晰、可检索的知识标题" />
+      </ElFormItem>
+
+      <ElFormItem label="所属目录" prop="space_id">
+        <ElSelect v-model="form.space_id" placeholder="请选择">
+          <ElOption v-for="dir in directories" :key="dir.id" :value="dir.id" :label="dir.name" />
+        </ElSelect>
+      </ElFormItem>
+
+      <ElFormItem label="知识类型" prop="type">
+        <ElSelect v-model="form.type">
+          <ElOption v-for="item in types" :key="item.value" :value="item.value" :label="item.label" />
+        </ElSelect>
+      </ElFormItem>
+
+      <ElFormItem label="验证状态" prop="verification_status">
+        <ElSelect v-model="form.verification_status">
+          <ElOption value="unverified" label="未验证" />
+          <ElOption value="verified" label="已验证" />
+          <ElOption value="failed" label="验证失败" />
+        </ElSelect>
+      </ElFormItem>
+
+      <ElFormItem label="标签" prop="tags">
+        <ElInput v-model="form.tags" placeholder="用逗号分隔" />
+      </ElFormItem>
+
+      <ElFormItem label="摘要" prop="summary">
+        <ElInput v-model.trim="form.summary" type="textarea" :rows="2" maxlength="4000" show-word-limit placeholder="用于列表与搜索结果的简短说明" />
+      </ElFormItem>
+
+      <ElFormItem label="Markdown 正文" prop="content_md">
+        <div class="markdown-editor">
+          <div class="markdown-editor__toolbar">
+            <ElRadioGroup v-model="markdownMode" size="small">
+              <ElRadioButton value="edit">编辑</ElRadioButton>
+              <ElRadioButton value="preview">预览</ElRadioButton>
+            </ElRadioGroup>
+            <ElButton :icon="Upload" plain @click="pickMarkdown">导入 .md</ElButton>
+            <input ref="fileInput" class="markdown-editor__file" type="file" accept=".md,text/markdown,text/plain" @change="readMarkdown" />
+          </div>
+          <ElInput v-if="markdownMode === 'edit'" v-model="form.content_md" class="markdown-editor__input" type="textarea" :rows="16" resize="vertical" placeholder="## 问题现象&#10;&#10;说明知识内容……" />
+          <div v-else class="markdown-editor__preview markdown-body" v-html="safeMarkdown" />
         </div>
-        <footer><button type="button" class="button" :disabled="saving" @click="requestClose">取消</button><button class="button button--primary" :disabled="saving"><LoaderCircle v-if="saving" :size="14" class="spin" />保存草稿</button></footer>
-      </form>
-    </div>
-  </Teleport>
+      </ElFormItem>
+
+      <ElAlert
+        v-if="error"
+        data-testid="knowledge-editor-error"
+        class="editor-error"
+        type="error"
+        show-icon
+        :closable="false"
+        :title="error"
+      />
+    </ElForm>
+
+    <template #footer>
+      <ElSpace :size="10">
+        <ElTag v-if="dirty" type="warning" effect="light">有未保存修改</ElTag>
+        <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
+        <ElButton type="primary" :loading="saving" @click="submit">保存草稿</ElButton>
+      </ElSpace>
+    </template>
+  </ElDrawer>
 </template>
 
 <script setup lang="ts">
-import { LoaderCircle, Upload, X } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
+import { Upload } from 'lucide-vue-next'
+import { computed, reactive, ref, watch } from 'vue'
+import { ElAlert, ElButton, ElDrawer, ElForm, ElFormItem, ElInput, ElOption, ElRadioGroup, ElRadioButton, ElSelect, ElSpace, ElTag, ElText } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { confirmDialog } from '@/composables/useConfirm'
-
 
 const props = defineProps<{ open: boolean; directories: Array<{ id: string; name: string; level: number }>; saving: boolean; error: string; initialContent?: string; initialTitle?: string; initialSpaceId?: string }>()
 const emit = defineEmits<{ close: []; save: [payload: Record<string, unknown>] }>()
-const types = [{ value: 'document', label: '文档' }, { value: 'rule', label: '规范' }, { value: 'guide', label: '指南' }, { value: 'experience', label: '经验' }, { value: 'faq', label: 'FAQ' }, { value: 'tool', label: '工具' }, { value: 'example', label: '示例' }]
+
+const types = [
+  { value: 'document', label: '文档' },
+  { value: 'rule', label: '规范' },
+  { value: 'guide', label: '指南' },
+  { value: 'experience', label: '经验' },
+  { value: 'faq', label: 'FAQ' },
+  { value: 'tool', label: '工具' },
+  { value: 'example', label: '示例' },
+]
+
+const formRef = ref<FormInstance | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const markdownMode = ref<'edit' | 'preview'>('edit')
 const form = reactive({ space_id: '', title: '', type: 'document', verification_status: 'unverified', tags: '', summary: '', content_md: '' })
 const snapshot = ref('')
 const dirty = computed(() => JSON.stringify(form) !== snapshot.value)
-let previousOverflow = ''
+
+const rules: FormRules = {
+  title: [{ required: true, message: '请输入知识标题', trigger: 'blur' }],
+  space_id: [{ required: true, message: '请选择所属目录', trigger: 'change' }],
+  content_md: [{ required: true, message: '请输入 Markdown 正文', trigger: 'blur' }],
+}
+
+marked.setOptions({ gfm: true, breaks: false })
+const safeMarkdown = computed(() => DOMPurify.sanitize(marked.parse(form.content_md || '', { async: false }) as string, { USE_PROFILES: { html: true } }))
+
 watch(() => props.open, (open) => {
-  if (open) {
-    previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    Object.assign(form, { space_id: props.initialSpaceId || props.directories[0]?.id || '', title: props.initialTitle ?? '', type: 'document', verification_status: 'unverified', tags: '', summary: '', content_md: props.initialContent ?? '' })
-    snapshot.value = JSON.stringify(form)
-  } else {
-    document.body.style.overflow = previousOverflow
-  }
+  if (!open) return
+  Object.assign(form, {
+    space_id: props.initialSpaceId || props.directories[0]?.id || '',
+    title: props.initialTitle ?? '',
+    type: 'document',
+    verification_status: 'unverified',
+    tags: '',
+    summary: '',
+    content_md: props.initialContent ?? '',
+  })
+  markdownMode.value = 'edit'
+  snapshot.value = JSON.stringify(form)
+  formRef.value?.clearValidate()
 })
-onBeforeUnmount(() => { document.body.style.overflow = previousOverflow })
+
 async function requestClose() {
   if (props.saving) return
   if (dirty.value) {
@@ -48,17 +150,54 @@ async function requestClose() {
   }
   emit('close')
 }
-function save() { emit('save', { ...form, tags: form.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) }) }
+
+async function submit() {
+  if (props.saving) return
+  const valid = formRef.value ? await formRef.value.validate().catch(() => false) : false
+  if (!valid) return
+  emit('save', { ...form, tags: form.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) })
+}
+
+function pickMarkdown() {
+  fileInput.value?.click()
+}
+
 async function readMarkdown(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file) return
-  form.content_md = await file.text()
-  if (!form.title) form.title = file.name.replace(/\.md$/i, '')
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) {
+    form.content_md = await file.text()
+    if (!form.title) form.title = file.name.replace(/\.md$/i, '')
+  }
+  input.value = ''
 }
 </script>
 
 <style scoped>
-.editor-backdrop { position: fixed; z-index: 1200; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(16,37,34,.38); backdrop-filter: blur(2px); }.knowledge-editor { display: grid; grid-template-rows: auto minmax(0,1fr) auto; width: min(860px,100%); max-height: 86vh; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 15px; background: white; box-shadow: 0 24px 70px rgba(16,37,34,.22); }.knowledge-editor>header { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 20px;border-bottom:1px solid var(--astra-border) }.knowledge-editor h3,.knowledge-editor p{margin:0}.knowledge-editor h3{color:var(--astra-text-primary);}.knowledge-editor header p{margin-top:4px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.knowledge-editor header>button{display:grid;place-items:center;width:34px;height:34px;color:var(--astra-text-muted);border:0;border-radius:8px;background:#f3f7f5;cursor:pointer}
-.editor-body { display:grid;gap:14px;overflow-y:auto;padding:18px 20px }.editor-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(180px,.7fr);gap:12px}.editor-grid--three{grid-template-columns:repeat(3,1fr)}.editor-body label{display:grid;gap:6px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}.editor-body input,.editor-body select,.editor-body textarea{width:100%;padding:9px 10px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:white;font:inherit;outline:none}.editor-body input,.editor-body select{height:40px}.editor-body input:focus,.editor-body select:focus,.editor-body textarea:focus{border-color:var(--astra-primary-border);box-shadow:0 0 0 3px var(--astra-primary-soft)}.markdown-field>span{display:flex;align-items:center;justify-content:space-between}.file-button{display:inline-flex!important;align-items:center;gap:5px;padding:5px 8px;color:var(--astra-primary-bright)!important;border:1px solid var(--astra-primary-border);border-radius:7px;background:var(--astra-primary-soft);cursor:pointer}.file-button input{display:none}.markdown-field textarea{min-height:300px;resize:vertical;font-family:var(--astra-font-family);font-size:var(--astra-font-body);line-height:1.55}.editor-error{padding:9px 11px;color:var(--astra-danger);border-radius:8px;background:var(--astra-danger-soft);font-size:var(--astra-font-body)}.knowledge-editor>footer{display:flex;justify-content:flex-end;gap:8px;padding:13px 20px;border-top:1px solid var(--astra-border);background:#fbfdfc}
-@media(max-width:700px){.editor-grid,.editor-grid--three{grid-template-columns:1fr}.knowledge-editor{max-height:94vh}.editor-backdrop{padding:8px}}
+.knowledge-editor-form { display: grid; gap: 2px; }
+.editor-hint { margin-bottom: 6px; }
+.markdown-editor { display: grid; gap: 8px; width: 100%; }
+.markdown-editor__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.markdown-editor__file { display: none; }
+.markdown-editor__input :deep(.el-textarea__inner) { min-height: 320px; font-family: var(--astra-font-family); font-size: var(--astra-font-body); line-height: 1.55; }
+.markdown-editor__preview { min-height: 320px; max-height: 46vh; overflow: auto; padding: 12px 14px; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 8px; background: #fbfdfc; font-size: var(--astra-font-body); line-height: 1.6; }
+.editor-error { margin-top: 4px; }
+.markdown-editor__preview :deep(h1), .markdown-editor__preview :deep(h2), .markdown-editor__preview :deep(h3) { margin: 12px 0 8px; color: var(--astra-text-primary); line-height: 1.35; }
+.markdown-editor__preview :deep(h1) { font-size: var(--astra-font-title); }
+.markdown-editor__preview :deep(h2) { font-size: var(--astra-font-section); }
+.markdown-editor__preview :deep(h3) { font-size: var(--astra-font-label); }
+.markdown-editor__preview :deep(p) { margin: 8px 0; }
+.markdown-editor__preview :deep(ul), .markdown-editor__preview :deep(ol) { padding-left: 22px; margin: 8px 0; }
+.markdown-editor__preview :deep(blockquote) { margin: 10px 0; padding: 8px 12px; color: var(--astra-text-secondary); border-left: 3px solid var(--astra-primary); background: var(--astra-primary-soft); }
+.markdown-editor__preview :deep(code) { padding: 2px 5px; color: #b45140; border-radius: 5px; background: #f4efec; font-family: var(--astra-font-family); font-size: .9em; }
+.markdown-editor__preview :deep(pre) { overflow: auto; padding: 12px; border: 1px solid var(--astra-border); border-radius: 8px; background: #15231f; }
+.markdown-editor__preview :deep(pre code) { padding: 0; color: #dcebe5; background: transparent; }
+.markdown-editor__preview :deep(table) { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.markdown-editor__preview :deep(th), .markdown-editor__preview :deep(td) { padding: 7px 10px; border: 1px solid var(--astra-border); }
+.markdown-editor__preview :deep(th) { background: #f3f8f5; }
+.markdown-editor__preview :deep(a) { color: var(--astra-primary-bright); text-decoration: underline; }
+</style>
+
+<style>
+.knowledge-editor-drawer .el-drawer__footer { display: flex; align-items: center; justify-content: flex-end; }
 </style>
