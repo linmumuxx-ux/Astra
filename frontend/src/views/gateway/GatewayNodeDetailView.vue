@@ -582,6 +582,17 @@ const error = ref('')
 const editorOpen = ref(false)
 const allProbes: GatewayProbeType[] = ['NETWORK', 'SERVICE', 'MODEL', 'STREAM']
 
+// 竞态守卫：切换节点或整页刷新都会推进 generation，只有最新一轮响应可以落地，
+// 否则慢响应会把上一个节点 / 上一个统计窗口的数据写回页面。
+let generation = 0
+let statsSeq = 0
+
+// 统计、日志与节点操作和整页加载一致：控制面凭据失效立即退回接入表单，
+// 不再用过期会话继续请求，也不再把 401 当成区块级错误提示。
+function unauthorized(reason: unknown): boolean {
+  return reason instanceof GatewayApiError && reason.status === 401
+}
+
 const windowLabel = computed(() => windows.find((item) => item.id === statsWindow.value)?.label ?? '')
 const probeAuthentication = computed(() => authenticationResult(healthChecks.value))
 
@@ -684,6 +695,7 @@ function jumpTo(index: string): void {
 }
 
 async function load(): Promise<void> {
+  const current = ++generation
   loading.value = true
   error.value = ''
   try {
@@ -691,44 +703,77 @@ async function load(): Promise<void> {
       gatewayApi.node(nodeId.value),
       gatewayApi.pools(),
       gatewayApi.healthChecks(nodeId.value, 100),
-      gatewayApi.requests({ node_id: nodeId.value, page: 1, page_size: 50 }),
+      // 整页刷新与节点操作后停在当前日志页：只有切换节点才会回到第 1 页。
+      gatewayApi.requests({ node_id: nodeId.value, page: requests.value.page, page_size: requests.value.page_size }),
       gatewayApi.stats('node', 'hour', nodeId.value),
       gatewayApi.stats('node', 'today', nodeId.value),
     ])
+    if (current !== generation) return
     node.value = nodeValue
     pools.value = poolList
     healthChecks.value = checks
     requests.value = requestPage
     hourTokens.value = hours
     dayTokens.value = days
+    // 日志总量变少会让当前页越界，回退到末页重取，避免停在空白页。
+    const lastPage = Math.max(1, Math.ceil(requestPage.total / requestPage.page_size))
+    if (requestPage.page > lastPage) await loadRequests(lastPage)
     await loadStats()
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
+    if (current !== generation) return
+    if (unauthorized(reason)) { disconnect(); return }
     error.value = errorMessage(reason, '节点详情加载失败')
   } finally {
-    loading.value = false
-    await nextTick()
-    syncActiveSection()
+    if (current === generation) {
+      loading.value = false
+      await nextTick()
+      syncActiveSection()
+    }
   }
 }
 
 async function loadStats(): Promise<void> {
+  const current = generation
+  const seq = ++statsSeq
   try {
-    stats.value = await gatewayApi.stats('node', statsWindow.value, nodeId.value)
+    const value = await gatewayApi.stats('node', statsWindow.value, nodeId.value)
+    // 连续切换窗口时只认最后一次响应，慢的旧响应直接丢弃。
+    if (current !== generation || seq !== statsSeq) return
+    stats.value = value
   } catch (reason) {
+    if (current !== generation || seq !== statsSeq) return
+    if (unauthorized(reason)) { disconnect(); return }
     error.value = errorMessage(reason, '统计加载失败')
   }
 }
 
 async function loadRequests(target: number = requests.value.page): Promise<void> {
+  const current = generation
   logsLoading.value = true
   try {
-    requests.value = await gatewayApi.requests({ node_id: nodeId.value, page: target, page_size: requests.value.page_size })
+    const page = await gatewayApi.requests({ node_id: nodeId.value, page: target, page_size: requests.value.page_size })
+    if (current !== generation) return
+    requests.value = page
   } catch (reason) {
+    if (current !== generation) return
+    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '日志加载失败'), 'error')
   } finally {
-    logsLoading.value = false
+    if (current === generation) logsLoading.value = false
   }
+}
+
+// 切换节点时立刻清空上一个节点的数据：旧节点的名称、指标、探测记录与操作按钮
+// 都不该留在新路由下；同时推进 generation 作废在途响应。
+function resetNodeState(): void {
+  generation += 1
+  node.value = null
+  healthChecks.value = []
+  stats.value = null
+  hourTokens.value = null
+  dayTokens.value = null
+  requests.value = { items: [], total: 0, page: 1, page_size: requests.value.page_size }
+  error.value = ''
 }
 
 async function probe(): Promise<void> {
@@ -739,6 +784,7 @@ async function probe(): Promise<void> {
     notify(`探测完成：${passed}/${result.checks.length} 项通过`, passed === result.checks.length ? 'success' : 'info')
     await load()
   } catch (reason) {
+    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '探测失败'), 'error')
   } finally {
     working.value = false
@@ -754,6 +800,7 @@ async function drain(): Promise<void> {
     notify('节点已进入安全下线')
     await load()
   } catch (reason) {
+    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '下线失败'), 'error')
   } finally {
     working.value = false
@@ -767,6 +814,7 @@ async function restore(): Promise<void> {
     notify('节点已恢复调度')
     await load()
   } catch (reason) {
+    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '恢复失败'), 'error')
   } finally {
     working.value = false
@@ -782,6 +830,7 @@ async function toggleConfig(): Promise<void> {
     notify(enable ? '节点已启用' : '节点已禁用')
     await load()
   } catch (reason) {
+    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '状态更新失败'), 'error')
   } finally {
     working.value = false
@@ -796,7 +845,10 @@ function backToList(): void {
   void router.push('/gateway/nodes')
 }
 
-watch(nodeId, () => { void load() })
+watch(nodeId, () => {
+  resetNodeState()
+  void load()
+})
 watch(statsWindow, () => { void loadStats() })
 
 onMounted(() => {

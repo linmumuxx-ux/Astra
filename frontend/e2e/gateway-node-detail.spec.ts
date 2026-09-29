@@ -6,6 +6,8 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 const CONTROL_TOKEN = 'e2e-gateway-node-detail-token'
 const NODE_ID = 'node-alpha'
 const NODE_PATH = `/gateway/nodes/${NODE_ID}`
+const BETA_ID = 'node-beta'
+const BETA_PATH = `/gateway/nodes/${BETA_ID}`
 
 type Json = Record<string, unknown>
 
@@ -14,6 +16,13 @@ interface MockOptions {
   failFirstNode?: boolean
   unauthorized?: boolean
   failLogRefresh?: boolean
+  // 按端点只让非整页请求返回 401，验证统计 / 日志 / 节点操作与整页一致地退回接入表单。
+  unauthorizedOn?: 'stats' | 'requests' | 'action'
+  // 显式延迟，用来控制响应顺序，复现统计窗口与节点切换的竞态。
+  statsDelayMs?: Record<string, number>
+  nodeDelayMs?: Record<string, number>
+  // 这些节点 id 的详情直接 500，用来验证新节点加载失败后不再残留旧节点的可操作内容。
+  failingNodeIds?: string[]
 }
 
 interface MockState {
@@ -25,6 +34,8 @@ interface MockState {
   statsWindows: string[]
   requestPages: string[]
   nodeAttempts: number
+  // 日志总数，可被用例改写以验证刷新后总页数变少时回退末页。
+  logTotal: number
 }
 
 function nodeFixture(): Json {
@@ -59,10 +70,20 @@ function nodeFixture(): Json {
   }
 }
 
-function checkFixture(id: number, probeType: string, extra: Json = {}): Json {
+function betaFixture(): Json {
+  return {
+    ...nodeFixture(),
+    id: BETA_ID,
+    name: 'Beta 节点',
+    base_url: 'https://beta.example.test',
+    models: ['gpt-beta'],
+  }
+}
+
+function checkFixture(id: number, probeType: string, extra: Json = {}, nodeId = NODE_ID): Json {
   return {
     id,
-    node_id: NODE_ID,
+    node_id: nodeId,
     probe_type: probeType,
     success: true,
     latency_ms: 10 + id,
@@ -74,22 +95,22 @@ function checkFixture(id: number, probeType: string, extra: Json = {}): Json {
   }
 }
 
-function healthCheckFixtures(): Json[] {
+function healthCheckFixtures(nodeId = NODE_ID): Json[] {
   return [
-    checkFixture(1, 'NETWORK'),
-    checkFixture(2, 'SERVICE'),
-    checkFixture(3, 'MODEL'),
-    checkFixture(4, 'STREAM'),
-    checkFixture(5, 'MODEL', { success: false, status_code: 502, error: '上游返回 502' }),
+    checkFixture(1, 'NETWORK', {}, nodeId),
+    checkFixture(2, 'SERVICE', {}, nodeId),
+    checkFixture(3, 'MODEL', {}, nodeId),
+    checkFixture(4, 'STREAM', {}, nodeId),
+    checkFixture(5, 'MODEL', { success: false, status_code: 502, error: '上游返回 502' }, nodeId),
   ]
 }
 
 const statsWindows: Record<string, number> = { hour: 6, today: 42, '7d': 310, '30d': 2400 }
 
-function statsFixture(window: string): Json {
+function statsFixture(window: string, scopeId = NODE_ID): Json {
   return {
     scope: 'node',
-    scope_id: NODE_ID,
+    scope_id: scopeId,
     window,
     window_start: '2026-01-02T00:00:00Z',
     window_end: '2026-01-02T23:59:59Z',
@@ -116,14 +137,14 @@ function statsFixture(window: string): Json {
   }
 }
 
-function logFixture(index: number, page: number): Json {
+function logFixture(index: number, page: number, nodeId = NODE_ID): Json {
   return {
-    id: `req-${page}-${index}`,
+    id: `req-${nodeId}-${page}-${index}`,
     key_id: 'key-e2e-0001',
     owner_id: 'user-e2e',
     model: page === 1 ? 'gpt-test' : 'gpt-pro',
     pool_id: 'pool-1',
-    node_id: NODE_ID,
+    node_id: nodeId,
     streaming: index % 2 === 0,
     retry_count: index % 3,
     status_code: index === 3 ? 502 : 200,
@@ -145,7 +166,7 @@ function logFixture(index: number, page: number): Json {
 
 async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockState> {
   const state: MockState = {
-    nodes: [nodeFixture()],
+    nodes: [nodeFixture(), betaFixture()],
     patched: [],
     probes: [],
     drains: [],
@@ -153,11 +174,12 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     statsWindows: [],
     requestPages: [],
     nodeAttempts: 0,
+    logTotal: 120,
   }
   await page.addInitScript((token) => {
     window.sessionStorage.setItem('astra.gateway.control.token', token)
   }, CONTROL_TOKEN)
-  await page.route('**/api/gateway/**', (route) => {
+  await page.route('**/api/gateway/**', async (route) => {
     const request = route.request()
     const method = request.method()
     const url = new URL(request.url())
@@ -165,6 +187,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     const body = (): Json => (request.postData() ? JSON.parse(request.postData() as string) : {})
+    const sleep = (ms: number) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve())
 
     if (pathname === '/api/gateway/permissions') {
       return json({ actor: 'e2e-admin', roles: options.roles ?? ['node'] })
@@ -174,7 +197,12 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
         { id: 'pool-1', name: '默认资源池', description: '', weight: 100, enabled: true, sort_order: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
       ])
     }
+    if (pathname === '/api/gateway/nodes') return json(state.nodes)
     if (pathname === '/api/gateway/requests') {
+      // 首屏之后的日志请求才模拟凭据失效，验证日志自身的 401 也退回接入表单。
+      if (options.unauthorizedOn === 'requests' && state.requestPages.length > 0) {
+        return json({ detail: '控制面凭据已失效' }, 401)
+      }
       state.requestPages.push(`${url.searchParams.get('node_id')}#${url.searchParams.get('page')}`)
       // 只让首屏之后的日志刷新失败，用来验证「日志失败不牵连其它区块」。
       if (options.failLogRefresh && state.requestPages.length > 1) {
@@ -182,35 +210,44 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
       }
       const target = Number(url.searchParams.get('page') ?? '1')
       return json({
-        items: Array.from({ length: 3 }, (_, index) => logFixture(index + 1, target)),
-        total: 120,
+        items: Array.from({ length: 3 }, (_, index) => logFixture(index + 1, target, url.searchParams.get('node_id') ?? NODE_ID)),
+        total: state.logTotal,
         page: target,
         page_size: Number(url.searchParams.get('page_size') ?? '50'),
       })
     }
     if (pathname === '/api/gateway/stats') {
       const window = url.searchParams.get('window') ?? 'today'
+      // 整页固定拉取的 hour / today 放行，只有交互切换的窗口才模拟凭据失效。
+      if (options.unauthorizedOn === 'stats' && window !== 'hour' && window !== 'today') {
+        return json({ detail: '控制面凭据已失效' }, 401)
+      }
       state.statsWindows.push(window)
-      return json(statsFixture(window))
+      await sleep(options.statsDelayMs?.[window] ?? 0)
+      return json(statsFixture(window, url.searchParams.get('scope_id') ?? NODE_ID))
     }
-    if (/^\/api\/gateway\/nodes\/[^/]+\/health-checks$/.test(pathname)) return json(healthCheckFixtures())
+    if (/^\/api\/gateway\/nodes\/[^/]+\/health-checks$/.test(pathname)) {
+      return json(healthCheckFixtures(decodeURIComponent(/^\/api\/gateway\/nodes\/([^/]+)\/health-checks$/.exec(pathname)?.[1] ?? NODE_ID)))
+    }
     const action = /^\/api\/gateway\/nodes\/([^/]+)\/(probe|drain|activate)$/.exec(pathname)
     if (action && method === 'POST') {
+      if (options.unauthorizedOn === 'action') return json({ detail: '控制面凭据已失效' }, 401)
       const id = decodeURIComponent(action[1])
       const kind = action[2]
+      const current = state.nodes.find((item) => item.id === id) ?? (state.nodes[0] as Json)
       if (kind === 'probe') {
         const payload = body()
         state.probes.push({ id, body: payload })
         const types = (payload.probe_types ?? []) as string[]
         return json({
-          node: state.nodes[0],
-          checks: types.map((type, index) => checkFixture(index + 1, type, { created_at: '2026-01-03T00:00:00Z' })),
+          node: current,
+          checks: types.map((type, index) => checkFixture(index + 1, type, { created_at: '2026-01-03T00:00:00Z' }, id)),
         })
       }
       const scheduling = kind === 'drain' ? 'DRAINING' : 'ACTIVE'
       state[kind === 'drain' ? 'drains' : 'activates'].push(id)
-      state.nodes = [{ ...(state.nodes[0] as Json), scheduling_state: scheduling }]
-      return json(state.nodes[0])
+      state.nodes = state.nodes.map((item) => (item.id === id ? { ...item, scheduling_state: scheduling } : item))
+      return json(state.nodes.find((item) => item.id === id) ?? current)
     }
     const single = /^\/api\/gateway\/nodes\/([^/]+)$/.exec(pathname)
     if (single) {
@@ -218,7 +255,11 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
       const id = decodeURIComponent(single[1])
       if (method === 'GET') {
         state.nodeAttempts += 1
+        await sleep(options.nodeDelayMs?.[id] ?? 0)
         if (options.failFirstNode && state.nodeAttempts === 1) {
+          return json({ detail: '节点详情服务暂不可用' }, 500)
+        }
+        if (options.failingNodeIds?.includes(id)) {
           return json({ detail: '节点详情服务暂不可用' }, 500)
         }
         return json(state.nodes.find((item) => item.id === id) ?? { ...(state.nodes[0] as Json), id })
@@ -258,6 +299,15 @@ function descriptions(content: Locator) {
 async function openDetail(page: Page) {
   await page.goto(NODE_PATH)
   await expect(page.getByRole('heading', { level: 2, name: 'Alpha 节点' })).toBeVisible()
+}
+
+// 同一条路由记录内换节点 id，组件实例被复用，走的正是 watch(nodeId) 而不是整页刷新。
+async function switchNodeRoute(page: Page, path: string) {
+  await page.evaluate((target) => {
+    window.history.pushState({}, '', target)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }))
+  }, path)
+  await expect(page).toHaveURL(new RegExp(`${path}$`))
 }
 
 test.describe('API 中转 · 节点详情', () => {
@@ -486,5 +536,112 @@ test.describe('API 中转 · 节点详情', () => {
     await expect(page.getByTestId('gateway-node-logs-total')).toContainText('共 120 条 · 第 1 页')
     await expect(page.getByTestId('gateway-node-info')).toContainText('https://alpha.example.test')
   })
+
+  test('统计窗口快速切换只采纳最后一次响应', async ({ page }) => {
+    const state = await mockGateway(page, { statsDelayMs: { '7d': 900 } })
+    await openDetail(page)
+    await expect(metricValue(page, 'requests')).toHaveText('42')
+
+    // 近 7 天故意慢：先切过去再立刻切回今日，慢的旧响应必须被丢弃。
+    await page.getByTestId('gateway-node-window').getByText('近 7 天', { exact: true }).click()
+    await page.getByTestId('gateway-node-window').getByText('今日', { exact: true }).click()
+    await expect.poll(() => state.statsWindows.filter((item) => item === '7d').length).toBeGreaterThan(0)
+
+    await expect(metricValue(page, 'requests')).toHaveText('42')
+    await expect(page.getByTestId('gateway-node-window')).toContainText('今日')
+    // 旧的近 7 天响应此刻才返回，落地就会把指标改成 310。
+    await page.waitForTimeout(1200)
+    await expect(metricValue(page, 'requests')).toHaveText('42')
+  })
+
+  test('切换节点立即清空旧数据，切换后不残留上一个节点', async ({ page }) => {
+    await mockGateway(page, { nodeDelayMs: { [BETA_ID]: 900 } })
+    await openDetail(page)
+    await expect(page.getByTestId('gateway-node-info')).toContainText('https://alpha.example.test')
+
+    await switchNodeRoute(page, BETA_PATH)
+
+    // Beta 还在加载：Alpha 的名称、探测表和操作按钮都不能留在新路由下。
+    await expect(page.getByTestId('gateway-node-state')).toBeVisible()
+    await expect(page.getByText('Alpha 节点', { exact: true })).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-probe')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-probe-table')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-logs-total')).toHaveCount(0)
+
+    await expect(page.getByRole('heading', { level: 2, name: 'Beta 节点' })).toBeVisible()
+    await expect(page.getByTestId('gateway-node-info')).toContainText('https://beta.example.test')
+    await expect(page.getByTestId('gateway-node-info')).toContainText('gpt-beta')
+  })
+
+  test('切换节点时旧节点的慢响应不覆盖新节点', async ({ page }) => {
+    await mockGateway(page, { nodeDelayMs: { [NODE_ID]: 1200 } })
+    await page.goto(NODE_PATH)
+    // Alpha 尚未返回，趁它在途切到 Beta。
+    await expect(page.getByTestId('gateway-node-state')).toBeVisible()
+    await switchNodeRoute(page, BETA_PATH)
+
+    await expect(page.getByRole('heading', { level: 2, name: 'Beta 节点' })).toBeVisible()
+    await page.waitForTimeout(1500)
+    await expect(page.getByRole('heading', { level: 2, name: 'Beta 节点' })).toBeVisible()
+    await expect(page.getByTestId('gateway-node-info')).toContainText('https://beta.example.test')
+    await expect(page.getByTestId('gateway-node-error')).toHaveCount(0)
+  })
+
+  test('切换到加载失败的节点时不残留上一个节点的可操作内容', async ({ page }) => {
+    await mockGateway(page, { failingNodeIds: [BETA_ID] })
+    await openDetail(page)
+
+    await switchNodeRoute(page, BETA_PATH)
+
+    await expect(page.getByTestId('gateway-node-error')).toContainText('节点详情服务暂不可用')
+    await expect(page.getByTestId('gateway-node-probe')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-drain')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-edit')).toHaveCount(0)
+    await expect(page.getByText('Alpha 节点', { exact: true })).toHaveCount(0)
+  })
+
+  test('整页刷新与节点操作保留日志当前页，总量变少时回退末页', async ({ page }) => {
+    const state = await mockGateway(page)
+    await openDetail(page)
+
+    await page.getByTestId('gateway-node-logs-pagination').locator('.el-pager li', { hasText: '2' }).click()
+    await expect(page.getByTestId('gateway-node-logs-total')).toContainText('第 2 页')
+
+    await page.getByTestId('gateway-node-refresh').click()
+    await expect(page.getByTestId('gateway-node-logs-total')).toContainText('共 120 条 · 第 2 页')
+    expect(state.requestPages.at(-1)).toBe(`${NODE_ID}#2`)
+
+    // 探测等节点操作会整页重载，日志页码同样保留。
+    await page.getByTestId('gateway-node-probe').click()
+    await expect(page.locator('.el-notification').filter({ hasText: '探测完成：4/4 项通过' })).toBeVisible()
+    await expect(page.getByTestId('gateway-node-logs-total')).toContainText('共 120 条 · 第 2 页')
+    expect(state.requestPages.at(-1)).toBe(`${NODE_ID}#2`)
+
+    // 总量缩到不足第 2 页时回退到末页，而不是停在空白页。
+    state.logTotal = 5
+    await page.getByTestId('gateway-node-refresh').click()
+    await expect(page.getByTestId('gateway-node-logs-total')).toContainText('共 5 条 · 第 1 页')
+    expect(state.requestPages.at(-1)).toBe(`${NODE_ID}#1`)
+    await expect(page.getByTestId('gateway-node-logs-table').locator('.el-table__row')).toHaveCount(3)
+  })
+
+  for (const part of ['stats', 'requests', 'action'] as const) {
+    test(`${part} 端点 401 与整页一致退回接入表单`, async ({ page }) => {
+      await mockGateway(page, { unauthorizedOn: part })
+      await openDetail(page)
+
+      if (part === 'stats') {
+        await page.getByTestId('gateway-node-window').getByText('近 7 天', { exact: true }).click()
+      } else if (part === 'requests') {
+        await page.getByTestId('gateway-node-logs-refresh').click()
+      } else {
+        await page.getByTestId('gateway-node-probe').click()
+      }
+
+      await expect(page.getByTestId('gateway-connect')).toBeVisible()
+      await expect(page.getByTestId('gateway-node-detail')).toHaveCount(0)
+      expect(await page.evaluate(() => window.sessionStorage.getItem('astra.gateway.control.token'))).toBeNull()
+    })
+  }
 })
 
