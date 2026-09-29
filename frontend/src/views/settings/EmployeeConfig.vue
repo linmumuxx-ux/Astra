@@ -129,7 +129,7 @@
 
         <template v-if="!creating">
           <ElFormItem label="连接状态">
-            <ElSpace :size="10">
+            <ElSpace :size="8">
               <ElTag :type="statusTagType(selectedEnvironmentStatus)">
                 {{ statusLabel(selectedEnvironmentStatus) }}
               </ElTag>
@@ -340,9 +340,8 @@ defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving, reset, sav
 <style scoped>
 .employee-config-form { width: 100%; }
 .employee-config-form :deep(.el-input), .employee-config-form :deep(.el-select) { width: 100%; }
-.employee-config-form :deep(.el-select__wrapper) { min-height: var(--el-component-size); }
 .employee-config-form :deep(.el-checkbox-group) { display: flex; flex-wrap: wrap; gap: 4px 18px; }
-.runtime-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+.runtime-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
 .runtime-row p { flex: 1; min-width: 0; margin: 0; color: var(--el-text-color-secondary); font-size: var(--el-font-size-extra-small); }
 .static-value { color: var(--el-text-color-primary); overflow-wrap: anywhere; }
 .environment-checks { display: grid; gap: 8px; margin: 2px 0 16px; }

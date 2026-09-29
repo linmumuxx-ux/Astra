@@ -1,11 +1,16 @@
 <template>
-  <RouterView />
-  <AssistantLauncher />
-  <AssistantDrawer />
-  <AstraConfirmHost />
+  <!-- 全局唯一尺寸入口：所有 Element Plus 控件默认 small，
+       紧凑高度由 styles/tokens.css 的 --el-component-size* 统一决定。 -->
+  <ElConfigProvider size="small">
+    <RouterView />
+    <AssistantLauncher />
+    <AssistantDrawer />
+    <AstraConfirmHost />
+  </ElConfigProvider>
 </template>
 
 <script setup lang="ts">
+import { ElConfigProvider } from 'element-plus'
 import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'

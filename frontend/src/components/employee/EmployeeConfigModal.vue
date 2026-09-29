@@ -13,7 +13,7 @@
     <EmployeeConfig ref="configRef" :employee="employee" :creating="creating" :categories="categories" embedded @saved="onSaved" />
 
     <template #footer>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElTag v-if="configRef?.dirty" type="warning" effect="light">有未保存修改</ElTag>
         <ElButton :disabled="configRef?.saving" @click="requestClose">取消</ElButton>
         <ElButton

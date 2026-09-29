@@ -6,6 +6,7 @@ import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
 import './styles/tokens.css'
+import './styles/element-plus-theme.css'
 import './styles/base.css'
 import './styles/animations.css'
 

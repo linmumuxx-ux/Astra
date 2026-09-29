@@ -3,9 +3,9 @@
     <header class="employee-page__intro">
       <div>
         <h2>数字员工</h2>
-        <ElText size="small" type="info">集中管理员工职责、运行状态与执行配置</ElText>
+        <ElText type="info">集中管理员工职责、运行状态与执行配置</ElText>
       </div>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElButton :icon="RefreshCw" :loading="store.loading" @click="store.refresh()">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" @click="beginCreate">新建数字员工</ElButton>
       </ElSpace>
@@ -32,14 +32,14 @@
     </section>
 
     <section class="employee-table-panel" aria-label="数字员工列表">
-      <ElTable v-loading="store.loading" :data="paged" size="small" height="100%" row-key="id" @row-click="onRowClick">
+      <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="onRowClick">
         <ElTableColumn label="员工" width="230">
           <template #default="{ row }">
             <div class="employee-cell">
               <EmployeeAvatar :employee="row.employee" size="small" />
               <span class="employee-cell__meta">
                 <strong>{{ row.name }}</strong>
-                <ElText size="small" type="info" truncated :title="row.employee.description">{{ row.employee.description || '暂无职责说明' }}</ElText>
+                <ElText type="info" truncated :title="row.employee.description">{{ row.employee.description || '暂无职责说明' }}</ElText>
               </span>
             </div>
           </template>
@@ -48,23 +48,23 @@
         <ElTableColumn label="职责" prop="role" min-width="140" show-overflow-tooltip />
         <ElTableColumn label="运行状态" width="120">
           <template #default="{ row }">
-            <ElTag size="small" :type="statusTagType(row.status)">{{ row.statusText }}</ElTag>
+            <ElTag :type="statusTagType(row.status)">{{ row.statusText }}</ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn label="当前任务" min-width="210">
           <template #default="{ row }">
             <RouterLink v-if="row.currentTask" class="task-link" :to="`/tasks/${row.currentTask.id}`" :title="row.currentTaskName" @click.stop>
               <strong>{{ row.currentTaskName }}</strong>
-              <ElText size="small" type="info" truncated>{{ platformCopy(row.currentTask.current_progress) || '等待进度更新' }}</ElText>
+              <ElText type="info" truncated>{{ platformCopy(row.currentTask.current_progress) || '等待进度更新' }}</ElText>
             </RouterLink>
-            <ElText v-else size="small" type="info">—</ElText>
+            <ElText v-else type="info">—</ElText>
           </template>
         </ElTableColumn>
         <ElTableColumn label="执行器 / 模型" min-width="170">
           <template #default="{ row }">
             <div class="environment-cell">
               <strong>{{ environmentLabel(row.employee.execution_environment) }}</strong>
-              <ElText size="small" type="info" truncated :title="row.employee.execution_environment?.model_name ?? ''">{{ row.employee.execution_environment?.model_name || '默认模型' }}</ElText>
+              <ElText type="info" truncated :title="row.employee.execution_environment?.model_name ?? ''">{{ row.employee.execution_environment?.model_name || '默认模型' }}</ElText>
             </div>
           </template>
         </ElTableColumn>
@@ -73,34 +73,34 @@
         </ElTableColumn>
         <ElTableColumn label="启用" width="100">
           <template #default="{ row }">
-            <ElTag size="small" :type="row.employee.enabled ? 'success' : 'info'" :effect="row.employee.enabled ? 'light' : 'plain'">{{ row.employee.enabled ? '已启用' : '已停用' }}</ElTag>
+            <ElTag :type="row.employee.enabled ? 'success' : 'info'" :effect="row.employee.enabled ? 'light' : 'plain'">{{ row.employee.enabled ? '已启用' : '已停用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="176" fixed="right">
+        <ElTableColumn label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions" @click.stop>
+            <ElSpace class="row-actions" :size="4" @click.stop>
               <ElTooltip content="查看" placement="top">
-                <ElButton text type="primary" :icon="Eye" :aria-label="`查看 ${row.name}`" @click="openDetail(row.id)" />
+                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.name}`" @click="openDetail(row.id)" />
               </ElTooltip>
               <ElTooltip content="编辑" placement="top">
-                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" @click="beginEdit(row.employee)" />
+                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" @click="beginEdit(row.employee)" />
               </ElTooltip>
               <ElTooltip :content="row.employee.enabled ? '停用' : '启用'" placement="top">
-                <ElButton text type="primary" :icon="row.employee.enabled ? Pause : Play" :aria-label="`${row.employee.enabled ? '停用' : '启用'} ${row.name}`" :disabled="busyId === row.id" @click="toggleEnabled(row.employee)" />
+                <ElButton circle type="primary" :icon="row.employee.enabled ? Pause : Play" :aria-label="`${row.employee.enabled ? '停用' : '启用'} ${row.name}`" :disabled="busyId === row.id" @click="toggleEnabled(row.employee)" />
               </ElTooltip>
               <ElTooltip content="删除" placement="top">
-                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busyId === row.id" @click="removeEmployee(row.employee)" />
+                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busyId === row.id" @click="removeEmployee(row.employee)" />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
           <ElEmpty v-if="store.error && !store.employees.length" :image-size="72" description="员工数据加载失败">
-            <ElText size="small" type="info">{{ store.error }}</ElText>
+            <ElText type="info">{{ store.error }}</ElText>
             <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.employees.length ? '没有匹配员工' : '暂无数字员工'">
-            <ElText size="small" type="info">{{ store.employees.length ? '调整搜索或筛选条件后重试。' : '创建第一位数字员工后即可开始管理。' }}</ElText>
+            <ElText type="info">{{ store.employees.length ? '调整搜索或筛选条件后重试。' : '创建第一位数字员工后即可开始管理。' }}</ElText>
             <ElButton v-if="!store.employees.length" type="primary" :icon="Plus" @click="beginCreate">新建数字员工</ElButton>
           </ElEmpty>
         </template>
@@ -108,7 +108,7 @@
     </section>
 
     <footer class="employee-page__footer">
-      <ElText size="small" type="info">共 {{ filtered.length }} 条</ElText>
+      <ElText type="info">共 {{ filtered.length }} 条</ElText>
       <nav aria-label="员工列表分页">
         <ElPagination v-model:current-page="page" :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" />
       </nav>
@@ -212,9 +212,9 @@ onMounted(async () => {
 .employee-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 14px; height: calc(100vh - 69px); min-height: 620px; padding: 20px 24px 18px; overflow: hidden; }
 .employee-page__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .employee-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
-.employee-filter { display: flex; align-items: center; gap: 10px; }
-.employee-filter__select { flex: none; width: 148px; }
-.employee-filter__search { flex: 1; min-width: 210px; max-width: 320px; }
+.employee-filter { display: flex; align-items: center; gap: 8px; }
+.employee-filter__select { flex: none; width: 140px; }
+.employee-filter__search { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .employee-table-panel { min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
 .employee-table-panel :deep(.el-table__row) { cursor: pointer; }
 .employee-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -222,7 +222,6 @@ onMounted(async () => {
 .employee-cell__meta strong, .task-link strong, .environment-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .task-link, .task-link:hover { color: inherit; text-decoration: none; }
 .task-link:hover strong { color: var(--astra-primary); }
-.row-actions { display: flex; align-items: center; gap: 2px; }
 .employee-page__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 @media (max-width: 900px) { .employee-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; } .employee-table-panel { min-height: 480px; } }
 </style>

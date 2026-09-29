@@ -30,11 +30,11 @@
   /* Latin/digits/punctuation use Times New Roman; CJK uses Microsoft YaHei.
      Both fonts must be installed on the client. Keep the existing UI size scale. */
   --astra-font-micro: 9px;
-  --astra-font-helper: 10px;
-  --astra-font-control: 11px;
-  --astra-font-body: 12px;
-  --astra-font-label: 13px;
-  --astra-font-emphasis: 14px;
+  --astra-font-helper: 11px;
+  --astra-font-control: 13px;
+  --astra-font-body: 14px;
+  --astra-font-label: 14px;
+  --astra-font-emphasis: 15px;
   --astra-font-section: 18px;
   --astra-font-title: 22px;
   --astra-font-kpi: 27px;
@@ -53,8 +53,12 @@
   --astra-font-size-23: 23px;
   --astra-font-size-25: 25px;
   --astra-font-size-30: 30px;
-  --astra-control-height: 42px;
-  --astra-control-height-compact: 38px;
+  /* 全局控件基准：32px。App.vue 用 ElConfigProvider size="small" 把所有控件放进
+     small 档，所以 default 与 small 同为 32px，large 为 40px。
+     ElInput / ElInputNumber / ElDateEditor 直接读 --el-component-size*，
+     ElButton / ElSelect / ElFormItem / ElTable 等把 small 写死在组件样式里，
+     由 styles/element-plus-theme.css 这一个全局覆盖层统一回同一基准。 */
+  --astra-control-height: 32px;
   --astra-content-gap: 16px;
   --astra-shadow-panel: 0 10px 30px rgba(28, 58, 49, .075);
 }
@@ -142,6 +146,6 @@
   --el-font-size-large: var(--astra-font-subtitle);
   --el-font-size-extra-large: var(--astra-font-section);
   --el-component-size: var(--astra-control-height);
-  --el-component-size-small: var(--astra-control-height-compact);
-  --el-component-size-large: calc(var(--astra-control-height) + 4px);
+  --el-component-size-small: var(--astra-control-height);
+  --el-component-size-large: calc(var(--astra-control-height) + 8px);
 }
