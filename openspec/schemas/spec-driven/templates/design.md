@@ -12,7 +12,8 @@
 
 ## Decisions
 
-<!-- Key design decisions and rationale -->
+<!-- Key design decisions and rationale. If no decision was actually open, say so
+     briefly instead of manufacturing content to fill the section. -->
 
 ## Risks / Trade-offs
 

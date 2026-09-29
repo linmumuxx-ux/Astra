@@ -6,8 +6,9 @@ description: Superpowers brainstorming - refine a rough idea into an agreed desi
 
 要求：
 
-- 严格遵循该 skill 的流程，不要跳过提问、探索替代方案、分段确认设计等步骤。
+- 需求已清楚时直接进入确认环节；不要为已有明确答案的环节重复提问。
 - 设计确认后再进入实现，不要在未确认前写代码。
-- 如果本次输入已经对应某个 OpenSpec change，先用 `openspec` 流程定位该 change，把设计沉淀回对应产物。
+- 输入已对应某个 OpenSpec change 时，把结论沉淀回该 change 的 proposal / design，不另起一份设计文档。
+- 缺陷定位不是本命令职责，用 `/sp-debug`。
 
 输入：$ARGUMENTS

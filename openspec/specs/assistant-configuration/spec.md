@@ -1,5 +1,8 @@
 # assistant-configuration
 
+## Purpose
+定义平台助手的配置范围：业务配置必须保留，Workspace 相关概念一律不得出现。
+
 ## Requirements
 
 ### Requirement: 助手配置不包含 Workspace 概念

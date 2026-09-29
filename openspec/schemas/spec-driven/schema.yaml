@@ -21,7 +21,7 @@ artifacts:
       proposal and specs phases. Research existing specs before filling this in.
       Each capability listed here will need a corresponding spec file.
 
-      Keep it concise (1-2 pages). Focus on the "why" not the "how" -
+      Keep it concise (typically under 500 words). Focus on the "why" not the "how" -
       implementation details belong in design.md.
 
       This is the foundation - specs, design, and tasks all build on this.
@@ -89,7 +89,10 @@ artifacts:
     instruction: |
       Create the design document that explains HOW to implement the change.
 
-      When to include design.md (create only if any apply):
+      design.md is REQUIRED — tasks depends on it (see `requires` below), so it is
+      always created. Keep it short when no real decision was made: a brief record
+      of the approach and any trade-offs is enough. Spend detail only where it
+      pays off:
       - Cross-cutting change (multiple services/modules) or new architectural pattern
       - New external dependency or significant data model changes
       - Security, performance, or migration complexity
@@ -123,20 +126,19 @@ artifacts:
       Guidelines:
       - Group related tasks under ## numbered headings
       - Each task MUST be a checkbox: `- [ ] X.Y Task description`
-      - Tasks should be small enough to complete in one session
+      - One task is one independently verifiable unit of work. Do not split it into
+        per-tool-call, per-file-read or per-commit steps.
       - Order tasks by dependency (what must be done first?)
 
       Example:
       ```
       ## 1. Setup
 
-      - [ ] 1.1 Create new module structure
-      - [ ] 1.2 Add dependencies to package.json
+      - [ ] 1.1 Add the export endpoint and its schema migration
 
       ## 2. Core Implementation
 
-      - [ ] 2.1 Implement data export function
-      - [ ] 2.2 Add CSV formatting utilities
+      - [ ] 2.1 Implement CSV serialization with coverage for quoted fields
       ```
 
       Reference specs for what needs to be built, design for how to build it.

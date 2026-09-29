@@ -25,7 +25,12 @@ def main() -> int:
     npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm") or shutil.which("npm")
     if not npm:
         raise RuntimeError("npm not found")
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("node not found")
 
+    run([node, str(ROOT / "tests" / "opencode" / "test-superpowers-bootstrap.mjs")], ROOT, "opencode plugin")
+    run([node, str(ROOT / "scripts" / "check_openspec_config.mjs")], ROOT, "openspec config")
     run([sys.executable, "-m", "ruff", "check", "app", "tests"], BACKEND, "backend lint")
     run([sys.executable, "-m", "pytest"], BACKEND, "backend tests")
     run(local_command(npm, ["run", "type-check"]), FRONTEND, "frontend type-check")

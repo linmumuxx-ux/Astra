@@ -35,6 +35,17 @@ const ASTRA_ROOT = path.resolve(__dirname, '..', '..');
 
 const isAssistantRuntime = () => process.env.ASTRA_RUNTIME_ROLE === 'platform-assistant';
 
+// Astra project default: skills stay registered for every session, but the
+// using-superpowers bootstrap is opt-in. Injecting it on every turn spends a
+// large fixed slice of context and pushes every task through the full
+// brainstorm → plan → subagent cycle, which duplicates the OpenSpec workflow
+// for changes that already have a change directory.
+//
+// Set ASTRA_SUPERPOWERS_BOOTSTRAP=1 to restore the upstream automatic
+// skill-check workflow. Skills remain discoverable and loadable through
+// OpenCode's native `skill` tool either way — only the always-on prompt is gated.
+const isBootstrapEnabled = () => process.env.ASTRA_SUPERPOWERS_BOOTSTRAP === '1';
+
 // Simple frontmatter extraction (avoid dependency on skills-core for
 // bootstrap). Handles plain `key: value` lines, quoted values (including
 // quotes that close on an indented continuation line), YAML block scalar
@@ -242,9 +253,9 @@ export const SuperpowersPlugin = async ({ client, directory }) => {
     // arrays may need injection again, so getBootstrapContent() must not do
     // repeated disk work.
     'experimental.chat.messages.transform': async (_input, output) => {
-      // Only repository-root sessions get the Superpowers bootstrap, and never
-      // the platform assistant runtime.
-      if (path.resolve(directory) !== ASTRA_ROOT || isAssistantRuntime()) return;
+      // Only repository-root developer sessions get the Superpowers bootstrap,
+      // never the platform assistant runtime, and only when explicitly enabled.
+      if (path.resolve(directory) !== ASTRA_ROOT || isAssistantRuntime() || !isBootstrapEnabled()) return;
       const bootstrap = getBootstrapContent(V1_MAPPING);
       if (!bootstrap || !output.messages.length) return;
       const firstUser = output.messages.find(m => m.info.role === 'user');
@@ -342,8 +353,8 @@ async function setup(ctx) {
     await ctx.session.hook('context', async (event) => {
       try {
         // Never inject the developer controller workflow into the platform
-        // assistant runtime.
-        if (isAssistantRuntime()) return;
+        // assistant runtime, and keep it opt-in for developer sessions.
+        if (isAssistantRuntime() || !isBootstrapEnabled()) return;
         const bootstrap = getBootstrapContent(V2_MAPPING);
         if (!bootstrap || !event.messages || !event.messages.length) return;
         const firstUser = event.messages.find(m => m.role === 'user');

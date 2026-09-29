@@ -7,18 +7,21 @@ Astra 把 OpenSpec 与 Superpowers 的开发能力直接放进仓库，**clone �
 
 ```text
 Astra/
-├── opencode.json                         # 项目配置：instructions 指向 AGENTS.md 与 openspec/AGENTS.md
+├── opencode.json                         # 项目配置：instructions 指向 AGENTS.md
+├── AGENTS.md                             # 项目级开发硬规则（唯一）
 ├── .opencode/
 │   ├── commands/                         # /opsx-* 与 /sp-* 命令
 │   ├── agents/code-reviewer.md           # 只读代码评审子代理
+│   ├── agents/platform-assistant.md      # 平台助手（独立 Runtime 标记）
 │   ├── skills/                           # 24 个项目级 skill（OpenSpec 9 + Superpowers 15）
-│   ├── plugins/superpowers.js            # Superpowers bootstrap 注入（仅仓库根会话）
+│   ├── plugins/superpowers.js            # skill 注册 + 可选 bootstrap 注入
 │   └── tools/openspec.mjs                # 自包含 OpenSpec CLI bundle（可提交产物）
 ├── openspec/
-│   ├── AGENTS.md                         # OpenSpec 工作流约定
+│   ├── config.yaml                       # 产物规则唯一事实源（context + rules）
 │   ├── schemas/spec-driven/              # 本项目固定 schema 与模板
 │   ├── specs/                            # 归档后的当前规范
 │   └── changes/                          # 进行中变更 + archive/
+├── scripts/check_openspec_config.mjs     # 校验 config.yaml 未退化为死配置
 └── scripts/build_openspec_bundle.mjs     # 仅维护用：重新生成 bundle
 ```
 
@@ -33,7 +36,7 @@ OpenCode 原生识别项目级目录，无需在 `opencode.json` 里逐个登记
 - 项目 agent：`.opencode/agents/<name>.md`
 - 项目插件：`.opencode/plugins/*.js`（自动发现，已确认出现在 `opencode debug config` 的 `plugin`）
 
-`opencode.json` 只声明 `instructions`，把 `AGENTS.md` 和 `openspec/AGENTS.md` 注入上下文。
+`opencode.json` 只声明 `instructions` 和 `mcp`，把 `AGENTS.md` 注入上下文。
 修改这些文件后需要重启 OpenCode（配置只在启动时加载）。
 
 ## OpenSpec
@@ -44,6 +47,27 @@ OpenCode 原生识别项目级目录，无需在 `opencode.json` 里逐个登记
   `node .opencode/tools/openspec.mjs <command>`，不依赖 PATH 上的 `openspec`。
 - schema 由 `openspec/schemas/` 提供（CLI 的项目级优先级最高，已确认 `Source: project`）。
 - 工作流：`需求/变更提出 → Spec → 设计/任务拆解 → 实现 → 验证 → 归档`。
+
+### config.yaml 的真实能力边界
+
+产物规则集中在 `openspec/config.yaml`，`openspec/AGENTS.md` 已删除（曾被 `instructions` 重复注入）。
+
+内置 CLI 的 `ProjectConfigSchema` **只解析三个字段**：
+
+| 字段 | 作用 | 校验 |
+| --- | --- | --- |
+| `schema` | 使用的 workflow schema | 必填，非空字符串 |
+| `context` | 注入每个 artifact 的项目背景，上限 50KB | 可选 |
+| `rules` | 按 artifact ID 附加的规则数组 | 可选，键必须是合法 artifact ID |
+
+**其他顶层键会被静默丢弃。** 非法 `rules` 键只打印一行 warning 后忽略。
+`spec-driven` 的合法 artifact ID 为 `proposal`、`specs`、`design`、`tasks`。
+`scripts/check_openspec_config.mjs` 会驱动真实 CLI 检出这两类问题，已接入 `scripts/verify.py`。
+
+### design.md 是必需产物
+
+`schema.yaml` 中 `tasks.requires: [specs, design]`，因此 `design.md` 总是需要生成；
+schema 提示语已同步更正，避免"按需生成"与实际依赖冲突。没有真实设计决策时保持精简即可。
 
 ### 重新生成 CLI bundle（维护用）
 
@@ -65,9 +89,23 @@ OpenSpec 来源优先级：`ASTRA_OPENSPEC_PACKAGE` → `frontend/node_modules` 
   `systematic-debugging`、`verification-before-completion`、`requesting-code-review` 等）。
 - 命令：`/sp-brainstorm`、`/sp-plan`、`/sp-execute`、`/sp-debug`、`/sp-review`、`/sp-verify`、`/sp-finish`。
 - agent：`code-reviewer`（`mode: subagent`，只读），由 `/sp-review` 使用。
-- 插件 `.opencode/plugins/superpowers.js` 负责把 `using-superpowers` bootstrap 注入会话首条用户消息，
-  让 skill 自动触发。**仅在 OpenCode 以仓库根为工作目录时注入**，且跳过平台助手 Runtime
-  （其 Server 以 `ASTRA_RUNTIME_ROLE=platform-assistant` 标记），避免污染助手会话。
+
+### bootstrap 为按需启用
+
+插件 `.opencode/plugins/superpowers.js` 做两件独立的事：
+
+1. **注册 skill** —— 始终执行。V1 由 OpenCode 原生项目发现，V2 由 `ctx.skill.transform()`。
+2. **注入 `using-superpowers` bootstrap** —— 需显式开启。
+
+开启方式：启动 OpenCode 前设置 `ASTRA_SUPERPOWERS_BOOTSTRAP=1`。
+
+默认关闭的原因：bootstrap 会在每轮对话注入约 3KB 通用提示词，并要求"任何响应前先调用 skill"，
+使简单改动也被迫走完整的头脑风暴 → 计划 → 子代理流程；与 OpenSpec 的 change 流程重复。
+关闭只影响常驻提示词，**skill 仍然注册且可通过原生 `skill` 工具显式调用**，
+`/sp-*` 命令也不受影响。
+
+注入还需同时满足（非仓库根目录、平台助手 Runtime、子代理会话均不注入）；
+子代理判定基于 session 的 `parentID`，不依赖模型自觉遵守提示词。
 
 ## 与 Astra 既有能力共存
 
@@ -91,7 +129,11 @@ PATH=/usr/bin:/bin node .opencode/tools/openspec.mjs status --change demo --json
 PATH=/usr/bin:/bin node .opencode/tools/openspec.mjs validate demo
 PATH=/usr/bin:/bin node .opencode/tools/openspec.mjs archive demo --yes
 
-# 3) 命令 / agent 被发现
+# 3) 项目配置与插件的回归检查（已接入 scripts/verify.py）
+node scripts/check_openspec_config.mjs
+node tests/opencode/test-superpowers-bootstrap.mjs
+
+# 4) 命令 / agent 被发现
 opencode debug config    # 16 个 command、code-reviewer agent、superpowers 插件
 opencode agent list
 ```
@@ -99,11 +141,17 @@ opencode agent list
 ## 已知边界与风险
 
 - 根目录 `.opencode/` 与 `opencode.json` 会被**同一 git worktree 内**的所有 OpenCode 进程继承。
-  平台助手现在也以仓库根为加载上下文，插件已通过运行角色标记跳过其 bootstrap 注入；
-  命令与 skill 对助手可见。生产环境请以项目级 `.opencode/agents/platform-assistant.md` 的
-  `edit/write/bash` 拒绝作为主要约束（助手不再有独立 `opencode.json`）。
-- 员工任务以独立 git worktree 运行（自带 `.git`），不会继承 Astra 根配置；但若任务 worktree 由
-  包含本集成的提交创建，会带上一份 `.opencode/` 副本。是否需要为员工剥离该目录由后续决定。
+  平台助手以仓库根为加载上下文，插件通过 `ASTRA_RUNTIME_ROLE=platform-assistant` 跳过 bootstrap 注入；
+  助手仍可见 `/opsx-*`、`/sp-*` 命令与全部 skill，其主要约束是
+  `.opencode/agents/platform-assistant.md` 中 `edit`/`write`/`bash`/`webfetch` 的 deny 权限。
+- 员工任务工作区是 `backend/.astra-tasks/<employee>/<task>` 下的独立 git worktree。
+  该目录带自己的 `.git`，`discover_workspace_config()` 的向上查找在 git 根停止，
+  因此**不会**加载 Astra 根的 `opencode.json`；若 worktree 由包含本集成的提交创建，
+  会带上一份 `.opencode/` 副本（其中 skill 与命令可见，但 bootstrap 因工作目录不等于仓库根而不注入）。
+  数字员工自己的 OpenCode 配置由其工作区拥有，Astra 从不生成也不设置 `OPENCODE_CONFIG`。
+- `openspec/specs/` 下 3 个 spec 由旧版 CLI 归档，缺少新版要求的 `## Purpose` 段，
+  `openspec validate --all` 会报 3 项失败。历史内容本身有效，修复时补 `## Purpose` 即可，不要删除 Requirement。
 - `opsx-archive` 命令内部使用 `mkdir -p` / `mv`，依赖 OpenCode 的 bash 环境；Windows 下需确保
   bash 语义可用（OpenCode 默认 bash 工具已满足）。核心 CLI 全部跨平台（仅依赖 `node`）。
-- bundle 是从 `@fission-ai/openspec` 生成的可提交产物，升级时需按上文重新生成。
+- bundle 是从 `@fission-ai/openspec` 生成的可提交产物，升级时需按上文重新生成；
+  升级后必须重跑 `scripts/check_openspec_config.mjs`，因为新版可能新增或改名 config 字段。

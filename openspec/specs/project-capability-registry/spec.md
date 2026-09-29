@@ -1,5 +1,8 @@
 # project-capability-registry
 
+## Purpose
+定义 Skill、Agent、Command 与 MCP 的唯一定义来源在项目级结构，不保留助手本地副本。
+
 ## Requirements
 
 ### Requirement: 能力项目级单一定义

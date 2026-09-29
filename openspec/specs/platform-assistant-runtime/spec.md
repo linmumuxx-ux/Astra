@@ -1,5 +1,8 @@
 # platform-assistant-runtime
 
+## Purpose
+定义平台助手的运行方式：作为项目级 Agent 使用独立 Runtime，不拥有专属工作区。
+
 ## Requirements
 
 ### Requirement: 数字助手不拥有独立 Workspace
