@@ -1,108 +1,301 @@
 <template>
-  <section class="gateway-section">
-    <header class="gateway-section__head">
-      <div><h3>资源池与模型路由</h3><p>路由模型名唯一，第一阶段一个路由指向一个资源池。</p></div>
-      <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
+  <section class="gateway-pools-routes" data-testid="gateway-pools-routes">
+    <header class="gateway-pools-routes__bar">
+      <div class="gateway-pools-routes__intro">
+        <h3>资源池与模型路由</h3>
+        <ElText size="small" type="info">路由模型名唯一，第一阶段一个路由指向一个资源池。</ElText>
+      </div>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-pools-routes-refresh" @click="load">刷新</ElButton>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-pools-routes-error">
+      <ElButton size="small" type="primary" data-testid="gateway-pools-routes-retry" @click="load">重试</ElButton>
+    </ElAlert>
 
-    <div class="gateway-two-col">
-      <AstraPanel title="资源池" :subtitle="`共 ${pools.length} 个`" flush>
-        <template #action><button v-if="canRoute" type="button" class="button button--compact" @click="openPoolCreate"><Plus :size="13" />新增资源池</button></template>
-        <div class="table-wrap">
-          <table class="gateway-mini-table">
-            <thead><tr><th>名称</th><th>权重</th><th>状态</th><th>排序</th><th class="gateway-col-actions">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="pool in pools" :key="pool.id">
-                <td><strong>{{ pool.name }}</strong><small>{{ pool.description || '—' }}</small></td>
-                <td>{{ pool.weight }}</td>
-                <td><span class="status-badge" :data-tone="pool.enabled ? 'success' : 'neutral'">{{ pool.enabled ? '启用' : '禁用' }}</span></td>
-                <td>{{ pool.sort_order }}</td>
-                <td class="gateway-col-actions">
-                  <div v-if="canRoute" class="gateway-row-actions">
-                    <button class="gateway-icon-btn" type="button" title="编辑" @click="openPoolEdit(pool)"><Pencil :size="14" /></button>
-                    <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="删除" @click="removePool(pool)"><Trash2 :size="14" /></button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!pools.length"><td colspan="5" class="empty-cell">暂无资源池。</td></tr>
-            </tbody>
-          </table>
+    <ElCard shadow="never" data-testid="gateway-pool-card">
+      <template #header>
+        <div class="gateway-pools-routes__card-head">
+          <div class="gateway-pools-routes__card-title">
+            <h4>资源池</h4>
+            <ElText size="small" type="info">仍被节点或路由引用的资源池无法删除。</ElText>
+          </div>
+          <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
         </div>
-      </AstraPanel>
-
-      <AstraPanel title="模型路由" :subtitle="`共 ${routes.length} 条`" flush>
-        <template #action><button v-if="canRoute" type="button" class="button button--compact" @click="openRouteCreate"><Plus :size="13" />新增路由</button></template>
-        <div class="table-wrap">
-          <table class="gateway-mini-table">
-            <thead><tr><th>模型</th><th>资源池</th><th>权重</th><th>状态</th><th class="gateway-col-actions">操作</th></tr></thead>
-            <tbody>
-              <tr v-for="route in routes" :key="route.id">
-                <td><strong>{{ route.model }}</strong><small>{{ route.description || '—' }}</small></td>
-                <td>{{ poolName(route.pool_id) }}</td>
-                <td>{{ route.weight }}</td>
-                <td><span class="status-badge" :data-tone="route.enabled ? 'success' : 'neutral'">{{ route.enabled ? '启用' : '禁用' }}</span></td>
-                <td class="gateway-col-actions">
-                  <div v-if="canRoute" class="gateway-row-actions">
-                    <button class="gateway-icon-btn" type="button" title="编辑" @click="openRouteEdit(route)"><Pencil :size="14" /></button>
-                    <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="删除" @click="removeRoute(route)"><Trash2 :size="14" /></button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!routes.length"><td colspan="5" class="empty-cell">暂无模型路由。</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </AstraPanel>
-    </div>
-
-    <AstraDialog :open="poolDialog" :title="poolForm.id ? '编辑资源池' : '新增资源池'" :busy="saving" testid="gateway-pool-dialog" @close="poolDialog = false">
-      <form id="gateway-pool-form" class="gateway-dialog-form" @submit.prevent="submitPool">
-        <label>名称<input v-model="poolForm.name" required /></label>
-        <label>描述<textarea v-model="poolForm.description" rows="2" /></label>
-        <div class="gateway-form__grid">
-          <label>权重<input v-model="poolForm.weight" type="number" min="0" /></label>
-          <label>排序<input v-model="poolForm.sort_order" type="number" /></label>
-        </div>
-        <label class="gateway-toggle"><span>启用</span><AstraSwitch v-model="poolForm.enabled" /></label>
-      </form>
-      <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="poolDialog = false">取消</button>
-        <button type="submit" form="gateway-pool-form" class="button button--primary" :disabled="saving">保存</button>
       </template>
-    </AstraDialog>
 
-    <AstraDialog :open="routeDialog" :title="routeForm.id ? '编辑路由' : '新增路由'" :busy="saving" testid="gateway-route-dialog" @close="routeDialog = false">
-      <form id="gateway-route-form" class="gateway-dialog-form" @submit.prevent="submitRoute">
-        <label>模型名<input v-model="routeForm.model" required placeholder="例如 gpt-4o-mini" /></label>
-        <label>资源池<select v-model="routeForm.pool_id" required><option value="" disabled>选择资源池</option><option v-for="pool in pools" :key="pool.id" :value="pool.id">{{ pool.name }}</option></select></label>
-        <label>描述<textarea v-model="routeForm.description" rows="2" /></label>
-        <div class="gateway-form__grid">
-          <label>权重<input v-model="routeForm.weight" type="number" min="0" /></label>
-          <label class="gateway-toggle"><span>启用</span><AstraSwitch v-model="routeForm.enabled" /></label>
+      <div class="gateway-pools-routes__filters" aria-label="资源池筛选">
+        <ElInput
+          v-model="poolFilters.keyword"
+          class="pool-filter__keyword"
+          aria-label="搜索资源池"
+          placeholder="搜索名称 / 描述"
+          clearable
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElSelect v-model="poolFilters.enabled" class="pool-filter__enabled" aria-label="资源池启用筛选" placeholder="状态：全部" clearable>
+          <ElOption value="enabled" label="启用" />
+          <ElOption value="disabled" label="禁用" />
+        </ElSelect>
+        <ElButton v-if="poolHasFilters" text type="primary" @click="clearPoolFilters">清除筛选</ElButton>
+      </div>
+
+      <ElTable
+        v-loading="loading"
+        :data="pagedPools"
+        size="small"
+        row-key="id"
+        element-loading-text="正在加载资源池"
+        data-testid="gateway-pool-table"
+      >
+        <ElTableColumn label="名称" min-width="220">
+          <template #default="{ row }">
+            <div class="pool-cell">
+              <strong>{{ row.name }}</strong>
+              <span class="pool-cell__desc" :title="row.description">{{ row.description || '—' }}</span>
+            </div>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="权重" prop="weight" width="90" />
+        <ElTableColumn label="状态" width="90">
+          <template #default="{ row }">
+            <ElTag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="排序" prop="sort_order" width="80" />
+        <ElTableColumn v-if="canRoute" label="操作" width="96" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions">
+              <ElTooltip content="编辑资源池" placement="top">
+                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openPoolEdit(row as GatewayPool)" />
+              </ElTooltip>
+              <ElTooltip content="删除资源池（被引用时无法删除）" placement="top">
+                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" @click="removePool(row as GatewayPool)" />
+              </ElTooltip>
+            </div>
+          </template>
+        </ElTableColumn>
+        <template #empty>
+          <ElEmpty v-if="!loading" :image-size="64" :description="poolEmptyText" />
+        </template>
+      </ElTable>
+
+      <footer v-if="filteredPools.length" class="gateway-pools-routes__footer">
+        <ElText size="small" type="info">共 {{ filteredPools.length }} 个</ElText>
+        <ElPagination
+          :current-page="poolPage"
+          :page-size="pageSize"
+          :total="filteredPools.length"
+          layout="prev, pager, next"
+          aria-label="资源池列表分页"
+          data-testid="gateway-pool-pagination"
+          @current-change="poolPage = $event"
+        />
+      </footer>
+    </ElCard>
+
+    <ElCard shadow="never" data-testid="gateway-route-card">
+      <template #header>
+        <div class="gateway-pools-routes__card-head">
+          <div class="gateway-pools-routes__card-title">
+            <h4>模型路由</h4>
+            <ElText size="small" type="info">每条路由把一个模型名指向一个资源池。</ElText>
+          </div>
+          <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
         </div>
-      </form>
-      <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="routeDialog = false">取消</button>
-        <button type="submit" form="gateway-route-form" class="button button--primary" :disabled="saving">保存</button>
       </template>
-    </AstraDialog>
+
+      <div class="gateway-pools-routes__filters" aria-label="路由筛选">
+        <ElInput
+          v-model="routeFilters.keyword"
+          class="route-filter__keyword"
+          aria-label="搜索路由"
+          placeholder="搜索模型名 / 描述"
+          clearable
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElSelect v-model="routeFilters.pool" class="route-filter__pool" aria-label="路由资源池筛选" placeholder="资源池：全部" clearable>
+          <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
+        </ElSelect>
+        <ElSelect v-model="routeFilters.enabled" class="route-filter__enabled" aria-label="路由启用筛选" placeholder="状态：全部" clearable>
+          <ElOption value="enabled" label="启用" />
+          <ElOption value="disabled" label="禁用" />
+        </ElSelect>
+        <ElButton v-if="routeHasFilters" text type="primary" @click="clearRouteFilters">清除筛选</ElButton>
+      </div>
+
+      <ElTable
+        v-loading="loading"
+        :data="pagedRoutes"
+        size="small"
+        row-key="id"
+        element-loading-text="正在加载路由"
+        data-testid="gateway-route-table"
+      >
+        <ElTableColumn label="模型名" min-width="220">
+          <template #default="{ row }">
+            <div class="pool-cell">
+              <strong>{{ row.model }}</strong>
+              <span class="pool-cell__desc" :title="row.description">{{ row.description || '—' }}</span>
+            </div>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="资源池" width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ poolName(row.pool_id) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="权重" prop="weight" width="90" />
+        <ElTableColumn label="状态" width="90">
+          <template #default="{ row }">
+            <ElTag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn v-if="canRoute" label="操作" width="96" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions">
+              <ElTooltip content="编辑路由" placement="top">
+                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.model}`" :disabled="busy" @click="openRouteEdit(row as GatewayRoute)" />
+              </ElTooltip>
+              <ElTooltip content="删除路由" placement="top">
+                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.model}`" :disabled="busy" @click="removeRoute(row as GatewayRoute)" />
+              </ElTooltip>
+            </div>
+          </template>
+        </ElTableColumn>
+        <template #empty>
+          <ElEmpty v-if="!loading" :image-size="64" :description="routeEmptyText" />
+        </template>
+      </ElTable>
+
+      <footer v-if="filteredRoutes.length" class="gateway-pools-routes__footer">
+        <ElText size="small" type="info">共 {{ filteredRoutes.length }} 条</ElText>
+        <ElPagination
+          :current-page="routePage"
+          :page-size="pageSize"
+          :total="filteredRoutes.length"
+          layout="prev, pager, next"
+          aria-label="路由列表分页"
+          data-testid="gateway-route-pagination"
+          @current-change="routePage = $event"
+        />
+      </footer>
+    </ElCard>
+
+    <ElDrawer
+      v-if="poolDrawerOpen"
+      class="gateway-drawer"
+      data-testid="gateway-pool-drawer"
+      :model-value="true"
+      :title="poolForm.id ? '编辑资源池' : '新增资源池'"
+      size="min(460px, 100%)"
+      :close-on-click-modal="false"
+      :before-close="() => requestPoolClose()"
+    >
+      <ElForm ref="poolFormRef" :model="poolForm" :rules="poolRules" label-position="top" scroll-to-error :disabled="saving">
+        <ElFormItem label="名称" prop="name">
+          <ElInput v-model="poolForm.name" placeholder="例如 默认资源池" />
+        </ElFormItem>
+        <ElFormItem label="描述" prop="description">
+          <ElInput v-model="poolForm.description" type="textarea" :rows="2" />
+        </ElFormItem>
+        <ElFormItem label="权重" prop="weight">
+          <ElInput v-model="poolForm.weight" type="number" min="0" />
+        </ElFormItem>
+        <ElFormItem label="排序" prop="sort_order">
+          <ElInput v-model="poolForm.sort_order" type="number" />
+        </ElFormItem>
+        <ElFormItem label="启用" prop="enabled">
+          <ElSwitch v-model="poolForm.enabled" data-testid="gateway-pool-enabled" />
+        </ElFormItem>
+        <ElAlert v-if="poolError" type="error" show-icon :closable="false" :title="poolError" data-testid="gateway-pool-error" />
+      </ElForm>
+      <template #footer>
+        <div class="gateway-drawer__footer">
+          <ElTag v-if="poolDirty" type="warning" effect="light" data-testid="gateway-pool-dirty">有未保存修改</ElTag>
+          <span class="gateway-drawer__spacer" />
+          <ElButton :disabled="saving" @click="requestPoolClose">取消</ElButton>
+          <ElButton type="primary" :loading="saving" data-testid="gateway-pool-save" @click="submitPool">保存</ElButton>
+        </div>
+      </template>
+    </ElDrawer>
+
+    <ElDrawer
+      v-if="routeDrawerOpen"
+      class="gateway-drawer"
+      data-testid="gateway-route-drawer"
+      :model-value="true"
+      :title="routeForm.id ? '编辑路由' : '新增路由'"
+      size="min(460px, 100%)"
+      :close-on-click-modal="false"
+      :before-close="() => requestRouteClose()"
+    >
+      <ElForm ref="routeFormRef" :model="routeForm" :rules="routeRules" label-position="top" scroll-to-error :disabled="saving">
+        <ElFormItem label="模型名" prop="model">
+          <ElInput v-model="routeForm.model" placeholder="例如 gpt-4o-mini" />
+        </ElFormItem>
+        <ElFormItem label="资源池" prop="pool_id">
+          <ElSelect v-model="routeForm.pool_id" placeholder="选择资源池" data-testid="gateway-route-pool">
+            <ElOption
+              v-for="pool in pools"
+              :key="pool.id"
+              :value="pool.id"
+              :label="`${pool.name}${pool.enabled ? '' : '（已禁用）'}`"
+            />
+          </ElSelect>
+        </ElFormItem>
+        <ElFormItem label="描述" prop="description">
+          <ElInput v-model="routeForm.description" type="textarea" :rows="2" />
+        </ElFormItem>
+        <ElFormItem label="权重" prop="weight">
+          <ElInput v-model="routeForm.weight" type="number" min="0" />
+        </ElFormItem>
+        <ElFormItem label="启用" prop="enabled">
+          <ElSwitch v-model="routeForm.enabled" data-testid="gateway-route-enabled" />
+        </ElFormItem>
+        <ElAlert v-if="routeError" type="error" show-icon :closable="false" :title="routeError" data-testid="gateway-route-error" />
+      </ElForm>
+      <template #footer>
+        <div class="gateway-drawer__footer">
+          <ElTag v-if="routeDirty" type="warning" effect="light" data-testid="gateway-route-dirty">有未保存修改</ElTag>
+          <span class="gateway-drawer__spacer" />
+          <ElButton :disabled="saving" @click="requestRouteClose">取消</ElButton>
+          <ElButton type="primary" :loading="saving" data-testid="gateway-route-save" @click="submitRoute">保存</ElButton>
+        </div>
+      </template>
+    </ElDrawer>
   </section>
 </template>
 
 <script setup lang="ts">
-import { Pencil, Plus, RefreshCw, Trash2, TriangleAlert } from 'lucide-vue-next'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import {
+  ElAlert,
+  ElButton,
+  ElCard,
+  ElDrawer,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElOption,
+  ElPagination,
+  ElSelect,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElText,
+  ElTooltip,
+  vLoading,
+} from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   gatewayApi,
   GatewayApiError,
   type GatewayPool,
   type GatewayRoute,
 } from '@/api/gateway'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
-import AstraPanel from '@/components/astra/AstraPanel.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
@@ -115,11 +308,79 @@ const routes = ref<GatewayRoute[]>([])
 const loading = ref(false)
 const error = ref('')
 const saving = ref(false)
-const poolDialog = ref(false)
-const routeDialog = ref(false)
+const busy = computed(() => loading.value || saving.value)
+
+const poolDrawerOpen = ref(false)
+const routeDrawerOpen = ref(false)
+const poolFormRef = ref<FormInstance>()
+const routeFormRef = ref<FormInstance>()
+const poolError = ref('')
+const routeError = ref('')
 
 const poolForm = reactive({ id: '', name: '', description: '', weight: '1', sort_order: '0', enabled: true })
 const routeForm = reactive({ id: '', model: '', pool_id: '', description: '', weight: '1', enabled: true })
+
+const pageSize = 10
+
+const poolFilters = reactive({ keyword: '', enabled: '' })
+const routeFilters = reactive({ keyword: '', pool: '', enabled: '' })
+const poolPage = ref(1)
+const routePage = ref(1)
+
+function matchesEnabled(enabled: boolean, filter: string): boolean {
+  if (!filter) return true
+  return filter === 'enabled' ? enabled : !enabled
+}
+
+const filteredPools = computed(() => {
+  const keyword = poolFilters.keyword.trim().toLowerCase()
+  return pools.value.filter((pool) => {
+    if (keyword && !`${pool.name} ${pool.description}`.toLowerCase().includes(keyword)) return false
+    return matchesEnabled(pool.enabled, poolFilters.enabled)
+  })
+})
+const filteredRoutes = computed(() => {
+  const keyword = routeFilters.keyword.trim().toLowerCase()
+  return routes.value.filter((route) => {
+    if (keyword && !`${route.model} ${route.description}`.toLowerCase().includes(keyword)) return false
+    if (routeFilters.pool && route.pool_id !== routeFilters.pool) return false
+    return matchesEnabled(route.enabled, routeFilters.enabled)
+  })
+})
+const pagedPools = computed(() => {
+  const start = (poolPage.value - 1) * pageSize
+  return filteredPools.value.slice(start, start + pageSize)
+})
+const pagedRoutes = computed(() => {
+  const start = (routePage.value - 1) * pageSize
+  return filteredRoutes.value.slice(start, start + pageSize)
+})
+const poolHasFilters = computed(() => Boolean(poolFilters.keyword.trim() || poolFilters.enabled))
+const routeHasFilters = computed(() => Boolean(routeFilters.keyword.trim() || routeFilters.pool || routeFilters.enabled))
+const poolEmptyText = computed(() => (poolHasFilters.value ? '没有匹配的资源池，调整筛选条件后重试。' : '暂无资源池，点击「新增资源池」开始配置。'))
+const routeEmptyText = computed(() => (routeHasFilters.value ? '没有匹配的路由，调整筛选条件后重试。' : '暂无模型路由，点击「新增路由」开始配置。'))
+
+watch(poolFilters, () => { poolPage.value = 1 })
+watch(routeFilters, () => { routePage.value = 1 })
+watch(filteredPools, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / pageSize))
+  if (poolPage.value > maxPage) poolPage.value = maxPage
+})
+watch(filteredRoutes, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / pageSize))
+  if (routePage.value > maxPage) routePage.value = maxPage
+})
+
+function clearPoolFilters() {
+  poolFilters.keyword = ''
+  poolFilters.enabled = ''
+}
+
+function clearRouteFilters() {
+  routeFilters.keyword = ''
+  routeFilters.pool = ''
+  routeFilters.enabled = ''
+}
 
 function poolName(poolId: string): string {
   return pools.value.find((pool) => pool.id === poolId)?.name ?? poolId
@@ -140,9 +401,23 @@ async function load() {
   }
 }
 
+// ── 资源池：抽屉表单 + 未保存提醒 ──────────────────────────────────────
+
+function poolSnapshot(): string {
+  return JSON.stringify(poolForm)
+}
+const poolInitial = ref('')
+const poolDirty = computed(() => poolDrawerOpen.value && poolSnapshot() !== poolInitial.value)
+
+const poolRules: FormRules = {
+  name: [{ required: true, message: '请填写资源池名称', trigger: 'blur' }],
+}
+
 function openPoolCreate() {
   Object.assign(poolForm, { id: '', name: '', description: '', weight: '1', sort_order: '0', enabled: true })
-  poolDialog.value = true
+  poolError.value = ''
+  poolInitial.value = poolSnapshot()
+  poolDrawerOpen.value = true
 }
 
 function openPoolEdit(pool: GatewayPool) {
@@ -154,11 +429,15 @@ function openPoolEdit(pool: GatewayPool) {
     sort_order: String(pool.sort_order),
     enabled: pool.enabled,
   })
-  poolDialog.value = true
+  poolError.value = ''
+  poolInitial.value = poolSnapshot()
+  poolDrawerOpen.value = true
 }
 
 async function submitPool() {
+  if (!(await poolFormRef.value?.validate().catch(() => false))) return
   saving.value = true
+  poolError.value = ''
   try {
     const body = {
       name: poolForm.name.trim(),
@@ -169,18 +448,38 @@ async function submitPool() {
     }
     if (poolForm.id) await gatewayApi.updatePool(poolForm.id, body)
     else await gatewayApi.createPool(body)
-    poolDialog.value = false
+    poolDrawerOpen.value = false
     notify('资源池已保存')
     await load()
   } catch (reason) {
-    notify(errorMessage(reason, '保存资源池失败'), 'error')
+    poolError.value = errorMessage(reason, '保存资源池失败')
   } finally {
     saving.value = false
   }
 }
 
+async function requestPoolClose() {
+  if (saving.value) return
+  if (poolDirty.value) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存修改',
+      message: '当前资源池配置尚未保存，确认放弃并关闭？',
+      confirmLabel: '放弃并关闭',
+      cancelLabel: '继续编辑',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  poolDrawerOpen.value = false
+}
+
 async function removePool(pool: GatewayPool) {
-  const confirmed = await confirmDialog({ title: '删除资源池', message: `确认删除「${pool.name}」？仍被路由引用的资源池无法删除。`, confirmLabel: '删除', danger: true })
+  const confirmed = await confirmDialog({
+    title: '删除资源池',
+    message: `确认删除「${pool.name}」？仍被节点或路由引用的资源池无法删除。`,
+    confirmLabel: '删除',
+    danger: true,
+  })
   if (!confirmed) return
   try {
     await gatewayApi.deletePool(pool.id)
@@ -191,9 +490,36 @@ async function removePool(pool: GatewayPool) {
   }
 }
 
+// ── 模型路由：抽屉表单 + 模型名唯一 + 未保存提醒 ───────────────────────
+
+function routeSnapshot(): string {
+  return JSON.stringify(routeForm)
+}
+const routeInitial = ref('')
+const routeDirty = computed(() => routeDrawerOpen.value && routeSnapshot() !== routeInitial.value)
+
+const routeRules: FormRules = {
+  model: [
+    { required: true, message: '请填写模型名', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        const text = String(value ?? '').trim()
+        if (text && routes.value.some((route) => route.model === text && route.id !== routeForm.id)) {
+          return callback(new Error(`模型「${text}」已有路由，模型名必须唯一`))
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  pool_id: [{ required: true, message: '请选择资源池', trigger: 'change' }],
+}
+
 function openRouteCreate() {
   Object.assign(routeForm, { id: '', model: '', pool_id: '', description: '', weight: '1', enabled: true })
-  routeDialog.value = true
+  routeError.value = ''
+  routeInitial.value = routeSnapshot()
+  routeDrawerOpen.value = true
 }
 
 function openRouteEdit(route: GatewayRoute) {
@@ -205,11 +531,15 @@ function openRouteEdit(route: GatewayRoute) {
     weight: String(route.weight),
     enabled: route.enabled,
   })
-  routeDialog.value = true
+  routeError.value = ''
+  routeInitial.value = routeSnapshot()
+  routeDrawerOpen.value = true
 }
 
 async function submitRoute() {
+  if (!(await routeFormRef.value?.validate().catch(() => false))) return
   saving.value = true
+  routeError.value = ''
   try {
     const body = {
       model: routeForm.model.trim(),
@@ -220,18 +550,38 @@ async function submitRoute() {
     }
     if (routeForm.id) await gatewayApi.updateRoute(routeForm.id, body)
     else await gatewayApi.createRoute(body)
-    routeDialog.value = false
+    routeDrawerOpen.value = false
     notify('路由已保存')
     await load()
   } catch (reason) {
-    notify(errorMessage(reason, '保存路由失败'), 'error')
+    routeError.value = errorMessage(reason, '保存路由失败')
   } finally {
     saving.value = false
   }
 }
 
+async function requestRouteClose() {
+  if (saving.value) return
+  if (routeDirty.value) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存修改',
+      message: '当前路由配置尚未保存，确认放弃并关闭？',
+      confirmLabel: '放弃并关闭',
+      cancelLabel: '继续编辑',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  routeDrawerOpen.value = false
+}
+
 async function removeRoute(route: GatewayRoute) {
-  const confirmed = await confirmDialog({ title: '删除路由', message: `确认删除模型「${route.model}」的路由？`, confirmLabel: '删除', danger: true })
+  const confirmed = await confirmDialog({
+    title: '删除路由',
+    message: `确认删除模型「${route.model}」的路由？`,
+    confirmLabel: '删除',
+    danger: true,
+  })
   if (!confirmed) return
   try {
     await gatewayApi.deleteRoute(route.id)
@@ -246,11 +596,24 @@ onMounted(load)
 </script>
 
 <style scoped>
-.gateway-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.gateway-mini-table { min-width: 420px; }
-.gateway-mini-table td strong { display: block; color: var(--astra-text-primary); font-size: var(--astra-font-body); }
-.gateway-mini-table td small { display: block; max-width: 220px; overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
-.gateway-dialog-form { display: grid; gap: 12px; }
-.gateway-dialog-form label { display: grid; gap: 6px; margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
-@media (max-width: 900px) { .gateway-two-col { grid-template-columns: 1fr; } }
+.gateway-pools-routes { display: grid; gap: 12px; }
+.gateway-pools-routes__bar { display: flex; align-items: center; gap: 12px; }
+.gateway-pools-routes__intro { margin-right: auto; }
+.gateway-pools-routes__intro h3 { margin: 0; color: var(--astra-text-primary); }
+.gateway-pools-routes__card-head { display: flex; align-items: center; gap: 12px; }
+.gateway-pools-routes__card-title { display: grid; gap: 2px; margin-right: auto; }
+.gateway-pools-routes__card-title h4 { margin: 0; color: var(--astra-text-primary); }
+.gateway-pools-routes__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.pool-filter__keyword { max-width: 240px; }
+.pool-filter__enabled { width: 120px; }
+.route-filter__keyword { max-width: 240px; }
+.route-filter__pool { width: 152px; }
+.route-filter__enabled { width: 120px; }
+.gateway-pools-routes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 10px; }
+.pool-cell { display: grid; gap: 2px; min-width: 0; }
+.pool-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
+.pool-cell__desc { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
+.row-actions { display: flex; align-items: center; gap: 2px; }
+.gateway-drawer__footer { display: flex; align-items: center; gap: 10px; }
+.gateway-drawer__spacer { flex: 1; }
 </style>
