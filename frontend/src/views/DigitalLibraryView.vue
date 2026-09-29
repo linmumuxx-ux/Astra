@@ -56,7 +56,7 @@
             :space-path="selectedPath"
             :keyword="queryInput"
             :filter-label="activeFilterLabel"
-            @search="queryInput = $event"
+            @search="onListSearch"
             @create="beginCreate"
             @open="openDetail"
             @move="openMoveDialog"
@@ -260,6 +260,14 @@ watch(queryInput, (value) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => { filters.keyword = value.trim(); filters.page = 1; statsActive.value = filters.keyword ? 'search' : 'all'; loadList() }, 320)
 })
+function onListSearch(value: string) {
+  if (value === queryInput.value) {
+    window.clearTimeout(searchTimer)
+    filters.keyword = value; filters.page = 1; statsActive.value = value ? 'search' : 'all'; void loadList()
+    return
+  }
+  queryInput.value = value
+}
 
 async function loadAll() {
   pageError.value = ''

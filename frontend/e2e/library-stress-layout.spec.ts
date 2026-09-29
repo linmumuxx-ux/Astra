@@ -141,7 +141,8 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   await expect(listHeader.locator('h3')).toHaveText('全部知识')
   await expect(listHeader.locator('p')).toHaveText(`${ALL_TOTAL} 条知识`)
   await expect(list.locator('tbody tr')).toHaveCount(PAGE_SIZE)
-  await expect(list.locator('footer')).toContainText(`第 1 / ${ALL_TOTAL / PAGE_SIZE} 页`)
+  await expect(list.locator('footer')).toContainText(`共 ${ALL_TOTAL} 条`)
+  await expect(list.locator('footer .el-pager li').last()).toHaveText(String(ALL_TOTAL / PAGE_SIZE))
 
   // 展开全部顶层空间，形成 10 + 120 = 130 个可见树节点
   const topSpaces = page.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content')
@@ -167,18 +168,19 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
 
   // 右列表可独立滚动，且滚动后表头仍固定在列表顶部
   const tableWrap = list.locator('.knowledge-table-wrap')
-  const tableMetrics = await tableWrap.evaluate((element) => ({
+  const bodyScroller = tableWrap.locator('.el-table__body-wrapper .el-scrollbar__wrap')
+  const tableMetrics = await bodyScroller.evaluate((element) => ({
     scrollHeight: element.scrollHeight,
     clientHeight: element.clientHeight,
     overflowY: getComputedStyle(element).overflowY,
   }))
   expect(tableMetrics.overflowY).toMatch(/auto|scroll/)
   expect(tableMetrics.scrollHeight).toBeGreaterThan(tableMetrics.clientHeight)
-  await tableWrap.evaluate((element) => { element.scrollTop = element.scrollHeight })
-  expect(await tableWrap.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await bodyScroller.evaluate((element) => { element.scrollTop = element.scrollHeight })
+  expect(await bodyScroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
 
   const wrapBox = await tableWrap.boundingBox()
-  const headBox = await tableWrap.locator('thead').boundingBox()
+  const headBox = await tableWrap.locator('.el-table__header-wrapper').boundingBox()
   expect(wrapBox, '列表容器应被渲染').not.toBeNull()
   expect(headBox, '列表表头应被渲染').not.toBeNull()
   expect(headBox!.y, '表头滚动后应贴在列表顶部').toBeGreaterThanOrEqual(wrapBox!.y - 1)
@@ -227,7 +229,8 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   await longRow.locator('.space-node__name').click()
   await expect(listHeader.locator('h3')).toHaveText(LONG_SPACE_NAME)
   await expect(listHeader.locator('p')).toHaveText('240 条知识')
-  await expect(list.locator('footer')).toContainText('第 1 / 12 页')
+  await expect(list.locator('footer')).toContainText('共 240 条')
+  await expect(list.locator('footer .el-pager li').last()).toHaveText('12')
   await expect(list.locator('tbody tr')).toHaveCount(PAGE_SIZE)
 
   const firstSpaceRow = page.locator('.space-panel .el-tree > .el-tree-node > .el-tree-node__content').filter({

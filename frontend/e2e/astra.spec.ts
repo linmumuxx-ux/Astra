@@ -144,6 +144,7 @@ test('数字图书馆支持当前空间搜索、安全 Markdown 弹框和滚动�
   await expect(library.getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
   await expect(library.getByRole('heading', { name: '知识空间', exact: true })).toBeVisible()
   await library.getByLabel('搜索当前空间').fill('50004')
+  await library.getByRole('button', { name: '搜索', exact: true }).click()
   await expect(library.getByText(title, { exact: true })).toBeVisible()
   await library.getByText(title, { exact: true }).click()
 
@@ -191,7 +192,7 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
 
   await page.goto('/library')
   const library = page.getByTestId('digital-library-page')
-  await expect(library.getByText('公共知识库', { exact: true })).toBeVisible()
+  await expect(library.locator('.space-panel').getByText('公共知识库', { exact: true })).toBeVisible()
   await expect(library.locator('.library-error')).toHaveCount(0)
   await expect(page.locator('.el-dropdown-menu:visible')).toHaveCount(0)
 
@@ -213,10 +214,11 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
     json: { user_id: 'viewer-e2e', role: 'viewer', can_manage: false, can_review: false },
   }))
   await page.reload()
-  const statusFilter = library.getByLabel('知识状态')
+  const statusFilter = library.locator('.knowledge-filter__status')
   await expect(statusFilter).toBeVisible()
-  const statusOptions = await statusFilter.locator('option').allTextContents()
-  expect(statusOptions).toEqual(['全部状态', '已发布'])
+  await statusFilter.locator('.el-select__wrapper').click()
+  await expect(page.locator('.el-select-dropdown:visible .el-select-dropdown__item')).toHaveText(['已发布'])
+  await page.keyboard.press('Escape')
   await expect(library.getByRole('button', { name: /^管理目录 / })).toHaveCount(0)
 })
 
