@@ -177,6 +177,6 @@ test.describe('API 中转 · 运行总览', () => {
 
     await page.getByTestId('gateway-nodes-entry').click()
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '节点' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
   })
 })

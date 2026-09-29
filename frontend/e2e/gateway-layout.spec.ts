@@ -103,7 +103,7 @@ async function mockGatewayApi(page: Page) {
 
 const sections = [
   { id: 'overview', label: '运行总览', path: '/gateway/overview', heading: 'API 中转总览' },
-  { id: 'nodes', label: '下游节点', path: '/gateway/nodes', heading: '节点' },
+  { id: 'nodes', label: '下游节点', path: '/gateway/nodes', heading: '下游节点' },
   { id: 'routes', label: '资源池与路由', path: '/gateway/routes', heading: '资源池与模型路由' },
   { id: 'keys', label: 'API Key 管理', path: '/gateway/keys', heading: 'Gateway Key' },
   { id: 'logs', label: '调用日志', path: '/gateway/logs', heading: '调用日志' },
@@ -154,7 +154,7 @@ test.describe('API 中转布局与路由', () => {
 
     await page.goto('/gateway?tab=nodes')
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '节点' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
 
     await page.goto('/gateway?tab=%E4%B8%8D%E5%AD%98%E5%9C%A8')
     await expect(page).toHaveURL(/\/gateway\/overview$/)
@@ -172,6 +172,6 @@ test.describe('API 中转布局与路由', () => {
 
     await page.getByRole('link', { name: '节点列表' }).click()
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '节点' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
   })
 })
