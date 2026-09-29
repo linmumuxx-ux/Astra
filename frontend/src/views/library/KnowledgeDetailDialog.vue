@@ -11,16 +11,16 @@
       <div class="detail-header">
         <div class="detail-header__text">
           <div class="detail-header__badges">
-            <ElTag v-if="detail" size="small">{{ typeLabel(detail.type) }}</ElTag>
-            <ElTag v-for="tag in detail?.tags ?? []" :key="tag" size="small" type="info" effect="plain">{{ tag }}</ElTag>
+            <ElTag v-if="detail">{{ typeLabel(detail.type) }}</ElTag>
+            <ElTag v-for="tag in detail?.tags ?? []" :key="tag" type="info" effect="plain">{{ tag }}</ElTag>
           </div>
           <h2 :id="detail ? `knowledge-${detail.id}` : 'knowledge-detail-title'">{{ detail?.title ?? (error ? '知识详情加载失败' : '正在加载知识详情') }}</h2>
           <div v-if="detail" class="detail-header__meta">
-            <ElTag size="small" :type="statusTagType(detail.status)">审核状态 · {{ statusLabel(detail.status) }}</ElTag>
-            <ElTag size="small" :type="verificationTagType(detail.verification_status)">证据状态 · {{ verificationLabel(detail.verification_status) }}</ElTag>
+            <ElTag :type="statusTagType(detail.status)">审核状态 · {{ statusLabel(detail.status) }}</ElTag>
+            <ElTag :type="verificationTagType(detail.verification_status)">证据状态 · {{ verificationLabel(detail.verification_status) }}</ElTag>
             <a v-if="detail.source_task_id" :href="`/tasks/${detail.source_task_id}`" @click="onTaskLinkClick($event, `/tasks/${detail.source_task_id}`)">来源任务：{{ detail.source_task_id }}</a>
-            <ElText size="small" type="info">更新 {{ formatDate(detail.updated_at) }}</ElText>
-            <ElText size="small" type="info">引用 {{ detail.reference_count }}</ElText>
+            <ElText type="info">更新 {{ formatDate(detail.updated_at) }}</ElText>
+            <ElText type="info">引用 {{ detail.reference_count }}</ElText>
           </div>
         </div>
         <ElButton class="detail-header__close" text :icon="X" aria-label="关闭知识详情" @click="requestClose" />
@@ -32,7 +32,7 @@
       <ElSkeleton v-if="!detail && !error" class="detail-loading" animated :rows="6" />
 
       <template v-else-if="detail">
-        <ElDescriptions class="detail-section" :column="3" border size="small">
+        <ElDescriptions class="detail-section" :column="3" border>
           <ElDescriptionsItem label="类型">{{ typeLabel(detail.type) }}</ElDescriptionsItem>
           <ElDescriptionsItem label="所属目录">{{ spaceName }}</ElDescriptionsItem>
           <ElDescriptionsItem label="来源">{{ sourceTypeLabel(detail.source_type) }}</ElDescriptionsItem>
@@ -46,19 +46,19 @@
 
         <section v-if="detail.status === 'candidate'" class="detail-section" aria-label="候选经验来源与证据">
           <h3>来源证据</h3>
-          <ElText size="small" type="info">用于判断这条候选经验是否可信；仅展示实际存在的执行信息。</ElText>
+          <ElText type="info">用于判断这条候选经验是否可信；仅展示实际存在的执行信息。</ElText>
           <ElAlert v-if="detail.review_note" class="candidate-review-note" type="warning" show-icon :closable="false">
             <template #title>审核意见</template>
             <p class="candidate-review-note__body">{{ detail.review_note }}</p>
           </ElAlert>
-          <ElDescriptions v-if="candidateFacts.length" class="origin-facts" :column="3" border size="small">
+          <ElDescriptions v-if="candidateFacts.length" class="origin-facts" :column="3" border>
             <ElDescriptionsItem v-for="fact in candidateFacts" :key="fact.label" :label="fact.label">{{ fact.value }}</ElDescriptionsItem>
           </ElDescriptions>
-          <ElDescriptions v-if="experienceFields.length" class="origin-facts" :column="2" border size="small">
+          <ElDescriptions v-if="experienceFields.length" class="origin-facts" :column="2" border>
             <ElDescriptionsItem v-for="field in experienceFields" :key="field.label" :label="field.label">{{ field.value }}</ElDescriptionsItem>
           </ElDescriptions>
           <p class="origin-facts__title">相关日志 / 会话 / Task 证据</p>
-          <ElTable v-if="detail.evidence.length" :data="detail.evidence" size="small" border>
+          <ElTable v-if="detail.evidence.length" :data="detail.evidence" border>
             <ElTableColumn label="证据类型" prop="evidence_type" width="110" />
             <ElTableColumn label="内容" min-width="220">
               <template #default="{ row }">{{ row.content || row.uri || '已关联结构化证据' }}</template>
@@ -71,7 +71,7 @@
             </ElTableColumn>
             <ElTableColumn label="结果" width="96">
               <template #default="{ row }">
-                <ElTag size="small" :type="row.result ? (row.result.includes('fail') || row.result.includes('error') ? 'danger' : 'success') : 'info'">{{ row.result || '未标记结果' }}</ElTag>
+                <ElTag :type="row.result ? (row.result.includes('fail') || row.result.includes('error') ? 'danger' : 'success') : 'info'">{{ row.result || '未标记结果' }}</ElTag>
               </template>
             </ElTableColumn>
             <ElTableColumn label="链接" width="70">
@@ -87,24 +87,22 @@
         <section class="detail-section">
           <div class="detail-section__head">
             <h3>{{ reviewEditing ? '发布前编辑' : '知识正文' }}</h3>
-            <ElTag v-if="reviewDirty" size="small" type="warning" effect="light">有未保存修改</ElTag>
+            <ElTag v-if="reviewDirty" type="warning" effect="light">有未保存修改</ElTag>
           </div>
           <ElForm v-if="reviewEditing" class="review-form" :model="review" label-position="top">
-            <ElText size="small" type="info">确认目标目录、标题、标签和 Markdown 后发布；发布成功后才进入员工检索范围。</ElText>
-            <div class="review-form__grid">
-              <ElFormItem label="目标目录" required>
-                <ElSelect v-model="review.space_id" placeholder="请选择">
-                  <ElOption v-for="dir in directories" :key="dir.id" :value="dir.id" :label="dir.name" />
-                </ElSelect>
-              </ElFormItem>
-              <ElFormItem label="验证状态">
-                <ElSelect v-model="review.verification_status">
-                  <ElOption value="unverified" label="未验证" />
-                  <ElOption value="verified" label="已验证" />
-                  <ElOption value="failed" label="验证失败" />
-                </ElSelect>
-              </ElFormItem>
-            </div>
+            <ElText type="info">确认目标目录、标题、标签和 Markdown 后发布；发布成功后才进入员工检索范围。</ElText>
+            <ElFormItem label="目标目录" required>
+              <ElSelect v-model="review.space_id" placeholder="请选择">
+                <ElOption v-for="dir in directories" :key="dir.id" :value="dir.id" :label="dir.name" />
+              </ElSelect>
+            </ElFormItem>
+            <ElFormItem label="验证状态">
+              <ElSelect v-model="review.verification_status">
+                <ElOption value="unverified" label="未验证" />
+                <ElOption value="verified" label="已验证" />
+                <ElOption value="failed" label="验证失败" />
+              </ElSelect>
+            </ElFormItem>
             <ElFormItem label="标题" required>
               <ElInput v-model.trim="review.title" maxlength="240" show-word-limit />
             </ElFormItem>
@@ -127,17 +125,17 @@
             <p>{{ reviewActionMode === 'supplement' ? '明确指出需要补充的内容或证据，避免无目标地重写整条经验。' : '请说明驳回原因，便于后续生成质量分析。' }}</p>
           </div>
           <ElInput ref="reviewReasonInput" v-model.trim="review.reason" type="textarea" :rows="3" :disabled="working" :placeholder="reviewActionMode === 'supplement' ? '例如：请补充异常场景下的验证证据，并明确适用边界。' : '请输入驳回原因'" />
-          <div class="review-request-panel__actions">
+          <ElSpace class="review-request-panel__actions" :size="8">
             <ElButton :disabled="working" @click="reviewActionMode = null">取消</ElButton>
             <ElButton :type="reviewActionMode === 'reject' ? 'danger' : 'primary'" :loading="working" :disabled="review.reason.length < 2" @click="confirmReviewAction">
               {{ reviewActionMode === 'supplement' ? '确认退回补充' : '确认驳回' }}
             </ElButton>
-          </div>
+          </ElSpace>
         </section>
 
         <section v-if="detail.sources.length" class="detail-section">
           <h3>资料来源</h3>
-          <ElTable :data="detail.sources" size="small" border>
+          <ElTable :data="detail.sources" border>
             <ElTableColumn label="来源" min-width="200">
               <template #default="{ row }">{{ row.source_name || row.source_id || row.source_type }}</template>
             </ElTableColumn>
@@ -155,7 +153,7 @@
 
         <section class="detail-section">
           <h3>最近引用</h3>
-          <ElTable v-if="usages.length" :data="usages" size="small" border>
+          <ElTable v-if="usages.length" :data="usages" border>
             <ElTableColumn label="任务" min-width="220">
               <template #default="{ row }">
                 <a v-if="row.task_id" :href="`/tasks/${row.task_id}`" @click="onTaskLinkClick($event, `/tasks/${row.task_id}`)">{{ row.task_title || row.task_id }}</a>
@@ -179,15 +177,15 @@
           <div class="detail-section__head">
             <div>
               <h3>关联任务</h3>
-              <ElText size="small" type="info">来源任务及实际引用过该知识的任务。</ElText>
+              <ElText type="info">来源任务及实际引用过该知识的任务。</ElText>
             </div>
             <ElButton text :icon="X" aria-label="关闭关联任务" @click="relatedOpen = false" />
           </div>
-          <ElTable v-if="relatedTasks.length || !relatedLoading" :data="relatedTasks" size="small" border>
+          <ElTable v-if="relatedTasks.length || !relatedLoading" :data="relatedTasks" border>
             <ElTableColumn label="任务" min-width="220">
               <template #default="{ row }">
                 <a :href="`/tasks/${row.id}`" @click="onTaskLinkClick($event, `/tasks/${row.id}`)">{{ row.title }}</a>
-                <ElText size="small" type="info"> · {{ row.id }}</ElText>
+                <ElText type="info"> · {{ row.id }}</ElText>
               </template>
             </ElTableColumn>
             <ElTableColumn label="关系" prop="relation" width="110" />
@@ -204,22 +202,22 @@
 
     <template v-if="detail" #footer>
       <div class="detail-footer">
-        <div class="detail-footer__actions">
-          <ElButton size="small" :type="detail.is_favorite ? 'warning' : 'default'" :plain="!detail.is_favorite" :icon="Star" :disabled="working" data-testid="knowledge-detail-favorite" @click="emit('favorite')">{{ detail.is_favorite ? '已收藏' : '收藏' }}</ElButton>
-          <ElButton size="small" :type="detail.user_helpful ? 'primary' : 'default'" :plain="!detail.user_helpful" :icon="ThumbsUp" :disabled="working" data-testid="knowledge-detail-helpful" @click="emit('helpful')">有帮助 ({{ detail.helpful_count }})</ElButton>
-          <ElButton size="small" :icon="Share2" @click="share">分享</ElButton>
-          <ElButton size="small" :icon="Link2" @click="copyLink">{{ copied ? '已复制' : '复制链接' }}</ElButton>
-          <ElButton size="small" :icon="ListTree" @click="openRelated">查看关联任务</ElButton>
-          <ElButton v-if="canManage" size="small" :icon="Pencil" data-testid="knowledge-detail-edit" @click="emit('edit')">编辑</ElButton>
-        </div>
-        <div v-if="canReview && ['candidate', 'draft'].includes(detail.status)" class="detail-footer__review">
-          <ElButton size="small" :icon="reviewEditing ? Eye : ClipboardEdit" :disabled="working" data-testid="knowledge-detail-review-edit" @click="toggleReviewEditing">{{ reviewEditing ? '预览正文' : '编辑' }}</ElButton>
+        <ElSpace class="detail-footer__actions" :size="8">
+          <ElButton :type="detail.is_favorite ? 'warning' : 'default'" :plain="!detail.is_favorite" :icon="Star" :disabled="working" data-testid="knowledge-detail-favorite" @click="emit('favorite')">{{ detail.is_favorite ? '已收藏' : '收藏' }}</ElButton>
+          <ElButton :type="detail.user_helpful ? 'primary' : 'default'" :plain="!detail.user_helpful" :icon="ThumbsUp" :disabled="working" data-testid="knowledge-detail-helpful" @click="emit('helpful')">有帮助 ({{ detail.helpful_count }})</ElButton>
+          <ElButton :icon="Share2" @click="share">分享</ElButton>
+          <ElButton :icon="Link2" @click="copyLink">{{ copied ? '已复制' : '复制链接' }}</ElButton>
+          <ElButton :icon="ListTree" @click="openRelated">查看关联任务</ElButton>
+          <ElButton v-if="canManage" :icon="Pencil" data-testid="knowledge-detail-edit" @click="emit('edit')">编辑</ElButton>
+        </ElSpace>
+        <ElSpace v-if="canReview && ['candidate', 'draft'].includes(detail.status)" class="detail-footer__review" :size="8">
+          <ElButton :icon="reviewEditing ? Eye : ClipboardEdit" :disabled="working" data-testid="knowledge-detail-review-edit" @click="toggleReviewEditing">{{ reviewEditing ? '预览正文' : '编辑' }}</ElButton>
           <template v-if="detail.status === 'candidate'">
-            <ElButton size="small" type="danger" plain :disabled="working" @click="startReviewAction('reject')">驳回</ElButton>
-            <ElButton size="small" :disabled="working" @click="startReviewAction('supplement')">退回补充</ElButton>
+            <ElButton type="danger" plain :disabled="working" @click="startReviewAction('reject')">驳回</ElButton>
+            <ElButton :disabled="working" @click="startReviewAction('supplement')">退回补充</ElButton>
           </template>
-          <ElButton size="small" type="primary" :loading="working" :disabled="!canPublish" data-testid="knowledge-detail-publish" @click="publish">发布</ElButton>
-        </div>
+          <ElButton type="primary" :loading="working" :disabled="!canPublish" data-testid="knowledge-detail-publish" @click="publish">发布</ElButton>
+        </ElSpace>
       </div>
     </template>
   </ElDrawer>
@@ -231,7 +229,7 @@ import { marked } from 'marked'
 import { ClipboardEdit, Eye, Link2, ListTree, Pencil, Share2, Star, ThumbsUp, X } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElAlert, ElButton, ElDescriptions, ElDescriptionsItem, ElDrawer, ElForm, ElFormItem, ElInput, ElLink, ElOption, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElDescriptions, ElDescriptionsItem, ElDrawer, ElForm, ElFormItem, ElInput, ElLink, ElOption, ElSelect, ElSkeleton, ElSpace, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
 import type { InputInstance } from 'element-plus'
 import type { KnowledgeDetail, KnowledgeUsageRecord, RelatedTask } from '@/api/types'
 import { confirmDialog } from '@/composables/useConfirm'
@@ -415,16 +413,13 @@ async function onTaskLinkClick(event: MouseEvent, to: string) {
 .detail-loading-text { display: block; margin-top: 10px; color: var(--astra-text-muted); }
 .detail-section a { color: var(--astra-primary-bright); }
 .review-form { display: grid; gap: 2px; margin-top: 8px; }
-.review-form__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
-.review-form :deep(.el-select) { width: 100%; }
 .review-form__content :deep(.el-textarea__inner) { font-family: var(--astra-font-family); font-size: var(--astra-font-body); line-height: 1.55; }
 .review-request-panel { display: grid; gap: 10px; margin-top: 18px; padding: 14px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-panel, #fbfdfc); }
 .review-request-panel strong { color: var(--astra-text-primary); font-size: var(--astra-font-label); }
 .review-request-panel p { margin: 3px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); }
-.review-request-panel__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.review-request-panel__actions { justify-content: flex-end; }
 .detail-loading { margin-top: 12px; }
-.detail-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-.detail-footer__actions, .detail-footer__review { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.detail-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 10px; }
 .markdown-body { margin-top: 10px; color: var(--astra-text-secondary); font-size: var(--astra-font-size-15); line-height: 1.78; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: var(--astra-text-primary); line-height: 1.35; }
 .markdown-body :deep(h1) { margin: 0 0 18px; font-size: var(--astra-font-title); }
@@ -444,7 +439,6 @@ async function onTaskLinkClick(event: MouseEvent, to: string) {
 .markdown-body :deep(hr) { margin: 24px 0; border: 0; border-top: 1px solid var(--astra-border); }
 @media (max-width: 720px) {
   .detail-footer { flex-direction: column; align-items: flex-start; }
-  .review-form__grid { grid-template-columns: 1fr; }
 }
 </style>
 

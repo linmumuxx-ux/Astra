@@ -125,6 +125,6 @@ function confirm(): void {
 .directory-picker-dialog .directory-node__copy{display:grid;min-width:0;flex:1}
 .directory-picker-dialog .directory-node__copy strong,.directory-picker-dialog .directory-node__copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .directory-picker-dialog .directory-node__copy strong{font-size:var(--astra-font-body)}
-.directory-picker-dialog .directory-node__copy small{margin-top:2px;color:var(--astra-text-muted);font-size:var(--astra-font-micro)}
+.directory-picker-dialog .directory-node__copy small{margin-top:2px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}
 .directory-picker-dialog .directory-node__count{flex:none;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}
 </style>

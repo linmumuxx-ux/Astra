@@ -3,16 +3,16 @@
     <ElHeader class="library-header">
       <div class="library-title">
         <h2>数字图书馆</h2>
-        <ElText size="small" type="info">管理团队知识、经验与项目资料。</ElText>
+        <ElText type="info">管理团队知识、经验与项目资料。</ElText>
       </div>
-      <div class="library-actions">
+      <ElSpace class="library-actions" :size="8">
         <ElButton :icon="RefreshCw" :loading="refreshing" @click="refreshAll">刷新</ElButton>
         <template v-if="permissions?.can_manage">
           <ElButton :icon="Upload" @click="triggerImport">导入知识</ElButton>
           <ElButton type="primary" :icon="Plus" @click="beginCreate">新建知识</ElButton>
         </template>
-        <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
-      </div>
+      </ElSpace>
+      <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
     </ElHeader>
 
     <ElMain class="library-body">
@@ -21,7 +21,7 @@
         <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
         <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
         <span>待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
-        <ElButton v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" size="small" text type="primary" :loading="resyncing" :disabled="!serviceStatus?.enabled" @click="resyncKnowledge">重新同步</ElButton>
+        <ElButton v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" text type="primary" :loading="resyncing" :disabled="!serviceStatus?.enabled" @click="resyncKnowledge">重新同步</ElButton>
         <small v-if="serviceError || serviceStatus?.healthy === false" role="status">{{ serviceError || serviceStatus?.message }}</small>
         <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
           待审核经验 <strong>{{ stats?.candidate_experiences ?? 0 }}</strong><ChevronRight :size="14" />
@@ -29,7 +29,7 @@
       </section>
 
       <ElAlert v-if="pageError" class="library-error" type="error" show-icon :closable="false" :title="pageError">
-        <ElButton size="small" @click="loadAll">重试</ElButton>
+        <ElButton @click="loadAll">重试</ElButton>
       </ElAlert>
 
       <ElContainer class="library-workspace" direction="horizontal">
@@ -137,7 +137,7 @@
 import { ChevronRight, Plus, RefreshCw, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElAlert, ElAside, ElButton, ElContainer, ElHeader, ElMain, ElText } from 'element-plus'
+import { ElAlert, ElAside, ElButton, ElContainer, ElHeader, ElMain, ElSpace, ElText } from 'element-plus'
 import { api } from '@/api/client'
 import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
@@ -462,7 +462,7 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 .library-header{--el-header-height:auto;--el-header-padding:0;display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
 .library-title{display:grid;min-width:0;gap:3px;margin-right:auto}
 .library-title h2{margin:0;color:var(--astra-text-primary);font-size:var(--astra-font-section);line-height:normal}
-.library-actions{display:flex;flex:none;align-items:center;gap:8px}
+.library-actions{flex:none}
 .hidden-input{display:none}
 .library-body{--el-main-padding:0;display:flex;flex-direction:column;gap:12px;padding:12px 20px}
 .library-service-bar{display:flex;flex:none;align-items:center;min-width:0;gap:12px;padding:7px 12px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-panel);font-size:var(--astra-font-helper)}
@@ -475,11 +475,13 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 .review-queue strong{font-size:var(--astra-font-label)}
 .review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}
 .library-workspace{flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}
-.library-aside{--el-aside-width:300px;overflow:hidden;border-right:1px solid var(--astra-border)}
+.library-aside{--el-aside-width:300px;overflow:hidden}
 .library-content{--el-main-padding:0;min-width:0;overflow:hidden}
 .library-error{flex:none}
-.move-knowledge-card label{display:grid;gap:6px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body)}
-.move-knowledge-card select{min-height:38px;padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff}
+/* 发布弹窗用原生 select：标签行高与控件高度都对齐全局 32px 基准，
+   与 ElForm（label-position="top"）的单列表单保持同一节奏。 */
+.move-knowledge-card label{display:grid;grid-template-rows:var(--astra-control-height) auto;gap:2px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body);line-height:var(--astra-control-height)}
+.move-knowledge-card select{height:var(--astra-control-height);padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;font:inherit}
 @media(max-width:1100px){.library-aside{--el-aside-width:270px}}
 @media(max-width:780px){.library-header{align-items:flex-start;flex-wrap:wrap}.library-workspace{flex-direction:column}.library-aside{flex:none;height:300px;--el-aside-width:auto}.library-content{min-height:420px}.library-service-bar{flex-wrap:wrap}.review-queue{margin-left:0}}
 .delete-blocked{display:grid;gap:8px}.delete-blocked p{margin:0;color:var(--astra-text-secondary);line-height:1.6}.delete-blocked p strong{color:var(--astra-text-primary)}

@@ -55,7 +55,7 @@
       <ElFormItem label="Markdown 正文" prop="content_md">
         <div class="markdown-editor">
           <div class="markdown-editor__toolbar">
-            <ElRadioGroup v-model="markdownMode" size="small">
+            <ElRadioGroup v-model="markdownMode">
               <ElRadioButton value="edit">编辑</ElRadioButton>
               <ElRadioButton value="preview">预览</ElRadioButton>
             </ElRadioGroup>
@@ -79,7 +79,7 @@
     </ElForm>
 
     <template #footer>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElTag v-if="dirty" type="warning" effect="light">有未保存修改</ElTag>
         <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
         <ElButton type="primary" :loading="saving" data-testid="knowledge-editor-submit" @click="submit">{{ isEdit ? '保存修改' : '保存草稿' }}</ElButton>

@@ -50,8 +50,10 @@
       >
         <template #prefix><Search :size="15" /></template>
       </ElInput>
-      <ElButton type="primary" plain :icon="Search" @click="runSearch">搜索</ElButton>
-      <ElButton class="knowledge-filter__more" :class="{ 'is-active': moreOpen || Boolean(filters.source || filters.tag) }" :icon="SlidersHorizontal" @click="moreOpen = !moreOpen">更多筛选</ElButton>
+      <ElSpace :size="8">
+        <ElButton type="primary" plain :icon="Search" @click="runSearch">搜索</ElButton>
+        <ElButton class="knowledge-filter__more" :class="{ 'is-active': moreOpen || Boolean(filters.source || filters.tag) }" :icon="SlidersHorizontal" @click="moreOpen = !moreOpen">更多筛选</ElButton>
+      </ElSpace>
     </div>
 
     <div v-if="moreOpen" class="knowledge-list__more">
@@ -78,13 +80,13 @@
     </div>
 
     <div v-if="selectedRows.length" class="knowledge-list__batch" aria-label="批量操作">
-      <ElText size="small">已选 {{ selectedRows.length }} 条</ElText>
+      <ElText>已选 {{ selectedRows.length }} 条</ElText>
       <ElSpace :size="8">
-        <ElButton v-if="canManage" size="small" @click="emitBatch('move')">移动</ElButton>
-        <ElButton v-if="canManage" size="small" @click="emitBatch('archive')">归档</ElButton>
-        <ElButton v-if="canReview" size="small" @click="emitBatch('publish')">发布</ElButton>
-        <ElButton v-if="canManage" size="small" type="danger" @click="emitBatch('delete')">删除</ElButton>
-        <ElButton size="small" text @click="clearSelection">取消选择</ElButton>
+        <ElButton v-if="canManage" @click="emitBatch('move')">移动</ElButton>
+        <ElButton v-if="canManage" @click="emitBatch('archive')">归档</ElButton>
+        <ElButton v-if="canReview" @click="emitBatch('publish')">发布</ElButton>
+        <ElButton v-if="canManage" type="danger" @click="emitBatch('delete')">删除</ElButton>
+        <ElButton text @click="clearSelection">取消选择</ElButton>
       </ElSpace>
     </div>
 
@@ -95,7 +97,6 @@
         class="knowledge-table"
         element-loading-text="正在加载知识"
         :data="page.items"
-        size="small"
         height="100%"
         row-key="id"
         @row-click="onRowClick"
@@ -106,8 +107,8 @@
           <template #default="{ row }">
             <div class="knowledge-cell">
               <strong :title="row.title">{{ row.title }}</strong>
-              <ElText size="small" type="info" truncated>{{ metaText(row) }}</ElText>
-              <ElText v-if="tagText(row)" size="small" type="info" truncated>{{ tagText(row) }}</ElText>
+              <ElText type="info" truncated>{{ metaText(row) }}</ElText>
+              <ElText v-if="tagText(row)" type="info" truncated>{{ tagText(row) }}</ElText>
             </div>
           </template>
         </ElTableColumn>
@@ -118,41 +119,41 @@
           <template #default="{ row }">{{ row.space_name ?? '未归类' }}</template>
         </ElTableColumn>
         <ElTableColumn label="审核状态" width="112">
-          <template #default="{ row }"><ElTag size="small" :type="statusTag(row.status)">{{ statusLabel(row.status) }}</ElTag></template>
+          <template #default="{ row }"><ElTag :type="statusTag(row.status)">{{ statusLabel(row.status) }}</ElTag></template>
         </ElTableColumn>
         <ElTableColumn label="验证状态" width="104">
-          <template #default="{ row }"><ElTag size="small" :type="verificationTag(row.verification_status)" effect="plain">{{ verificationLabel(row.verification_status) }}</ElTag></template>
+          <template #default="{ row }"><ElTag :type="verificationTag(row.verification_status)" effect="plain">{{ verificationLabel(row.verification_status) }}</ElTag></template>
         </ElTableColumn>
         <ElTableColumn label="更新时间" width="132">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="212" fixed="right">
+        <ElTableColumn label="操作" width="232" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions" @click.stop>
+            <ElSpace class="row-actions" :size="4" @click.stop>
               <ElTooltip content="查看" placement="top">
-                <ElButton text type="primary" :icon="Eye" :aria-label="`查看 ${row.title}`" @click="openRow(row)" />
+                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.title}`" @click="openRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canManage" content="编辑" placement="top">
-                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.title}`" @click="editRow(row)" />
+                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.title}`" @click="editRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canManage" content="移动到其他目录" placement="top">
-                <ElButton text type="primary" :icon="FolderInput" :aria-label="`移动 ${row.title}`" @click="moveRow(row)" />
+                <ElButton circle type="primary" :icon="FolderInput" :aria-label="`移动 ${row.title}`" @click="moveRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canReview && (row.status === 'candidate' || row.status === 'draft')" content="在详情中审核发布" placement="top">
-                <ElButton text type="warning" :icon="Stamp" :aria-label="`审核发布 ${row.title}`" @click="publishRow(row)" />
+                <ElButton circle type="warning" :icon="Stamp" :aria-label="`审核发布 ${row.title}`" @click="publishRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canManage && row.status !== 'archived'" content="归档" placement="top">
-                <ElButton text type="primary" :icon="Archive" :aria-label="`归档 ${row.title}`" @click="archiveRow(row)" />
+                <ElButton circle type="primary" :icon="Archive" :aria-label="`归档 ${row.title}`" @click="archiveRow(row)" />
               </ElTooltip>
               <ElTooltip v-if="canManage" content="删除" placement="top">
-                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.title}`" @click="deleteRow(row)" />
+                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.title}`" @click="deleteRow(row)" />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
           <ElEmpty v-if="!loading" :image-size="72" :description="hasFilters ? '没有匹配的知识' : '这里还没有知识'">
-            <ElText size="small" type="info">{{ hasFilters ? '调整搜索或筛选条件后重试。' : `当前位置：${spacePath}。你可以新建知识，或将已有知识移动到这里。` }}</ElText>
+            <ElText type="info">{{ hasFilters ? '调整搜索或筛选条件后重试。' : `当前位置：${spacePath}。你可以新建知识，或将已有知识移动到这里。` }}</ElText>
             <div class="empty-actions">
               <ElButton v-if="!hasFilters && canManage" type="primary" :icon="Plus" @click="emit('create')">新建知识</ElButton>
               <ElButton v-else-if="hasFilters" @click="emit('clear-filter')">清除筛选</ElButton>
@@ -163,7 +164,7 @@
     </div>
 
     <footer v-if="page.total > 0" class="knowledge-list__footer">
-      <ElText size="small" type="info">共 {{ page.total }} 条</ElText>
+      <ElText type="info">共 {{ page.total }} 条</ElText>
       <ElPagination
         :current-page="page.page"
         :page-size="page.page_size"
@@ -290,12 +291,12 @@ const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 
 .knowledge-filter__type{width:132px}
 .knowledge-filter__status{width:150px}
 .knowledge-filter__sort{width:136px}
-.knowledge-filter__search{flex:1;min-width:200px;max-width:360px}
+.knowledge-filter__search{flex:1 1 240px;min-width:190px;max-width:420px}
 .knowledge-filter__more.is-active{color:var(--astra-primary-bright);border-color:var(--astra-primary-border);background:var(--astra-primary-soft)}
 .knowledge-list__more{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--astra-border)}
 .knowledge-filter__source{width:140px}
-.knowledge-filter__tag{display:flex;align-items:center;gap:8px}
-.knowledge-filter__tag .el-input{width:200px}
+.knowledge-filter__tag{display:flex;align-items:center;gap:8px;flex:1 1 260px;min-width:0;max-width:420px}
+.knowledge-filter__tag .el-input{flex:1 1 auto;min-width:0}
 .knowledge-list__active{display:flex;align-items:center;padding:8px 14px;border-bottom:1px solid var(--astra-border)}
 .knowledge-list__batch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 14px;border-bottom:1px solid var(--astra-border);background:var(--astra-primary-soft)}
 .knowledge-table-wrap{min-height:0}
@@ -304,7 +305,7 @@ const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 
 .knowledge-table :deep(.el-empty){padding:28px 0}
 .knowledge-cell{display:grid;min-width:0;gap:2px}
 .knowledge-cell strong{overflow:hidden;color:var(--astra-text-primary);font-size:var(--astra-font-label);text-overflow:ellipsis;white-space:nowrap}
-.row-actions{display:flex;align-items:center;gap:2px}
+.row-actions{justify-content:flex-end}
 .empty-actions{display:flex;justify-content:center;gap:8px}
 .knowledge-list__footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 14px;border-top:1px solid var(--astra-border)}
 @media(max-width:1100px){.knowledge-filter__search{max-width:none}}
