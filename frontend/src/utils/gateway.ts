@@ -123,6 +123,13 @@ export function formatPercent(ratio: number | null | undefined): string {
   return `${(ratio * 100).toFixed(ratio >= 0.9995 ? 0 : 1)}%`
 }
 
+export function tokenLimitText(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '不限'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`
+  return String(value)
+}
+
 export function parseNumberList(value: string): string[] {
   return value
     .split(/[\n,，\s]+/)

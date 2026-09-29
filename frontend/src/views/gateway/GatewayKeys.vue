@@ -1,93 +1,237 @@
 <template>
-  <section class="gateway-section">
-    <header class="gateway-section__head">
-      <div><h3>Gateway Key</h3><p>Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建后显示一次。</p></div>
-      <div class="gateway-section__actions">
-        <button type="button" class="button" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" />刷新</button>
-        <button v-if="canKey" type="button" class="button button--primary" @click="openCreate"><Plus :size="15" />新建 Key</button>
+  <section class="gateway-keys" data-testid="gateway-keys">
+    <header class="gateway-keys__bar">
+      <div class="gateway-keys__intro">
+        <h3>API Key 管理</h3>
+        <ElText size="small" type="info">Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建成功后显示一次。</ElText>
       </div>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
+      <ElButton v-if="canKey" type="success" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
     </header>
 
-    <p v-if="error" class="gateway-alert"><TriangleAlert :size="15" />{{ error }}<button type="button" @click="load">重试</button></p>
+    <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-keys-error">
+      <ElButton size="small" type="primary" data-testid="gateway-keys-retry" @click="load">重试</ElButton>
+    </ElAlert>
 
-    <div class="table-wrap gateway-card">
-      <table class="gateway-key-table">
-        <thead><tr><th>名称</th><th>前缀</th><th>归属</th><th>允许模型</th><th>并发</th><th>额度（时 / 日）</th><th>有效期</th><th>状态</th><th>最近使用</th><th class="gateway-col-actions">操作</th></tr></thead>
-        <tbody>
-          <tr v-for="key in keys" :key="key.id">
-            <td><strong>{{ key.name }}</strong><small>{{ key.id }}</small></td>
-            <td class="gateway-mono">{{ key.key_prefix }}…</td>
-            <td>{{ key.owner_id || '—' }}</td>
-            <td>{{ key.allowed_models.length ? key.allowed_models.join('、') : '全部' }}</td>
-            <td class="gateway-num">{{ key.max_concurrency || '不限' }}</td>
-            <td class="gateway-num">{{ limitText(key.hourly_token_limit) }} / {{ limitText(key.daily_token_limit) }}</td>
-            <td class="gateway-time">{{ key.expires_at ? formatDateTime(key.expires_at) : '长期' }}</td>
-            <td>
-              <span v-if="key.revoked_at" class="status-badge" data-tone="danger">已吊销</span>
-              <span v-else class="status-badge" :data-tone="key.enabled ? 'success' : 'neutral'">{{ key.enabled ? '启用' : '停用' }}</span>
-            </td>
-            <td class="gateway-time">{{ formatRelativeTime(key.last_used_at) }}</td>
-            <td class="gateway-col-actions">
-              <div v-if="canKey" class="gateway-row-actions">
-                <button class="gateway-icon-btn" type="button" title="编辑" @click="openEdit(key)"><Pencil :size="14" /></button>
-                <button class="gateway-icon-btn gateway-icon-btn--danger" type="button" title="吊销" :disabled="Boolean(key.revoked_at)" @click="revoke(key)"><Ban :size="14" /></button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="!keys.length"><td colspan="10" class="empty-cell">暂无 Gateway Key。</td></tr>
-        </tbody>
-      </table>
+    <div class="gateway-keys__filters" aria-label="Key 筛选">
+      <ElInput
+        v-model="filters.keyword"
+        class="key-filter__keyword"
+        aria-label="搜索 Key"
+        placeholder="搜索名称 / 前缀 / 归属"
+        clearable
+      >
+        <template #prefix><Search :size="15" /></template>
+      </ElInput>
+      <ElSelect v-model="filters.status" class="key-filter__status" aria-label="Key 状态筛选" placeholder="状态：全部" clearable>
+        <ElOption value="enabled" label="启用" />
+        <ElOption value="disabled" label="停用" />
+        <ElOption value="revoked" label="已吊销" />
+      </ElSelect>
+      <ElButton v-if="hasFilters" text type="primary" @click="clearFilters">清除筛选</ElButton>
     </div>
 
-    <AstraDialog :open="editorOpen" :title="form.id ? '编辑 Gateway Key' : '新建 Gateway Key'" :busy="saving" testid="gateway-key-dialog" width="min(540px,100%)" @close="editorOpen = false">
-      <form id="gateway-key-form" class="gateway-dialog-form" @submit.prevent="submit">
-        <label>名称<input v-model="form.name" required /></label>
-        <div class="gateway-form__grid">
-          <label>归属 ID<input v-model="form.owner_id" placeholder="可选" /></label>
-          <label>有效至<input v-model="form.expires_at" type="datetime-local" /></label>
-        </div>
-        <label>允许模型（留空为全部，逗号或换行分隔）<textarea v-model="form.allowed_models" rows="2" /></label>
-        <div class="gateway-form__grid">
-          <label>最大并发（0 不限）<input v-model="form.max_concurrency" type="number" min="0" /></label>
-          <label v-if="form.id" class="gateway-toggle"><span>启用</span><AstraSwitch v-model="form.enabled" /></label>
-        </div>
-        <div class="gateway-form__grid">
-          <label>每小时 Token 限额<input v-model="form.hourly" type="number" min="0" placeholder="不限" /></label>
-          <label>每日 Token 限额<input v-model="form.daily" type="number" min="0" placeholder="不限" /></label>
-        </div>
-      </form>
-      <template #footer>
-        <button type="button" class="button" :disabled="saving" @click="editorOpen = false">取消</button>
-        <button type="submit" form="gateway-key-form" class="button button--primary" :disabled="saving"><LoaderCircle v-if="saving" :size="14" class="spin" />保存</button>
+    <ElTable
+      v-loading="loading"
+      :data="pagedKeys"
+      size="small"
+      row-key="id"
+      element-loading-text="正在加载 Key"
+      data-testid="gateway-keys-table"
+    >
+      <ElTableColumn label="名称" min-width="200">
+        <template #default="{ row }">
+          <div class="key-cell">
+            <strong>{{ row.name }}</strong>
+            <span class="key-cell__id" :title="row.id">{{ row.id }}</span>
+          </div>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn label="前缀" width="128">
+        <template #default="{ row }"><span class="key-mono">{{ row.key_prefix }}…</span></template>
+      </ElTableColumn>
+      <ElTableColumn label="归属" width="132" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.owner_id || '—' }}</template>
+      </ElTableColumn>
+      <ElTableColumn label="允许模型" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.allowed_models.length">{{ row.allowed_models.join('、') }}</span>
+          <span v-else class="key-muted">全部</span>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn label="并发" width="76">
+        <template #default="{ row }">{{ row.max_concurrency || '不限' }}</template>
+      </ElTableColumn>
+      <ElTableColumn label="额度（时 / 日）" width="124">
+        <template #default="{ row }">{{ tokenLimitText(row.hourly_token_limit) }} / {{ tokenLimitText(row.daily_token_limit) }}</template>
+      </ElTableColumn>
+      <ElTableColumn label="有效期" width="130">
+        <template #default="{ row }">{{ row.expires_at ? formatDateTime(row.expires_at) : '长期' }}</template>
+      </ElTableColumn>
+      <ElTableColumn label="状态" width="88">
+        <template #default="{ row }">
+          <ElTag v-if="row.revoked_at" size="small" type="danger">已吊销</ElTag>
+          <ElTag v-else size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</ElTag>
+        </template>
+      </ElTableColumn>
+      <ElTableColumn label="最近使用" width="104">
+        <template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template>
+      </ElTableColumn>
+      <ElTableColumn v-if="canKey" label="操作" width="96" fixed="right">
+        <template #default="{ row }">
+          <div class="row-actions">
+            <ElTooltip content="编辑 Key" placement="top">
+              <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openEdit(row as GatewayKey)" />
+            </ElTooltip>
+            <ElTooltip content="吊销 Key（立即失效，不可恢复）" placement="top">
+              <ElButton text type="danger" :icon="Ban" :aria-label="`吊销 ${row.name}`" :disabled="busy || Boolean(row.revoked_at)" @click="revoke(row as GatewayKey)" />
+            </ElTooltip>
+          </div>
+        </template>
+      </ElTableColumn>
+      <template #empty>
+        <ElEmpty v-if="!loading" :image-size="64" :description="emptyText" />
       </template>
-    </AstraDialog>
+    </ElTable>
 
-    <AstraDialog :open="plaintextOpen && Boolean(createdKey)" title="Gateway Key 已创建" subtitle="请立即复制保存，关闭后无法再次查看原文。" :busy="false" testid="gateway-key-plaintext" width="min(560px,100%)" @close="closePlaintext">
-      <p class="gateway-key-warning"><TriangleAlert :size="15" />库中只保存摘要，任何页面与日志都不会再显示该 Key。</p>
-      <IdDisplay v-if="createdKey" :value="createdKey.key" :max-width="52" />
+    <footer v-if="filteredKeys.length" class="gateway-keys__footer">
+      <ElText size="small" type="info">共 {{ filteredKeys.length }} 条</ElText>
+      <ElPagination
+        :current-page="page"
+        :page-size="pageSize"
+        :total="filteredKeys.length"
+        layout="prev, pager, next"
+        aria-label="Key 列表分页"
+        data-testid="gateway-keys-pagination"
+        @current-change="page = $event"
+      />
+    </footer>
+
+    <ElDrawer
+      v-if="drawerOpen"
+      class="gateway-drawer"
+      data-testid="gateway-key-drawer"
+      :model-value="true"
+      :title="form.id ? '编辑 Key' : '新增 Key'"
+      size="min(460px, 100%)"
+      :close-on-click-modal="false"
+      :before-close="() => requestClose()"
+    >
+      <ElForm ref="formRef" class="key-form" :model="form" :rules="rules" label-position="top" scroll-to-error :disabled="saving">
+        <ElFormItem label="名称" prop="name">
+          <ElInput v-model="form.name" placeholder="例如 生产应用 Key" />
+        </ElFormItem>
+        <ElFormItem label="归属 ID" prop="owner_id">
+          <ElInput v-model="form.owner_id" placeholder="可选，例如 user-001" />
+        </ElFormItem>
+        <ElFormItem label="允许模型（留空为全部，逗号或换行分隔）" prop="allowed_models">
+          <ElInput v-model="form.allowed_models" type="textarea" :rows="2" placeholder="gpt-4o&#10;claude-3-5-sonnet" />
+        </ElFormItem>
+        <ElFormItem label="最大并发（0 为不限）" prop="max_concurrency">
+          <ElInput v-model="form.max_concurrency" type="number" min="0" />
+        </ElFormItem>
+        <ElFormItem label="每小时 Token 限额" prop="hourly">
+          <ElInput v-model="form.hourly" type="number" min="0" placeholder="不限" />
+        </ElFormItem>
+        <ElFormItem label="每日 Token 限额" prop="daily">
+          <ElInput v-model="form.daily" type="number" min="0" placeholder="不限" />
+        </ElFormItem>
+        <ElFormItem label="有效期至" prop="expires_at">
+          <ElDatePicker
+            v-model="form.expires_at"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="长期有效"
+            clearable
+            data-testid="gateway-key-expires"
+          />
+        </ElFormItem>
+        <ElFormItem v-if="form.id" label="启用" prop="enabled">
+          <ElSwitch v-model="form.enabled" data-testid="gateway-key-enabled" />
+        </ElFormItem>
+        <ElAlert v-if="formError" type="error" show-icon :closable="false" :title="formError" data-testid="gateway-key-error" />
+      </ElForm>
       <template #footer>
-        <button type="button" class="button button--primary" @click="closePlaintext">我已保存</button>
+        <div class="gateway-drawer__footer">
+          <ElTag v-if="dirty" type="warning" effect="light" data-testid="gateway-key-dirty">有未保存修改</ElTag>
+          <span class="gateway-drawer__spacer" />
+          <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
+          <ElButton type="primary" :loading="saving" data-testid="gateway-key-save" @click="submit">保存</ElButton>
+        </div>
       </template>
-    </AstraDialog>
+    </ElDrawer>
+
+    <ElDialog
+      v-if="createdKey"
+      :model-value="true"
+      class="gateway-key-plaintext"
+      data-testid="gateway-key-plaintext"
+      title="Gateway Key 已创建"
+      width="min(560px, 92%)"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      @close="closePlaintext"
+    >
+      <ElText size="small" type="info">请立即复制保存，关闭后无法再次查看原文。</ElText>
+      <ElAlert class="gateway-key-plaintext__warn" type="warning" show-icon :closable="false" title="库中只保存摘要，任何页面与日志都不会再显示该 Key。" />
+      <div v-if="createdKey" class="gateway-key-plaintext__row">
+        <ElInput
+          class="gateway-key-plaintext__value"
+          :model-value="createdKey.key"
+          readonly
+          data-testid="gateway-key-plaintext-value"
+        />
+        <ElButton :icon="Copy" data-testid="gateway-key-copy" @click="copyCreatedKey">复制</ElButton>
+      </div>
+      <template #footer>
+        <ElButton type="primary" data-testid="gateway-key-plaintext-done" @click="closePlaintext">我已保存</ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>
 
 <script setup lang="ts">
-import { Ban, LoaderCircle, Pencil, Plus, RefreshCw, TriangleAlert } from 'lucide-vue-next'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { Ban, Copy, Pencil, Plus, RefreshCw, Search } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import {
+  ElAlert,
+  ElButton,
+  ElDatePicker,
+  ElDialog,
+  ElDrawer,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElInput,
+  ElOption,
+  ElPagination,
+  ElSelect,
+  ElSwitch,
+  ElTable,
+  ElTableColumn,
+  ElTag,
+  ElText,
+  ElTooltip,
+  vLoading,
+} from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   gatewayApi,
   GatewayApiError,
   type GatewayKey,
   type GatewayKeyCreated,
 } from '@/api/gateway'
-import AstraDialog from '@/components/astra/AstraDialog.vue'
-import AstraSwitch from '@/components/astra/AstraSwitch.vue'
-import IdDisplay from '@/components/astra/IdDisplay.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
-import { errorMessage, formatDateTime, formatRelativeTime, parseNumberList } from '@/utils/gateway'
+import {
+  errorMessage,
+  formatDateTime,
+  formatRelativeTime,
+  parseNumberList,
+  tokenLimitText,
+} from '@/utils/gateway'
 
 const { hasRole, disconnect } = useGatewayAuth()
 const canKey = computed(() => hasRole('key'))
@@ -95,8 +239,12 @@ const keys = ref<GatewayKey[]>([])
 const loading = ref(false)
 const error = ref('')
 const saving = ref(false)
-const editorOpen = ref(false)
-const plaintextOpen = ref(false)
+const revokingId = ref('')
+const busy = computed(() => loading.value || saving.value || Boolean(revokingId.value))
+
+const drawerOpen = ref(false)
+const formRef = ref<FormInstance>()
+const formError = ref('')
 const createdKey = ref<GatewayKeyCreated | null>(null)
 
 const form = reactive({
@@ -111,11 +259,38 @@ const form = reactive({
   enabled: true,
 })
 
-function limitText(value: number | null): string {
-  if (value === null || value === undefined) return '不限'
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`
-  return String(value)
+const pageSize = 10
+const filters = reactive({ keyword: '', status: '' })
+const page = ref(1)
+
+const filteredKeys = computed(() => {
+  const keyword = filters.keyword.trim().toLowerCase()
+  return keys.value.filter((key) => {
+    if (keyword && !`${key.name} ${key.key_prefix} ${key.owner_id ?? ''}`.toLowerCase().includes(keyword)) return false
+    if (filters.status === 'revoked' && !key.revoked_at) return false
+    if (filters.status === 'enabled' && (key.revoked_at || !key.enabled)) return false
+    if (filters.status === 'disabled' && (key.revoked_at || key.enabled)) return false
+    return true
+  })
+})
+const pagedKeys = computed(() => {
+  const start = (page.value - 1) * pageSize
+  return filteredKeys.value.slice(start, start + pageSize)
+})
+const hasFilters = computed(() => Boolean(filters.keyword.trim() || filters.status))
+const emptyText = computed(() => (hasFilters.value
+  ? '没有匹配的 Key，调整筛选条件后重试。'
+  : '暂无 Gateway Key，点击「新增 Key」开始创建。'))
+
+watch(filters, () => { page.value = 1 })
+watch(filteredKeys, (list) => {
+  const maxPage = Math.max(1, Math.ceil(list.length / pageSize))
+  if (page.value > maxPage) page.value = maxPage
+})
+
+function clearFilters() {
+  filters.keyword = ''
+  filters.status = ''
 }
 
 function intOrNull(value: string): number | null {
@@ -144,9 +319,23 @@ async function load() {
   }
 }
 
+// ── 抽屉表单：未保存提醒 + 一次性原文 ──────────────────────────────────
+
+function formSnapshot(): string {
+  return JSON.stringify(form)
+}
+const initialSnapshot = ref('')
+const dirty = computed(() => drawerOpen.value && formSnapshot() !== initialSnapshot.value)
+
+const rules: FormRules = {
+  name: [{ required: true, message: '请填写 Key 名称', trigger: 'blur' }],
+}
+
 function openCreate() {
   Object.assign(form, { id: '', name: '', owner_id: '', allowed_models: '', max_concurrency: '0', hourly: '', daily: '', expires_at: '', enabled: true })
-  editorOpen.value = true
+  formError.value = ''
+  initialSnapshot.value = formSnapshot()
+  drawerOpen.value = true
 }
 
 function openEdit(key: GatewayKey) {
@@ -161,11 +350,15 @@ function openEdit(key: GatewayKey) {
     expires_at: key.expires_at ? key.expires_at.slice(0, 16) : '',
     enabled: key.enabled,
   })
-  editorOpen.value = true
+  formError.value = ''
+  initialSnapshot.value = formSnapshot()
+  drawerOpen.value = true
 }
 
 async function submit() {
+  if (!(await formRef.value?.validate().catch(() => false))) return
   saving.value = true
+  formError.value = ''
   try {
     const body = {
       name: form.name.trim(),
@@ -178,37 +371,69 @@ async function submit() {
     }
     if (form.id) {
       await gatewayApi.updateKey(form.id, { ...body, enabled: form.enabled })
+      drawerOpen.value = false
       notify('Key 已更新')
-      editorOpen.value = false
       await load()
     } else {
       const created = await gatewayApi.createKey(body)
       createdKey.value = created
-      editorOpen.value = false
-      plaintextOpen.value = true
+      drawerOpen.value = false
       await load()
     }
   } catch (reason) {
-    notify(errorMessage(reason, '保存 Key 失败'), 'error')
+    formError.value = errorMessage(reason, '保存 Key 失败')
   } finally {
     saving.value = false
   }
 }
 
+async function requestClose() {
+  if (saving.value) return
+  if (dirty.value) {
+    const confirmed = await confirmDialog({
+      title: '放弃未保存修改',
+      message: '当前 Key 配置尚未保存，确认放弃并关闭？',
+      confirmLabel: '放弃并关闭',
+      cancelLabel: '继续编辑',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  drawerOpen.value = false
+}
+
 function closePlaintext() {
-  plaintextOpen.value = false
   createdKey.value = null
 }
 
+async function copyCreatedKey() {
+  const value = createdKey.value?.key
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    notify('Key 已复制到剪贴板')
+  } catch {
+    notify('浏览器拒绝自动复制，请手动选中复制', 'error')
+  }
+}
+
 async function revoke(key: GatewayKey) {
-  const confirmed = await confirmDialog({ title: '吊销 Gateway Key', message: `确认吊销「${key.name}」？吊销后该 Key 立即失效且不可恢复。`, confirmLabel: '吊销', danger: true })
+  const confirmed = await confirmDialog({
+    title: '吊销 Gateway Key',
+    message: `确认吊销「${key.name}」？吊销后该 Key 立即失效且不可恢复。`,
+    confirmLabel: '吊销',
+    danger: true,
+  })
   if (!confirmed) return
+  revokingId.value = key.id
   try {
     await gatewayApi.revokeKey(key.id)
     notify('Key 已吊销')
     await load()
   } catch (reason) {
     notify(errorMessage(reason, '吊销失败'), 'error')
+  } finally {
+    revokingId.value = ''
   }
 }
 
@@ -216,13 +441,26 @@ onMounted(load)
 </script>
 
 <style scoped>
-.gateway-card { border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-card); box-shadow: var(--astra-shadow-panel); }
-.gateway-key-table { min-width: 1060px; }
-.gateway-key-table td > strong { display: block; color: var(--astra-text-primary); font-size: var(--astra-font-body); }
-.gateway-key-table td > small { display: block; color: var(--astra-text-muted); font-size: var(--astra-font-micro); }
-.gateway-mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
-.gateway-num, .gateway-time { white-space: nowrap; font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
-.gateway-dialog-form { display: grid; gap: 12px; }
-.gateway-dialog-form label { display: grid; gap: 6px; margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
-.gateway-key-warning { display: flex; align-items: center; gap: 7px; margin: 0; padding: 10px 12px; color: var(--astra-warning); border: 1px solid rgba(233, 149, 63, .28); border-radius: 9px; background: var(--astra-warning-soft); font-size: var(--astra-font-helper); }
+.gateway-keys { display: grid; gap: 12px; }
+.gateway-keys__bar { display: flex; align-items: center; gap: 12px; }
+.gateway-keys__intro { margin-right: auto; }
+.gateway-keys__intro h3 { margin: 0; color: var(--astra-text-primary); }
+.gateway-keys__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.key-filter__keyword { max-width: 280px; }
+.key-filter__status { width: 120px; }
+.gateway-keys__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+.key-cell { display: grid; gap: 2px; min-width: 0; }
+.key-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
+.key-cell__id { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
+.key-mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
+.key-muted { color: var(--astra-text-muted); }
+.row-actions { display: flex; align-items: center; gap: 2px; }
+.key-form :deep(.el-form-item) { margin-bottom: 14px; }
+.key-form :deep(.el-date-editor) { width: 100%; }
+.gateway-drawer__footer { display: flex; align-items: center; gap: 10px; }
+.gateway-drawer__spacer { flex: 1; }
+.gateway-key-plaintext__warn { margin-top: 10px; }
+.gateway-key-plaintext__row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.gateway-key-plaintext__value { flex: 1; }
+.gateway-key-plaintext__value :deep(input) { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 </style>

@@ -44,7 +44,7 @@
       <template #default="{ row }">{{ row.max_concurrency ? row.max_concurrency : '不限' }} / {{ row.weight }}</template>
     </ElTableColumn>
     <ElTableColumn label="额度（时 / 日）" width="116">
-      <template #default="{ row }">{{ limitText(row.hourly_token_limit) }} / {{ limitText(row.daily_token_limit) }}</template>
+      <template #default="{ row }">{{ tokenLimitText(row.hourly_token_limit) }} / {{ tokenLimitText(row.daily_token_limit) }}</template>
     </ElTableColumn>
     <ElTableColumn label="最近探测" width="108">
       <template #default="{ row }">{{ formatRelativeTime(row.last_checked_at) }}</template>
@@ -94,6 +94,7 @@ import {
   healthTone,
   schedulingStateLabel,
   schedulingTone,
+  tokenLimitText,
   type GatewayTone,
 } from '@/utils/gateway'
 
@@ -118,13 +119,6 @@ defineEmits<{
 function poolName(poolId: string | null): string {
   if (!poolId) return '未分配'
   return props.pools.find((pool) => pool.id === poolId)?.name ?? poolId
-}
-
-function limitText(value: number | null): string {
-  if (value === null || value === undefined) return '不限'
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`
-  return String(value)
 }
 
 function tagType(tone: GatewayTone): 'success' | 'warning' | 'danger' | 'info' {

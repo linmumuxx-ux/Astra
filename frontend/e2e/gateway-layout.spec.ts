@@ -105,7 +105,7 @@ const sections = [
   { id: 'overview', label: '运行总览', path: '/gateway/overview', heading: 'API 中转总览' },
   { id: 'nodes', label: '下游节点', path: '/gateway/nodes', heading: '下游节点' },
   { id: 'routes', label: '资源池与路由', path: '/gateway/routes', heading: '资源池与模型路由' },
-  { id: 'keys', label: 'API Key 管理', path: '/gateway/keys', heading: 'Gateway Key' },
+  { id: 'keys', label: 'API Key 管理', path: '/gateway/keys', heading: 'API Key 管理' },
   { id: 'logs', label: '调用日志', path: '/gateway/logs', heading: '调用日志' },
   { id: 'versions', label: '配置版本', path: '/gateway/versions', heading: '配置草稿与版本' },
   { id: 'self', label: '自助用量', path: '/gateway/self', heading: 'Key 自助用量' },
