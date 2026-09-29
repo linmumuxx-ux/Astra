@@ -3,14 +3,16 @@
     <header class="gateway-keys__bar">
       <div class="gateway-keys__intro">
         <h3>API Key 管理</h3>
-        <ElText size="small" type="info">Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建成功后显示一次。</ElText>
+        <ElText type="info">Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建成功后显示一次。</ElText>
       </div>
-      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
-      <ElButton v-if="canKey" type="success" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
+      <ElSpace :size="8">
+        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
+        <ElButton v-if="canKey" type="success" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
+      </ElSpace>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-keys-error">
-      <ElButton size="small" type="primary" data-testid="gateway-keys-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-keys-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <div class="gateway-keys__filters" aria-label="Key 筛选">
@@ -34,7 +36,6 @@
     <ElTable
       v-loading="loading"
       :data="pagedKeys"
-      size="small"
       row-key="id"
       element-loading-text="正在加载 Key"
       data-testid="gateway-keys-table"
@@ -70,23 +71,23 @@
       </ElTableColumn>
       <ElTableColumn label="状态" width="88">
         <template #default="{ row }">
-          <ElTag v-if="row.revoked_at" size="small" type="danger">已吊销</ElTag>
-          <ElTag v-else size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</ElTag>
+          <ElTag v-if="row.revoked_at" type="danger">已吊销</ElTag>
+          <ElTag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</ElTag>
         </template>
       </ElTableColumn>
       <ElTableColumn label="最近使用" width="104">
         <template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template>
       </ElTableColumn>
-      <ElTableColumn v-if="canKey" label="操作" width="96" fixed="right">
+      <ElTableColumn v-if="canKey" label="操作" width="88" fixed="right">
         <template #default="{ row }">
-          <div class="row-actions">
+          <ElSpace :size="4">
             <ElTooltip content="编辑 Key" placement="top">
-              <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openEdit(row as GatewayKey)" />
+              <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openEdit(row as GatewayKey)" />
             </ElTooltip>
             <ElTooltip content="吊销 Key（立即失效，不可恢复）" placement="top">
-              <ElButton text type="danger" :icon="Ban" :aria-label="`吊销 ${row.name}`" :disabled="busy || Boolean(row.revoked_at)" @click="revoke(row as GatewayKey)" />
+              <ElButton circle type="danger" :icon="Ban" :aria-label="`吊销 ${row.name}`" :disabled="busy || Boolean(row.revoked_at)" @click="revoke(row as GatewayKey)" />
             </ElTooltip>
-          </div>
+          </ElSpace>
         </template>
       </ElTableColumn>
       <template #empty>
@@ -95,7 +96,7 @@
     </ElTable>
 
     <footer v-if="filteredKeys.length" class="gateway-keys__footer">
-      <ElText size="small" type="info">共 {{ filteredKeys.length }} 条</ElText>
+      <ElText type="info">共 {{ filteredKeys.length }} 条</ElText>
       <ElPagination
         :current-page="page"
         :page-size="pageSize"
@@ -155,9 +156,10 @@
       <template #footer>
         <div class="gateway-drawer__footer">
           <ElTag v-if="dirty" type="warning" effect="light" data-testid="gateway-key-dirty">有未保存修改</ElTag>
-          <span class="gateway-drawer__spacer" />
-          <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
-          <ElButton type="primary" :loading="saving" data-testid="gateway-key-save" @click="submit">保存</ElButton>
+          <ElSpace :size="8">
+            <ElButton :disabled="saving" @click="requestClose">取消</ElButton>
+            <ElButton type="primary" :loading="saving" data-testid="gateway-key-save" @click="submit">保存</ElButton>
+          </ElSpace>
         </div>
       </template>
     </ElDrawer>
@@ -173,7 +175,7 @@
       :close-on-press-escape="false"
       @close="closePlaintext"
     >
-      <ElText size="small" type="info">请立即复制保存，关闭后无法再次查看原文。</ElText>
+      <ElText type="info">请立即复制保存，关闭后无法再次查看原文。</ElText>
       <ElAlert class="gateway-key-plaintext__warn" type="warning" show-icon :closable="false" title="库中只保存摘要，任何页面与日志都不会再显示该 Key。" />
       <div v-if="createdKey" class="gateway-key-plaintext__row">
         <ElInput
@@ -207,6 +209,7 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
+  ElSpace,
   ElSwitch,
   ElTable,
   ElTableColumn,
@@ -446,7 +449,7 @@ onMounted(load)
 .gateway-keys__intro { margin-right: auto; }
 .gateway-keys__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-keys__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.key-filter__keyword { max-width: 280px; }
+.key-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .key-filter__status { width: 120px; }
 .gateway-keys__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
 .key-cell { display: grid; gap: 2px; min-width: 0; }
@@ -454,11 +457,9 @@ onMounted(load)
 .key-cell__id { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
 .key-mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 .key-muted { color: var(--astra-text-muted); }
-.row-actions { display: flex; align-items: center; gap: 2px; }
 .key-form :deep(.el-form-item) { margin-bottom: 14px; }
 .key-form :deep(.el-date-editor) { width: 100%; }
-.gateway-drawer__footer { display: flex; align-items: center; gap: 10px; }
-.gateway-drawer__spacer { flex: 1; }
+.gateway-drawer__footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .gateway-key-plaintext__warn { margin-top: 10px; }
 .gateway-key-plaintext__row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .gateway-key-plaintext__value { flex: 1; }

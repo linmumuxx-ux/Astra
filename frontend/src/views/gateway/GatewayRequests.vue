@@ -3,13 +3,13 @@
     <header class="gateway-requests__bar">
       <div class="gateway-requests__intro">
         <h3>调用日志</h3>
-        <ElText size="small" type="info">只记录元数据与测量值，不保存 Prompt、Authorization 或响应体。</ElText>
+        <ElText type="info">只记录元数据与测量值，不保存 Prompt、Authorization 或响应体。</ElText>
       </div>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-requests-refresh" @click="load">刷新</ElButton>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-requests-error">
-      <ElButton size="small" type="primary" data-testid="gateway-requests-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-requests-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <div class="gateway-requests__filters" aria-label="调用日志筛选">
@@ -40,14 +40,15 @@
       <ElSelect v-model="pageSize" class="log-filter__size" aria-label="每页条数">
         <ElOption v-for="size in pageSizeOptions" :key="size" :value="size" :label="`每页 ${size}`" />
       </ElSelect>
-      <ElButton type="primary" :icon="Filter" :disabled="loading" data-testid="gateway-requests-apply" @click="apply">筛选</ElButton>
-      <ElButton :disabled="loading" data-testid="gateway-requests-reset" @click="reset">重置</ElButton>
+      <ElSpace :size="8">
+        <ElButton type="primary" :icon="Filter" :disabled="loading" data-testid="gateway-requests-apply" @click="apply">筛选</ElButton>
+        <ElButton :disabled="loading" data-testid="gateway-requests-reset" @click="reset">重置</ElButton>
+      </ElSpace>
     </div>
 
     <ElTable
       v-loading="loading"
       :data="page.items"
-      size="small"
       row-key="id"
       max-height="calc(100vh - 330px)"
       element-loading-text="正在加载调用日志"
@@ -72,14 +73,14 @@
       </ElTableColumn>
       <ElTableColumn label="状态" min-width="170">
         <template #default="{ row }">
-          <ElTag v-if="row.error_code" size="small" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
-          <ElTag v-else size="small" :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
+          <ElTag v-if="row.error_code" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
+          <ElTag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
         </template>
       </ElTableColumn>
       <ElTableColumn label="流式" width="110">
         <template #default="{ row }">
           <span>{{ row.streaming ? 'SSE' : '普通' }}</span>
-          <ElTag v-if="row.stream_interrupted" class="log-interrupted" size="small" type="danger" effect="plain">中断</ElTag>
+          <ElTag v-if="row.stream_interrupted" class="log-interrupted" type="danger" effect="plain">中断</ElTag>
         </template>
       </ElTableColumn>
       <ElTableColumn label="重试" width="68">
@@ -103,7 +104,7 @@
     </ElTable>
 
     <footer class="gateway-requests__footer">
-      <ElText size="small" type="info" data-testid="gateway-requests-total">共 {{ page.total }} 条 · 第 {{ page.page }} 页</ElText>
+      <ElText type="info" data-testid="gateway-requests-total">共 {{ page.total }} 条 · 第 {{ page.page }} 页</ElText>
       <ElPagination
         :current-page="page.page"
         :page-size="page.page_size"
@@ -129,6 +130,7 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
+  ElSpace,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -241,7 +243,7 @@ onMounted(() => {
 .gateway-requests__intro { margin-right: auto; }
 .gateway-requests__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-requests__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.log-filter__request { width: 190px; }
+.log-filter__request { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .log-filter__model, .log-filter__node, .log-filter__key { width: 148px; }
 .log-filter__status { width: 100px; }
 .log-filter__error { width: 230px; }

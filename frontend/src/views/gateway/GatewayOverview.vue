@@ -3,7 +3,7 @@
     <header class="gateway-overview__bar">
       <div class="gateway-overview__intro">
         <h3>API 中转总览</h3>
-        <ElText size="small" type="info">Token、QPS、延迟、节点健康与实例状态均直接来自后端观测契约。</ElText>
+        <ElText type="info">Token、QPS、延迟、节点健康与实例状态均直接来自后端观测契约。</ElText>
       </div>
       <ElRadioGroup v-model="statsWindow" data-testid="gateway-window-switch">
         <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
@@ -12,7 +12,7 @@
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-overview-error">
-      <ElButton size="small" type="primary" data-testid="gateway-overview-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-overview-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <section class="gateway-overview__metrics" aria-label="核心指标">
@@ -26,7 +26,7 @@
       <ElCard shadow="never" class="gateway-overview__trend-card" data-testid="gateway-overview-trend">
         <template #header>
           <div class="gateway-overview__card-header">
-            <div><h4>Token 趋势</h4><ElText size="small" type="info">{{ windowLabel }}</ElText></div>
+            <div><h4>Token 趋势</h4><ElText type="info">{{ windowLabel }}</ElText></div>
             <span class="gateway-overview__legend"><i />输入<i class="gateway-overview__legend--output" />输出</span>
           </div>
         </template>
@@ -36,9 +36,9 @@
 
       <ElCard shadow="never">
         <template #header>
-          <div class="gateway-overview__card-header"><div><h4>QPS 与延迟</h4><ElText size="small" type="info">窗口内平均 / p50 / p95</ElText></div></div>
+          <div class="gateway-overview__card-header"><div><h4>QPS 与延迟</h4><ElText type="info">窗口内平均 / p50 / p95</ElText></div></div>
         </template>
-        <ElDescriptions :column="1" size="small">
+        <ElDescriptions :column="1">
           <ElDescriptionsItem v-for="row in latencyRows" :key="row.label" :label="row.label">{{ row.value }}</ElDescriptionsItem>
         </ElDescriptions>
         <div class="gateway-overview__peak">
@@ -50,21 +50,21 @@
 
       <ElCard shadow="never" data-testid="gateway-overview-health">
         <template #header>
-          <div class="gateway-overview__card-header"><div><h4>节点健康分布</h4><ElText size="small" type="info">健康态与调度态相互独立</ElText></div></div>
+          <div class="gateway-overview__card-header"><div><h4>节点健康分布</h4><ElText type="info">健康态与调度态相互独立</ElText></div></div>
         </template>
         <ul class="gateway-overview__dist">
           <li v-for="item in healthRows" :key="item.label">
-            <ElTag size="small" :type="item.tag">{{ item.label }}</ElTag>
+            <ElTag :type="item.tag">{{ item.label }}</ElTag>
             <div class="gateway-overview__dist-bar"><i :style="{ width: `${barWidth(item.value, healthMax)}%` }" /></div>
             <b>{{ item.value }}</b>
           </li>
         </ul>
-        <ElText size="small" class="gateway-overview__note">{{ schedulingSummary }}</ElText>
+        <ElText class="gateway-overview__note">{{ schedulingSummary }}</ElText>
       </ElCard>
 
       <ElCard shadow="never">
         <template #header>
-          <div class="gateway-overview__card-header"><div><h4>模型分布</h4><ElText size="small" type="info">按节点支持模型统计</ElText></div></div>
+          <div class="gateway-overview__card-header"><div><h4>模型分布</h4><ElText type="info">按节点支持模型统计</ElText></div></div>
         </template>
         <ul v-if="modelRows.length" class="gateway-overview__dist">
           <li v-for="item in modelRows" :key="item.label">
@@ -80,11 +80,11 @@
     <ElCard shadow="never" data-testid="gateway-overview-nodes-entry">
       <template #header>
         <div class="gateway-overview__card-header">
-          <div><h4>节点</h4><ElText size="small" type="info">节点的增删改与健康操作在「下游节点」页完成</ElText></div>
+          <div><h4>节点</h4><ElText type="info">节点的增删改与健康操作在「下游节点」页完成</ElText></div>
           <RouterLink class="gateway-overview__entry" to="/gateway/nodes" data-testid="gateway-nodes-entry">进入节点列表 <ArrowUpRight :size="13" /></RouterLink>
         </div>
       </template>
-      <ElDescriptions :column="4" size="small">
+      <ElDescriptions :column="4">
         <ElDescriptionsItem label="节点总数">{{ nodes.length }}</ElDescriptionsItem>
         <ElDescriptionsItem label="健康">{{ healthyCount }}</ElDescriptionsItem>
         <ElDescriptionsItem label="调度中">{{ schedulingCounts.ACTIVE }}</ElDescriptionsItem>
@@ -94,11 +94,11 @@
 
     <ElCard shadow="never" data-testid="gateway-overview-instances">
       <template #header>
-        <div class="gateway-overview__card-header"><div><h4>Gateway 实例</h4><ElText size="small" type="info">心跳过期即标记不可用，不从实例反推节点健康</ElText></div></div>
+        <div class="gateway-overview__card-header"><div><h4>Gateway 实例</h4><ElText type="info">心跳过期即标记不可用，不从实例反推节点健康</ElText></div></div>
       </template>
-      <ElTable :data="instances" size="small" empty-text="暂无实例心跳。">
+      <ElTable :data="instances" empty-text="暂无实例心跳。">
         <ElTableColumn label="实例" prop="instance_id" min-width="150"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.instance_id }}</span></template></ElTableColumn>
-        <ElTableColumn label="状态" width="86"><template #default="{ row }"><ElTag size="small" :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template></ElTableColumn>
+        <ElTableColumn label="状态" width="86"><template #default="{ row }"><ElTag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template></ElTableColumn>
         <ElTableColumn label="应用版本" min-width="100"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.app_version ?? '—' }}</span></template></ElTableColumn>
         <ElTableColumn label="配置版本" width="90"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.config_version ?? '—' }}</span></template></ElTableColumn>
         <ElTableColumn label="运行时长" width="90"><template #default="{ row }">{{ formatSeconds(row.uptime_seconds) }}</template></ElTableColumn>

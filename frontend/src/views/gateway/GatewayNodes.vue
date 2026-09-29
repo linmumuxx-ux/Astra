@@ -3,14 +3,16 @@
     <header class="gateway-nodes__bar">
       <div class="gateway-nodes__intro">
         <h3>下游节点</h3>
-        <ElText size="small" type="info">配置态、健康态与调度态相互独立；节点默认先安全下线再删除。</ElText>
+        <ElText type="info">配置态、健康态与调度态相互独立；节点默认先安全下线再删除。</ElText>
       </div>
-      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-nodes-refresh" @click="load">刷新</ElButton>
-      <ElButton v-if="canManage" type="success" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
+      <ElSpace :size="8">
+        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-nodes-refresh" @click="load">刷新</ElButton>
+        <ElButton v-if="canManage" type="success" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
+      </ElSpace>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-nodes-error">
-      <ElButton size="small" type="primary" data-testid="gateway-nodes-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-nodes-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <div class="gateway-nodes__filters" aria-label="节点筛选">
@@ -57,7 +59,7 @@
     />
 
     <footer v-if="filteredNodes.length" class="gateway-nodes__footer">
-      <ElText size="small" type="info">共 {{ filteredNodes.length }} 条</ElText>
+      <ElText type="info">共 {{ filteredNodes.length }} 条</ElText>
       <ElPagination
         :current-page="page"
         :page-size="pageSize"
@@ -77,7 +79,7 @@
 import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElText } from 'element-plus'
 import {
   gatewayApi,
   GatewayApiError,
@@ -255,7 +257,7 @@ onMounted(load)
 .gateway-nodes__intro { margin-right: auto; }
 .gateway-nodes__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-nodes__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.node-filter__keyword { max-width: 280px; }
+.node-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .node-filter__health { width: 132px; }
 .node-filter__scheduling { width: 136px; }
 .node-filter__config { width: 120px; }

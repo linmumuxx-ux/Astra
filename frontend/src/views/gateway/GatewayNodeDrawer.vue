@@ -77,8 +77,8 @@
           {{ probeRunning ? '探测中…' : '保存并执行探测' }}
         </ElButton>
         <span class="node-form__health-line">
-          <ElTag size="small" :type="tagType(healthTone(currentHealth))">健康：{{ healthStateLabel(currentHealth) }}</ElTag>
-          <ElTag v-if="probeChecks.length" size="small" :type="tagType(authenticationTone(probeAuthentication))">{{ authenticationLabel(probeAuthentication) }}</ElTag>
+          <ElTag :type="tagType(healthTone(currentHealth))">健康：{{ healthStateLabel(currentHealth) }}</ElTag>
+          <ElTag v-if="probeChecks.length" :type="tagType(authenticationTone(probeAuthentication))">{{ authenticationLabel(probeAuthentication) }}</ElTag>
         </span>
       </div>
       <p class="node-form__note"><Info :size="13" />必须同时勾选网络 / 服务 / 模型 / SSE 完成完整探测；局部探测不会让节点脱离 UNKNOWN。连续成功 2 次方为 HEALTHY。认证结果由真实模型调用状态推断（无独立认证探测）。</p>
@@ -144,9 +144,10 @@
     <template #footer>
       <div class="node-drawer__footer">
         <ElTag v-if="dirty" type="warning" effect="light" data-testid="gateway-node-dirty">有未保存修改</ElTag>
-        <span class="node-drawer__spacer" />
-        <ElButton :disabled="busy" @click="requestClose">取消</ElButton>
-        <ElButton type="primary" :loading="saving" data-testid="gateway-node-save" @click="finish">{{ node ? '保存节点' : '创建并保存' }}</ElButton>
+        <ElSpace :size="8">
+          <ElButton :disabled="busy" @click="requestClose">取消</ElButton>
+          <ElButton type="primary" :loading="saving" data-testid="gateway-node-save" @click="finish">{{ node ? '保存节点' : '创建并保存' }}</ElButton>
+        </ElSpace>
       </div>
     </template>
   </ElDrawer>
@@ -506,6 +507,5 @@ function tagType(tone: GatewayTone): 'success' | 'warning' | 'danger' | 'info' {
 .node-probe-result .ok { color: var(--astra-success); }
 .node-probe-result .bad { color: var(--astra-danger); }
 .node-probe-result em { overflow: hidden; color: var(--astra-danger); font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-.node-drawer__footer { display: flex; align-items: center; gap: 10px; }
-.node-drawer__spacer { flex: 1; }
+.node-drawer__footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 </style>

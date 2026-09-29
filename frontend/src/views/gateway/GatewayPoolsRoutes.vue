@@ -3,13 +3,13 @@
     <header class="gateway-pools-routes__bar">
       <div class="gateway-pools-routes__intro">
         <h3>资源池与模型路由</h3>
-        <ElText size="small" type="info">路由模型名唯一，第一阶段一个路由指向一个资源池。</ElText>
+        <ElText type="info">路由模型名唯一，第一阶段一个路由指向一个资源池。</ElText>
       </div>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-pools-routes-refresh" @click="load">刷新</ElButton>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-pools-routes-error">
-      <ElButton size="small" type="primary" data-testid="gateway-pools-routes-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-pools-routes-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <ElCard shadow="never" data-testid="gateway-pool-card">
@@ -17,7 +17,7 @@
         <div class="gateway-pools-routes__card-head">
           <div class="gateway-pools-routes__card-title">
             <h4>资源池</h4>
-            <ElText size="small" type="info">仍被节点或路由引用的资源池无法删除。</ElText>
+            <ElText type="info">仍被节点或路由引用的资源池无法删除。</ElText>
           </div>
           <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
         </div>
@@ -43,7 +43,6 @@
       <ElTable
         v-loading="loading"
         :data="pagedPools"
-        size="small"
         row-key="id"
         element-loading-text="正在加载资源池"
         data-testid="gateway-pool-table"
@@ -59,20 +58,20 @@
         <ElTableColumn label="权重" prop="weight" width="90" />
         <ElTableColumn label="状态" width="90">
           <template #default="{ row }">
-            <ElTag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
+            <ElTag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn label="排序" prop="sort_order" width="80" />
-        <ElTableColumn v-if="canRoute" label="操作" width="96" fixed="right">
+        <ElTableColumn v-if="canRoute" label="操作" width="88" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions">
+            <ElSpace :size="4">
               <ElTooltip content="编辑资源池" placement="top">
-                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openPoolEdit(row as GatewayPool)" />
+                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openPoolEdit(row as GatewayPool)" />
               </ElTooltip>
               <ElTooltip content="删除资源池（被引用时无法删除）" placement="top">
-                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" @click="removePool(row as GatewayPool)" />
+                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" @click="removePool(row as GatewayPool)" />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
@@ -81,7 +80,7 @@
       </ElTable>
 
       <footer v-if="filteredPools.length" class="gateway-pools-routes__footer">
-        <ElText size="small" type="info">共 {{ filteredPools.length }} 个</ElText>
+        <ElText type="info">共 {{ filteredPools.length }} 个</ElText>
         <ElPagination
           :current-page="poolPage"
           :page-size="pageSize"
@@ -99,7 +98,7 @@
         <div class="gateway-pools-routes__card-head">
           <div class="gateway-pools-routes__card-title">
             <h4>模型路由</h4>
-            <ElText size="small" type="info">每条路由把一个模型名指向一个资源池。</ElText>
+            <ElText type="info">每条路由把一个模型名指向一个资源池。</ElText>
           </div>
           <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
         </div>
@@ -128,7 +127,6 @@
       <ElTable
         v-loading="loading"
         :data="pagedRoutes"
-        size="small"
         row-key="id"
         element-loading-text="正在加载路由"
         data-testid="gateway-route-table"
@@ -147,19 +145,19 @@
         <ElTableColumn label="权重" prop="weight" width="90" />
         <ElTableColumn label="状态" width="90">
           <template #default="{ row }">
-            <ElTag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
+            <ElTag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn v-if="canRoute" label="操作" width="96" fixed="right">
+        <ElTableColumn v-if="canRoute" label="操作" width="88" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions">
+            <ElSpace :size="4">
               <ElTooltip content="编辑路由" placement="top">
-                <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.model}`" :disabled="busy" @click="openRouteEdit(row as GatewayRoute)" />
+                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.model}`" :disabled="busy" @click="openRouteEdit(row as GatewayRoute)" />
               </ElTooltip>
               <ElTooltip content="删除路由" placement="top">
-                <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.model}`" :disabled="busy" @click="removeRoute(row as GatewayRoute)" />
+                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.model}`" :disabled="busy" @click="removeRoute(row as GatewayRoute)" />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
@@ -168,7 +166,7 @@
       </ElTable>
 
       <footer v-if="filteredRoutes.length" class="gateway-pools-routes__footer">
-        <ElText size="small" type="info">共 {{ filteredRoutes.length }} 条</ElText>
+        <ElText type="info">共 {{ filteredRoutes.length }} 条</ElText>
         <ElPagination
           :current-page="routePage"
           :page-size="pageSize"
@@ -281,6 +279,7 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
+  ElSpace,
   ElSwitch,
   ElTable,
   ElTableColumn,
@@ -604,16 +603,15 @@ onMounted(load)
 .gateway-pools-routes__card-title { display: grid; gap: 2px; margin-right: auto; }
 .gateway-pools-routes__card-title h4 { margin: 0; color: var(--astra-text-primary); }
 .gateway-pools-routes__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
-.pool-filter__keyword { max-width: 240px; }
+.pool-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .pool-filter__enabled { width: 120px; }
-.route-filter__keyword { max-width: 240px; }
+.route-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .route-filter__pool { width: 152px; }
 .route-filter__enabled { width: 120px; }
 .gateway-pools-routes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 10px; }
 .pool-cell { display: grid; gap: 2px; min-width: 0; }
 .pool-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .pool-cell__desc { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
-.row-actions { display: flex; align-items: center; gap: 2px; }
 .gateway-drawer__footer { display: flex; align-items: center; gap: 10px; }
 .gateway-drawer__spacer { flex: 1; }
 </style>

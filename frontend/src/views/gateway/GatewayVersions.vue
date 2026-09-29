@@ -3,14 +3,16 @@
     <header class="gateway-versions__bar">
       <div class="gateway-versions__intro">
         <h3>配置草稿与版本</h3>
-        <ElText size="small" type="info">发布前校验全部引用，生成不可变快照；回滚会以历史快照生成新版本。</ElText>
+        <ElText type="info">发布前校验全部引用，生成不可变快照；回滚会以历史快照生成新版本。</ElText>
       </div>
-      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-versions-refresh" @click="load">刷新</ElButton>
-      <ElButton v-if="canPublish" :loading="reconciling" :icon="GitMerge" data-testid="gateway-versions-reconcile" @click="reconcile">发布对账</ElButton>
+      <ElSpace :size="8">
+        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-versions-refresh" @click="load">刷新</ElButton>
+        <ElButton v-if="canPublish" :loading="reconciling" :icon="GitMerge" data-testid="gateway-versions-reconcile" @click="reconcile">发布对账</ElButton>
+      </ElSpace>
     </header>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-versions-error">
-      <ElButton size="small" type="primary" data-testid="gateway-versions-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-versions-retry" @click="load">重试</ElButton>
     </ElAlert>
 
     <div class="gateway-versions__grid">
@@ -19,13 +21,13 @@
           <div class="gateway-versions__card-head">
             <div class="gateway-versions__card-title">
               <h4>草稿校验</h4>
-              <ElText size="small" type="info">{{ draftSubtitle }}</ElText>
+              <ElText type="info">{{ draftSubtitle }}</ElText>
             </div>
           </div>
         </template>
 
         <div v-if="draft" class="gateway-draft">
-          <ElDescriptions :column="3" size="small" border data-testid="gateway-draft-counts">
+          <ElDescriptions :column="3" border data-testid="gateway-draft-counts">
             <ElDescriptionsItem v-for="(value, key) in draft.counts" :key="key" :label="countLabel(String(key))">
               {{ value }}
             </ElDescriptionsItem>
@@ -39,7 +41,7 @@
               :title="`校验未通过：发现 ${draft.errors.length} 项错误，修复后才可发布`"
               data-testid="gateway-draft-fail"
             />
-            <ElTable :data="draft.errors" size="small" data-testid="gateway-draft-errors">
+            <ElTable :data="draft.errors" data-testid="gateway-draft-errors">
               <ElTableColumn label="错误码" prop="code" width="140" />
               <ElTableColumn label="说明" prop="message" min-width="200" show-overflow-tooltip />
               <ElTableColumn label="资源" width="170" show-overflow-tooltip>
@@ -74,7 +76,7 @@
               @click="publish"
             >发布新版本</ElButton>
           </div>
-          <ElText v-else size="small" type="info" data-testid="gateway-publish-locked">当前凭据缺少 publish 角色，只能查看。</ElText>
+          <ElText v-else type="info" data-testid="gateway-publish-locked">当前凭据缺少 publish 角色，只能查看。</ElText>
         </div>
         <ElEmpty v-else :image-size="64" :description="loading ? '加载中…' : '暂无草稿数据'" />
       </ElCard>
@@ -84,7 +86,7 @@
           <div class="gateway-versions__card-head">
             <div class="gateway-versions__card-title">
               <h4>版本历史</h4>
-              <ElText size="small" type="info">共 {{ versions.length }} 个版本</ElText>
+              <ElText type="info">共 {{ versions.length }} 个版本</ElText>
             </div>
           </div>
         </template>
@@ -92,7 +94,6 @@
         <ElTable
           v-loading="loading"
           :data="versions"
-          size="small"
           row-key="id"
           element-loading-text="正在加载版本历史"
           data-testid="gateway-versions-table"
@@ -102,7 +103,7 @@
           </ElTableColumn>
           <ElTableColumn label="状态" width="96">
             <template #default="{ row }">
-              <ElTag size="small" :type="tagType(versionTone(row.status))">{{ versionStatusLabel(row.status) }}</ElTag>
+              <ElTag :type="tagType(versionTone(row.status))">{{ versionStatusLabel(row.status) }}</ElTag>
             </template>
           </ElTableColumn>
           <ElTableColumn label="说明" min-width="160" show-overflow-tooltip>
@@ -115,15 +116,15 @@
           <ElTableColumn label="发布时间" width="150">
             <template #default="{ row }">{{ formatDateTime(row.published_at) }}</template>
           </ElTableColumn>
-          <ElTableColumn label="操作" width="92" fixed="right">
+          <ElTableColumn label="操作" width="88" fixed="right">
             <template #default="{ row }">
-              <div class="row-actions">
+              <ElSpace :size="4">
                 <ElTooltip content="查看快照" placement="top">
-                  <ElButton text type="primary" :icon="Eye" :aria-label="`查看 v${row.version} 快照`" @click="openDetail(row.version)" />
+                  <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 v${row.version} 快照`" @click="openDetail(row.version)" />
                 </ElTooltip>
                 <ElTooltip v-if="canPublish && row.status !== 'CURRENT'" content="回滚到此版本（以历史快照生成新版本）" placement="top">
                   <ElButton
-                    text
+                    circle
                     type="danger"
                     :icon="RotateCcw"
                     :aria-label="`回滚到 v${row.version}`"
@@ -131,7 +132,7 @@
                     @click="rollback(row as GatewayConfigVersion)"
                   />
                 </ElTooltip>
-              </div>
+              </ElSpace>
             </template>
           </ElTableColumn>
           <template #empty>
@@ -148,10 +149,10 @@
       :title="detail ? `版本 v${detail.version} 快照` : '版本快照'"
       width="min(720px, 92%)"
     >
-      <ElText size="small" type="info">已脱敏：不含节点密文与 Key 摘要</ElText>
-      <ElDescriptions v-if="detail" :column="4" size="small" border class="gateway-snapshot__meta">
+      <ElText type="info">已脱敏：不含节点密文与 Key 摘要</ElText>
+      <ElDescriptions v-if="detail" :column="4" border class="gateway-snapshot__meta">
         <ElDescriptionsItem label="状态">
-          <ElTag size="small" :type="tagType(versionTone(detail.status))">{{ versionStatusLabel(detail.status) }}</ElTag>
+          <ElTag :type="tagType(versionTone(detail.status))">{{ versionStatusLabel(detail.status) }}</ElTag>
         </ElDescriptionsItem>
         <ElDescriptionsItem label="来源">{{ detail.source_version ? `v${detail.source_version}` : '—' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="发布人">{{ detail.published_by }}</ElDescriptionsItem>
@@ -174,6 +175,7 @@ import {
   ElDialog,
   ElEmpty,
   ElInput,
+  ElSpace,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -317,7 +319,6 @@ onMounted(load)
 .gateway-versions__card-title h4 { margin: 0; color: var(--astra-text-primary); }
 .gateway-draft { display: grid; gap: 12px; }
 .gateway-publish { display: flex; gap: 8px; }
-.row-actions { display: flex; align-items: center; gap: 2px; }
 .gateway-mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 .gateway-snapshot__meta { margin-top: 12px; }
 .gateway-snapshot__json { max-height: 50vh; margin: 12px 0 0; padding: 12px; overflow: auto; color: var(--astra-text-secondary); border: 1px solid var(--astra-border); border-radius: 9px; background: var(--astra-bg-base); font: var(--astra-font-helper)/1.5 var(--astra-font-family); white-space: pre-wrap; }

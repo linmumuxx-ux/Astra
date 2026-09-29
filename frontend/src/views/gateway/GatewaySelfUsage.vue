@@ -3,7 +3,7 @@
     <header class="gateway-self__bar">
       <div class="gateway-self__intro">
         <h3>Key 自助用量</h3>
-        <ElText size="small" type="info">普通 Gateway Key 只能查看自身的日志与统计，凭据仅存当前会话。</ElText>
+        <ElText type="info">普通 Gateway Key 只能查看自身的日志与统计，凭据仅存当前会话。</ElText>
       </div>
       <ElRadioGroup
         v-if="connected"
@@ -13,14 +13,15 @@
       >
         <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
       </ElRadioGroup>
-      <ElButton
-        v-if="connected"
-        :loading="loading"
-        :icon="RefreshCw"
-        data-testid="gateway-self-refresh"
-        @click="refresh"
-      >刷新</ElButton>
-      <ElButton v-if="connected" :icon="LogOut" data-testid="gateway-self-clear" @click="disconnect">退出去用量</ElButton>
+      <ElSpace v-if="connected" :size="8">
+        <ElButton
+          :loading="loading"
+          :icon="RefreshCw"
+          data-testid="gateway-self-refresh"
+          @click="refresh"
+        >刷新</ElButton>
+        <ElButton :icon="LogOut" data-testid="gateway-self-clear" @click="disconnect">退出去用量</ElButton>
+      </ElSpace>
     </header>
 
     <ElAlert
@@ -50,7 +51,7 @@
           :loading="loading"
           data-testid="gateway-self-submit"
         >查看用量</ElButton>
-        <ElText size="small" type="info" class="gateway-self__note">
+        <ElText type="info" class="gateway-self__note">
           Key 只写入当前会话的 sessionStorage，不随页面构建产物分发；退出去用量后立即清除。
         </ElText>
       </ElForm>
@@ -65,7 +66,7 @@
         :title="error"
         data-testid="gateway-self-error"
       >
-        <ElButton size="small" type="primary" data-testid="gateway-self-retry" @click="refresh">重试</ElButton>
+        <ElButton type="primary" data-testid="gateway-self-retry" @click="refresh">重试</ElButton>
       </ElAlert>
 
       <section class="gateway-self__metrics" aria-label="自身用量指标">
@@ -80,7 +81,7 @@
           <div class="gateway-self__card-head">
             <div>
               <h4>Token 趋势</h4>
-              <ElText size="small" type="info">{{ windowLabel }}</ElText>
+              <ElText type="info">{{ windowLabel }}</ElText>
             </div>
             <span class="gateway-self__legend"><i />输入<i class="gateway-self__legend--output" />输出</span>
           </div>
@@ -94,7 +95,7 @@
           <div class="gateway-self__card-head">
             <div>
               <h4>调用记录</h4>
-              <ElText size="small" type="info">只包含该 Key 自身的调用元数据与测量值</ElText>
+              <ElText type="info">只包含该 Key 自身的调用元数据与测量值</ElText>
             </div>
           </div>
         </template>
@@ -102,7 +103,6 @@
         <ElTable
           v-loading="loading"
           :data="page.items"
-          size="small"
           row-key="id"
           max-height="calc(100vh - 330px)"
           element-loading-text="正在加载调用记录"
@@ -119,8 +119,8 @@
           </ElTableColumn>
           <ElTableColumn label="状态" min-width="150">
             <template #default="{ row }">
-              <ElTag v-if="row.error_code" size="small" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
-              <ElTag v-else size="small" :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
+              <ElTag v-if="row.error_code" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
+              <ElTag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
             </template>
           </ElTableColumn>
           <ElTableColumn label="流式" width="90">
@@ -141,7 +141,7 @@
         </ElTable>
 
         <footer class="gateway-self__footer">
-          <ElText size="small" type="info" data-testid="gateway-self-total">共 {{ page.total }} 条 · 第 {{ page.page }} 页</ElText>
+          <ElText type="info" data-testid="gateway-self-total">共 {{ page.total }} 条 · 第 {{ page.page }} 页</ElText>
           <div class="gateway-self__paging">
             <ElSelect v-model="pageSize" class="gateway-self__size" aria-label="每页条数" :disabled="loading">
               <ElOption v-for="size in pageSizeOptions" :key="size" :value="size" :label="`每页 ${size}`" />
@@ -179,6 +179,7 @@ import {
   ElRadioButton,
   ElRadioGroup,
   ElSelect,
+  ElSpace,
   ElStatistic,
   ElTable,
   ElTableColumn,

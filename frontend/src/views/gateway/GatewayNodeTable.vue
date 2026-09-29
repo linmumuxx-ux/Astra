@@ -4,7 +4,6 @@
     class="gateway-node-table"
     element-loading-text="正在加载节点"
     :data="nodes"
-    size="small"
     row-key="id"
     data-testid="gateway-node-table"
   >
@@ -21,17 +20,17 @@
     </ElTableColumn>
     <ElTableColumn label="健康" width="88">
       <template #default="{ row }">
-        <ElTag size="small" :type="tagType(healthTone(row.health_state))">{{ healthStateLabel(row.health_state) }}</ElTag>
+        <ElTag :type="tagType(healthTone(row.health_state))">{{ healthStateLabel(row.health_state) }}</ElTag>
       </template>
     </ElTableColumn>
     <ElTableColumn label="调度" width="100">
       <template #default="{ row }">
-        <ElTag size="small" :type="tagType(schedulingTone(row.scheduling_state))">{{ schedulingStateLabel(row.scheduling_state) }}</ElTag>
+        <ElTag :type="tagType(schedulingTone(row.scheduling_state))">{{ schedulingStateLabel(row.scheduling_state) }}</ElTag>
       </template>
     </ElTableColumn>
     <ElTableColumn label="配置" width="80">
       <template #default="{ row }">
-        <ElTag size="small" :type="row.config_state === 'ENABLED' ? 'success' : 'info'">{{ configStateLabel(row.config_state) }}</ElTag>
+        <ElTag :type="row.config_state === 'ENABLED' ? 'success' : 'info'">{{ configStateLabel(row.config_state) }}</ElTag>
       </template>
     </ElTableColumn>
     <ElTableColumn label="支持模型" min-width="150" show-overflow-tooltip>
@@ -49,31 +48,31 @@
     <ElTableColumn label="最近探测" width="108">
       <template #default="{ row }">{{ formatRelativeTime(row.last_checked_at) }}</template>
     </ElTableColumn>
-    <ElTableColumn v-if="!readonly" label="操作" width="210" fixed="right">
+    <ElTableColumn v-if="!readonly" label="操作" width="232" fixed="right">
       <template #default="{ row }">
-        <div class="row-actions">
+        <ElSpace :size="4" @click.stop>
           <ElTooltip content="查看详情" placement="top">
-            <ElButton text type="primary" :icon="ChevronRight" :aria-label="`查看 ${row.name} 详情`" @click="$emit('detail', row as GatewayNode)" />
+            <ElButton circle type="primary" :icon="ChevronRight" :aria-label="`查看 ${row.name} 详情`" @click="$emit('detail', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip content="连接/模型/SSE 探测" placement="top">
-            <ElButton text type="primary" :icon="Activity" :aria-label="`探测 ${row.name}`" :disabled="busyId === row.id" @click="$emit('probe', row as GatewayNode)" />
+            <ElButton circle type="primary" :icon="Activity" :aria-label="`探测 ${row.name}`" :disabled="busyId === row.id" @click="$emit('probe', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip v-if="row.scheduling_state === 'ACTIVE'" content="安全下线（DRAINING）" placement="top">
-            <ElButton text type="warning" :icon="Pause" :aria-label="`安全下线 ${row.name}`" :disabled="busyId === row.id" @click="$emit('drain', row as GatewayNode)" />
+            <ElButton circle type="warning" :icon="Pause" :aria-label="`安全下线 ${row.name}`" :disabled="busyId === row.id" @click="$emit('drain', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip v-else content="恢复调度" placement="top">
-            <ElButton text type="success" :icon="Play" :aria-label="`恢复调度 ${row.name}`" :disabled="busyId === row.id" @click="$emit('restore', row as GatewayNode)" />
+            <ElButton circle type="success" :icon="Play" :aria-label="`恢复调度 ${row.name}`" :disabled="busyId === row.id" @click="$emit('restore', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip :content="row.config_state === 'ENABLED' ? '禁用节点' : '启用节点'" placement="top">
-            <ElButton text type="primary" :icon="row.config_state === 'ENABLED' ? PowerOff : Power" :aria-label="`${row.config_state === 'ENABLED' ? '禁用' : '启用'} ${row.name}`" :disabled="busyId === row.id" @click="$emit('toggle-config', row as GatewayNode)" />
+            <ElButton circle type="primary" :icon="row.config_state === 'ENABLED' ? PowerOff : Power" :aria-label="`${row.config_state === 'ENABLED' ? '禁用' : '启用'} ${row.name}`" :disabled="busyId === row.id" @click="$emit('toggle-config', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip content="编辑节点配置" placement="top">
-            <ElButton text type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busyId === row.id" @click="$emit('edit', row as GatewayNode)" />
+            <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busyId === row.id" @click="$emit('edit', row as GatewayNode)" />
           </ElTooltip>
           <ElTooltip content="删除节点（需已下线且并发为 0）" placement="top">
-            <ElButton text type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busyId === row.id" @click="$emit('delete', row as GatewayNode)" />
+            <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busyId === row.id" @click="$emit('delete', row as GatewayNode)" />
           </ElTooltip>
-        </div>
+        </ElSpace>
       </template>
     </ElTableColumn>
     <template #empty>
@@ -85,7 +84,7 @@
 <script setup lang="ts">
 import { Activity, ChevronRight, Pause, Pencil, Play, Power, PowerOff, Trash2 } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
-import { ElButton, ElEmpty, ElTable, ElTableColumn, ElTag, ElTooltip, vLoading } from 'element-plus'
+import { ElButton, ElEmpty, ElSpace, ElTable, ElTableColumn, ElTag, ElTooltip, vLoading } from 'element-plus'
 import type { GatewayNode, GatewayPool } from '@/api/gateway'
 import {
   configStateLabel,
@@ -134,5 +133,4 @@ function tagType(tone: GatewayTone): 'success' | 'warning' | 'danger' | 'info' {
 .node-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .node-cell__url { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
 .node-muted { color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.row-actions { display: flex; align-items: center; gap: 2px; }
 </style>

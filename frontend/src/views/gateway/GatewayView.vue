@@ -3,12 +3,12 @@
     <ElHeader class="gateway-header">
       <div class="gateway-title">
         <h2>API 中转</h2>
-        <ElText size="small" type="info">模型统一入口的控制面：节点调度、额度、Pool/Route/Key、调用证据与配置版本。</ElText>
+        <ElText type="info">模型统一入口的控制面：节点调度、额度、Pool/Route/Key、调用证据与配置版本。</ElText>
       </div>
       <div v-if="authorized" class="gateway-session">
         <i />
         <span><strong>{{ actor }}</strong><small>{{ rolesText }}</small></span>
-        <ElButton size="small" @click="disconnect">退出</ElButton>
+        <ElButton @click="disconnect">退出</ElButton>
       </div>
     </ElHeader>
 
