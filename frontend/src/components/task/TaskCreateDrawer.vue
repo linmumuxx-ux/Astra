@@ -71,9 +71,9 @@
       >
         <div class="criterion-row">
           <ElInput v-model.trim="item.content" :placeholder="`验收标准 ${index + 1}`" />
-          <ElButton size="small" text bg :icon="ArrowUp" title="上移" :disabled="index === 0" :aria-label="`验收标准 ${index + 1} 上移`" @click="moveCriterion(index, -1)" />
-          <ElButton size="small" text bg :icon="ArrowDown" title="下移" :disabled="index === form.criteria.length - 1" :aria-label="`验收标准 ${index + 1} 下移`" @click="moveCriterion(index, 1)" />
-          <ElButton size="small" text bg type="danger" :icon="Trash2" title="删除" :disabled="form.criteria.length === 1" :aria-label="`删除验收标准 ${index + 1}`" @click="removeCriterion(index)" />
+          <ElButton text bg :icon="ArrowUp" title="上移" :disabled="index === 0" :aria-label="`验收标准 ${index + 1} 上移`" @click="moveCriterion(index, -1)" />
+          <ElButton text bg :icon="ArrowDown" title="下移" :disabled="index === form.criteria.length - 1" :aria-label="`验收标准 ${index + 1} 下移`" @click="moveCriterion(index, 1)" />
+          <ElButton text bg type="danger" :icon="Trash2" title="删除" :disabled="form.criteria.length === 1" :aria-label="`删除验收标准 ${index + 1}`" @click="removeCriterion(index)" />
         </div>
       </ElFormItem>
       <ElFormItem>
@@ -103,7 +103,7 @@
     </ElForm>
 
     <template #footer>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElTag v-if="createDirty" type="warning" effect="light">有未保存修改</ElTag>
         <ElButton :disabled="submitting" @click="requestClose">取消</ElButton>
         <ElButton type="primary" :loading="submitting" @click="submit">创建任务</ElButton>
@@ -239,7 +239,6 @@ async function submit() {
 
 <style scoped>
 .task-create-drawer :deep(.el-drawer__footer) { display: flex; align-items: center; justify-content: flex-end; }
-.task-create-form :deep(.el-select__wrapper) { min-height: var(--el-component-size); }
 .criterion-row { display: flex; align-items: center; gap: 6px; width: 100%; }
 .criterion-row .el-input { flex: 1; min-width: 0; }
 .form-message { margin-top: 4px; }

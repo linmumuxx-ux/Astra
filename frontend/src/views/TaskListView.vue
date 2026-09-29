@@ -3,9 +3,9 @@
     <header class="task-page__intro">
       <div>
         <h2>任务管理</h2>
-        <ElText size="small" type="info">现在有哪些任务，哪些正在正常运行，哪些需要人工处理。</ElText>
+        <ElText type="info">现在有哪些任务，哪些正在正常运行，哪些需要人工处理。</ElText>
       </div>
-      <ElSpace :size="10">
+      <ElSpace :size="8">
         <ElButton :icon="RefreshCw" :loading="store.loading" @click="store.refresh()">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" @click="createOpen = true">创建任务</ElButton>
       </ElSpace>
@@ -48,11 +48,11 @@
     </section>
 
     <section class="task-table-panel" aria-label="任务列表">
-      <ElTable v-loading="store.loading" :data="paged" size="small" height="100%" row-key="id" @row-click="(row: Task) => openTask(row.id)">
+      <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="(row: Task) => openTask(row.id)">
         <ElTableColumn label="任务标题" min-width="230">
           <template #default="{ row }">
             <div class="task-title-cell">
-              <ElTag v-if="isHigh(row.priority)" size="small" :type="row.priority === 'VERY_HIGH' ? 'danger' : 'warning'" effect="light">{{ priorityLabel(row.priority) }}</ElTag>
+              <ElTag v-if="isHigh(row.priority)" :type="row.priority === 'VERY_HIGH' ? 'danger' : 'warning'" effect="light">{{ priorityLabel(row.priority) }}</ElTag>
               <strong :title="row.title">{{ row.title }}</strong>
             </div>
           </template>
@@ -72,31 +72,31 @@
         </ElTableColumn>
         <ElTableColumn label="当前进展" min-width="180">
           <template #default="{ row }">
-            <ElText size="small" type="info" truncated :title="progressCopy(row as Task)">{{ progressCopy(row as Task) }}</ElText>
+            <ElText type="info" truncated :title="progressCopy(row as Task)">{{ progressCopy(row as Task) }}</ElText>
           </template>
         </ElTableColumn>
         <ElTableColumn label="更新时间" width="140">
           <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="158" fixed="right">
+        <ElTableColumn label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <div class="row-actions" @click.stop>
+            <ElSpace class="row-actions" :size="4" @click.stop>
               <ElTooltip content="查看" placement="top">
-                <ElButton text type="primary" :icon="Eye" :aria-label="`查看 ${row.id}`" @click="openTask(row.id)" />
+                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.id}`" @click="openTask(row.id)" />
               </ElTooltip>
               <ElTooltip v-for="item in actionsFor(row as Task)" :key="item.action" :content="item.tip" placement="top">
-                <ElButton text :type="item.danger ? 'danger' : 'primary'" :icon="item.icon" :aria-label="`${item.tip} ${row.id}`" @click="onAction(row as Task, item)" />
+                <ElButton circle :type="item.danger ? 'danger' : 'primary'" :icon="item.icon" :aria-label="`${item.tip} ${row.id}`" @click="onAction(row as Task, item)" />
               </ElTooltip>
-            </div>
+            </ElSpace>
           </template>
         </ElTableColumn>
         <template #empty>
           <ElEmpty v-if="store.error && !store.tasks.length" :image-size="72" description="任务数据加载失败">
-            <ElText size="small" type="info">{{ store.error }}</ElText>
+            <ElText type="info">{{ store.error }}</ElText>
             <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.tasks.length ? '暂无符合条件的任务' : '暂无任务'">
-            <ElText size="small" type="info">{{ store.tasks.length ? '当前筛选条件下没有找到任务。' : '创建第一个任务后即可开始管理。' }}</ElText>
+            <ElText type="info">{{ store.tasks.length ? '当前筛选条件下没有找到任务。' : '创建第一个任务后即可开始管理。' }}</ElText>
             <ElButton v-if="store.tasks.length" @click="resetFilters">清除筛选</ElButton>
             <ElButton v-else type="primary" :icon="Plus" @click="createOpen = true">创建任务</ElButton>
           </ElEmpty>
@@ -105,7 +105,7 @@
     </section>
 
     <footer class="task-page__footer">
-      <ElText size="small" type="info">共 {{ total }} 条</ElText>
+      <ElText type="info">共 {{ total }} 条</ElText>
       <nav aria-label="任务列表分页">
         <ElPagination v-model:current-page="currentPage" v-model:page-size="pageSize" :total="total" :page-sizes="[20, 50, 100]" layout="sizes, prev, pager, next" />
       </nav>
@@ -123,9 +123,9 @@
       :close-on-press-escape="false"
       :before-close="closePendingAction"
     >
-      <ElText size="small" type="info">{{ `确认对「${shortTitle(pending.task.title)}」执行该操作？` }}</ElText>
+      <ElText type="info">{{ `确认对「${shortTitle(pending.task.title)}」执行该操作？` }}</ElText>
       <template #footer>
-        <ElSpace :size="10">
+        <ElSpace :size="8">
           <ElButton :disabled="acting" @click="pending = null">取消</ElButton>
           <ElButton type="primary" :disabled="acting" :loading="acting" @click="runPendingAction">确认{{ pending.label }}</ElButton>
         </ElSpace>
@@ -289,12 +289,15 @@ async function onTaskCreated(id: string) {
 .task-page__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .task-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
 
-.task-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.task-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .task-filter__select { flex: none; width: 148px; }
-.task-filter__status { width: 188px; }
-.task-filter__search { flex: 1; min-width: 210px; max-width: 320px; }
+.task-filter__status { width: 180px; }
+.task-filter__search { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
 .task-filter__break { flex-basis: 100%; height: 0; }
-.task-filter__date { flex: none; width: 148px; }
+/* ElDatePicker 根节点是 .el-date-editor.el-input，自身宽度写死 var(--el-date-editor-width)=220px；
+   它也没有 scoped 的 data-v 标记，所以这里用 :deep 改它自己的宽度变量，
+   让日期框与筛选下拉统一到同一个宽度。 */
+.task-filter :deep(.task-filter__date) { --el-date-editor-width: 148px; flex: none; }
 .task-filter__dash { color: var(--astra-text-muted); }
 
 .task-table-panel { min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
@@ -302,11 +305,14 @@ async function onTaskCreated(id: string) {
 .task-title-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .task-title-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 
-.row-actions { display: flex; align-items: center; gap: 2px; }
+.row-actions { justify-content: flex-end; }
 .task-page__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
 @media (max-width: 900px) {
   .task-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; }
   .task-table-panel { min-height: 480px; }
+  .task-filter__select { flex: 1 1 148px; width: auto; }
+  .task-filter :deep(.task-filter__date) { --el-date-editor-width: 100%; flex: 1 1 148px; }
+  .task-filter__search { flex: 1 1 100%; max-width: none; }
 }
 </style>

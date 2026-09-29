@@ -4,10 +4,10 @@
       <ElButton :tag="RouterLink" to="/tasks" :icon="ArrowLeft">返回任务列表</ElButton>
       <div class="task-title">
         <h1>{{ task.title }}</h1>
-        <ElText size="small" type="info">{{ employeeName }} · {{ task.id }}</ElText>
+        <ElText type="info">{{ employeeName }} · {{ task.id }}</ElText>
       </div>
       <RuntimeStatusBadge :projection="task" :show-detail="false" />
-      <ElTag v-if="repo" class="repo" size="small" type="info" effect="plain" :title="repo.commit">{{ repoSummary }}</ElTag>
+      <ElTag v-if="repo" class="repo" type="info" effect="plain" :title="repo.commit">{{ repoSummary }}</ElTag>
       <ElSelect v-if="binding?.sessions.length" v-model="selectedSession" class="task-header__session" data-testid="session-select" :data-session-id="selectedSession" aria-label="选择 Session">
         <ElOption v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id" :label="`Session #${binding.sessions.length - index} · ${item.current ? '当前' : '历史只读'}`" />
       </ElSelect>
@@ -31,8 +31,8 @@
       >
         <div class="workspace-alert__body">
           <span>最后已知状态：{{ task?.runtime_status_label }}</span>
-          <ElButton size="small" :disabled="busy" @click="reconnect">重连</ElButton>
-          <ElButton v-if="task?.pending_message_id" size="small" :disabled="busy" @click="action('retry-submission')">核对并重试未确认输入</ElButton>
+          <ElButton :disabled="busy" @click="reconnect">重连</ElButton>
+          <ElButton v-if="task?.pending_message_id" :disabled="busy" @click="action('retry-submission')">核对并重试未确认输入</ElButton>
         </div>
       </ElAlert>
       <iframe v-if="frameUrl" :key="frameKey" :src="frameUrl" title="OpenCode Task Workspace" class="task-detail__frame" allow="clipboard-read; clipboard-write" />
