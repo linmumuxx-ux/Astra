@@ -154,10 +154,11 @@ test('数字图书馆支持当前空间搜索、安全 Markdown 弹框和滚动�
   await expect(dialog.getByRole('heading', { name: '问题现象' })).toBeVisible()
   await expect(dialog.locator('.markdown-body script')).toHaveCount(0)
   await expect(dialog.locator('.markdown-body [onerror]')).toHaveCount(0)
-  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+  // 原生 ElDrawer 通过 el-popup-parent--hidden 类锁定页面滚动，关闭后由 Element Plus 异步恢复。
+  await expect.poll(() => page.evaluate(() => document.body.classList.contains('el-popup-parent--hidden'))).toBe(true)
   await dialog.getByRole('button', { name: '关闭知识详情' }).click()
   await expect(dialog).toHaveCount(0)
-  expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden')
+  await expect.poll(() => page.evaluate(() => document.body.classList.contains('el-popup-parent--hidden'))).toBe(false)
 })
 
 test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出现', async ({ page, request }) => {

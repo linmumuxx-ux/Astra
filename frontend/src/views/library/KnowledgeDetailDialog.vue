@@ -1,116 +1,308 @@
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="detail-backdrop" data-testid="knowledge-detail-dialog" @click.self="$emit('close')">
-      <article v-if="detail" class="knowledge-detail" role="dialog" aria-modal="true" :aria-labelledby="`knowledge-${detail.id}`">
-        <header>
-          <div class="detail-heading">
-            <div><span class="detail-type">{{ typeLabel(detail.type) }}</span><span v-for="tag in detail.tags" :key="tag" class="detail-tag">{{ tag }}</span></div>
-            <h2 :id="`knowledge-${detail.id}`">{{ detail.title }}</h2>
-            <div class="detail-meta">
-              <span :data-status="detail.status"><CircleCheck v-if="detail.status === 'published'" :size="14" /><Clock3 v-else :size="14" />审核状态 · {{ statusLabel(detail.status) }}</span>
-              <span :data-verified="detail.verification_status"><BadgeCheck :size="14" />证据状态 · {{ verificationLabel(detail.verification_status) }}</span>
-              <RouterLink v-if="detail.source_task_id" :to="`/tasks/${detail.source_task_id}`" @click="$emit('close')">来源任务：{{ detail.source_task_id }}</RouterLink>
-              <span>更新：{{ formatDate(detail.updated_at) }}</span><span>引用：{{ detail.reference_count }}</span>
-            </div>
+  <ElDrawer
+    v-if="open"
+    class="knowledge-detail-drawer"
+    data-testid="knowledge-detail-dialog"
+    :model-value="true"
+    size="min(980px, 100%)"
+    :before-close="() => requestClose()"
+  >
+    <template #header>
+      <div class="detail-header">
+        <div class="detail-header__text">
+          <div class="detail-header__badges">
+            <ElTag v-if="detail" size="small">{{ typeLabel(detail.type) }}</ElTag>
+            <ElTag v-for="tag in detail?.tags ?? []" :key="tag" size="small" type="info" effect="plain">{{ tag }}</ElTag>
           </div>
-          <button type="button" aria-label="关闭知识详情" @click="$emit('close')"><X :size="19" /></button>
-        </header>
-
-        <div class="detail-scroll">
-          <section v-if="detail.status === 'candidate'" class="candidate-origin">
-            <div class="section-title"><span><Sparkles :size="16" /></span><div><h3>来源证据</h3><p>用于判断这条候选经验是否可信；仅展示实际存在的执行信息。</p></div></div>
-            <dl v-if="candidateFacts.length" class="origin-facts">
-              <div v-for="fact in candidateFacts" :key="fact.label"><dt>{{ fact.label }}</dt><dd :title="fact.value">{{ fact.value }}</dd></div>
-            </dl>
-            <div v-if="detail.review_note" class="review-note"><MessageSquareWarning :size="15" /><div><strong>审核意见</strong><p>{{ detail.review_note }}</p></div></div>
-            <div class="experience-details">
-              <article v-for="field in experienceFields" :key="field.label"><h4>{{ field.label }}</h4><p>{{ field.value }}</p></article>
-            </div>
-            <div class="evidence-list"><h4>相关日志 / 会话 / Task 证据</h4><article v-for="evidence in detail.evidence" :key="evidence.id"><span :data-result="evidence.result"><FileCheck2 :size="15" /></span><div><strong>{{ evidence.evidence_type }}</strong><p>{{ evidence.content || evidence.uri || '已关联结构化证据' }}</p><small>{{ evidence.task_id || '—' }} · {{ evidence.source_session_id || '—' }} · {{ evidence.result || '未标记结果' }}</small></div><a v-if="safeExternalUrl(evidence.uri)" :href="safeExternalUrl(evidence.uri)" target="_blank" rel="noopener noreferrer">打开</a></article><p v-if="!detail.evidence.length" class="evidence-empty">暂无额外证据，审核时请重点核对来源 Task 与 Session。</p></div>
-          </section>
-
-          <section v-if="reviewEditing" class="review-editor">
-            <div class="section-title"><span><ClipboardEdit :size="16" /></span><div><h3>发布前编辑</h3><p>确认目标空间、标题、标签和 Markdown，保存后立即进入员工检索范围。</p></div></div>
-            <div class="review-grid"><label>目标目录 *<select v-model="review.space_id"><option value="" disabled>请选择</option><option v-for="dir in directories" :key="dir.id" :value="dir.id">{{ dir.name }}</option></select></label><label>验证状态<select v-model="review.verification_status"><option value="unverified">未验证</option><option value="verified">已验证</option><option value="failed">验证失败</option></select></label></div>
-            <label>标题<input v-model.trim="review.title" maxlength="240" /></label><label>标签<input v-model="review.tags" placeholder="用逗号分隔" /></label><label>摘要<textarea v-model="review.summary" rows="2" /></label><label>Markdown 正文<textarea v-model="review.content_md" rows="18" /></label>
-
-          </section>
-          <section v-else class="markdown-section">
-            <div class="markdown-body" v-html="safeMarkdown" />
-          </section>
-
-          <section v-if="reviewActionMode && detail.status === 'candidate'" ref="reviewRequestPanel" class="review-request-panel">
-            <div>
-              <strong>{{ reviewActionMode === 'supplement' ? '退回补充' : '驳回候选经验' }}</strong>
-              <p>{{ reviewActionMode === 'supplement' ? '明确指出需要补充的内容或证据，避免无目标地重写整条经验。' : '请说明驳回原因，便于后续生成质量分析。' }}</p>
-            </div>
-            <textarea ref="reviewReasonInput" v-model.trim="review.reason" rows="3" :placeholder="reviewActionMode === 'supplement' ? '例如：请补充异常场景下的验证证据，并明确适用边界。' : '请输入驳回原因'" />
-            <div class="review-request-actions">
-              <button type="button" class="button" :disabled="working" @click="reviewActionMode = null">取消</button>
-              <button type="button" class="button" :class="{ 'button--danger': reviewActionMode === 'reject', 'button--primary': reviewActionMode === 'supplement' }" :disabled="working || review.reason.length < 2" @click="confirmReviewAction">
-                <LoaderCircle v-if="working" :size="14" class="spin" />{{ reviewActionMode === 'supplement' ? '确认退回补充' : '确认驳回' }}
-              </button>
-            </div>
-          </section>
-
-          <section v-if="detail.sources.length" class="knowledge-sources"><h3>资料来源</h3><article v-for="source in detail.sources" :key="source.id"><strong>{{ source.source_name || source.source_id || source.source_type }}</strong><span>{{ source.source_type }}<template v-if="source.version"> · {{ source.version }}</template></span><a v-if="safeExternalUrl(source.source_uri)" :href="safeExternalUrl(source.source_uri)" target="_blank" rel="noopener noreferrer">查看来源</a></article></section>
-          <section class="usage-records"><h3>最近引用</h3><div v-if="usagesLoading" class="related-loading"><LoaderCircle :size="17" class="spin" />正在加载</div><template v-else-if="usages.length"><component :is="record.task_id ? RouterLink : 'div'" v-for="record in usages" :key="record.id" :to="record.task_id ? `/tasks/${record.task_id}` : '#'" class="usage-row" @click="$emit('close')"><div><strong>{{ record.task_title || record.task_id || '引用' }}</strong><small>{{ record.employee_name || record.employee_id || '数字员工' }} · {{ formatDate(record.used_at) }}</small></div><ChevronRight :size="15" /></component><button type="button" class="text-link" @click="openRelated">查看全部关联任务</button></template><p v-else class="usage-empty">暂无知识引用记录。</p></section>
-          <section v-if="relatedOpen" class="related-tasks"><div class="section-title"><span><ListTree :size="16" /></span><div><h3>关联任务</h3><p>来源任务及实际引用过该知识的任务。</p></div><button type="button" aria-label="关闭关联任务" @click="relatedOpen = false"><X :size="15" /></button></div><div v-if="relatedLoading" class="related-loading"><LoaderCircle :size="17" class="spin" />正在加载</div><RouterLink v-for="task in relatedTasks" :key="task.id" :to="`/tasks/${task.id}`" @click="$emit('close')"><div><strong>{{ task.title }}</strong><small>{{ task.id }} · {{ task.relation }}</small></div><span>{{ task.status }}</span><ChevronRight :size="15" /></RouterLink><p v-if="!relatedLoading && !relatedTasks.length">暂无关联任务记录。</p></section>
-          <p v-if="error" class="detail-error">{{ error }}</p>
+          <h2 :id="detail ? `knowledge-${detail.id}` : 'knowledge-detail-title'">{{ detail?.title ?? (error ? '知识详情加载失败' : '正在加载知识详情') }}</h2>
+          <div v-if="detail" class="detail-header__meta">
+            <ElTag size="small" :type="statusTagType(detail.status)">审核状态 · {{ statusLabel(detail.status) }}</ElTag>
+            <ElTag size="small" :type="verificationTagType(detail.verification_status)">证据状态 · {{ verificationLabel(detail.verification_status) }}</ElTag>
+            <a v-if="detail.source_task_id" :href="`/tasks/${detail.source_task_id}`" @click="onTaskLinkClick($event, `/tasks/${detail.source_task_id}`)">来源任务：{{ detail.source_task_id }}</a>
+            <ElText size="small" type="info">更新 {{ formatDate(detail.updated_at) }}</ElText>
+            <ElText size="small" type="info">引用 {{ detail.reference_count }}</ElText>
+          </div>
         </div>
+        <ElButton class="detail-header__close" text :icon="X" aria-label="关闭知识详情" @click="requestClose" />
+      </div>
+    </template>
 
-        <footer>
-          <div class="knowledge-actions">
-            <button type="button" :class="{ active: detail.is_favorite }" @click="$emit('favorite')"><Star :size="15" :fill="detail.is_favorite ? 'currentColor' : 'none'" />{{ detail.is_favorite ? '已收藏' : '收藏' }}</button>
-            <button type="button" :class="{ active: detail.user_helpful }" @click="$emit('helpful')"><ThumbsUp :size="15" />有帮助 ({{ detail.helpful_count }})</button>
-            <button type="button" @click="share"><Share2 :size="15" />分享</button><button type="button" @click="copyLink"><Link2 :size="15" />{{ copied ? '已复制' : '复制链接' }}</button>
-            <button type="button" @click="openRelated"><ListTree :size="15" />查看关联任务</button>
-            <button v-if="canManage" type="button" data-testid="knowledge-detail-edit" @click="$emit('edit')"><Pencil :size="15" />编辑</button>
+    <div class="detail-scroll">
+      <ElAlert v-if="error" class="detail-error" type="error" show-icon :closable="false" :title="error" />
+      <ElSkeleton v-if="!detail && !error" class="detail-loading" animated :rows="6" />
+
+      <template v-else-if="detail">
+        <ElDescriptions class="detail-section" :column="3" border size="small">
+          <ElDescriptionsItem label="类型">{{ typeLabel(detail.type) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="所属目录">{{ spaceName }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="来源">{{ sourceTypeLabel(detail.source_type) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="来源员工">{{ detail.source_employee_name || detail.source_employee_id || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="执行会话">{{ detail.source_session_id || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="验证时间">{{ detail.verified_at ? formatDate(detail.verified_at) : '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="有帮助">{{ detail.helpful_count }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="更新时间">{{ formatDate(detail.updated_at) }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="发布时间">{{ detail.published_at ? formatDate(detail.published_at) : '尚未发布' }}</ElDescriptionsItem>
+        </ElDescriptions>
+
+        <section v-if="detail.status === 'candidate'" class="detail-section" aria-label="候选经验来源与证据">
+          <h3>来源证据</h3>
+          <ElText size="small" type="info">用于判断这条候选经验是否可信；仅展示实际存在的执行信息。</ElText>
+          <ElAlert v-if="detail.review_note" class="candidate-review-note" type="warning" show-icon :closable="false">
+            <template #title>审核意见</template>
+            <p class="candidate-review-note__body">{{ detail.review_note }}</p>
+          </ElAlert>
+          <ElDescriptions v-if="candidateFacts.length" class="origin-facts" :column="3" border size="small">
+            <ElDescriptionsItem v-for="fact in candidateFacts" :key="fact.label" :label="fact.label">{{ fact.value }}</ElDescriptionsItem>
+          </ElDescriptions>
+          <ElDescriptions v-if="experienceFields.length" class="origin-facts" :column="2" border size="small">
+            <ElDescriptionsItem v-for="field in experienceFields" :key="field.label" :label="field.label">{{ field.value }}</ElDescriptionsItem>
+          </ElDescriptions>
+          <p class="origin-facts__title">相关日志 / 会话 / Task 证据</p>
+          <ElTable v-if="detail.evidence.length" :data="detail.evidence" size="small" border>
+            <ElTableColumn label="证据类型" prop="evidence_type" width="110" />
+            <ElTableColumn label="内容" min-width="220">
+              <template #default="{ row }">{{ row.content || row.uri || '已关联结构化证据' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="Task" width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.task_id || '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="会话" width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.source_session_id || '—' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="结果" width="96">
+              <template #default="{ row }">
+                <ElTag size="small" :type="row.result ? (row.result.includes('fail') || row.result.includes('error') ? 'danger' : 'success') : 'info'">{{ row.result || '未标记结果' }}</ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="链接" width="70">
+              <template #default="{ row }">
+                <ElLink v-if="safeExternalUrl(row.uri)" :href="safeExternalUrl(row.uri)" target="_blank" rel="noopener noreferrer" type="primary">打开</ElLink>
+                <span v-else>—</span>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+          <ElText v-else class="detail-loading-text" type="info">暂无额外证据，审核时请重点核对来源 Task 与 Session。</ElText>
+        </section>
+
+        <section class="detail-section">
+          <div class="detail-section__head">
+            <h3>{{ reviewEditing ? '发布前编辑' : '知识正文' }}</h3>
+            <ElTag v-if="reviewDirty" size="small" type="warning" effect="light">有未保存修改</ElTag>
           </div>
-          <div v-if="canReview && ['candidate','draft'].includes(detail.status)" class="review-actions">
-            <button type="button" class="button" @click="reviewEditing = !reviewEditing"><Pencil :size="14" />{{ reviewEditing ? '预览正文' : '编辑' }}</button>
-            <template v-if="detail.status === 'candidate'"><button type="button" class="button review-reject" :disabled="working" @click="openReviewAction('reject')">驳回</button><button type="button" class="button" :disabled="working" @click="openReviewAction('supplement')">退回补充</button></template>
-            <button type="button" class="button button--primary" :disabled="working || !review.space_id || !review.title || !review.content_md" @click="publish"><LoaderCircle v-if="working" :size="14" class="spin" />发布</button>
+          <ElForm v-if="reviewEditing" class="review-form" :model="review" label-position="top">
+            <ElText size="small" type="info">确认目标目录、标题、标签和 Markdown 后发布；发布成功后才进入员工检索范围。</ElText>
+            <div class="review-form__grid">
+              <ElFormItem label="目标目录" required>
+                <ElSelect v-model="review.space_id" placeholder="请选择">
+                  <ElOption v-for="dir in directories" :key="dir.id" :value="dir.id" :label="dir.name" />
+                </ElSelect>
+              </ElFormItem>
+              <ElFormItem label="验证状态">
+                <ElSelect v-model="review.verification_status">
+                  <ElOption value="unverified" label="未验证" />
+                  <ElOption value="verified" label="已验证" />
+                  <ElOption value="failed" label="验证失败" />
+                </ElSelect>
+              </ElFormItem>
+            </div>
+            <ElFormItem label="标题" required>
+              <ElInput v-model.trim="review.title" maxlength="240" show-word-limit />
+            </ElFormItem>
+            <ElFormItem label="标签">
+              <ElInput v-model="review.tags" placeholder="用逗号分隔" />
+            </ElFormItem>
+            <ElFormItem label="摘要">
+              <ElInput v-model="review.summary" type="textarea" :rows="2" />
+            </ElFormItem>
+            <ElFormItem label="Markdown 正文" required>
+              <ElInput v-model="review.content_md" class="review-form__content" type="textarea" :rows="16" resize="vertical" />
+            </ElFormItem>
+          </ElForm>
+          <div v-else class="markdown-body" v-html="safeMarkdown" />
+        </section>
+
+        <section v-if="reviewActionMode && detail.status === 'candidate'" ref="reviewRequestPanel" class="review-request-panel">
+          <div>
+            <strong>{{ reviewActionMode === 'supplement' ? '退回补充' : '驳回候选经验' }}</strong>
+            <p>{{ reviewActionMode === 'supplement' ? '明确指出需要补充的内容或证据，避免无目标地重写整条经验。' : '请说明驳回原因，便于后续生成质量分析。' }}</p>
           </div>
-        </footer>
-      </article>
-      <div v-else-if="error" class="detail-loading detail-loading--error"><TriangleAlert :size="22" /><span>{{ error }}</span><button type="button" @click="$emit('close')">关闭</button></div>
-      <div v-else class="detail-loading"><LoaderCircle :size="24" class="spin" />正在加载知识详情</div>
+          <ElInput ref="reviewReasonInput" v-model.trim="review.reason" type="textarea" :rows="3" :disabled="working" :placeholder="reviewActionMode === 'supplement' ? '例如：请补充异常场景下的验证证据，并明确适用边界。' : '请输入驳回原因'" />
+          <div class="review-request-panel__actions">
+            <ElButton :disabled="working" @click="reviewActionMode = null">取消</ElButton>
+            <ElButton :type="reviewActionMode === 'reject' ? 'danger' : 'primary'" :loading="working" :disabled="review.reason.length < 2" @click="confirmReviewAction">
+              {{ reviewActionMode === 'supplement' ? '确认退回补充' : '确认驳回' }}
+            </ElButton>
+          </div>
+        </section>
+
+        <section v-if="detail.sources.length" class="detail-section">
+          <h3>资料来源</h3>
+          <ElTable :data="detail.sources" size="small" border>
+            <ElTableColumn label="来源" min-width="200">
+              <template #default="{ row }">{{ row.source_name || row.source_id || row.source_type }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="类型" width="150">
+              <template #default="{ row }">{{ row.source_type }}<template v-if="row.version"> · {{ row.version }}</template></template>
+            </ElTableColumn>
+            <ElTableColumn label="链接" width="90">
+              <template #default="{ row }">
+                <ElLink v-if="safeExternalUrl(row.source_uri)" :href="safeExternalUrl(row.source_uri)" target="_blank" rel="noopener noreferrer" type="primary">查看来源</ElLink>
+                <span v-else>—</span>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+        </section>
+
+        <section class="detail-section">
+          <h3>最近引用</h3>
+          <ElTable v-if="usages.length" :data="usages" size="small" border>
+            <ElTableColumn label="任务" min-width="220">
+              <template #default="{ row }">
+                <a v-if="row.task_id" :href="`/tasks/${row.task_id}`" @click="onTaskLinkClick($event, `/tasks/${row.task_id}`)">{{ row.task_title || row.task_id }}</a>
+                <span v-else>{{ row.task_title || '引用' }}</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="数字员工" width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.employee_name || row.employee_id || '数字员工' }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="动作" prop="action" width="110" />
+            <ElTableColumn label="引用时间" width="150">
+              <template #default="{ row }">{{ formatDate(row.used_at) }}</template>
+            </ElTableColumn>
+          </ElTable>
+          <ElText v-else-if="usagesLoading" class="detail-loading-text">正在加载引用记录……</ElText>
+          <ElText v-else class="detail-loading-text" type="info">暂无知识引用记录。</ElText>
+          <ElButton v-if="usages.length" text type="primary" @click="openRelated">查看全部关联任务</ElButton>
+        </section>
+
+        <section v-if="relatedOpen" class="detail-section">
+          <div class="detail-section__head">
+            <div>
+              <h3>关联任务</h3>
+              <ElText size="small" type="info">来源任务及实际引用过该知识的任务。</ElText>
+            </div>
+            <ElButton text :icon="X" aria-label="关闭关联任务" @click="relatedOpen = false" />
+          </div>
+          <ElTable v-if="relatedTasks.length || !relatedLoading" :data="relatedTasks" size="small" border>
+            <ElTableColumn label="任务" min-width="220">
+              <template #default="{ row }">
+                <a :href="`/tasks/${row.id}`" @click="onTaskLinkClick($event, `/tasks/${row.id}`)">{{ row.title }}</a>
+                <ElText size="small" type="info"> · {{ row.id }}</ElText>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="关系" prop="relation" width="110" />
+            <ElTableColumn label="状态" prop="status" width="110" />
+            <ElTableColumn label="最近引用" width="150">
+              <template #default="{ row }">{{ row.last_used_at ? formatDate(row.last_used_at) : '—' }}</template>
+            </ElTableColumn>
+            <template #empty>暂无关联任务记录。</template>
+          </ElTable>
+          <ElText v-else class="detail-loading-text">正在加载关联任务……</ElText>
+        </section>
+      </template>
     </div>
-  </Teleport>
+
+    <template v-if="detail" #footer>
+      <div class="detail-footer">
+        <div class="detail-footer__actions">
+          <ElButton size="small" :type="detail.is_favorite ? 'warning' : 'default'" :plain="!detail.is_favorite" :icon="Star" :disabled="working" data-testid="knowledge-detail-favorite" @click="emit('favorite')">{{ detail.is_favorite ? '已收藏' : '收藏' }}</ElButton>
+          <ElButton size="small" :type="detail.user_helpful ? 'primary' : 'default'" :plain="!detail.user_helpful" :icon="ThumbsUp" :disabled="working" data-testid="knowledge-detail-helpful" @click="emit('helpful')">有帮助 ({{ detail.helpful_count }})</ElButton>
+          <ElButton size="small" :icon="Share2" @click="share">分享</ElButton>
+          <ElButton size="small" :icon="Link2" @click="copyLink">{{ copied ? '已复制' : '复制链接' }}</ElButton>
+          <ElButton size="small" :icon="ListTree" @click="openRelated">查看关联任务</ElButton>
+          <ElButton v-if="canManage" size="small" :icon="Pencil" data-testid="knowledge-detail-edit" @click="emit('edit')">编辑</ElButton>
+        </div>
+        <div v-if="canReview && ['candidate', 'draft'].includes(detail.status)" class="detail-footer__review">
+          <ElButton size="small" :icon="reviewEditing ? Eye : ClipboardEdit" :disabled="working" data-testid="knowledge-detail-review-edit" @click="toggleReviewEditing">{{ reviewEditing ? '预览正文' : '编辑' }}</ElButton>
+          <template v-if="detail.status === 'candidate'">
+            <ElButton size="small" type="danger" plain :disabled="working" @click="startReviewAction('reject')">驳回</ElButton>
+            <ElButton size="small" :disabled="working" @click="startReviewAction('supplement')">退回补充</ElButton>
+          </template>
+          <ElButton size="small" type="primary" :loading="working" :disabled="!canPublish" data-testid="knowledge-detail-publish" @click="publish">发布</ElButton>
+        </div>
+      </div>
+    </template>
+  </ElDrawer>
 </template>
 
 <script setup lang="ts">
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { BadgeCheck, ChevronRight, CircleCheck, ClipboardEdit, Clock3, FileCheck2, Link2, ListTree, LoaderCircle, MessageSquareWarning, Pencil, Share2, Sparkles, Star, ThumbsUp, TriangleAlert, X } from 'lucide-vue-next'
+import { ClipboardEdit, Eye, Link2, ListTree, Pencil, Share2, Star, ThumbsUp, X } from 'lucide-vue-next'
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { useRouter } from 'vue-router'
+import { ElAlert, ElButton, ElDescriptions, ElDescriptionsItem, ElDrawer, ElForm, ElFormItem, ElInput, ElLink, ElOption, ElSelect, ElSkeleton, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
+import type { InputInstance } from 'element-plus'
 import type { KnowledgeDetail, KnowledgeUsageRecord, RelatedTask } from '@/api/types'
+import { confirmDialog } from '@/composables/useConfirm'
 
 const props = defineProps<{ open: boolean; detail: KnowledgeDetail | null; directories: Array<{ id: string; name: string; level: number }>; canReview: boolean; canManage: boolean; working: boolean; error: string; relatedTasks: RelatedTask[]; relatedLoading: boolean; usages: KnowledgeUsageRecord[]; usagesLoading: boolean }>()
 const emit = defineEmits<{ close: []; favorite: []; helpful: []; related: []; edit: []; publish: [payload: Record<string, unknown>]; reject: [reason: string]; supplement: [reason: string] }>()
+
+const router = useRouter()
 const reviewEditing = ref(false)
 const relatedOpen = ref(false)
 const copied = ref(false)
 const reviewActionMode = ref<'supplement' | 'reject' | null>(null)
 const reviewRequestPanel = ref<HTMLElement | null>(null)
-const reviewReasonInput = ref<HTMLTextAreaElement | null>(null)
+const reviewReasonInput = ref<InputInstance | null>(null)
 const review = reactive({ space_id: '', title: '', summary: '', tags: '', content_md: '', verification_status: 'unverified', reason: '' })
-let previousOverflow = ''
+let reviewSnapshot = ''
+let lastDetailId: string | null | undefined
+let copyTimer = 0
 marked.setOptions({ gfm: true, breaks: false })
-watch(() => props.open, (open) => { if (open) { previousOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden' } else document.body.style.overflow = previousOverflow })
-watch(() => props.detail?.id, () => {
+
+const editFields = () => JSON.stringify([review.space_id, review.title, review.summary, review.tags, review.content_md, review.verification_status])
+const reviewDirty = computed(() => reviewEditing.value && Boolean(props.detail) && editFields() !== reviewSnapshot)
+
+function syncReviewFromDetail() {
   const detail = props.detail
   if (!detail) return
-  Object.assign(review, { space_id: detail.space_id || props.directories[0]?.id || '', title: detail.title, summary: detail.summary, tags: detail.tags.join(', '), content_md: detail.content_md, verification_status: detail.verification_status, reason: detail.review_note || '' })
-  reviewEditing.value = false; relatedOpen.value = false; copied.value = false; reviewActionMode.value = null
-})
-onBeforeUnmount(() => { document.body.style.overflow = previousOverflow })
+  Object.assign(review, {
+    space_id: detail.space_id || props.directories[0]?.id || '',
+    title: detail.title,
+    summary: detail.summary,
+    tags: detail.tags.join(', '),
+    content_md: detail.content_md,
+    verification_status: detail.verification_status,
+    reason: detail.review_note || '',
+  })
+  reviewSnapshot = editFields()
+  if (!['candidate', 'draft'].includes(detail.status)) reviewEditing.value = false
+}
+
+watch(
+  () => props.detail && [props.detail.id, props.detail.status, props.detail.updated_at, props.detail.verification_status].join('|'),
+  () => {
+    const detail = props.detail
+    if (!detail) return
+    if (detail.id !== lastDetailId) {
+      lastDetailId = detail.id
+      reviewEditing.value = false
+      relatedOpen.value = false
+      copied.value = false
+      reviewActionMode.value = null
+    }
+    syncReviewFromDetail()
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => window.clearTimeout(copyTimer))
+
 const safeMarkdown = computed(() => DOMPurify.sanitize(marked.parse(props.detail?.content_md || '', { async: false }) as string, { USE_PROFILES: { html: true } }))
+const spaceName = computed(() => {
+  const detail = props.detail
+  if (!detail) return '—'
+  if (detail.space_name) return detail.space_name
+  return props.directories.find((dir) => dir.id === detail.space_id)?.name.trim() ?? '未归类'
+})
 const typeLabel = (value: string) => ({ document: '文档', rule: '规范', guide: '指南', experience: '经验', faq: 'FAQ', tool: '工具', example: '示例' }[value] ?? value)
 const statusLabel = (value: string) => ({ published: '已发布', candidate: '待人工审核', draft: '草稿', archived: '已归档', rejected: '已驳回' }[value] ?? value)
+const statusTagType = (value: string) => (({ published: 'success', candidate: 'warning', draft: 'info', archived: 'info', rejected: 'danger' }[value] ?? 'info') as 'success' | 'warning' | 'info' | 'danger')
 const verificationLabel = (value: string) => ({ verified: '已验证', unverified: '未验证', failed: '验证失败' }[value] ?? value)
+const verificationTagType = (value: string) => (({ verified: 'success', failed: 'danger' }[value] ?? 'info') as 'success' | 'danger' | 'info')
+const sourceTypeLabel = (value: string | null) => ({ task: '任务沉淀', manual: '人工创建', import: '文档导入', system: '系统同步' }[value ?? ''] ?? '人工创建')
 const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
 function experienceValue(keys: string[]) { for (const key of keys) { const value = props.detail?.experience_data[key]; if (value !== undefined && value !== null && value !== '') return typeof value === 'boolean' ? value ? '通过' : '未通过' : String(value) } return '—' }
 function safeExternalUrl(value: string | null | undefined) {
@@ -145,31 +337,119 @@ const experienceFields = computed(() => [
   { label: '修改内容摘要', value: experienceValue(['change_summary', 'changes', 'modification_summary']) },
   { label: '重试与验证结果', value: experienceValue(['retry_result', 'verification_result', 'result']) },
 ].filter((field) => field.value !== '—'))
-async function openReviewAction(mode: 'supplement' | 'reject') {
+
+async function discardUnsavedReview(actionLabel: string, confirmLabel: string): Promise<boolean> {
+  if (!reviewDirty.value) return true
+  return confirmDialog({
+    title: '放弃未保存的审核补充编辑？',
+    message: `发布前编辑的内容尚未提交，${actionLabel}后这些修改将丢失。`,
+    confirmLabel,
+    danger: true,
+  })
+}
+
+async function requestClose() {
+  if (props.working) return
+  if (!(await discardUnsavedReview('关闭详情', '放弃并关闭'))) return
+  emit('close')
+}
+
+async function toggleReviewEditing() {
+  if (!reviewEditing.value) { reviewEditing.value = true; return }
+  if (!(await discardUnsavedReview('切换预览', '放弃修改'))) return
+  syncReviewFromDetail()
+  reviewEditing.value = false
+}
+
+async function startReviewAction(mode: 'supplement' | 'reject') {
+  if (!(await discardUnsavedReview('该操作不会带上正文编辑', '放弃并继续'))) return
   reviewActionMode.value = mode
   await nextTick()
   reviewRequestPanel.value?.scrollIntoView({ block: 'nearest' })
-  reviewReasonInput.value?.focus({ preventScroll: true })
+  reviewReasonInput.value?.textarea?.focus({ preventScroll: true })
 }
+
 function confirmReviewAction() {
   if (!reviewActionMode.value || review.reason.length < 2) return
   if (reviewActionMode.value === 'supplement') emit('supplement', review.reason)
   else emit('reject', review.reason)
   reviewActionMode.value = null
 }
-function publish() { emit('publish', { space_id: review.space_id, title: review.title, summary: review.summary, tags: review.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean), content_md: review.content_md, verification_status: review.verification_status }) }
+
+const canPublish = computed(() => Boolean(props.detail && review.space_id && review.title && review.content_md))
+function publish() {
+  if (!canPublish.value) return
+  emit('publish', { space_id: review.space_id, title: review.title, summary: review.summary, tags: review.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean), content_md: review.content_md, verification_status: review.verification_status })
+}
+
 function knowledgeUrl() { const url = new URL(window.location.href); if (props.detail) url.searchParams.set('knowledge', props.detail.id); return url.toString() }
-async function copyLink() { await navigator.clipboard.writeText(knowledgeUrl()); copied.value = true; window.setTimeout(() => { copied.value = false }, 1600) }
-async function share() { if (navigator.share) await navigator.share({ title: props.detail?.title, url: knowledgeUrl() }); else await copyLink() }
+async function copyLink() {
+  try { await navigator.clipboard.writeText(knowledgeUrl()); copied.value = true; window.clearTimeout(copyTimer); copyTimer = window.setTimeout(() => { copied.value = false }, 1600) } catch { copied.value = false }
+}
+async function share() { try { if (navigator.share) await navigator.share({ title: props.detail?.title, url: knowledgeUrl() }); else await copyLink() } catch { /* 用户取消分享 */ } }
 function openRelated() { relatedOpen.value = true; emit('related') }
+async function onTaskLinkClick(event: MouseEvent, to: string) {
+  event.preventDefault()
+  if (!(await discardUnsavedReview('离开详情', '放弃并离开'))) return
+  emit('close')
+  await router.push(to)
+}
 </script>
 
 <style scoped>
-.detail-backdrop{position:fixed;z-index:1250;inset:0;display:grid;place-items:center;padding:20px;background:rgba(16,37,34,.42);backdrop-filter:blur(2px)}.knowledge-detail{display:grid;grid-template-rows:auto minmax(0,1fr) auto;width:min(1020px,100%);max-height:80vh;overflow:hidden;border:1px solid var(--astra-border);border-radius:16px;background:#fff;box-shadow:0 28px 80px rgba(16,37,34,.24)}.knowledge-detail>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 22px 16px;border-bottom:1px solid var(--astra-border);background:#fff}.knowledge-detail>header>button{display:grid;place-items:center;flex:none;width:35px;height:35px;color:var(--astra-text-muted);border:0;border-radius:9px;background:#f2f6f4;cursor:pointer}.detail-heading{min-width:0}.detail-heading>div:first-child{display:flex;flex-wrap:wrap;gap:6px}.detail-type,.detail-tag{display:inline-flex;padding:4px 8px;border-radius:6px;font-size: var(--astra-font-body)}.detail-type{color:var(--astra-primary-bright);background:var(--astra-primary-soft)}.detail-tag{color:var(--astra-text-secondary);background:#edf2f0}.detail-heading h2{margin:9px 0 8px;color:var(--astra-text-primary);line-height:1.3}.detail-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;color:var(--astra-text-muted);font-size: var(--astra-font-body)}.detail-meta span,.detail-meta a{display:inline-flex;align-items:center;gap:4px}.detail-meta span[data-status='published'],.detail-meta span[data-verified='verified']{color:var(--astra-primary-bright)}.detail-meta a{color:var(--astra-primary-bright)}.detail-loading--error{display:grid;justify-items:center;max-width:420px;text-align:center}.detail-loading--error button{padding:7px 14px;color:var(--astra-danger);border:1px solid rgba(228,93,106,.24);border-radius:7px;background:#fff;cursor:pointer}
-.detail-scroll{overflow-y:auto;overscroll-behavior:contain;padding:0 24px 24px;scrollbar-gutter:stable}.markdown-section{padding:25px 4px 10px}.markdown-body{color:var(--astra-text-secondary);font-size:var(--astra-font-size-15);line-height:1.78}.markdown-body:deep(h1),.markdown-body:deep(h2),.markdown-body:deep(h3){color:var(--astra-text-primary);line-height:1.35}.markdown-body:deep(h1){margin:0 0 18px;font-size: var(--astra-font-title)}.markdown-body:deep(h2){margin:25px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--astra-border);font-size:var(--astra-font-size-20)}.markdown-body:deep(h3){margin:19px 0 9px;font-size: var(--astra-font-section)}.markdown-body:deep(p){margin:9px 0}.markdown-body:deep(ul),.markdown-body:deep(ol){padding-left:24px}.markdown-body:deep(blockquote){margin:14px 0;padding:10px 14px;color:var(--astra-text-secondary);border-left:3px solid var(--astra-primary);background:var(--astra-primary-soft)}.markdown-body:deep(code){padding:2px 5px;color:#b45140;border-radius:5px;background:#f4efec;font-family:var(--astra-font-family);font-size:.9em}.markdown-body:deep(pre){overflow:auto;padding:14px;border:1px solid var(--astra-border);border-radius:9px;background:#15231f}.markdown-body:deep(pre code){padding:0;color:#dcebe5;background:transparent}.markdown-body:deep(table){display:block;max-width:100%;overflow:auto;border-collapse:collapse}.markdown-body:deep(th),.markdown-body:deep(td){padding:8px 10px;border:1px solid var(--astra-border)}.markdown-body:deep(th){background:#f3f8f5}.markdown-body:deep(img){max-width:100%;height:auto;border-radius:8px}.markdown-body:deep(a){color:var(--astra-primary-bright);text-decoration:underline}.markdown-body:deep(hr){margin:24px 0;border:0;border-top:1px solid var(--astra-border)}
-.candidate-origin{margin:18px 0 4px;padding:16px;border:1px solid rgba(233,149,63,.25);border-radius:12px;background:linear-gradient(135deg,rgba(255,250,244,.96),rgba(255,255,255,.96))}.section-title{display:flex;align-items:center;gap:10px}.section-title>span{display:grid;place-items:center;flex:none;width:34px;height:34px;color:var(--astra-warning);border-radius:9px;background:var(--astra-warning-soft)}.section-title h3,.section-title p{margin:0}.section-title h3{color:var(--astra-text-primary);}.section-title p{margin-top:2px;color:var(--astra-text-muted);font-size: var(--astra-font-body)}.origin-facts{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin:14px 0 0;overflow:hidden;border:1px solid rgba(233,149,63,.2);border-radius:9px;background:rgba(233,149,63,.16)}.origin-facts div{min-width:0;padding:9px 10px;background:#fff}.origin-facts dt{color:var(--astra-text-muted);font-size: var(--astra-font-control)}.origin-facts dd{overflow:hidden;margin:3px 0 0;color:var(--astra-text-primary);font-size: var(--astra-font-label);font-weight: var(--astra-weight-bold);text-overflow:ellipsis;white-space:nowrap}.experience-details{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.experience-details article{padding:10px;border:1px solid var(--astra-border);border-radius:8px;background:#fff}.experience-details h4,.experience-details p,.evidence-list h4{margin:0}.experience-details h4,.evidence-list h4{color:var(--astra-text-secondary);font-size: var(--astra-font-body)}.experience-details p{margin-top:4px;color:var(--astra-text-muted);font-size: var(--astra-font-body);white-space:pre-wrap}.review-note{display:flex;gap:8px;margin-top:12px;padding:9px 10px;color:#9a6328;border-radius:8px;background:var(--astra-warning-soft)}.review-note svg{flex:none}.review-note strong{font-size: var(--astra-font-body)}.review-note p{margin:3px 0 0;font-size: var(--astra-font-body)}.evidence-list{margin-top:14px}.evidence-list>article{display:flex;align-items:flex-start;gap:9px;padding:9px 0;border-bottom:1px solid var(--astra-border)}.evidence-list>article>span{display:grid;place-items:center;flex:none;width:30px;height:30px;color:var(--astra-primary-bright);border-radius:8px;background:var(--astra-primary-soft)}.evidence-list article>div{display:grid;min-width:0;flex:1}.evidence-list strong{color:var(--astra-text-primary);font-size: var(--astra-font-body)}.evidence-list p,.evidence-list small{overflow:hidden;margin:2px 0 0;color:var(--astra-text-muted);font-size: var(--astra-font-control);text-overflow:ellipsis;white-space:nowrap}.evidence-list a{color:var(--astra-primary-bright);font-size: var(--astra-font-body)}.evidence-empty{color:var(--astra-text-muted);font-size: var(--astra-font-body)}
-.review-editor{display:grid;gap:12px;margin:18px 0;padding:16px;border:1px solid var(--astra-primary-border);border-radius:12px;background:#f8fcfa}.review-request-panel{display:grid;gap:10px;margin:18px 0;padding:14px;border:1px solid var(--astra-border);border-radius:10px;background:#fbfdfc}.review-request-panel strong{color:var(--astra-text-primary);font-size:var(--astra-font-label)}.review-request-panel p{margin:3px 0 0;color:var(--astra-text-muted);font-size:var(--astra-font-body)}.review-request-panel textarea{width:100%;padding:9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;font:inherit;resize:vertical}.review-request-panel textarea:focus{border-color:var(--astra-primary-border);outline:0;box-shadow:0 0 0 3px var(--astra-primary-soft)}.review-request-actions{display:flex;justify-content:flex-end;gap:8px}.review-editor>.section-title{margin-bottom:2px}.review-editor>.section-title>span{color:var(--astra-primary-bright);background:var(--astra-primary-soft)}.review-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.review-editor label{display:grid;gap:5px;color:var(--astra-text-secondary);font-size: var(--astra-font-body)}.review-editor input,.review-editor select,.review-editor textarea{width:100%;padding:8px 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;font:inherit}.review-editor textarea{resize:vertical}.review-editor label:nth-of-type(4) textarea{font-family:var(--astra-font-family);font-size: var(--astra-font-body);line-height:1.55}
-.knowledge-sources,.related-tasks,.usage-records{margin:18px 0 0;padding-top:15px;border-top:1px solid var(--astra-border)}.knowledge-sources h3{margin:0 0 8px;color:var(--astra-text-primary);}.knowledge-sources article{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;padding:7px 0;color:var(--astra-text-muted);font-size: var(--astra-font-body)}.knowledge-sources strong{color:var(--astra-text-secondary)}.knowledge-sources a{color:var(--astra-primary-bright)}.usage-records h3{margin:0 0 8px;color:var(--astra-text-primary);}.usage-records .usage-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--astra-border)}.usage-records .usage-row>div{display:grid;min-width:0}.usage-records .usage-row strong{overflow:hidden;color:var(--astra-text-primary);font-size: var(--astra-font-label);text-overflow:ellipsis;white-space:nowrap}.usage-records .usage-row small{color:var(--astra-text-muted);font-size: var(--astra-font-control)}.usage-records .text-link{margin-top:8px}.usage-empty{margin:0;padding:9px 0;color:var(--astra-text-muted);font-size: var(--astra-font-body)}.related-tasks>.section-title>button{margin-left:auto;display:grid;place-items:center;width:28px;height:28px;border:0;border-radius:7px;background:#f2f6f4}.related-tasks>a{display:grid;grid-template-columns:minmax(0,1fr) auto 20px;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--astra-border)}.related-tasks>a div{display:grid}.related-tasks>a strong{color:var(--astra-text-primary);font-size: var(--astra-font-label)}.related-tasks>a small,.related-tasks>a span,.related-tasks>p{color:var(--astra-text-muted);font-size: var(--astra-font-control)}.related-loading{display:flex;align-items:center;gap:7px;padding:15px;color:var(--astra-text-muted);font-size: var(--astra-font-body)}.detail-error{padding:9px 11px;color:var(--astra-danger);border-radius:8px;background:var(--astra-danger-soft);font-size: var(--astra-font-body)}
-.knowledge-detail>footer{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:62px;padding:10px 18px;border-top:1px solid var(--astra-border);background:#fbfdfc}.knowledge-actions,.review-actions{display:flex;align-items:center;flex-wrap:wrap;gap:5px}.knowledge-actions button{display:inline-flex;align-items:center;gap:5px;min-height:34px;padding:0 8px;color:var(--astra-text-muted);border:0;border-radius:7px;background:transparent;cursor:pointer;font-size: var(--astra-font-body)}.knowledge-actions button:hover,.knowledge-actions button.active{color:var(--astra-primary-bright);background:var(--astra-primary-soft)}.button--danger{color:var(--astra-danger)!important;border-color:rgba(228,93,106,.28)!important;background:var(--astra-danger-soft)!important}.detail-loading{display:flex;align-items:center;gap:9px;padding:20px;color:#fff}.button:disabled{cursor:default;opacity:.55}
-@media(max-width:900px){.knowledge-detail>footer{align-items:flex-start;flex-direction:column}.knowledge-actions,.review-actions{width:100%}.origin-facts{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.detail-backdrop{padding:7px}.knowledge-detail{max-height:94vh}.knowledge-detail>header{padding:14px}.detail-scroll{padding:0 14px 18px}.detail-heading h2{}.origin-facts,.experience-details,.review-grid{grid-template-columns:1fr}.knowledge-actions button{font-size:0}.knowledge-actions button svg{width:17px;height:17px}.knowledge-detail>footer{padding:9px 12px}}
+.detail-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 20px 20px; scrollbar-gutter: stable; }
+.detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; width: 100%; min-width: 0; }
+.detail-header__text { min-width: 0; }
+.detail-header__badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-header h2 { margin: 8px 0 6px; color: var(--astra-text-primary); font-size: var(--astra-font-title); line-height: 1.3; }
+.detail-header__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; color: var(--astra-text-muted); font-size: var(--astra-font-body); }
+.detail-header__meta a { color: var(--astra-primary-bright); }
+.detail-header__close { flex: none; }
+.detail-section { margin-top: 18px; }
+.detail-section h3 { margin: 0 0 6px; color: var(--astra-text-primary); font-size: var(--astra-font-section); line-height: 1.4; }
+.detail-section__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.origin-facts { margin-top: 12px; }
+.origin-facts__title { margin: 14px 0 8px; color: var(--astra-text-secondary); font-size: var(--astra-font-body); font-weight: 700; }
+.candidate-review-note { margin-top: 10px; }
+.candidate-review-note__body { margin: 2px 0 0; }
+.detail-loading-text { display: block; margin-top: 10px; color: var(--astra-text-muted); }
+.detail-section a { color: var(--astra-primary-bright); }
+.review-form { display: grid; gap: 2px; margin-top: 8px; }
+.review-form__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.review-form :deep(.el-select) { width: 100%; }
+.review-form__content :deep(.el-textarea__inner) { font-family: var(--astra-font-family); font-size: var(--astra-font-body); line-height: 1.55; }
+.review-request-panel { display: grid; gap: 10px; margin-top: 18px; padding: 14px; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-panel, #fbfdfc); }
+.review-request-panel strong { color: var(--astra-text-primary); font-size: var(--astra-font-label); }
+.review-request-panel p { margin: 3px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-body); }
+.review-request-panel__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.detail-loading { margin-top: 12px; }
+.detail-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.detail-footer__actions, .detail-footer__review { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.markdown-body { margin-top: 10px; color: var(--astra-text-secondary); font-size: var(--astra-font-size-15); line-height: 1.78; }
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { color: var(--astra-text-primary); line-height: 1.35; }
+.markdown-body :deep(h1) { margin: 0 0 18px; font-size: var(--astra-font-title); }
+.markdown-body :deep(h2) { margin: 25px 0 12px; padding-bottom: 7px; border-bottom: 1px solid var(--astra-border); font-size: var(--astra-font-size-20); }
+.markdown-body :deep(h3) { margin: 19px 0 9px; font-size: var(--astra-font-section); }
+.markdown-body :deep(p) { margin: 9px 0; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 24px; }
+.markdown-body :deep(blockquote) { margin: 14px 0; padding: 10px 14px; color: var(--astra-text-secondary); border-left: 3px solid var(--astra-primary); background: var(--astra-primary-soft); }
+.markdown-body :deep(code) { padding: 2px 5px; color: #b45140; border-radius: 5px; background: #f4efec; font-family: var(--astra-font-family); font-size: .9em; }
+.markdown-body :deep(pre) { overflow: auto; padding: 14px; border: 1px solid var(--astra-border); border-radius: 9px; background: #15231f; }
+.markdown-body :deep(pre code) { padding: 0; color: #dcebe5; background: transparent; }
+.markdown-body :deep(table) { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.markdown-body :deep(th), .markdown-body :deep(td) { padding: 8px 10px; border: 1px solid var(--astra-border); }
+.markdown-body :deep(th) { background: #f3f8f5; }
+.markdown-body :deep(img) { max-width: 100%; height: auto; border-radius: 8px; }
+.markdown-body :deep(a) { color: var(--astra-primary-bright); text-decoration: underline; }
+.markdown-body :deep(hr) { margin: 24px 0; border: 0; border-top: 1px solid var(--astra-border); }
+@media (max-width: 720px) {
+  .detail-footer { flex-direction: column; align-items: flex-start; }
+  .review-form__grid { grid-template-columns: 1fr; }
+}
+</style>
+
+<style>
+.knowledge-detail-drawer .el-drawer__header { margin-bottom: 0; padding: 16px 20px 14px; border-bottom: 1px solid var(--astra-border); }
+.knowledge-detail-drawer .el-drawer__body { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.knowledge-detail-drawer .el-drawer__footer { padding: 12px 20px; border-top: 1px solid var(--astra-border); background: var(--astra-bg-panel, #fff); }
 </style>
