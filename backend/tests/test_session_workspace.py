@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -39,6 +40,7 @@ class NativeServer:
         self.sessions = {"ses_current": []}
         self.state = "idle"
         self.pending = []
+        self.pending_permissions = []
         self.sent = []
         self.fail_after_accept = False
         self.created_options = []
@@ -95,7 +97,7 @@ class NativeServer:
         if path == "/question":
             return self.pending
         if path == "/permission":
-            return []
+            return self.pending_permissions
 
     async def abort(self, directory, sid):
         await self.session(directory, sid)
@@ -1155,6 +1157,98 @@ async def test_gateway_rejects_workspace_override_and_foreign_question(runtime):
         "/api/tasks/T1/opencode/ses_current/question/q_foreign/reply", json={"answers": [["yes"]]}
     )
     assert response.status_code == 403
+
+
+async def test_native_permission_reply_is_allowed_only_for_task_session(runtime, monkeypatch):
+    """原生 UI 用 /session/{sid}/permissions/{id} 回答权限，必须可用且仍受任务边界约束。"""
+
+    runtime.native.pending_permissions = [{"id": "per_foreign", "sessionID": "ses_other"}]
+    response = await runtime.api.post(
+        "/api/tasks/T1/opencode/ses_current/session/ses_current/permissions/per_foreign",
+        json={"response": "once"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "请求不属于此任务 Session"
+
+    response = await runtime.api.post(
+        "/api/tasks/T1/opencode/ses_other/session/ses_other/permissions/per_foreign",
+        json={"response": "once"},
+    )
+    assert response.status_code == 404
+
+    runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_current"}]
+    original = httpx.AsyncClient
+    sent = {}
+
+    def handler(request):
+        sent["method"] = request.method
+        sent["path"] = request.url.path
+        sent["query"] = dict(request.url.params)
+        sent["body"] = json.loads(request.content or b"{}")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(
+        "app.api.workspace_routes.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    response = await runtime.api.post(
+        "/api/tasks/T1/opencode/ses_current/session/ses_current/permissions/per_own",
+        json={"response": "once"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert sent["method"] == "POST"
+    assert sent["path"] == "/session/ses_current/permissions/per_own"
+    assert sent["body"] == {"response": "once"}
+    assert sent["query"]["directory"] == str(runtime.workspace)
+
+
+@pytest.mark.parametrize("terminal", ["SUCCEEDED", "CANCELED"])
+async def test_native_permission_reply_is_denied_after_business_terminal(runtime, terminal):
+    """业务终态后原生权限与问题答复都必须拒绝写入。"""
+
+    runtime.task.status = terminal
+    await runtime.session.commit()
+    runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_current"}]
+    for path in (
+        "session/ses_current/permissions/per_own",
+        "permission/per_own/reply",
+    ):
+        response = await runtime.api.post(f"/api/tasks/T1/opencode/ses_current/{path}", json={})
+        assert response.status_code == 409, path
+
+
+@pytest.mark.parametrize(
+    ("path", "current_path"),
+    [
+        ("session/ses_prev/prompt_async", "session/ses_current/prompt_async"),
+        ("session/ses_prev/permissions/per_own", "session/ses_current/permissions/per_own"),
+        ("permission/per_own/reply", "permission/per_own/reply"),
+    ],
+)
+async def test_bound_historical_session_rejects_native_writes(runtime, path, current_path):
+    """任务自身已绑定的历史 Session 仍然只读，含原生权限答复。"""
+
+    runtime.session.add(
+        RuntimeSession(
+            id="ses_prev",
+            task_id="T1",
+            employee_id="E1",
+            workspace=str(runtime.workspace),
+            environment=environment_snapshot(runtime.environment),
+        )
+    )
+    await runtime.session.commit()
+    runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_prev"}]
+    response = await runtime.api.post(f"/api/tasks/T1/opencode/ses_prev/{path}", json={})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "历史 Session 只读"
+    assert not runtime.native.sent
+
+    # 对照：同一原生操作在当前 Session 上不是被路径形状拒绝，证明上面的 403 只来自历史绑定。
+    runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_current"}]
+    current = await runtime.api.post(f"/api/tasks/T1/opencode/ses_current/{current_path}", json={})
+    assert current.status_code != 403, current_path
 
 
 async def test_timeout_aborts_native_busy_but_waiting_does_not_timeout(runtime):

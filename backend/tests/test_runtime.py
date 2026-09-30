@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,171 @@ async def test_dispatcher_matches_type_and_category_and_limits_one_task(session,
     assert second_claim is None
     await session.refresh(employee)
     assert employee.current_task_count == 1
+
+
+async def test_dispatcher_claims_task_assigned_to_employee_without_auto_claim(session, tmp_path):
+    """人工指定员工后必须自动分配并启动，不受 auto_claim 影响。"""
+
+    workspace = tmp_path / "employee-workspace"
+    workspace.mkdir()
+    employee = DigitalEmployee(
+        id="astra-assigned",
+        name="Astra Assigned",
+        role="指定员工",
+        status=EmployeeStatus.IDLE,
+        task_types=["ISSUE"],
+        category_ids=["testing-platform"],
+        auto_claim=False,
+        auto_execute=True,
+    )
+    session.add(employee)
+    session.add(
+        OpenCodeExecutionEnvironment(
+            employee_id=employee.id,
+            mode="LOCAL",
+            name="员工固定工作空间",
+            opencode_path="opencode",
+            model_name="opencode/space-bunny-free",
+            workspace_root=str(workspace),
+            status=EnvironmentStatus.AVAILABLE,
+        )
+    )
+    await session.commit()
+    task = await TaskService(session).create(new_task(title="指定员工任务", employee_id="astra-assigned"))
+    task_id = task.id
+
+    claimed = await Dispatcher(session).claim_once()
+    assert claimed is not None
+    assert claimed.id == task_id
+    assert claimed.employee_id == "astra-assigned"
+    assert claimed.claimed_at is not None
+    assert claimed.execution_environment_snapshot["workspace_root"] == str(workspace)
+    assert claimed.execution_environment_snapshot["model_name"] == "opencode/space-bunny-free"
+    # 下一轮只把同一任务作为待启动的已分配任务交回，不会改派他人。
+    recovered = await Dispatcher(session).claim_once()
+    assert recovered is not None
+    assert recovered.id == task_id
+    assert recovered.employee_id == "astra-assigned"
+
+
+async def test_dispatcher_keeps_unclaimed_pool_on_auto_claim(session, tmp_path):
+    """未指定员工的任务仍只由开启自动认领的员工领取。"""
+
+    workspace = tmp_path / "employee-workspace"
+    workspace.mkdir()
+    session.add(
+        DigitalEmployee(
+            id="astra-manual",
+            name="Astra Manual",
+            role="手动员工",
+            status=EmployeeStatus.IDLE,
+            task_types=["ISSUE"],
+            category_ids=["testing-platform"],
+            auto_claim=False,
+            auto_execute=True,
+        )
+    )
+    session.add(
+        OpenCodeExecutionEnvironment(
+            employee_id="astra-manual",
+            mode="LOCAL",
+            name="员工固定工作空间",
+            opencode_path="opencode",
+            workspace_root=str(workspace),
+            status=EnvironmentStatus.AVAILABLE,
+        )
+    )
+    await session.commit()
+    await TaskService(session).create(new_task(title="无人指定任务"))
+
+    assert await Dispatcher(session).claim_once() is None
+
+
+async def _assigned_task(session, tmp_path, *, auto_execute: bool, employee_id: str):
+    workspace = tmp_path / "employee-workspace"
+    workspace.mkdir(exist_ok=True)
+    session.add(
+        DigitalEmployee(
+            id=employee_id,
+            name="Dispatch Employee",
+            role="调度员工",
+            status=EmployeeStatus.IDLE,
+            task_types=["ISSUE"],
+            category_ids=["testing-platform"],
+            auto_claim=False,
+            auto_execute=auto_execute,
+        )
+    )
+    session.add(
+        OpenCodeExecutionEnvironment(
+            employee_id=employee_id,
+            mode="LOCAL",
+            name="员工固定工作空间",
+            opencode_path="opencode",
+            workspace_root=str(workspace),
+            status=EnvironmentStatus.AVAILABLE,
+        )
+    )
+    await session.commit()
+    return await TaskService(session).create(new_task(employee_id=employee_id))
+
+
+@pytest.mark.parametrize(
+    ("auto_execute", "expected_starts"),
+    [(False, []), (True, ["T-auto"])],
+)
+def test_dispatch_respects_employee_auto_execute(monkeypatch, auto_execute, expected_starts):
+    """人工指定员工即被领取；是否自动执行仍由员工的自动执行开关决定。"""
+
+    from types import SimpleNamespace
+
+    from app.runtime import celery_app
+
+    started: list[str] = []
+
+    class WorkerSession:
+        async def get(self, model, key):
+            return SimpleNamespace(auto_execute=auto_execute)
+
+    @asynccontextmanager
+    async def worker_scope():
+        yield WorkerSession()
+
+    async def no_init() -> None:
+        return None
+
+    async def claim_once(self):
+        return SimpleNamespace(id="T-auto", employee_id="astra-dispatch")
+
+    async def start(self, task_id, **kwargs):
+        started.append(task_id)
+
+    monkeypatch.setattr(celery_app, "init_database", no_init)
+    monkeypatch.setattr(celery_app, "worker_session", worker_scope)
+    monkeypatch.setattr(celery_app.Dispatcher, "claim_once", claim_once)
+    monkeypatch.setattr(celery_app.RuntimeService, "start", start)
+
+    assert celery_app.dispatch() == "T-auto"
+    assert started == expected_starts
+
+
+async def test_claimed_task_without_session_is_offered_again_for_start_retry(session, tmp_path):
+    """启动失败后任务仍无 Session，下一轮必须原样交回同一任务重试启动。"""
+
+    task = await _assigned_task(session, tmp_path, auto_execute=True, employee_id="astra-retry")
+    task_id = task.id
+    claimed = await Dispatcher(session).claim_once()
+    assert claimed is not None and claimed.id == task_id
+    # 模拟 start() 失败：没有 Session、没有待确认输入、没有运行时错误。
+    assert claimed.current_session_id is None
+    assert claimed.pending_message_id is None
+    assert claimed.runtime_error is None
+
+    retried = await Dispatcher(session).claim_once()
+    assert retried is not None
+    assert retried.id == task_id
+    assert retried.employee_id == "astra-retry"
+    assert retried.execution_environment_snapshot["workspace_root"] == str(tmp_path / "employee-workspace")
 
 
 class FakeSource(TaskSource):

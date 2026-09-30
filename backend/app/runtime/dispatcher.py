@@ -48,17 +48,22 @@ class Dispatcher:
             .all()
         )
         for task in candidates:
+            conditions = [
+                DigitalEmployee.status == EmployeeStatus.IDLE,
+                DigitalEmployee.enabled.is_(True),
+                DigitalEmployee.current_task_count < 1,
+            ]
+            if task.employee_id:
+                # 指定员工由人工分配，auto_claim 只约束无人认领的任务池。
+                conditions.append(DigitalEmployee.id == task.employee_id)
+            else:
+                conditions.append(DigitalEmployee.auto_claim.is_(True))
             employees = (
                 (
                     await self.session.execute(
                         select(DigitalEmployee)
                         .options(selectinload(DigitalEmployee.execution_environment))
-                        .where(
-                            DigitalEmployee.status == EmployeeStatus.IDLE,
-                            DigitalEmployee.enabled.is_(True),
-                            DigitalEmployee.auto_claim.is_(True),
-                            DigitalEmployee.current_task_count < 1,
-                        )
+                        .where(*conditions)
                         .order_by(DigitalEmployee.id)
                         .with_for_update(skip_locked=True)
                     )
@@ -74,10 +79,7 @@ class Dispatcher:
                 and task.task_type in employee.task_types
                 and task.category_id in employee.category_ids
             ]
-            employee = next(
-                (item for item in compatible if item.id == task.employee_id),
-                None,
-            ) or next((item for item in compatible if not task.employee_id), None)
+            employee = compatible[0] if compatible else None
             if not employee:
                 continue
             task.employee_id = employee.id

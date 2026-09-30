@@ -76,6 +76,8 @@ SESSION_WRITE = re.compile(
     r"^/session/([^/]+)/(prompt_async|message|abort|revert|unrevert|summarize|command)$"
 )
 REPLY = re.compile(r"^/(question|permission)/([^/]+)/(reply|reject)$")
+# 原生 Workspace UI 直接按 Session 回答权限请求，与 /permission/{id}/reply 等价。
+PERMISSION_REPLY = re.compile(r"^/session/([^/]+)/permissions/([^/]+)$")
 OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
@@ -339,6 +341,12 @@ async def native_proxy(
             raise error_response(exc) from exc
     match = SESSION_READ.fullmatch(native_path) if method == "GET" else SESSION_WRITE.fullmatch(native_path)
     reply = REPLY.fullmatch(native_path) if method == "POST" else None
+    permission_reply = PERMISSION_REPLY.fullmatch(native_path) if method == "POST" else None
+    if permission_reply and permission_reply[1] != session_id:
+        raise HTTPException(403, "历史 Session 只读")
+    pending = (reply[1], reply[2]) if reply else (
+        ("permission", permission_reply[2]) if permission_reply else None
+    )
     if method != "GET" and task.status in {"SUCCEEDED", "CANCELED"}:
         raise HTTPException(409, "任务已结束；请显式重新开始")
     if method != "GET" and session_id != task.current_session_id:
@@ -350,7 +358,7 @@ async def native_proxy(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    if not match and not reply and not (method == "GET" and native_path in READ_PATHS):
+    if not match and not pending and not (method == "GET" and native_path in READ_PATHS):
         raise HTTPException(403, "此接口不属于 Task Workspace 的权限范围")
     try:
         await validate_path(environment, workspace, request.query_params.get("path", "."))
@@ -365,9 +373,9 @@ async def native_proxy(
             body = json.loads(await request.body() or b"{}") if method != "GET" else None
             if body and {"directory", "sessionID", "workspace", "location"}.intersection(body):
                 raise PermissionError("不允许覆盖任务绑定")
-            if reply:
-                items = await client.request("GET", f"/{reply[1]}", directory=Path(workspace))
-                if not any(item["id"] == reply[2] and item.get("sessionID") in allowed for item in items):
+            if pending:
+                items = await client.request("GET", f"/{pending[0]}", directory=Path(workspace))
+                if not any(item["id"] == pending[1] and item.get("sessionID") in allowed for item in items):
                     raise PermissionError("请求不属于此任务 Session")
             if native_path.endswith(("/prompt_async", "/message", "/command")) and method == "POST":
                 await persist_attachments(body, environment, workspace)

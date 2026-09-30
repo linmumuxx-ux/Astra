@@ -55,7 +55,8 @@ def message(index, role, text):
 def fixtures():
     requirement = [
         message(1, "user", "需求：隐藏已停用账号。"),
-        message(2, "assistant", "我将删除已停用账号及历史记录。当时的历史 Runtime 协议还要求最终追加 ASTRA_RESULT_JSON。"),
+        message(2, "assistant", "我将删除已停用账号及历史记录。当时的历史 Runtime 协议还要求"
+                               "最终追加 ASTRA_RESULT_JSON。"),
         message(
             3,
             "user",
@@ -173,6 +174,7 @@ async def run(model: str | None, binary: str, timeout: int):
 
     get_settings.cache_clear()
     from sqlalchemy import select
+
     from app.assistant.client import AssistantOpenCodeClient
     from app.assistant.review import reconcile_task_reviews
     from app.database import SessionLocal, engine
@@ -250,21 +252,29 @@ async def run(model: str | None, binary: str, timeout: int):
                         f"助手启动失败，日志：{root / 'opencode.log'}"
                     ) from None
                 await asyncio.sleep(0.5)
+        reconcile_started = time.monotonic()
         await reconcile_task_reviews()
         deadline = time.monotonic() + timeout
         summaries = []
+        summaries_found = 0
         while time.monotonic() < deadline:
             async with SessionLocal() as session:
                 summaries = (await session.scalars(select(TaskSummary))).all()
-            if len(summaries) == 3:
+            summaries_found = len(summaries)
+            if summaries_found == 3:
                 break
             await asyncio.sleep(1)
+        # 真实经过时间与真实提交数：单调时钟实测，不回填 timestamp。
+        summaries_elapsed = round(time.monotonic() - reconcile_started, 3)
         async with SessionLocal() as session:
             items = (await session.scalars(select(KnowledgeItem))).all()
             texts = {s.task_id: s.content_md for s in summaries}
             statuses = (await session.scalars(select(Task.status))).all()
         report = {
             "root": str(root),
+            "timeout_budget_seconds": timeout,
+            "reconcile_elapsed_seconds": summaries_elapsed,
+            "summaries_found": summaries_found,
             "summaries": texts,
             "experiences": [
                 {

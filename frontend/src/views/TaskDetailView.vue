@@ -114,6 +114,7 @@ const changesLoading = ref(false)
 const changesError = ref('')
 const changeMode = ref('task')
 const changes = ref<Array<{ file: string; patch: string; additions: number; deletions: number }>>([])
+let diffRequest: AbortController | null = null
 async function loadRepo(id: string) {
   try {
     const value = await api.taskRepo(id)
@@ -123,18 +124,32 @@ async function loadRepo(id: string) {
 async function loadChanges() {
   if (!task.value?.current_session_id) return
   const id = String(route.params.id)
+  const sessionId = task.value.current_session_id
   const mode = changeMode.value
+  // 快速切换模式时取消上一个请求：只有当前请求能写数据、错误与加载态。
+  diffRequest?.abort()
+  const controller = new AbortController()
+  diffRequest = controller
   changesLoading.value = true; changesError.value = ''
+  // 读取有界等待与失败提示：长时间无响应时给出可读错误，而不是永久停留在加载态。
+  const deadline = window.setTimeout(() => controller.abort(), 20000)
   try {
-    const response = await fetch(`${import.meta.env.VITE_API_BASE ?? ''}/api/tasks/${encodeURIComponent(id)}/opencode/${encodeURIComponent(task.value.current_session_id)}/vcs/diff?mode=${mode}`)
+    const response = await fetch(`${import.meta.env.VITE_API_BASE ?? ''}/api/tasks/${encodeURIComponent(id)}/opencode/${encodeURIComponent(sessionId)}/vcs/diff?mode=${mode}`, { signal: controller.signal })
     const data = await response.json()
+    if (diffRequest !== controller) return
     if (!response.ok) throw new Error(data.detail || '代码变更读取失败')
     if (id === String(route.params.id) && mode === changeMode.value) changes.value = data
     if (id === String(route.params.id)) void loadRepo(id)
   } catch (reason) {
-    if (id === String(route.params.id) && mode === changeMode.value) changesError.value = reason instanceof Error ? reason.message : '代码变更读取失败'
+    if (diffRequest !== controller) return
+    if (id === String(route.params.id) && mode === changeMode.value) {
+      changesError.value = controller.signal.aborted
+        ? '读取 Git 变更超时，请重试'
+        : reason instanceof Error ? reason.message : '代码变更读取失败'
+    }
   } finally {
-    if (id === String(route.params.id) && mode === changeMode.value) changesLoading.value = false
+    window.clearTimeout(deadline)
+    if (diffRequest === controller && id === String(route.params.id) && mode === changeMode.value) changesLoading.value = false
   }
 }
 async function openChanges() { showChanges.value = true; await loadChanges() }
@@ -178,7 +193,7 @@ onMounted(() => {
 })
 watch(() => store.lastEvent, event => { if (event?.task_id === route.params.id) void load() })
 watch(() => store.realtimeConnected, connected => { if (connected) void load() })
-onBeforeUnmount(() => { clearInterval(timer) })
+onBeforeUnmount(() => { clearInterval(timer); diffRequest?.abort() })
 </script>
 
 <style scoped>

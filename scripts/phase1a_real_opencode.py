@@ -135,8 +135,14 @@ async def run(model: str, binary: str, keep: bool) -> dict:
     async with SessionLocal() as session:
         await RuntimeService(session).start("T-SMOKE")
 
+    smoke_started = time.monotonic()
     status = await wait_for_terminal("T-SMOKE", 240)
-    result: dict = {"smoke_task_status": status, "smoke_file": None}
+    result: dict = {
+        "smoke_task_status": status,
+        "smoke_file": None,
+        # 真实经过时间，不回填 timestamp：wait_for_terminal 单调时钟起止。
+        "smoke_wait_elapsed_seconds": round(time.monotonic() - smoke_started, 3),
+    }
 
     from app.runtime.session_connection import connect, resolve_environment
 
@@ -145,6 +151,7 @@ async def run(model: str, binary: str, keep: bool) -> dict:
         env = await resolve_environment(session, task)
         runtime_session = await session.get(RuntimeSession, task.current_session_id)
         result["session_status"] = runtime_session.status
+        result["session_id_observed"] = task.current_session_id
         result["session_finished_at"] = bool(runtime_session.finished_at)
         result["context_hash_present"] = bool(runtime_session.runtime_context_hash)
         result["session_total_tokens"] = runtime_session.total_tokens
@@ -165,6 +172,30 @@ async def run(model: str, binary: str, keep: bool) -> dict:
                 result["mcp"] = mcp
             except Exception as exc:  # noqa: BLE001 - report the real server response
                 result["mcp_error"] = str(exc)
+
+    # 旧契约校正：单轮 Session 结束后业务 Task 仍占用员工，而 RuntimeService.start
+    # 会拒绝在同一员工上启动第二个 Task（lifecycle.py occupied 检查）。这里先断言
+    # 「仍 RUNNING/WAITING 且绑定同一 Session」，再走现有人工 confirm 释放员工，
+    # 之后才进入 T-LONG 的真实写入与显式 restart/取消链。
+    async with SessionLocal() as session:
+        smoke_task = await session.get(Task, "T-SMOKE")
+        smoke_binding = await session.get(RuntimeSession, smoke_task.current_session_id)
+        result["smoke_task_still_occupied"] = smoke_task.status in {"RUNNING", "WAITING"}
+        result["smoke_session_stable"] = (
+            smoke_task.current_session_id == result.get("session_id_observed")
+        )
+        result["smoke_session_id"] = smoke_task.current_session_id
+        assert smoke_binding is not None
+    assert result["smoke_task_still_occupied"], result
+    assert result["smoke_session_stable"], result
+
+    confirm_started = time.monotonic()
+    async with SessionLocal() as session:
+        confirmed = await RuntimeService(session).confirm_completion("T-SMOKE")
+        await session.commit()
+        result["smoke_confirm_status"] = str(confirmed.status)
+        result["smoke_confirm_elapsed_seconds"] = round(time.monotonic() - confirm_started, 3)
+    assert result["smoke_confirm_status"] == "SUCCEEDED", result
 
     # Long-write restart scenario.
     from sqlalchemy import select
