@@ -135,7 +135,7 @@ function keyTotal(page: Page) {
 }
 
 async function openStatusFilter(page: Page) {
-  await page.locator('.key-filter__status .el-select__wrapper').click()
+  await page.getByTestId('key-filter-status').locator('.el-select__wrapper').click()
 }
 
 async function selectStatusOption(page: Page, label: string) {
@@ -148,7 +148,7 @@ test.describe('API 中转 · API Key 管理', () => {
     await mockGateway(page, { roles: ['view'] })
     await page.goto('/gateway/keys')
 
-    await expect(page.getByRole('heading', { level: 3, name: 'API Key 管理' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(page.getByTestId('gateway-keys-create')).toHaveCount(0)
     const headers = await page.getByTestId('gateway-keys-table').locator('.el-table__header-wrapper th').allInnerTexts()
     expect(headers).not.toContain('操作')
@@ -164,15 +164,15 @@ test.describe('API 中转 · API Key 管理', () => {
     await expect(deltaRow).toContainText('全部')
 
     // 关键字：名称 / 前缀 / 归属。
-    await page.getByLabel('搜索 Key').fill('Beta')
+    await page.getByTestId('key-filter-keyword').fill('Beta')
     await expect(keyTotal(page)).toContainText('共 1 条')
     await expect(keyRows(page).filter({ hasText: 'Beta 停用' })).toBeVisible()
-    await page.getByLabel('搜索 Key').fill('agw_k3')
+    await page.getByTestId('key-filter-keyword').fill('agw_k3')
     await expect(keyTotal(page)).toContainText('共 1 条')
     await expect(keyRows(page).filter({ hasText: 'Alpha 3' })).toBeVisible()
-    await page.getByLabel('搜索 Key').fill('user-002')
+    await page.getByTestId('key-filter-keyword').fill('user-002')
     await expect(keyTotal(page)).toContainText('共 1 条')
-    await page.getByLabel('搜索 Key').fill('')
+    await page.getByTestId('key-filter-keyword').fill('')
 
     // 状态筛选：启用 10 / 停用 1 / 已吊销 1。
     await selectStatusOption(page, '启用')

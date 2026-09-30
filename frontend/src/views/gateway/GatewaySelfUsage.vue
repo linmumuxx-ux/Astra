@@ -1,10 +1,6 @@
 <template>
   <section class="gateway-self" data-testid="gateway-self">
-    <header class="gateway-self__bar">
-      <div class="gateway-self__intro">
-        <h3>Key 自助用量</h3>
-        <ElText type="info">普通 Gateway Key 只能查看自身的日志与统计，凭据仅存当前会话。</ElText>
-      </div>
+    <GatewayHeaderActions>
       <ElRadioGroup
         v-if="connected"
         v-model="statsWindow"
@@ -13,16 +9,15 @@
       >
         <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
       </ElRadioGroup>
-      <ElSpace v-if="connected" :size="8">
-        <ElButton
-          :loading="loading"
-          :icon="RefreshCw"
-          data-testid="gateway-self-refresh"
-          @click="refresh"
-        >刷新</ElButton>
-        <ElButton :icon="LogOut" data-testid="gateway-self-clear" @click="disconnect">退出去用量</ElButton>
-      </ElSpace>
-    </header>
+      <ElButton
+        v-if="connected"
+        :loading="loading"
+        :icon="RefreshCw"
+        data-testid="gateway-self-refresh"
+        @click="refresh"
+      >刷新</ElButton>
+      <ElButton v-if="connected" :icon="LogOut" data-testid="gateway-self-clear" @click="disconnect">退出去用量</ElButton>
+    </GatewayHeaderActions>
 
     <ElAlert
       v-if="authError"
@@ -201,6 +196,7 @@ import {
 import { formatTokens } from '@/utils/format'
 import { errorMessage, formatDateTime, formatPercent } from '@/utils/gateway'
 import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 
 const windows: Array<{ id: GatewayStatsWindow; label: string }> = [
   { id: 'hour', label: '本小时' },
@@ -330,9 +326,6 @@ onMounted(() => {
 
 <style scoped>
 .gateway-self { display: grid; gap: 12px; }
-.gateway-self__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-self__intro { margin-right: auto; }
-.gateway-self__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-self__connect { max-width: 520px; }
 .gateway-self__note { display: block; margin-top: 10px; }
 .gateway-self__metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
@@ -345,12 +338,11 @@ onMounted(() => {
 .gateway-self__legend { display: inline-flex; align-items: center; gap: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .gateway-self__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: #3d8ff0; }
 .gateway-self__legend .gateway-self__legend--output { background: #159d65; }
-.gateway-self__trend :deep(.el-empty) { padding: 40px 0; }
 .gateway-self__mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 .gateway-self__num { white-space: nowrap; font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
 .gateway-self__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; }
 .gateway-self__paging { display: flex; align-items: center; gap: 10px; }
 .gateway-self__size { width: 116px; }
 @media (max-width: 1280px) { .gateway-self__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 760px) { .gateway-self__bar { flex-wrap: wrap; } .gateway-self__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gateway-self__footer { flex-direction: column; align-items: flex-start; } }
+@media (max-width: 760px) { .gateway-self__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .gateway-self__footer { flex-direction: column; align-items: flex-start; } }
 </style>

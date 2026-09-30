@@ -37,7 +37,8 @@ test('主要页面、控件与弹层使用全局字体，实际中英文字形�
 
     // 旧全局样式中的 22px 页面级标题字号已随 theme/typography.css 移除，业务页面允许视觉变化；
     // 基础层仍然保证页面级标题可见、加粗并使用全局字体主题。
-    const titles = page.locator('.page-intro h2, .task-head h2, .employee-detail__identity h2, .task-hero h2, .library-intro h2')
+    // 统一标题区由 AstraPageHeader 渲染，页面主标题统一是 .astra-page-header__title。
+    const titles = page.locator('.astra-page-header__title, .employee-detail__identity h2, .task-hero h2, .task-title h1')
     for (const title of await titles.all()) {
       await expect(title).toBeVisible()
       await expect(title).toHaveCSS('font-family', '"Times New Roman", "Microsoft YaHei", 微软雅黑, serif')

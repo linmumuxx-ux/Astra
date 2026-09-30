@@ -1,37 +1,35 @@
 <template>
-  <div class="employee-page" data-testid="employee-list-page">
-    <header class="employee-page__intro">
-      <div>
-        <h2>数字员工</h2>
-        <ElText type="info">集中管理员工职责、运行状态与执行配置</ElText>
-      </div>
-      <ElSpace :size="8">
-        <ElButton :icon="RefreshCw" :loading="store.loading" @click="store.refresh()">刷新</ElButton>
-        <ElButton type="primary" :icon="Plus" @click="beginCreate">新建数字员工</ElButton>
-      </ElSpace>
-    </header>
+  <div class="astra-page" data-testid="employee-list-page">
+    <AstraPageHeader title="数字员工" description="集中管理员工职责、运行状态与执行配置" testid="employee-header">
+      <template #actions>
+        <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="employee-refresh" @click="store.refresh()">刷新</ElButton>
+        <ElButton type="primary" :icon="Plus" data-testid="employee-create" @click="beginCreate">新建数字员工</ElButton>
+      </template>
+    </AstraPageHeader>
 
-    <section class="employee-filter" aria-label="员工筛选">
-      <ElSelect v-model="status" class="employee-filter__select employee-filter__status" aria-label="员工状态" placeholder="状态：全部" clearable>
+    <AstraFilterPanel label="员工筛选" testid="employee-filter">
+      <ElSelect v-model="status" class="astra-filter__select" data-testid="employee-filter-status" aria-label="员工状态" placeholder="状态：全部" clearable>
         <ElOption v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />
       </ElSelect>
-      <ElSelect v-model="role" class="employee-filter__select" aria-label="员工职责" placeholder="职责：全部" clearable>
+      <ElSelect v-model="role" class="astra-filter__select" data-testid="employee-filter-role" aria-label="员工职责" placeholder="职责：全部" clearable>
         <ElOption v-for="item in roles" :key="item" :value="item" :label="item" />
       </ElSelect>
-      <ElSelect v-model="area" class="employee-filter__select" aria-label="所属区域" placeholder="区域：全部" clearable>
+      <ElSelect v-model="area" class="astra-filter__select" data-testid="employee-filter-area" aria-label="所属区域" placeholder="区域：全部" clearable>
         <ElOption v-for="item in workspaceAreas" :key="item.id" :value="item.id" :label="item.name" />
       </ElSelect>
-      <ElSelect v-model="enabled" class="employee-filter__select" aria-label="启用状态" placeholder="启用：全部" clearable>
+      <ElSelect v-model="enabled" class="astra-filter__select" data-testid="employee-filter-enabled" aria-label="启用状态" placeholder="启用：全部" clearable>
         <ElOption value="enabled" label="已启用" />
         <ElOption value="disabled" label="已停用" />
       </ElSelect>
-      <ElInput v-model="query" class="employee-filter__search" aria-label="搜索员工" placeholder="搜索员工名称 / 编号 / 职责 / 任务" clearable>
-        <template #prefix><Search :size="15" /></template>
-      </ElInput>
-      <ElButton type="primary" plain :icon="Search" @click="applySearch">搜索</ElButton>
-    </section>
+      <template #search>
+        <ElInput v-model="query" class="astra-filter__keyword" data-testid="employee-filter-keyword" aria-label="搜索员工" placeholder="搜索员工名称 / 编号 / 职责 / 任务" clearable>
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElButton type="primary" :icon="Search" data-testid="employee-search" @click="applySearch">搜索</ElButton>
+      </template>
+    </AstraFilterPanel>
 
-    <section class="employee-table-panel" aria-label="数字员工列表">
+    <section class="astra-table-panel astra-table-panel--clickable" aria-label="数字员工列表">
       <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="onRowClick">
         <ElTableColumn label="员工" width="230">
           <template #default="{ row }">
@@ -78,7 +76,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="160" fixed="right">
           <template #default="{ row }">
-            <ElSpace class="row-actions" :size="4" @click.stop>
+            <ElSpace class="astra-row-actions" :size="4" @click.stop>
               <ElTooltip content="查看" placement="top">
                 <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.name}`" @click="openDetail(row.id)" />
               </ElTooltip>
@@ -107,10 +105,10 @@
       </ElTable>
     </section>
 
-    <footer class="employee-page__footer">
-      <ElText type="info">共 {{ filtered.length }} 条</ElText>
+    <footer class="astra-page__footer">
+      <ElText type="info" data-testid="employee-total">共 {{ filtered.length }} 条</ElText>
       <nav aria-label="员工列表分页">
-        <ElPagination v-model:current-page="page" :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" />
+        <ElPagination v-model:current-page="page" :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" data-testid="employee-pagination" />
       </nav>
     </footer>
 
@@ -127,6 +125,8 @@ import { RouterLink, useRoute } from 'vue-router'
 import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Employee } from '@/api/types'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeConfigModal from '@/components/employee/EmployeeConfigModal.vue'
 import EmployeeDetailDrawer from '@/components/employee/EmployeeDetailDrawer.vue'
@@ -209,19 +209,11 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.employee-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 14px; height: calc(100vh - 69px); min-height: 620px; padding: 20px 24px 18px; overflow: hidden; }
-.employee-page__intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.employee-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
-.employee-filter { display: flex; align-items: center; gap: 8px; }
-.employee-filter__select { flex: none; width: 140px; }
-.employee-filter__search { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.employee-table-panel { min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
-.employee-table-panel :deep(.el-table__row) { cursor: pointer; }
+/* 页面骨架、标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css，
+   这里只保留表格单元格内部的排版。 */
 .employee-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .employee-cell__meta, .task-link, .environment-cell { display: grid; min-width: 0; }
 .employee-cell__meta strong, .task-link strong, .environment-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .task-link, .task-link:hover { color: inherit; text-decoration: none; }
 .task-link:hover strong { color: var(--astra-primary); }
-.employee-page__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-@media (max-width: 900px) { .employee-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; } .employee-table-panel { min-height: 480px; } }
 </style>

@@ -1,15 +1,9 @@
 <template>
   <section class="gateway-versions" data-testid="gateway-versions">
-    <header class="gateway-versions__bar">
-      <div class="gateway-versions__intro">
-        <h3>配置草稿与版本</h3>
-        <ElText type="info">发布前校验全部引用，生成不可变快照；回滚会以历史快照生成新版本。</ElText>
-      </div>
-      <ElSpace :size="8">
-        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-versions-refresh" @click="load">刷新</ElButton>
-        <ElButton v-if="canPublish" :loading="reconciling" :icon="GitMerge" data-testid="gateway-versions-reconcile" @click="reconcile">发布对账</ElButton>
-      </ElSpace>
-    </header>
+    <GatewayHeaderActions>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-versions-refresh" @click="load">刷新</ElButton>
+      <ElButton v-if="canPublish" type="primary" :loading="reconciling" :icon="GitMerge" data-testid="gateway-versions-reconcile" @click="reconcile">发布对账</ElButton>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-versions-error">
       <ElButton type="primary" data-testid="gateway-versions-retry" @click="load">重试</ElButton>
@@ -191,6 +185,7 @@ import {
   type GatewayDraftValidation,
 } from '@/api/gateway'
 import { confirmDialog } from '@/composables/useConfirm'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import {
@@ -310,9 +305,6 @@ onMounted(load)
 
 <style scoped>
 .gateway-versions { display: grid; gap: 12px; }
-.gateway-versions__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-versions__intro { margin-right: auto; }
-.gateway-versions__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-versions__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; align-items: start; }
 .gateway-versions__card-head { display: flex; align-items: center; gap: 12px; }
 .gateway-versions__card-title { display: grid; gap: 2px; margin-right: auto; }

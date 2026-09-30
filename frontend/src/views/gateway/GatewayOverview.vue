@@ -1,15 +1,11 @@
 <template>
   <section class="gateway-overview" data-testid="gateway-overview">
-    <header class="gateway-overview__bar">
-      <div class="gateway-overview__intro">
-        <h3>API 中转总览</h3>
-        <ElText type="info">Token、QPS、延迟、节点健康与实例状态均直接来自后端观测契约。</ElText>
-      </div>
+    <GatewayHeaderActions>
       <ElRadioGroup v-model="statsWindow" data-testid="gateway-window-switch">
         <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
       </ElRadioGroup>
-      <ElButton :loading="loading" data-testid="gateway-overview-refresh" @click="load">刷新</ElButton>
-    </header>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-overview-refresh" @click="load">刷新</ElButton>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-overview-error">
       <ElButton type="primary" data-testid="gateway-overview-retry" @click="load">重试</ElButton>
@@ -113,7 +109,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowUpRight } from 'lucide-vue-next'
+import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
@@ -143,6 +139,7 @@ import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, formatBytes, formatPercent, formatRelativeTime, formatSeconds } from '@/utils/gateway'
 import { formatTokens } from '@/utils/format'
 import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 
 const { disconnect } = useGatewayAuth()
 const windows: Array<{ id: GatewayStatsWindow; label: string }> = [
@@ -260,9 +257,6 @@ onBeforeUnmount(() => { if (timer !== undefined) globalThis.clearInterval(timer)
 
 <style scoped>
 .gateway-overview { display: grid; gap: 12px; }
-.gateway-overview__bar { display: flex; align-items: center; gap: 14px; }
-.gateway-overview__intro { margin-right: auto; }
-.gateway-overview__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-overview__metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
 .gateway-overview__metrics :deep(.el-statistic__head) { color: var(--astra-text-muted); font-size: var(--astra-font-control); }
 .gateway-overview__metrics :deep(.el-statistic__content) { color: var(--astra-text-primary); font-size: var(--astra-font-subtitle); font-weight: var(--astra-weight-bold); }
@@ -274,7 +268,6 @@ onBeforeUnmount(() => { if (timer !== undefined) globalThis.clearInterval(timer)
 .gateway-overview__legend { display: inline-flex; align-items: center; gap: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .gateway-overview__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: #3d8ff0; }
 .gateway-overview__legend .gateway-overview__legend--output { background: #159d65; }
-.gateway-overview__trend-card :deep(.el-empty) { padding: 40px 0; }
 .gateway-overview__peak { display: flex; gap: 16px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--astra-border); color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .gateway-overview__peak b { color: var(--astra-text-primary); font-variant-numeric: tabular-nums; }
 .gateway-overview__peak--bad { color: var(--astra-danger); }
@@ -288,5 +281,5 @@ onBeforeUnmount(() => { if (timer !== undefined) globalThis.clearInterval(timer)
 .gateway-overview__entry { display: inline-flex; align-items: center; gap: 3px; color: var(--astra-primary-bright); font-size: var(--astra-font-helper); text-decoration: none; }
 .gateway-overview__mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
 @media (max-width: 1280px) { .gateway-overview__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .gateway-overview__grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .gateway-overview__bar { flex-wrap: wrap; } .gateway-overview__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .gateway-overview__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

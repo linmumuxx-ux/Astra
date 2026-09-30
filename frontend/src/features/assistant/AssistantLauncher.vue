@@ -6,8 +6,7 @@
     data-testid="assistant-launcher"
     :class="{ 'assistant-launcher--alert': store.waitingConfirm }"
     @click="store.openDrawer()"
-  >
-    <MessageCircle :size="20" />
+  >    <MessageCircle :size="20" />
     <i v-if="store.waitingConfirm" class="assistant-launcher__dot" />
   </button>
 </template>
@@ -24,25 +23,24 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 入口收进顶部栏右侧：与通知铃铛同一组，不再悬浮在内容之上。
+   固定悬浮会压住表格右侧固定操作列与底部分页，任何页面都不能接受。 */
 .assistant-launcher {
-  position: fixed;
-  right: 22px;
-  bottom: 88px;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: none;
-  background: var(--astra-primary);
-  color: #fff;
   display: grid;
   place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
   cursor: pointer;
-  box-shadow: 0 12px 28px rgba(21, 157, 101, 0.35);
-  z-index: 55;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.assistant-launcher:hover { transform: translateY(-2px); }
-.assistant-launcher--alert { background: var(--astra-warning); box-shadow: 0 12px 28px rgba(233, 149, 63, 0.4); }
+.assistant-launcher:hover { background: var(--astra-primary-soft); color: var(--astra-primary-bright); }
+.assistant-launcher--alert { color: var(--astra-warning); }
+.assistant-launcher--alert:hover { color: var(--astra-warning); background: var(--astra-warning-soft); }
 .assistant-launcher__dot {
   position: absolute;
   top: 4px;

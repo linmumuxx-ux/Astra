@@ -3,8 +3,8 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 const table = (page: Page) => page.getByTestId('category-table')
 const rowsOf = (page: Page) => table(page).locator('.el-table__row')
 const rowOf = (page: Page, name: string) => rowsOf(page).filter({ hasText: name })
-const statusFilter = (page: Page) => page.locator('.category-filter__status')
-const keywordFilter = (page: Page) => page.getByLabel('搜索任务分类')
+const statusFilter = (page: Page) => page.getByTestId('category-filter-status')
+const keywordFilter = (page: Page) => page.getByTestId('category-filter-keyword')
 const drawer = (page: Page) => page.getByTestId('category-editor-drawer')
 const nameField = (page: Page) => drawer(page).getByTestId('category-form-name')
 const taskPrompt = (page: Page) => drawer(page).getByLabel('任务 Prompt')
@@ -384,7 +384,7 @@ test('新建的分类立即出现在任务与员工的分类选择中', async ({
   await expect(page.locator('.el-notification').filter({ hasText: '任务分类已创建' })).toBeVisible()
 
   await page.goto('/tasks')
-  await page.locator('.task-filter__select').nth(1).click()
+  await page.getByTestId('task-filter-category').locator('.el-select__wrapper').click()
   await expect(page.getByRole('option', { name, exact: true })).toBeVisible()
   await page.keyboard.press('Escape')
 

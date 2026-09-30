@@ -3,7 +3,6 @@
        紧凑高度由 styles/tokens.css 的 --el-component-size* 统一决定。 -->
   <ElConfigProvider size="small">
     <RouterView />
-    <AssistantLauncher />
     <AssistantDrawer />
     <AstraConfirmHost />
   </ElConfigProvider>
@@ -15,7 +14,6 @@ import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'
 import AssistantDrawer from '@/features/assistant/AssistantDrawer.vue'
-import AssistantLauncher from '@/features/assistant/AssistantLauncher.vue'
 import { useAstraStore } from '@/stores/astra'
 
 const route = useRoute()

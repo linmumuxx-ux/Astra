@@ -238,7 +238,7 @@ test('创建根空间与子目录：尊重后端响应，自动选中并保持�
   await expect(rowFor(page, '空间 Y')).toBeVisible()
   await expect(rowFor(page, '空间 Y')).toBeCurrentNode()
   await expect(page.locator('.knowledge-list__header h3')).toHaveText('空间 Y')
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('0 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 0 条')
 
   // 在新空间下创建子目录
   await runMenuAction(page, '空间 Y', '新建子目录')
@@ -271,7 +271,7 @@ test('重命名保留展开与选中，失败时不关闭弹窗', async ({ page 
   await expect(rowFor(page, '目录 C')).not.toBeVisible()
   await expandRow(page, '目录 B')
   await rowFor(page, '目录 B').locator('.space-node__name').click()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('2 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 2 条')
 
   await runMenuAction(page, '目录 B', '重命名')
   const nameInput = page.getByLabel('目录名称')
@@ -285,7 +285,7 @@ test('重命名保留展开与选中，失败时不关闭弹窗', async ({ page 
   await expect(rowFor(page, '目录 B2')).toBeCurrentNode()
   await expect(rowFor(page, '目录 C')).toBeVisible()
   await expect(page.locator('.knowledge-list__header h3')).toHaveText('空间 A / 目录 B2')
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('2 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 2 条')
   await expect(rowFor(page, '空间 A').locator('.space-node__count')).toHaveText('6')
   await expect(rowFor(page, '目录 B2').locator('.space-node__count')).toHaveText('2')
 
@@ -337,7 +337,7 @@ test('移动目录使用选择树：排除自身与子孙，计数按后端结�
   // 左树：父链自动展开使 D 可见；选中与列表保持；计数按后端结果一致刷新
   await expect(rowFor(page, '目录 D')).toBeVisible()
   await expect(rowFor(page, '目录 B')).toBeCurrentNode()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('2 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 2 条')
   await expect(rowFor(page, '目录 B').locator('.space-node__count')).toHaveText('5')
   await expect(rowFor(page, '目录 C').locator('.space-node__count')).toHaveText('3')
   await expect(rowFor(page, '空间 A').locator('.space-node__count')).toHaveText('6')
@@ -375,7 +375,7 @@ test('删除保护：非空目录不发请求，空目录删除后计数与选�
 
   // 选中空目录 C 并删除：目录消失，计数与后端一致，选中回到全部知识
   await rowFor(page, '目录 C').locator('.space-node__name').click()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('0 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 0 条')
   await runMenuAction(page, '目录 C', '删除')
   const confirm = page.getByTestId('astra-confirm-dialog')
   await expect(confirm).toContainText('确认删除「目录 C」？')
@@ -386,7 +386,7 @@ test('删除保护：非空目录不发请求，空目录删除后计数与选�
   await expect(rowFor(page, '目录 B').locator('.space-node__count')).toHaveText('2')
   await expect(page.locator('.space-all strong')).toHaveText('11')
   await expect(page.locator('.knowledge-list__header h3')).toHaveText('全部知识')
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('11 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 11 条')
 })
 
 test('大量节点：展开、选中、重命名后保持滚动与状态，不跳动', async ({ page }) => {
@@ -404,7 +404,7 @@ test('大量节点：展开、选中、重命名后保持滚动与状态，不�
   await nav.evaluate((element) => { element.scrollTop = element.scrollHeight })
   await rowFor(page, '压力目录 300').locator('.space-node__name').click()
   await expect(rowFor(page, '压力目录 300')).toBeCurrentNode()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('1 条知识')
+  await expect(page.getByTestId('knowledge-total')).toHaveText('共 1 条')
   const scrollBefore = await nav.evaluate((element) => element.scrollTop)
   expect(scrollBefore).toBeGreaterThan(0)
 

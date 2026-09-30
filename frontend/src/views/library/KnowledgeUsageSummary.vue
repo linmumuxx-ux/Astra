@@ -5,7 +5,7 @@
         <h3>知识使用分析</h3>
         <p>{{ entryLine }}</p>
       </div>
-      <button type="button" class="button" @click="detailOpen = true">查看详情</button>
+      <button type="button" class="usage-summary__more" @click="detailOpen = true">查看详情</button>
     </div>
 
     <AstraDialog
@@ -60,14 +60,16 @@ const barHeight = (value: number) => value ? Math.max(12, Math.round(value / max
 </script>
 
 <style scoped>
-.usage-summary { margin-right: 52px; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: rgba(255,255,255,.92); box-shadow: var(--astra-shadow-panel); }
-.usage-summary__entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 66px; padding: 13px 16px; }
-.usage-summary h3,.usage-summary p,.usage-summary h4 { margin: 0; }.usage-summary h3 { color: var(--astra-text-primary); }.usage-summary__entry p { margin-top: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.usage-summary__entry .button { flex: none; }
+.usage-summary { flex: none; border: 1px solid var(--astra-border); border-radius: 10px; background: var(--astra-bg-panel); }
+.usage-summary__entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 40px; padding: 4px 12px; }
+.usage-summary h3,.usage-summary p,.usage-summary h4 { margin: 0; }.usage-summary__entry h3 { color: var(--astra-text-primary); font-size: var(--astra-font-label); }.usage-summary__entry p { margin-left: 10px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
+/* 助手入口已收进顶部栏，这里不再需要为悬浮球让位的右边距。 */
+.usage-summary__more { flex: none; min-height: var(--astra-control-height); padding: 0 12px; color: var(--astra-primary-bright); border: 1px solid var(--astra-primary-border); border-radius: 8px; background: var(--astra-primary-soft); font-size: var(--astra-font-helper); cursor: pointer; }
+.usage-summary__more:hover { background: var(--astra-primary-glow); }
 .usage-summary__empty { color: var(--astra-text-muted); font-size: var(--astra-font-body); line-height: 1.6; }
 .usage-summary__body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .usage-kpis { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3,1fr); gap: 8px; }.usage-kpis article { display: grid; align-content: center; min-width: 0; padding: 12px; border-radius: 9px; background: #f5f9f7; }.usage-kpis span { display: grid; place-items: center; width: 29px; height: 29px; color: var(--astra-primary-bright); border-radius: 8px; background: var(--astra-primary-soft); }.usage-kpis small { margin-top: 6px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }.usage-kpis strong { margin-top: 2px; color: var(--astra-text-primary); font: var(--astra-weight-bold) var(--astra-font-kpi) var(--astra-font-display); }.usage-kpis .text-value { overflow: hidden; font-size: var(--astra-font-emphasis); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .top-knowledge h4,.usage-trend h4 { color: var(--astra-text-secondary); font-size: var(--astra-font-label); }.top-knowledge ol { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; counter-reset: item; }.top-knowledge li { display: grid; grid-template-columns: 24px minmax(0,1fr) auto; align-items: center; gap: 7px; min-height: 29px; color: var(--astra-text-secondary); font-size: var(--astra-font-body); counter-increment: item; }.top-knowledge li::before { display: grid; place-items: center; width: 22px; height: 22px; color: var(--astra-primary-bright); border-radius: 6px; background: var(--astra-primary-soft); content: counter(item); }.top-knowledge li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.top-knowledge li strong { color: var(--astra-text-muted); font-weight: var(--astra-weight-bold); }.top-knowledge p { margin-top: 18px; color: var(--astra-text-muted); font-size: var(--astra-font-body); }
 .usage-trend > div { display: flex; align-items: end; gap: 7px; height: 99px; margin-top: 8px; }.usage-trend span { display: grid; grid-template-rows: 68px 18px; align-items: end; flex: 1; height: 91px; text-align: center; }.usage-trend i { display: block; min-height: 3px; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg,#24c47d,#0d9e61); }.usage-trend small { color: var(--astra-text-muted); font-size: var(--astra-font-micro); }
-@media(max-width:1100px){.usage-summary{margin-right:0}}
-@media(max-width:700px){.usage-summary__body{grid-template-columns:1fr}.usage-kpis{grid-column:auto}}
+@media(max-width:700px){.usage-summary__entry{flex-wrap:wrap}.usage-summary__body{grid-template-columns:1fr}.usage-kpis{grid-column:auto}}
 </style>

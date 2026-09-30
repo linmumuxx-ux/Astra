@@ -213,8 +213,9 @@ function routeTotal(page: Page) {
   return page.getByTestId('gateway-route-card').locator('.gateway-pools-routes__footer')
 }
 
-async function openFilterSelect(page: Page, className: string) {
-  await page.locator(`.${className} .el-select__wrapper`).click()
+// 统一样式层后不再有页面自定 class，筛选控件一律用 data-testid 定位。
+async function openFilterSelect(page: Page, testId: string) {
+  await page.getByTestId(testId).locator('.el-select__wrapper').click()
 }
 
 async function selectDrawerOption(page: Page, testId: string, optionText: string) {
@@ -227,7 +228,7 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await mockGateway(page, { roles: [] })
     await page.goto('/gateway/routes')
 
-    await expect(page.getByRole('heading', { level: 3, name: '资源池与模型路由' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(page.getByTestId('gateway-pool-create')).toHaveCount(0)
     await expect(page.getByTestId('gateway-route-create')).toHaveCount(0)
     const poolHeaders = await page.getByTestId('gateway-pool-table').locator('.el-table__header-wrapper th').allInnerTexts()
@@ -249,7 +250,7 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await page.getByLabel('搜索资源池').fill('Beta')
     await expect(poolRows(page)).toHaveCount(2)
     await page.getByLabel('搜索资源池').fill('')
-    await openFilterSelect(page, 'pool-filter__enabled')
+    await openFilterSelect(page, 'pool-filter-enabled')
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: '禁用' }).first().click()
     await expect(poolTotal(page)).toContainText('共 1 个')
     await expect(poolRows(page).filter({ hasText: 'Beta 2' })).toBeVisible()
@@ -266,12 +267,12 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await page.getByLabel('搜索路由').fill('claude')
     await expect(routeTotal(page)).toContainText('共 2 条')
     await page.getByLabel('搜索路由').fill('')
-    await openFilterSelect(page, 'route-filter__pool')
+    await openFilterSelect(page, 'route-filter-pool')
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: 'Alpha 1' }).first().click()
     await expect(routeTotal(page)).toContainText('共 3 条')
     await expect(routeRows(page).filter({ hasText: 'gpt-4o-mini' })).toBeVisible()
     await page.getByRole('button', { name: '清除筛选' }).first().click()
-    await openFilterSelect(page, 'route-filter__enabled')
+    await openFilterSelect(page, 'route-filter-enabled')
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: '禁用' }).first().click()
     await expect(routeTotal(page)).toContainText('共 1 条')
     await expect(routeRows(page).filter({ hasText: 'claude-y' })).toBeVisible()

@@ -1,47 +1,46 @@
 <template>
-  <section class="gateway-nodes" data-testid="gateway-nodes">
-    <header class="gateway-nodes__bar">
-      <div class="gateway-nodes__intro">
-        <h3>下游节点</h3>
-        <ElText type="info">配置态、健康态与调度态相互独立；节点默认先安全下线再删除。</ElText>
-      </div>
-      <ElSpace :size="8">
-        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-nodes-refresh" @click="load">刷新</ElButton>
-        <ElButton v-if="canManage" type="success" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
-      </ElSpace>
-    </header>
+  <section class="gateway-nodes astra-stack" data-testid="gateway-nodes">
+    <GatewayHeaderActions>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-nodes-refresh" @click="load">刷新</ElButton>
+      <ElButton v-if="canManage" type="primary" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-nodes-error">
       <ElButton type="primary" data-testid="gateway-nodes-retry" @click="load">重试</ElButton>
     </ElAlert>
 
-    <div class="gateway-nodes__filters" aria-label="节点筛选">
-      <ElInput
-        v-model="filters.keyword"
-        class="node-filter__keyword"
-        aria-label="搜索节点"
-        placeholder="搜索名称 / 地址 / 模型"
-        clearable
-      >
-        <template #prefix><Search :size="15" /></template>
-      </ElInput>
-      <ElSelect v-model="filters.health" class="node-filter__health" aria-label="健康状态筛选" placeholder="健康：全部" clearable>
+    <AstraFilterPanel label="节点筛选" testid="gateway-nodes-filter">
+      <ElSelect v-model="filters.health" class="astra-filter__select" data-testid="node-filter-health" aria-label="健康状态筛选" placeholder="健康：全部" clearable>
         <ElOption v-for="item in healthOptions" :key="item.value" :value="item.value" :label="item.label" />
       </ElSelect>
-      <ElSelect v-model="filters.scheduling" class="node-filter__scheduling" aria-label="调度状态筛选" placeholder="调度：全部" clearable>
+      <ElSelect v-model="filters.scheduling" class="astra-filter__select" data-testid="node-filter-scheduling" aria-label="调度状态筛选" placeholder="调度：全部" clearable>
         <ElOption v-for="item in schedulingOptions" :key="item.value" :value="item.value" :label="item.label" />
       </ElSelect>
-      <ElSelect v-model="filters.config" class="node-filter__config" aria-label="配置状态筛选" placeholder="配置：全部" clearable>
+      <ElSelect v-model="filters.config" class="astra-filter__select" data-testid="node-filter-config" aria-label="配置状态筛选" placeholder="配置：全部" clearable>
         <ElOption value="ENABLED" label="启用" />
         <ElOption value="DISABLED" label="禁用" />
       </ElSelect>
-      <ElSelect v-model="filters.pool" class="node-filter__pool" aria-label="资源池筛选" placeholder="资源池：全部" clearable>
+      <ElSelect v-model="filters.pool" class="astra-filter__select" data-testid="node-filter-pool" aria-label="资源池筛选" placeholder="资源池：全部" clearable>
         <ElOption value="__none__" label="未分配" />
         <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
       </ElSelect>
-      <ElButton v-if="hasFilters" text type="primary" @click="clearFilters">清除筛选</ElButton>
-    </div>
+      <ElButton v-if="hasFilters" text type="primary" data-testid="gateway-nodes-clear" @click="clearFilters">清除筛选</ElButton>
+      <template #search>
+        <ElInput
+          v-model="filters.keyword"
+          class="astra-filter__keyword"
+          data-testid="node-filter-keyword"
+          aria-label="搜索节点"
+          placeholder="搜索名称 / 地址 / 模型"
+          clearable
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElButton type="primary" :icon="Search" data-testid="gateway-nodes-search" @click="load">搜索</ElButton>
+      </template>
+    </AstraFilterPanel>
 
+    <section class="astra-table-panel astra-table-panel--clickable">
     <GatewayNodeTable
       :nodes="pagedNodes"
       :pools="pools"
@@ -57,9 +56,10 @@
       @edit="openEdit"
       @delete="onDelete"
     />
+    </section>
 
     <footer v-if="filteredNodes.length" class="gateway-nodes__footer">
-      <ElText type="info">共 {{ filteredNodes.length }} 条</ElText>
+      <ElText type="info" data-testid="gateway-nodes-total">共 {{ filteredNodes.length }} 条</ElText>
       <ElPagination
         :current-page="page"
         :page-size="pageSize"
@@ -79,7 +79,8 @@
 import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElText } from 'element-plus'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import {
   gatewayApi,
   GatewayApiError,
@@ -91,6 +92,7 @@ import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, healthStateLabel, schedulingStateLabel } from '@/utils/gateway'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import GatewayNodeDrawer from '@/views/gateway/GatewayNodeDrawer.vue'
 import GatewayNodeTable from '@/views/gateway/GatewayNodeTable.vue'
 
@@ -252,15 +254,5 @@ onMounted(load)
 </script>
 
 <style scoped>
-.gateway-nodes { display: grid; gap: 12px; }
-.gateway-nodes__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-nodes__intro { margin-right: auto; }
-.gateway-nodes__intro h3 { margin: 0; color: var(--astra-text-primary); }
-.gateway-nodes__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.node-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.node-filter__health { width: 132px; }
-.node-filter__scheduling { width: 136px; }
-.node-filter__config { width: 120px; }
-.node-filter__pool { width: 152px; }
-.gateway-nodes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+.gateway-nodes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 </style>

@@ -1,56 +1,55 @@
 <template>
-  <section class="gateway-requests" data-testid="gateway-requests">
-    <header class="gateway-requests__bar">
-      <div class="gateway-requests__intro">
-        <h3>调用日志</h3>
-        <ElText type="info">只记录元数据与测量值，不保存 Prompt、Authorization 或响应体。</ElText>
-      </div>
+  <section class="gateway-requests astra-stack" data-testid="gateway-requests">
+    <GatewayHeaderActions>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-requests-refresh" @click="load">刷新</ElButton>
-    </header>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-requests-error">
       <ElButton type="primary" data-testid="gateway-requests-retry" @click="load">重试</ElButton>
     </ElAlert>
 
-    <div class="gateway-requests__filters" aria-label="调用日志筛选">
-      <ElInput
-        v-model="filters.request_id"
-        class="log-filter__request"
-        aria-label="Request ID 筛选"
-        placeholder="Request ID 精确匹配"
-        clearable
-      />
-      <ElSelect v-model="filters.model" class="log-filter__model" aria-label="模型筛选" placeholder="模型：全部" clearable>
+    <AstraFilterPanel label="调用日志筛选" testid="gateway-requests-filter">
+      <ElSelect v-model="filters.model" class="astra-filter__select" data-testid="log-filter-model" aria-label="模型筛选" placeholder="模型：全部" clearable>
         <ElOption v-for="model in models" :key="model" :value="model" :label="model" />
       </ElSelect>
-      <ElSelect v-model="filters.node_id" class="log-filter__node" aria-label="节点筛选" placeholder="节点：全部" clearable>
+      <ElSelect v-model="filters.node_id" class="astra-filter__select" data-testid="log-filter-node" aria-label="节点筛选" placeholder="节点：全部" clearable>
         <ElOption v-for="node in nodes" :key="node.id" :value="node.id" :label="node.name" />
       </ElSelect>
-      <ElSelect v-model="filters.key_id" class="log-filter__key" aria-label="Key 筛选" placeholder="Key：全部" clearable>
+      <ElSelect v-model="filters.key_id" class="astra-filter__select" data-testid="log-filter-key" aria-label="Key 筛选" placeholder="Key：全部" clearable>
         <ElOption v-for="key in keys" :key="key.id" :value="key.id" :label="key.name" />
       </ElSelect>
-      <ElInput v-model="filters.status_code" class="log-filter__status" aria-label="状态码筛选" placeholder="状态码" type="number" />
+      <ElInput v-model="filters.status_code" class="log-filter__status" data-testid="log-filter-status-code" aria-label="状态码筛选" placeholder="状态码" type="number" />
       <ElInput
         v-model="filters.error_code"
         class="log-filter__error"
+        data-testid="log-filter-error-code"
         aria-label="错误码筛选"
         placeholder="错误码，如 UPSTREAM_CONNECT_TIMEOUT"
         clearable
       />
-      <ElSelect v-model="pageSize" class="log-filter__size" aria-label="每页条数">
+      <ElSelect v-model="pageSize" class="log-filter__size" data-testid="log-filter-size" aria-label="每页条数">
         <ElOption v-for="size in pageSizeOptions" :key="size" :value="size" :label="`每页 ${size}`" />
       </ElSelect>
-      <ElSpace :size="8">
+      <template #search>
+        <ElInput
+          v-model="filters.request_id"
+          class="astra-filter__keyword"
+          data-testid="log-filter-request"
+          aria-label="Request ID 筛选"
+          placeholder="Request ID 精确匹配"
+          clearable
+        />
         <ElButton type="primary" :icon="Filter" :disabled="loading" data-testid="gateway-requests-apply" @click="apply">筛选</ElButton>
         <ElButton :disabled="loading" data-testid="gateway-requests-reset" @click="reset">重置</ElButton>
-      </ElSpace>
-    </div>
+      </template>
+    </AstraFilterPanel>
 
+    <section class="astra-table-panel">
     <ElTable
       v-loading="loading"
       :data="page.items"
       row-key="id"
-      max-height="calc(100vh - 330px)"
+      height="100%"
       element-loading-text="正在加载调用日志"
       data-testid="gateway-requests-table"
     >
@@ -102,6 +101,7 @@
         <ElEmpty v-if="!loading" :image-size="64" :description="emptyText" />
       </template>
     </ElTable>
+    </section>
 
     <footer class="gateway-requests__footer">
       <ElText type="info" data-testid="gateway-requests-total">共 {{ page.total }} 条 · 第 {{ page.page }} 页</ElText>
@@ -146,6 +146,8 @@ import {
   type GatewayRequestPage,
   type GatewayRequestQuery,
 } from '@/api/gateway'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, formatDateTime } from '@/utils/gateway'
 
@@ -238,17 +240,10 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.gateway-requests { display: grid; gap: 12px; }
-.gateway-requests__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-requests__intro { margin-right: auto; }
-.gateway-requests__intro h3 { margin: 0; color: var(--astra-text-primary); }
-.gateway-requests__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.log-filter__request { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.log-filter__model, .log-filter__node, .log-filter__key { width: 148px; }
-.log-filter__status { width: 100px; }
-.log-filter__error { width: 230px; }
-.log-filter__size { width: 116px; }
-.gateway-requests__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+.log-filter__status { flex: none; width: 104px; }
+.log-filter__error { flex: none; width: 220px; }
+.log-filter__size { flex: none; width: 116px; }
+.gateway-requests__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .log-cell { display: grid; gap: 2px; min-width: 0; }
 .log-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .log-cell__sub { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }

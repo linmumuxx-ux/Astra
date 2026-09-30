@@ -1,33 +1,44 @@
 <template>
   <ElContainer direction="vertical" class="digital-library-page" data-testid="digital-library-page">
-    <ElHeader class="library-header">
-      <div class="library-title">
-        <h2>数字图书馆</h2>
-        <ElText type="info">管理团队知识、经验与项目资料。</ElText>
-      </div>
-      <ElSpace class="library-actions" :size="8">
-        <ElButton :icon="RefreshCw" :loading="refreshing" @click="refreshAll">刷新</ElButton>
+    <AstraPageHeader title="数字图书馆" description="管理团队知识、经验与项目资料。" testid="library-header">
+      <!-- 知识服务状态并入标题信息区：与标题合成一个整体，不再单独占一整行。 -->
+      <span class="astra-service-dot" :data-state="serviceState" aria-hidden="true" />
+      <strong :data-state="serviceState" data-testid="library-service-state">知识服务：{{ serviceStateText }}</strong>
+      <span data-testid="library-service-synced">最近同步：{{ lastSyncedText }}</span>
+      <span v-if="pendingCount > 0 || failedCount > 0" data-testid="library-service-queue">
+        待同步 <em>{{ pendingCount }}</em> · 同步失败 <em>{{ failedCount }}</em>
+      </span>
+      <ElButton
+        v-if="canManage && canResync"
+        text
+        type="primary"
+        :loading="resyncing"
+        :disabled="!serviceStatus?.enabled"
+        data-testid="library-service-resync"
+        @click="resyncKnowledge"
+      >重新同步</ElButton>
+      <span v-if="serviceReason" class="library-service-reason" role="status">{{ serviceReason }}</span>
+      <button
+        v-if="permissions?.can_review"
+        type="button"
+        class="astra-mark"
+        :aria-pressed="statsActive === 'candidate'"
+        data-testid="library-review-queue"
+        @click="applyStat('candidate')"
+      >
+        待审核经验 <em>{{ stats?.candidate_experiences ?? 0 }}</em><ChevronRight :size="14" />
+      </button>
+      <template #actions>
+        <ElButton :icon="RefreshCw" :loading="refreshing" data-testid="library-refresh" @click="refreshAll">刷新</ElButton>
         <template v-if="permissions?.can_manage">
-          <ElButton :icon="Upload" @click="triggerImport">导入知识</ElButton>
-          <ElButton type="primary" :icon="Plus" @click="beginCreate">新建知识</ElButton>
+          <ElButton :icon="Upload" data-testid="library-import" @click="triggerImport">导入知识</ElButton>
+          <ElButton type="primary" :icon="Plus" data-testid="library-create" @click="beginCreate">新建知识</ElButton>
         </template>
-      </ElSpace>
-      <input ref="importInput" class="hidden-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
-    </ElHeader>
+      </template>
+    </AstraPageHeader>
+    <input ref="importInput" class="hidden-input" data-testid="library-import-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
 
     <ElMain class="library-body">
-      <section class="library-service-bar" :data-state="serviceError || serviceStatus?.healthy === false ? 'error' : 'ok'" aria-label="知识服务状态">
-        <span class="service-dot" />
-        <strong>知识服务：{{ serviceError ? '异常' : serviceStatus ? (serviceStatus.healthy ? '正常' : '异常') : '检查中' }}</strong>
-        <span>最近同步：{{ serviceStatus?.last_synced_at ? new Date(serviceStatus.last_synced_at).toLocaleString() : '暂无' }}</span>
-        <span>待同步 {{ serviceStatus?.pending_count ?? 0 }} · 同步失败 {{ serviceStatus?.failed_count ?? 0 }}</span>
-        <ElButton v-if="permissions?.can_manage && (serviceError || serviceStatus?.healthy === false || (serviceStatus?.failed_count ?? 0) > 0)" text type="primary" :loading="resyncing" :disabled="!serviceStatus?.enabled" @click="resyncKnowledge">重新同步</ElButton>
-        <small v-if="serviceError || serviceStatus?.healthy === false" role="status">{{ serviceError || serviceStatus?.message }}</small>
-        <button v-if="permissions?.can_review" type="button" class="review-queue" :class="{ active: statsActive === 'candidate' }" @click="applyStat('candidate')">
-          待审核经验 <strong>{{ stats?.candidate_experiences ?? 0 }}</strong><ChevronRight :size="14" />
-        </button>
-      </section>
-
       <ElAlert v-if="pageError" class="library-error" type="error" show-icon :closable="false" :title="pageError">
         <ElButton @click="loadAll">重试</ElButton>
       </ElAlert>
@@ -137,10 +148,11 @@
 import { ChevronRight, Plus, RefreshCw, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElAlert, ElAside, ElButton, ElContainer, ElHeader, ElMain, ElSpace, ElText } from 'element-plus'
+import { ElAlert, ElAside, ElButton, ElContainer, ElMain } from 'element-plus'
 import { api } from '@/api/client'
 import type { KnowledgeDetail, KnowledgeListItem, KnowledgePage, KnowledgeSpace, KnowledgeUsageRecord, LibraryPermissions, LibraryStats as LibraryStatsData, LibraryUsageSummary, LibraryServiceStatus, RelatedTask } from '@/api/types'
 import AstraDialog from '@/components/astra/AstraDialog.vue'
+import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import DirectoryPickerDialog from '@/views/library/DirectoryPickerDialog.vue'
@@ -189,7 +201,7 @@ async function resyncKnowledge() {
   finally { resyncing.value = false }
 }
 const page = ref<KnowledgePage>(emptyPage())
-const filters = reactive({ spaceId: null as string | null, type: '', status: '', source: '', tag: '', sort: 'updated_desc', page: 1, keyword: '' })
+const filters = reactive({ spaceId: null as string | null, type: '', status: '', sort: 'updated_desc', page: 1, keyword: '' })
 const queryInput = ref('')
 const statsActive = ref('all')
 const listLoading = ref(false)
@@ -222,6 +234,15 @@ const working = ref(false)
 let searchTimer = 0
 
 const selectedSpace = computed(() => spaces.value.find((space) => space.id === filters.spaceId) ?? findNode(spaces.value, filters.spaceId) ?? null)
+const canManage = computed(() => Boolean(permissions.value?.can_manage))
+const serviceState = computed<'ok' | 'error'>(() => (serviceError.value || serviceStatus.value?.healthy === false ? 'error' : 'ok'))
+const serviceStateText = computed(() => (serviceError.value ? '异常' : serviceStatus.value ? (serviceStatus.value.healthy ? '正常' : '异常') : '检查中'))
+const lastSyncedText = computed(() => (serviceStatus.value?.last_synced_at ? new Date(serviceStatus.value.last_synced_at).toLocaleString() : '暂无'))
+const pendingCount = computed(() => serviceStatus.value?.pending_count ?? 0)
+const failedCount = computed(() => serviceStatus.value?.failed_count ?? 0)
+// 状态接口请求失败、或服务自报不健康、或有同步失败，都需要给出重新同步入口。
+const canResync = computed(() => Boolean(serviceError.value || serviceStatus.value?.healthy === false || failedCount.value > 0))
+const serviceReason = computed(() => (serviceError.value || serviceStatus.value?.healthy === false ? serviceError.value || serviceStatus.value?.message || '' : ''))
 const selectedPath = computed(() => {
   if (!filters.spaceId) return '全部知识'
   return findPath(spaces.value, filters.spaceId)?.join(' / ') ?? selectedSpace.value?.name ?? '全部知识'
@@ -241,8 +262,6 @@ const activeFilterLabel = computed(() => {
   if (filters.status === 'candidate') return '候选经验'
   if (filters.type === 'experience' && filters.status === 'published') return '已发布经验'
   if (filters.keyword) return `搜索：${filters.keyword}`
-  if (filters.source) return `来源：${sourceLabel(filters.source)}`
-  if (filters.tag) return `标签：${filters.tag}`
   return ''
 })
 
@@ -286,8 +305,6 @@ async function loadList() {
     if (filters.spaceId) query.set('space_id', filters.spaceId)
     if (filters.type) query.set('type', filters.type)
     if (filters.status) query.set('status', filters.status)
-    if (filters.source) query.set('source', filters.source)
-    if (filters.tag) query.set('tag', filters.tag)
     if (filters.keyword) query.set('keyword', filters.keyword)
     page.value = await api.libraryKnowledge(`?${query}`)
   } catch (error) { notify(message(error, '知识列表加载失败'), 'error'); page.value = emptyPage() } finally { listLoading.value = false }
@@ -298,7 +315,7 @@ async function refreshOverview() {
 }
 function applyStat(value: string) {
   if (value === 'spaces') { statsActive.value = value; return }
-  filters.spaceId = null; filters.type = ''; filters.status = ''; filters.source = ''; filters.tag = ''; filters.sort = 'updated_desc'; filters.page = 1; filters.keyword = ''; queryInput.value = ''
+  filters.spaceId = null; filters.type = ''; filters.status = ''; filters.sort = 'updated_desc'; filters.page = 1; filters.keyword = ''; queryInput.value = ''
   if (value === 'weekly') filters.sort = 'references_desc'
   if (value === 'published') { filters.type = 'experience'; filters.status = 'published' }
   if (value === 'candidate') { filters.type = 'experience'; filters.status = 'candidate' }
@@ -306,8 +323,8 @@ function applyStat(value: string) {
 }
 function selectSpace(id: string | null) { filters.spaceId = id; filters.page = 1; statsActive.value = 'spaces'; loadList() }
 function setPage(value: number) { filters.page = value; loadList() }
-function setFilter(key: 'type' | 'status' | 'source' | 'tag' | 'sort', value: string) { filters[key] = value; filters.page = 1; statsActive.value = value === 'candidate' ? 'candidate' : 'filter'; loadList() }
-function clearFilters() { filters.type = ''; filters.status = ''; filters.source = ''; filters.tag = ''; filters.sort = 'updated_desc'; filters.keyword = ''; filters.page = 1; queryInput.value = ''; statsActive.value = 'all'; loadList() }
+function setFilter(key: 'type' | 'status' | 'sort', value: string) { filters[key] = value; filters.page = 1; statsActive.value = value === 'candidate' ? 'candidate' : 'filter'; loadList() }
+function clearFilters() { filters.type = ''; filters.status = ''; filters.sort = 'updated_desc'; filters.keyword = ''; filters.page = 1; queryInput.value = ''; statsActive.value = 'all'; loadList() }
 function beginCreate() { editorInitialContent.value = ''; editorInitialTitle.value = ''; editorInitialSpaceId.value = filters.spaceId ?? directoryOptions.value[0]?.id ?? ''; editorEditing.value = null; editorSourceType.value = 'manual'; editorError.value = ''; editorOpen.value = true }
 async function beginEdit(id: string) {
   editorError.value = ''
@@ -430,7 +447,6 @@ async function reject(reason: string) { if (!detail.value) return; await reviewA
 async function supplement(reason: string) { if (!detail.value) return; await reviewAction(async () => api.supplementLibraryKnowledge(detail.value!.id, reason), '已记录退回补充要求') }
 async function reviewAction(action: () => Promise<KnowledgeDetail>, success: string) { detailWorking.value = true; detailError.value = ''; try { detail.value = await action(); notify(success); await Promise.all([refreshOverview(), loadList()]) } catch (error) { const text = message(error, '审核操作失败'); detailError.value = text; notify(text, 'error') } finally { detailWorking.value = false } }
 function message(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback }
-const sourceLabel = (value: string) => ({ task: '任务沉淀', manual: '人工创建', import: '文档导入', system: '系统同步' }[value] ?? value)
 function findNode(nodes: KnowledgeSpace[], id: string | null): KnowledgeSpace | null {
   if (!id) return null
   for (const node of nodes) { if (node.id === id) return node; const found = findNode(node.children ?? [], id); if (found) return found }
@@ -458,31 +474,22 @@ function normalizeSpaces(nodes: KnowledgeSpace[]): KnowledgeSpace[] {
 </script>
 
 <style scoped>
-.digital-library-page{height:calc(100vh - 92px);min-height:620px;overflow:hidden;background:var(--astra-bg-base)}
-.library-header{--el-header-height:auto;--el-header-padding:0;display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
-.library-title{display:grid;min-width:0;gap:3px;margin-right:auto}
-.library-title h2{margin:0;color:var(--astra-text-primary);font-size:var(--astra-font-section);line-height:normal}
-.library-actions{flex:none}
+/* 标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css。
+   本页只保留「左目录树 + 右知识表格」的双栏骨架与页面独有的排版。 */
+.digital-library-page{height:calc(100vh - 68px);min-height:620px;padding:16px 24px 18px;overflow:hidden;gap:14px;background:var(--astra-bg-base)}
+.digital-library-page>.astra-page-header{flex:none}
 .hidden-input{display:none}
-.library-body{--el-main-padding:0;display:flex;flex-direction:column;gap:12px;padding:12px 20px}
-.library-service-bar{display:flex;flex:none;align-items:center;min-width:0;gap:12px;padding:7px 12px;color:var(--astra-text-muted);border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-bg-panel);font-size:var(--astra-font-helper)}
-.library-service-bar strong{color:var(--astra-text-secondary)}
-.library-service-bar[data-state='error']{border-color:rgba(228,93,106,.3);background:var(--astra-danger-soft)}
-.library-service-bar[data-state='error'] strong,.library-service-bar[data-state='error'] .service-dot{color:var(--astra-danger)}
-.service-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--astra-primary)}
-.library-service-bar small{overflow:hidden;max-width:360px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}
-.review-queue{display:inline-flex;align-items:center;gap:6px;min-height:32px;margin-left:auto;padding:0 10px;color:#9b6428;border:1px solid rgba(233,149,63,.28);border-radius:8px;background:var(--astra-warning-soft);font-size:var(--astra-font-helper);cursor:pointer}
-.review-queue strong{font-size:var(--astra-font-label)}
-.review-queue.active{box-shadow:0 0 0 2px rgba(233,149,63,.12)}
-.library-workspace{flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:#fff;box-shadow:var(--astra-shadow-panel)}
+.library-body{--el-main-padding:0;display:flex;flex:1 1 auto;min-height:0;flex-direction:column;gap:12px}
+.library-error{flex:none}
+.library-service-reason{overflow:hidden;max-width:340px;color:var(--astra-danger);text-overflow:ellipsis;white-space:nowrap}
+.library-workspace{flex:1 1 auto;min-height:360px;overflow:hidden;border:1px solid var(--astra-border);border-radius:12px;background:var(--astra-bg-panel);box-shadow:var(--astra-shadow-panel)}
 .library-aside{--el-aside-width:300px;overflow:hidden}
 .library-content{--el-main-padding:0;min-width:0;overflow:hidden}
-.library-error{flex:none}
 /* 发布弹窗用原生 select：标签行高与控件高度都对齐全局 32px 基准，
    与 ElForm（label-position="top"）的单列表单保持同一节奏。 */
 .move-knowledge-card label{display:grid;grid-template-rows:var(--astra-control-height) auto;gap:2px;margin-top:14px;color:var(--astra-text-secondary);font-size:var(--astra-font-body);line-height:var(--astra-control-height)}
 .move-knowledge-card select{height:var(--astra-control-height);padding:0 9px;color:var(--astra-text-primary);border:1px solid var(--astra-border);border-radius:8px;background:#fff;font:inherit}
-@media(max-width:1100px){.library-aside{--el-aside-width:270px}}
-@media(max-width:780px){.library-header{align-items:flex-start;flex-wrap:wrap}.library-workspace{flex-direction:column}.library-aside{flex:none;height:300px;--el-aside-width:auto}.library-content{min-height:420px}.library-service-bar{flex-wrap:wrap}.review-queue{margin-left:0}}
 .delete-blocked{display:grid;gap:8px}.delete-blocked p{margin:0;color:var(--astra-text-secondary);line-height:1.6}.delete-blocked p strong{color:var(--astra-text-primary)}
+@media(max-width:1100px){.library-aside{--el-aside-width:270px}}
+@media(max-width:780px){.digital-library-page{height:auto;min-height:calc(100vh - 68px);overflow:visible}.library-workspace{min-height:420px}.library-aside{flex:none;height:300px;--el-aside-width:auto}.library-content{min-height:420px}.library-service-reason{max-width:100%}}
 </style>

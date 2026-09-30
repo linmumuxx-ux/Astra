@@ -120,7 +120,7 @@ test.describe('API 中转 · 运行总览', () => {
       request.url().includes('/api/gateway/stats') && request.url().includes('window=today'))
     await page.goto('/gateway/overview')
 
-    await expect(page.getByRole('heading', { level: 3, name: 'API 中转总览' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await todayRequest
     await expect(metricValue(page, 'requests')).toHaveText('120')
     await expect(metricValue(page, 'qps')).toHaveText('1.50')
@@ -177,6 +177,6 @@ test.describe('API 中转 · 运行总览', () => {
 
     await page.getByTestId('gateway-nodes-entry').click()
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
   })
 })

@@ -1,8 +1,11 @@
 <template>
-  <component
-    :is="embedded ? 'div' : AstraPanel"
-    v-bind="embedded ? {} : { title: creating ? '创建数字员工' : `${employeeDisplayName(employee?.name)} 配置`, subtitle: '配置描述员工职责与工作环境；运行状态由系统状态机维护。' }"
-  >
+  <component :is="embedded ? 'div' : 'section'">
+    <AstraPageHeader
+      v-if="!embedded"
+      :title="creating ? '创建数字员工' : `${employeeDisplayName(employee?.name)} 配置`"
+      description="配置描述员工职责与工作环境；运行状态由系统状态机维护。"
+      testid="employee-config-header"
+    />
     <ElForm
       ref="formRef"
       data-testid="employee-config-form"
@@ -176,7 +179,7 @@ import { ElAlert, ElButton, ElCheckbox, ElCheckboxGroup, ElDivider, ElForm, ElFo
 import type { FormInstance, FormRules } from 'element-plus'
 import { api } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
-import AstraPanel from '@/components/astra/AstraPanel.vue'
+import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import FieldHelp from '@/components/forms/FieldHelp.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import StickyActionBar from '@/components/astra/StickyActionBar.vue'

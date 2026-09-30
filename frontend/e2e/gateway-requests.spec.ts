@@ -89,8 +89,9 @@ function logRows(page: Page) {
   return page.getByTestId('gateway-requests-table').locator('.el-table__row')
 }
 
-async function selectOption(page: Page, className: string, label: string) {
-  await page.locator(`${className} .el-select__wrapper`).click()
+// 统一样式层后不再有页面自定 class，筛选控件一律用 data-testid 定位。
+async function selectOption(page: Page, testId: string, label: string) {
+  await page.getByTestId(testId).locator('.el-select__wrapper').click()
   await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: label }).first().click()
 }
 
@@ -105,13 +106,13 @@ test.describe('API 中转 · 调用日志', () => {
     await expect(logRows(page)).toHaveCount(2)
     expect(state.queries[0]).toEqual({ page: '1', page_size: '50' })
 
-    await page.getByLabel('Request ID 筛选').fill('req-2026010608-abcdef0123456')
-    await selectOption(page, '.log-filter__model', 'gpt-test')
-    await selectOption(page, '.log-filter__node', 'Alpha 节点')
-    await selectOption(page, '.log-filter__key', '测试 Key')
-    await page.getByLabel('状态码筛选').fill('502')
-    await page.getByLabel('错误码筛选').fill('UPSTREAM_CONNECT_TIMEOUT')
-    await selectOption(page, '.log-filter__size', '每页 100')
+    await page.getByTestId('log-filter-request').fill('req-2026010608-abcdef0123456')
+    await selectOption(page, 'log-filter-model', 'gpt-test')
+    await selectOption(page, 'log-filter-node', 'Alpha 节点')
+    await selectOption(page, 'log-filter-key', '测试 Key')
+    await page.getByTestId('log-filter-status-code').fill('502')
+    await page.getByTestId('log-filter-error-code').fill('UPSTREAM_CONNECT_TIMEOUT')
+    await selectOption(page, 'log-filter-size', '每页 100')
     await page.getByTestId('gateway-requests-apply').click()
 
     expect(lastQuery(state)).toEqual({
@@ -179,7 +180,7 @@ test.describe('API 中转 · 调用日志', () => {
     await expect(page.locator('.el-empty__description')).toHaveText('暂无调用记录。')
     await expect(page.getByTestId('gateway-requests-total')).toContainText('共 0 条')
 
-    await page.getByLabel('错误码筛选').fill('NOT_FOUND')
+    await page.getByTestId('log-filter-error-code').fill('NOT_FOUND')
     await page.getByTestId('gateway-requests-apply').click()
     expect(lastQuery(state)).toMatchObject({ page: '1', error_code: 'NOT_FOUND' })
     await expect(page.locator('.el-empty__description')).toHaveText('没有匹配的调用记录，调整筛选条件后重试。')
@@ -201,7 +202,7 @@ test.describe('API 中转 · 调用日志', () => {
     const state = await mockGateway(page, { roles: ['view'] })
     await page.goto('/gateway/logs')
 
-    await expect(page.getByRole('heading', { level: 3, name: '调用日志' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(logRows(page)).toHaveCount(2)
     await expect(page.getByRole('button', { name: /新增|编辑|删除|吊销|发布|回滚/ })).toHaveCount(0)
 

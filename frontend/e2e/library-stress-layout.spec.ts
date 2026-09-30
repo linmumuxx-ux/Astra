@@ -137,9 +137,10 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   const list = library.locator('.knowledge-list')
   const listHeader = list.locator('.knowledge-list__header')
 
-  // 分页契约：total=1000、当前页 20 条、共 50 页
+  // 分页契约：total=1000、当前页 20 条、共 50 页；总数只在分页左侧出现一次
   await expect(listHeader.locator('h3')).toHaveText('全部知识')
-  await expect(listHeader.locator('p')).toHaveText(`${ALL_TOTAL} 条知识`)
+  await expect(listHeader.locator('p')).toHaveCount(0)
+  await expect(list.getByTestId('knowledge-total')).toHaveText(`共 ${ALL_TOTAL} 条`)
   await expect(list.locator('tbody tr')).toHaveCount(PAGE_SIZE)
   await expect(list.locator('footer')).toContainText(`共 ${ALL_TOTAL} 条`)
   await expect(list.locator('footer .el-pager li').last()).toHaveText(String(ALL_TOTAL / PAGE_SIZE))
@@ -228,7 +229,7 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   // 空间切换后路径与数量同步更新
   await longRow.locator('.space-node__name').click()
   await expect(listHeader.locator('h3')).toHaveText(LONG_SPACE_NAME)
-  await expect(listHeader.locator('p')).toHaveText('240 条知识')
+  await expect(list.getByTestId('knowledge-total')).toHaveText('共 240 条')
   await expect(list.locator('footer')).toContainText('共 240 条')
   await expect(list.locator('footer .el-pager li').last()).toHaveText('12')
   await expect(list.locator('tbody tr')).toHaveCount(PAGE_SIZE)
@@ -238,5 +239,6 @@ test('图书馆在 1000 条知识与 120+ 目录节点压力下保持布局、�
   })
   await firstSpaceRow.locator('.space-node__name').click()
   await expect(listHeader.locator('h3')).toHaveText('知识空间 1')
-  await expect(listHeader.locator('p')).toHaveText(`${ALL_TOTAL} 条知识`)
+  await expect(listHeader.locator('p')).toHaveCount(0)
+  await expect(list.getByTestId('knowledge-total')).toHaveText(`共 ${ALL_TOTAL} 条`)
 })

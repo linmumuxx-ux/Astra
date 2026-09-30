@@ -75,10 +75,12 @@ test('左树数量与右侧同一视图的列表总数保持一致', async ({ pa
   await page.goto('/library')
   await expect(page.getByTestId('digital-library-page').getByRole('heading', { name: '数字图书馆', level: 2 })).toBeVisible()
 
-  // 根节点展示“当前身份可见的全部知识”，不再是仅已发布的数量
+  // 总数只在分页左侧出现一次：目录路径行不再重复展示条数。
+  const listTotal = page.getByTestId('knowledge-total')
   const rootButton = page.locator('.space-all')
+  await expect(page.locator('.knowledge-list__header p')).toHaveCount(0)
   await expect(rootButton.locator('strong')).toHaveText('39')
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('39 条知识')
+  await expect(listTotal).toHaveText('共 39 条')
   await expect(rootButton).toHaveAttribute('title', /可见的全部知识 39 条/)
 
   // 展开根空间，目录节点展示与查询范围一致的子树数
@@ -93,9 +95,9 @@ test('左树数量与右侧同一视图的列表总数保持一致', async ({ pa
 
   // 选中根空间：查询包含子目录，右侧总数与节点展示的子树数一致
   await rootRow.locator('.space-node__name').click()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('3 条知识')
+  await expect(listTotal).toHaveText('共 3 条')
 
   // 选中子目录：查询范围收窄，右侧总数同步为子树内的数量
   await childRow.locator('.space-node__name').click()
-  await expect(page.locator('.knowledge-list__header p')).toHaveText('1 条知识')
+  await expect(listTotal).toHaveText('共 1 条')
 })

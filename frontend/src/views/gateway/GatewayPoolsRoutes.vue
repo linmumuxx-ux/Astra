@@ -1,12 +1,8 @@
 <template>
   <section class="gateway-pools-routes" data-testid="gateway-pools-routes">
-    <header class="gateway-pools-routes__bar">
-      <div class="gateway-pools-routes__intro">
-        <h3>资源池与模型路由</h3>
-        <ElText type="info">路由模型名唯一，第一阶段一个路由指向一个资源池。</ElText>
-      </div>
+    <GatewayHeaderActions>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-pools-routes-refresh" @click="load">刷新</ElButton>
-    </header>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-pools-routes-error">
       <ElButton type="primary" data-testid="gateway-pools-routes-retry" @click="load">重试</ElButton>
@@ -19,26 +15,30 @@
             <h4>资源池</h4>
             <ElText type="info">仍被节点或路由引用的资源池无法删除。</ElText>
           </div>
-          <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
+          <ElButton v-if="canRoute" type="primary" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
         </div>
       </template>
 
-      <div class="gateway-pools-routes__filters" aria-label="资源池筛选">
-        <ElInput
-          v-model="poolFilters.keyword"
-          class="pool-filter__keyword"
-          aria-label="搜索资源池"
-          placeholder="搜索名称 / 描述"
-          clearable
-        >
-          <template #prefix><Search :size="15" /></template>
-        </ElInput>
-        <ElSelect v-model="poolFilters.enabled" class="pool-filter__enabled" aria-label="资源池启用筛选" placeholder="状态：全部" clearable>
+      <AstraFilterPanel label="资源池筛选" testid="gateway-pool-filter">
+        <ElSelect v-model="poolFilters.enabled" class="astra-filter__select" data-testid="pool-filter-enabled" aria-label="资源池启用筛选" placeholder="状态：全部" clearable>
           <ElOption value="enabled" label="启用" />
           <ElOption value="disabled" label="禁用" />
         </ElSelect>
-        <ElButton v-if="poolHasFilters" text type="primary" @click="clearPoolFilters">清除筛选</ElButton>
-      </div>
+        <ElButton v-if="poolHasFilters" text type="primary" data-testid="gateway-pool-clear" @click="clearPoolFilters">清除筛选</ElButton>
+        <template #search>
+          <ElInput
+            v-model="poolFilters.keyword"
+            class="astra-filter__keyword"
+            data-testid="pool-filter-keyword"
+            aria-label="搜索资源池"
+            placeholder="搜索名称 / 描述"
+            clearable
+          >
+            <template #prefix><Search :size="15" /></template>
+          </ElInput>
+          <ElButton type="primary" :icon="Search" data-testid="gateway-pool-search" @click="load">搜索</ElButton>
+        </template>
+      </AstraFilterPanel>
 
       <ElTable
         v-loading="loading"
@@ -80,7 +80,7 @@
       </ElTable>
 
       <footer v-if="filteredPools.length" class="gateway-pools-routes__footer">
-        <ElText type="info">共 {{ filteredPools.length }} 个</ElText>
+        <ElText type="info" data-testid="gateway-pool-total">共 {{ filteredPools.length }} 个</ElText>
         <ElPagination
           :current-page="poolPage"
           :page-size="pageSize"
@@ -100,29 +100,33 @@
             <h4>模型路由</h4>
             <ElText type="info">每条路由把一个模型名指向一个资源池。</ElText>
           </div>
-          <ElButton v-if="canRoute" type="success" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
+          <ElButton v-if="canRoute" type="primary" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
         </div>
       </template>
 
-      <div class="gateway-pools-routes__filters" aria-label="路由筛选">
-        <ElInput
-          v-model="routeFilters.keyword"
-          class="route-filter__keyword"
-          aria-label="搜索路由"
-          placeholder="搜索模型名 / 描述"
-          clearable
-        >
-          <template #prefix><Search :size="15" /></template>
-        </ElInput>
-        <ElSelect v-model="routeFilters.pool" class="route-filter__pool" aria-label="路由资源池筛选" placeholder="资源池：全部" clearable>
+      <AstraFilterPanel label="路由筛选" testid="gateway-route-filter">
+        <ElSelect v-model="routeFilters.pool" class="astra-filter__select" data-testid="route-filter-pool" aria-label="路由资源池筛选" placeholder="资源池：全部" clearable>
           <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
         </ElSelect>
-        <ElSelect v-model="routeFilters.enabled" class="route-filter__enabled" aria-label="路由启用筛选" placeholder="状态：全部" clearable>
+        <ElSelect v-model="routeFilters.enabled" class="astra-filter__select" data-testid="route-filter-enabled" aria-label="路由启用筛选" placeholder="状态：全部" clearable>
           <ElOption value="enabled" label="启用" />
           <ElOption value="disabled" label="禁用" />
         </ElSelect>
-        <ElButton v-if="routeHasFilters" text type="primary" @click="clearRouteFilters">清除筛选</ElButton>
-      </div>
+        <ElButton v-if="routeHasFilters" text type="primary" data-testid="gateway-route-clear" @click="clearRouteFilters">清除筛选</ElButton>
+        <template #search>
+          <ElInput
+            v-model="routeFilters.keyword"
+            class="astra-filter__keyword"
+            data-testid="route-filter-keyword"
+            aria-label="搜索路由"
+            placeholder="搜索模型名 / 描述"
+            clearable
+          >
+            <template #prefix><Search :size="15" /></template>
+          </ElInput>
+          <ElButton type="primary" :icon="Search" data-testid="gateway-route-search" @click="load">搜索</ElButton>
+        </template>
+      </AstraFilterPanel>
 
       <ElTable
         v-loading="loading"
@@ -166,7 +170,7 @@
       </ElTable>
 
       <footer v-if="filteredRoutes.length" class="gateway-pools-routes__footer">
-        <ElText type="info">共 {{ filteredRoutes.length }} 条</ElText>
+        <ElText type="info" data-testid="gateway-route-total">共 {{ filteredRoutes.length }} 条</ElText>
         <ElPagination
           :current-page="routePage"
           :page-size="pageSize"
@@ -295,6 +299,8 @@ import {
   type GatewayPool,
   type GatewayRoute,
 } from '@/api/gateway'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
@@ -596,18 +602,9 @@ onMounted(load)
 
 <style scoped>
 .gateway-pools-routes { display: grid; gap: 12px; }
-.gateway-pools-routes__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-pools-routes__intro { margin-right: auto; }
-.gateway-pools-routes__intro h3 { margin: 0; color: var(--astra-text-primary); }
 .gateway-pools-routes__card-head { display: flex; align-items: center; gap: 12px; }
 .gateway-pools-routes__card-title { display: grid; gap: 2px; margin-right: auto; }
 .gateway-pools-routes__card-title h4 { margin: 0; color: var(--astra-text-primary); }
-.gateway-pools-routes__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
-.pool-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.pool-filter__enabled { width: 120px; }
-.route-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.route-filter__pool { width: 152px; }
-.route-filter__enabled { width: 120px; }
 .gateway-pools-routes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 10px; }
 .pool-cell { display: grid; gap: 2px; min-width: 0; }
 .pool-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }

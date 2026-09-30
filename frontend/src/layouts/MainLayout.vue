@@ -32,6 +32,8 @@
           <template #prefix><Search :size="15" /></template>
         </el-input>
 
+        <AssistantLauncher class="header-assistant" />
+
         <RouterLink class="header-notification" to="/interventions" aria-label="消息通知">
           <el-badge :value="pendingCount" :max="9" :hidden="!pendingCount">
             <Bell :size="19" />
@@ -62,7 +64,7 @@
         :closable="false"
         :title="store.error"
       >
-        <el-button size="small" type="primary" @click="store.refresh()">重试</el-button>
+        <el-button type="primary" @click="store.refresh()">重试</el-button>
       </el-alert>
       <RouterView />
     </el-main>
@@ -90,6 +92,7 @@ import {
   ElText,
 } from 'element-plus'
 import AstraLogo from '@/components/astra/AstraLogo.vue'
+import AssistantLauncher from '@/features/assistant/AssistantLauncher.vue'
 import { useAstraStore } from '@/stores/astra'
 
 const route = useRoute()
@@ -158,7 +161,8 @@ watch(searchInput, (value) => {
 .layout-menu :deep(.el-menu-item){gap:6px}
 .layout-actions{flex:none;display:flex;align-items:center;gap:8px}
 .global-search{width:180px}
-.header-notification{display:inline-flex;align-items:center;justify-content:center;color:#4f6961}
+.header-notification,.header-assistant{display:inline-flex;align-items:center;justify-content:center;color:#4f6961}
+.header-assistant:hover{color:var(--astra-primary-bright)}
 .header-user{gap:8px;padding:0 7px}
 .header-user__avatar{--el-avatar-bg-color:var(--astra-primary-soft);--el-avatar-text-color:var(--astra-primary-bright)}
 .app-main{--el-main-padding:0}

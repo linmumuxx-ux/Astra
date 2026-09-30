@@ -169,7 +169,7 @@ test('只读身份无选择列，行操作仅查看且状态筛选仅已发布',
   await expect(firstRow.getByRole('button', { name: /^查看 / })).toBeVisible()
   await expect(list.locator('.knowledge-list__batch')).toHaveCount(0)
 
-  await list.locator('.knowledge-filter__status .el-select__wrapper').click()
+  await list.getByTestId('knowledge-filter-status').locator('.el-select__wrapper').click()
   await expect(page.locator('.el-select-dropdown:visible .el-select-dropdown__item')).toHaveText(['已发布'])
   await page.keyboard.press('Escape')
 

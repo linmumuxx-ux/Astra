@@ -1,15 +1,20 @@
 <template>
   <section class="knowledge-list">
     <header class="knowledge-list__header">
-      <div class="list-context">
-        <h3 :title="spacePath">{{ spacePath }}</h3>
-        <p>{{ page.total }} 条知识</p>
-      </div>
+      <h3 :title="spacePath">{{ spacePath }}</h3>
+      <ElButton
+        v-if="hasFilters"
+        text
+        type="primary"
+        data-testid="knowledge-clear-filter"
+        @click="emit('clear-filter')"
+      >清除筛选</ElButton>
     </header>
 
-    <div class="knowledge-list__filters" aria-label="知识筛选">
+    <AstraFilterPanel label="知识筛选" testid="knowledge-filter">
       <ElSelect
-        class="knowledge-filter__type"
+        class="astra-filter__select"
+        data-testid="knowledge-filter-type"
         :model-value="filters.type"
         aria-label="知识类型"
         placeholder="类型：全部"
@@ -19,7 +24,8 @@
         <ElOption v-for="item in types" :key="item.value" :value="item.value" :label="item.label" />
       </ElSelect>
       <ElSelect
-        class="knowledge-filter__status"
+        class="astra-filter__select"
+        data-testid="knowledge-filter-status"
         :model-value="filters.status"
         aria-label="知识状态"
         placeholder="状态：全部"
@@ -29,7 +35,8 @@
         <ElOption v-for="item in statusOptions" :key="item.value" :value="item.value" :label="item.label" />
       </ElSelect>
       <ElSelect
-        class="knowledge-filter__sort"
+        class="astra-filter__select"
+        data-testid="knowledge-filter-sort"
         :model-value="filters.sort"
         aria-label="知识排序"
         @update:model-value="applyFilter('sort', $event)"
@@ -39,45 +46,22 @@
         <ElOption value="references_desc" label="引用最多" />
         <ElOption value="title_asc" label="标题排序" />
       </ElSelect>
-      <ElInput
-        v-model="keywordDraft"
-        class="knowledge-filter__search"
-        aria-label="搜索当前空间"
-        placeholder="搜索当前空间"
-        clearable
-        @keydown.enter.prevent="runSearch"
-        @clear="runSearch"
-      >
-        <template #prefix><Search :size="15" /></template>
-      </ElInput>
-      <ElSpace :size="8">
-        <ElButton type="primary" plain :icon="Search" @click="runSearch">搜索</ElButton>
-        <ElButton class="knowledge-filter__more" :class="{ 'is-active': moreOpen || Boolean(filters.source || filters.tag) }" :icon="SlidersHorizontal" @click="moreOpen = !moreOpen">更多筛选</ElButton>
-      </ElSpace>
-    </div>
-
-    <div v-if="moreOpen" class="knowledge-list__more">
-      <ElSelect
-        class="knowledge-filter__source"
-        :model-value="filters.source"
-        aria-label="知识来源"
-        placeholder="来源：全部"
-        clearable
-        @update:model-value="applyFilter('source', $event)"
-      >
-        <ElOption v-for="item in sources" :key="item.value" :value="item.value" :label="item.label" />
-      </ElSelect>
-      <div class="knowledge-filter__tag">
-        <ElInput v-model="tagInput" list="knowledge-tag-options" aria-label="知识标签" placeholder="标签：全部" clearable @keydown.enter.prevent="applyTag" />
-        <datalist id="knowledge-tag-options"><option v-for="tag in tagOptions" :key="tag" :value="tag" /></datalist>
-        <ElButton aria-label="应用标签筛选" @click="applyTag">应用</ElButton>
-      </div>
-      <ElButton v-if="hasFilters" text type="primary" @click="emit('clear-filter')">清除筛选</ElButton>
-    </div>
-
-    <div v-if="filterLabel" class="knowledge-list__active">
-      <ElTag closable type="warning" @close="emit('clear-filter')">{{ filterLabel }}</ElTag>
-    </div>
+      <template #search>
+        <ElInput
+          v-model="keywordDraft"
+          class="astra-filter__keyword"
+          data-testid="knowledge-filter-keyword"
+          aria-label="搜索当前空间"
+          placeholder="搜索当前空间"
+          clearable
+          @keydown.enter.prevent="runSearch"
+          @clear="runSearch"
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElButton type="primary" :icon="Search" data-testid="knowledge-search" @click="runSearch">搜索</ElButton>
+      </template>
+    </AstraFilterPanel>
 
     <div v-if="selectedRows.length" class="knowledge-list__batch" aria-label="批量操作">
       <ElText>已选 {{ selectedRows.length }} 条</ElText>
@@ -129,7 +113,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="232" fixed="right">
           <template #default="{ row }">
-            <ElSpace class="row-actions" :size="4" @click.stop>
+            <ElSpace class="astra-row-actions" :size="4" @click.stop>
               <ElTooltip content="查看" placement="top">
                 <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.title}`" @click="openRow(row)" />
               </ElTooltip>
@@ -163,14 +147,18 @@
       </ElTable>
     </div>
 
-    <footer v-if="page.total > 0" class="knowledge-list__footer">
-      <ElText type="info">共 {{ page.total }} 条</ElText>
+    <!-- 总数始终展示（空列表也要看到「共 0 条」），只有分页在空列表时隐藏。
+         总数只在这里出现一次：目录路径行与筛选面板都不重复展示。 -->
+    <footer class="knowledge-list__footer">
+      <ElText type="info" data-testid="knowledge-total">共 {{ page.total }} 条</ElText>
       <ElPagination
+        v-if="page.total > 0"
         :current-page="page.page"
         :page-size="page.page_size"
         :total="page.total"
         layout="prev, pager, next"
         aria-label="知识列表分页"
+        data-testid="knowledge-pagination"
         @current-change="emit('page', $event)"
       />
     </footer>
@@ -178,13 +166,16 @@
 </template>
 
 <script setup lang="ts">
-import { Archive, Eye, FolderInput, Pencil, Plus, Search, SlidersHorizontal, Stamp, Trash2 } from 'lucide-vue-next'
+import { Archive, Eye, FolderInput, Pencil, Plus, Search, Stamp, Trash2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import type { KnowledgeListItem, KnowledgePage, KnowledgeStatus, VerificationStatus } from '@/api/types'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 
-interface ListFilters { type: string; status: string; source: string; tag: string; sort: string }
+// 只保留最常用的查询条件：类型、状态、排序与关键词。
+// 来源与标签筛选随「更多筛选」一并取消，filters 里也不再保留这两个维度。
+interface ListFilters { type: string; status: string; sort: string }
 const props = defineProps<{
   page: KnowledgePage
   filters: ListFilters
@@ -214,9 +205,6 @@ const types = [
   { value: 'document', label: '文档' }, { value: 'rule', label: '规范' }, { value: 'guide', label: '指南' },
   { value: 'experience', label: '经验' }, { value: 'faq', label: 'FAQ' }, { value: 'tool', label: '工具' }, { value: 'example', label: '示例' },
 ]
-const sources = [
-  { value: 'manual', label: '人工创建' }, { value: 'task', label: '任务沉淀' }, { value: 'import', label: '文档导入' }, { value: 'system', label: '系统同步' },
-]
 const statusMeta: Record<KnowledgeStatus, { label: string; tag: 'success' | 'warning' | 'info' | 'danger' }> = {
   published: { label: '已发布', tag: 'success' },
   candidate: { label: '待人工审核', tag: 'warning' },
@@ -231,8 +219,6 @@ const verificationMeta: Record<VerificationStatus, { label: string; tag: 'succes
 }
 
 const keywordDraft = ref(props.keyword)
-const tagInput = ref(props.filters.tag)
-const moreOpen = ref(false)
 const selectedRows = ref<KnowledgeListItem[]>([])
 const tableRef = ref<TableInstance>()
 
@@ -245,16 +231,12 @@ const statusOptions = computed(() => [
   ...(props.canManage ? [{ value: 'archived', label: '已归档' }] : []),
   ...(props.canReview ? [{ value: 'rejected', label: '已驳回' }] : []),
 ])
-const allTags = computed(() => { const set = new Set<string>(); props.page.items.forEach((item) => item.tags.forEach((tag) => set.add(tag))); return [...set] })
-const tagOptions = computed(() => allTags.value.slice(0, 24))
-const hasFilters = computed(() => Boolean(props.keyword || props.filters.type || props.filters.status || props.filters.source || props.filters.tag))
+const hasFilters = computed(() => Boolean(props.keyword || props.filters.type || props.filters.status))
 
 watch(() => props.keyword, (value) => { keywordDraft.value = value })
-watch(() => props.filters.tag, (value) => { tagInput.value = value })
 
 function runSearch() { emit('search', keywordDraft.value.trim()) }
 function applyFilter(key: keyof ListFilters, value: unknown) { emit('filter', key, String(value ?? '')) }
-function applyTag() { const value = tagInput.value.trim(); if (value === props.filters.tag) return; emit('filter', 'tag', value) }
 function onRowClick(row: Row, column: unknown) {
   if (column && typeof column === 'object' && (column as { type?: string }).type === 'selection') return
   emit('open', row.id)
@@ -279,34 +261,20 @@ const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 
 </script>
 
 <style scoped>
-.knowledge-list{display:flex;flex-direction:column;min-width:0;height:100%;overflow:hidden;background:#fff}
+/* 筛选面板、行操作与表格外壳统一走 styles/page-layout.css，
+   这里只保留「目录路径行、批量操作条、单元格排版」这些本页独有的部分。 */
+.knowledge-list{display:flex;flex-direction:column;min-width:0;height:100%;overflow:hidden;background:var(--astra-bg-panel)}
 .knowledge-list>*{flex:none}
 .knowledge-list>.knowledge-table-wrap{flex:1 1 auto;min-height:0}
-.knowledge-list__header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:58px;padding:10px 15px;border-bottom:1px solid var(--astra-border)}
-.list-context{min-width:0}
-.knowledge-list h3,.knowledge-list p{margin:0}
-.knowledge-list h3{overflow:hidden;color:var(--astra-text-primary);font-size:var(--astra-font-section);text-overflow:ellipsis;white-space:nowrap}
-.knowledge-list p{margin-top:3px;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}
-.knowledge-list__filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--astra-border);background:#fbfdfc}
-.knowledge-filter__type{width:132px}
-.knowledge-filter__status{width:150px}
-.knowledge-filter__sort{width:136px}
-.knowledge-filter__search{flex:1 1 240px;min-width:190px;max-width:420px}
-.knowledge-filter__more.is-active{color:var(--astra-primary-bright);border-color:var(--astra-primary-border);background:var(--astra-primary-soft)}
-.knowledge-list__more{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--astra-border)}
-.knowledge-filter__source{width:140px}
-.knowledge-filter__tag{display:flex;align-items:center;gap:8px;flex:1 1 260px;min-width:0;max-width:420px}
-.knowledge-filter__tag .el-input{flex:1 1 auto;min-width:0}
-.knowledge-list__active{display:flex;align-items:center;padding:8px 14px;border-bottom:1px solid var(--astra-border)}
-.knowledge-list__batch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 14px;border-bottom:1px solid var(--astra-border);background:var(--astra-primary-soft)}
+/* 目录路径行只做上下文提示，不再重复展示列表总数 —— 总数只在分页左侧出现一次。 */
+.knowledge-list__header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:40px;padding:0 2px 1px}
+.knowledge-list h3{overflow:hidden;margin:0;color:var(--astra-text-primary);font-size:var(--astra-font-label);text-overflow:ellipsis;white-space:nowrap}
+.knowledge-list__batch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 12px;border:1px solid var(--astra-border);border-radius:10px;background:var(--astra-primary-soft)}
 .knowledge-table-wrap{min-height:0}
 .knowledge-table{--el-table-border-color:var(--astra-border)}
-.knowledge-table :deep(.el-table__row){cursor:pointer}
-.knowledge-table :deep(.el-empty){padding:28px 0}
+.knowledge-table .el-table__row{cursor:pointer}
 .knowledge-cell{display:grid;min-width:0;gap:2px}
 .knowledge-cell strong{overflow:hidden;color:var(--astra-text-primary);font-size:var(--astra-font-label);text-overflow:ellipsis;white-space:nowrap}
-.row-actions{justify-content:flex-end}
 .empty-actions{display:flex;justify-content:center;gap:8px}
-.knowledge-list__footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 14px;border-top:1px solid var(--astra-border)}
-@media(max-width:1100px){.knowledge-filter__search{max-width:none}}
+.knowledge-list__footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:2px}
 </style>

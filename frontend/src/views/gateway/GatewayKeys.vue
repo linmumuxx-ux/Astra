@@ -1,38 +1,37 @@
 <template>
-  <section class="gateway-keys" data-testid="gateway-keys">
-    <header class="gateway-keys__bar">
-      <div class="gateway-keys__intro">
-        <h3>API Key 管理</h3>
-        <ElText type="info">Key 以 agw_ 前缀生成，库中只存不可逆摘要；原文仅在创建成功后显示一次。</ElText>
-      </div>
-      <ElSpace :size="8">
-        <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
-        <ElButton v-if="canKey" type="success" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
-      </ElSpace>
-    </header>
+  <section class="gateway-keys astra-stack" data-testid="gateway-keys">
+    <GatewayHeaderActions>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
+      <ElButton v-if="canKey" type="primary" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
+    </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-keys-error">
       <ElButton type="primary" data-testid="gateway-keys-retry" @click="load">重试</ElButton>
     </ElAlert>
 
-    <div class="gateway-keys__filters" aria-label="Key 筛选">
-      <ElInput
-        v-model="filters.keyword"
-        class="key-filter__keyword"
-        aria-label="搜索 Key"
-        placeholder="搜索名称 / 前缀 / 归属"
-        clearable
-      >
-        <template #prefix><Search :size="15" /></template>
-      </ElInput>
-      <ElSelect v-model="filters.status" class="key-filter__status" aria-label="Key 状态筛选" placeholder="状态：全部" clearable>
+    <AstraFilterPanel label="Key 筛选" testid="gateway-keys-filter">
+      <ElSelect v-model="filters.status" class="astra-filter__select" data-testid="key-filter-status" aria-label="Key 状态筛选" placeholder="状态：全部" clearable>
         <ElOption value="enabled" label="启用" />
         <ElOption value="disabled" label="停用" />
         <ElOption value="revoked" label="已吊销" />
       </ElSelect>
-      <ElButton v-if="hasFilters" text type="primary" @click="clearFilters">清除筛选</ElButton>
-    </div>
+      <ElButton v-if="hasFilters" text type="primary" data-testid="gateway-keys-clear" @click="clearFilters">清除筛选</ElButton>
+      <template #search>
+        <ElInput
+          v-model="filters.keyword"
+          class="astra-filter__keyword"
+          data-testid="key-filter-keyword"
+          aria-label="搜索 Key"
+          placeholder="搜索名称 / 前缀 / 归属"
+          clearable
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElButton type="primary" :icon="Search" data-testid="gateway-keys-search" @click="load">搜索</ElButton>
+      </template>
+    </AstraFilterPanel>
 
+    <section class="astra-table-panel">
     <ElTable
       v-loading="loading"
       :data="pagedKeys"
@@ -94,9 +93,10 @@
         <ElEmpty v-if="!loading" :image-size="64" :description="emptyText" />
       </template>
     </ElTable>
+    </section>
 
     <footer v-if="filteredKeys.length" class="gateway-keys__footer">
-      <ElText type="info">共 {{ filteredKeys.length }} 条</ElText>
+      <ElText type="info" data-testid="gateway-keys-total">共 {{ filteredKeys.length }} 条</ElText>
       <ElPagination
         :current-page="page"
         :page-size="pageSize"
@@ -225,6 +225,8 @@ import {
   type GatewayKey,
   type GatewayKeyCreated,
 } from '@/api/gateway'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
@@ -444,14 +446,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.gateway-keys { display: grid; gap: 12px; }
-.gateway-keys__bar { display: flex; align-items: center; gap: 12px; }
-.gateway-keys__intro { margin-right: auto; }
-.gateway-keys__intro h3 { margin: 0; color: var(--astra-text-primary); }
-.gateway-keys__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.key-filter__keyword { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.key-filter__status { width: 120px; }
-.gateway-keys__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 2px; }
+.gateway-keys__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .key-cell { display: grid; gap: 2px; min-width: 0; }
 .key-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .key-cell__id { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }

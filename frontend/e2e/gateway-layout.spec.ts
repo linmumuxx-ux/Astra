@@ -101,15 +101,27 @@ async function mockGatewayApi(page: Page) {
   })
 }
 
+// 父级是 API 中转唯一的标题区：主标题固定为「API 中转」，副标题承载当前分区名与说明；
+// 子页不再各自带一套大标题，只把刷新与主操作按钮 Teleport 到父级标题区右侧。
 const sections = [
-  { id: 'overview', label: '运行总览', path: '/gateway/overview', heading: 'API 中转总览' },
+  { id: 'overview', label: '运行总览', path: '/gateway/overview', heading: '运行总览' },
   { id: 'nodes', label: '下游节点', path: '/gateway/nodes', heading: '下游节点' },
-  { id: 'routes', label: '资源池与路由', path: '/gateway/routes', heading: '资源池与模型路由' },
+  { id: 'routes', label: '资源池与路由', path: '/gateway/routes', heading: '资源池与路由' },
   { id: 'keys', label: 'API Key 管理', path: '/gateway/keys', heading: 'API Key 管理' },
   { id: 'logs', label: '调用日志', path: '/gateway/logs', heading: '调用日志' },
-  { id: 'versions', label: '配置版本', path: '/gateway/versions', heading: '配置草稿与版本' },
-  { id: 'self', label: '自助用量', path: '/gateway/self', heading: 'Key 自助用量' },
+  { id: 'versions', label: '配置版本', path: '/gateway/versions', heading: '配置版本' },
+  { id: 'self', label: '自助用量', path: '/gateway/self', heading: '自助用量' },
 ]
+
+async function expectSingleHeader(page: import('@playwright/test').Page, heading: string) {
+  const header = page.getByTestId('gateway-header')
+  await expect(header.getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
+  await expect(header.getByText(heading, { exact: false }).first()).toBeVisible()
+  // 全页只有这一个 h2 大标题，子页不再重复一套。
+  await expect(page.getByRole('heading', { level: 2 })).toHaveCount(1)
+  // 左侧竖向子菜单保持在位。
+  await expect(page.getByTestId('gateway-page').getByRole('complementary')).toBeVisible()
+}
 
 test.describe('API 中转布局与路由', () => {
   test.beforeEach(async ({ page }) => {
@@ -126,7 +138,13 @@ test.describe('API 中转布局与路由', () => {
       await page.getByTestId(`gateway-menu-${section.id}`).click()
       await expect(page).toHaveURL(new RegExp(`${section.path}$`))
       await expect(page.getByTestId(`gateway-menu-${section.id}`)).toHaveClass(/is-active/)
-      await expect(page.getByRole('heading', { level: 3, name: section.heading })).toBeVisible()
+      await expectSingleHeader(page, section.heading)
+      // 子页的刷新按钮落在父级标题区右侧，不留在内容区里。
+      // 自助用量未接入 Key 时本来就没有刷新按钮。
+      const actions = page.locator('#gateway-header-actions')
+      await expect(actions).toHaveCount(1)
+      if (section.id === 'self') await expect(actions.locator('> *')).toHaveCount(0)
+      else await expect(actions.getByRole('button', { name: '刷新' })).toBeVisible()
       for (const other of sections.filter((item) => item.id !== section.id)) {
         await expect(page.getByTestId(`gateway-menu-${other.id}`)).not.toHaveClass(/is-active/)
       }
@@ -138,29 +156,31 @@ test.describe('API 中转布局与路由', () => {
 
   test('直接访问与刷新保持对应页面', async ({ page }) => {
     await page.goto('/gateway/versions')
-    await expect(page.getByRole('heading', { level: 3, name: '配置草稿与版本' })).toBeVisible()
+    await expectSingleHeader(page, '配置版本')
     await expect(page.getByTestId('gateway-menu-versions')).toHaveClass(/is-active/)
 
     await page.reload()
     await expect(page).toHaveURL(/\/gateway\/versions$/)
-    await expect(page.getByRole('heading', { level: 3, name: '配置草稿与版本' })).toBeVisible()
+    await expectSingleHeader(page, '配置版本')
     await expect(page.getByTestId('gateway-menu-versions')).toHaveClass(/is-active/)
   })
 
   test('旧 ?tab= 链接无损转向新路径', async ({ page }) => {
     await page.goto('/gateway?tab=logs')
     await expect(page).toHaveURL(/\/gateway\/logs$/)
-    await expect(page.getByRole('heading', { level: 3, name: '调用日志' })).toBeVisible()
+    await expectSingleHeader(page, '调用日志')
 
     await page.goto('/gateway?tab=nodes')
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
+    await expectSingleHeader(page, '下游节点')
 
     await page.goto('/gateway?tab=%E4%B8%8D%E5%AD%98%E5%9C%A8')
     await expect(page).toHaveURL(/\/gateway\/overview$/)
   })
 
   test('节点详情可从列表进入、深链刷新且旧返回链接可用', async ({ page }) => {
+    const errs: string[] = []
+    page.on('pageerror', (e) => errs.push(`${e.message}\n${e.stack}`))
     await page.goto('/gateway/nodes')
     await page.getByRole('link', { name: /Alpha 节点/ }).click()
     await expect(page).toHaveURL(/\/gateway\/nodes\/node-alpha$/)
@@ -172,6 +192,7 @@ test.describe('API 中转布局与路由', () => {
 
     await page.getByRole('link', { name: '节点列表' }).click()
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
+    console.log('ERRS', JSON.stringify(errs, null, 2))
+    await expectSingleHeader(page, '下游节点')
   })
 })

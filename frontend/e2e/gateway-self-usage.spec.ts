@@ -162,7 +162,7 @@ test.describe('API 中转 · Key 自助用量', () => {
     const state = await mockGateway(page)
     await page.goto('/gateway/self')
 
-    await expect(page.getByRole('heading', { level: 3, name: 'Key 自助用量' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(page.getByTestId('gateway-self-connect')).toBeVisible()
     await expect(page.getByTestId('gateway-self-key-input')).toHaveAttribute('type', 'password')
     // 空态不发任何自助请求，也不渲染统计与调用记录。

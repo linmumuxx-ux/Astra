@@ -68,7 +68,7 @@ test('首页单模块失败不影响其他模块并保留筛选跳转', async ({
 
   await dashboard.locator('.summary-metrics').getByRole('link', { name: '8 工作中' }).click()
   await expect(page).toHaveURL(/\/employees\?status=WORKING$/)
-  await page.locator('.employee-filter__status').click()
+  await page.getByTestId('employee-filter-status').locator('.el-select__wrapper').click()
   await expect(page.getByRole('option', { name: '工作中' })).toHaveAttribute('aria-selected', 'true')
 })
 
@@ -215,7 +215,7 @@ test('数字图书馆兼容平铺空间响应且目录菜单只在点击后出�
     json: { user_id: 'viewer-e2e', role: 'viewer', can_manage: false, can_review: false },
   }))
   await page.reload()
-  const statusFilter = library.locator('.knowledge-filter__status')
+  const statusFilter = library.getByTestId('knowledge-filter-status')
   await expect(statusFilter).toBeVisible()
   await statusFilter.locator('.el-select__wrapper').click()
   await expect(page.locator('.el-select-dropdown:visible .el-select-dropdown__item')).toHaveText(['已发布'])
@@ -307,13 +307,15 @@ test('待处理角标与聚合队列一致并提供进入 Workspace 入口', asy
   await expect(pending.locator('.intervention-task')).toHaveCount(3)
 
   // 人工介入已收敛进任务 Workspace，列表只提供进入 Workspace 的入口。
+  // 入口是固定在右侧的紧凑图标按钮，点击后进入该任务详情。
   const item = pending.locator('.intervention-task').filter({ hasText: '新增回调场景自动化覆盖' })
-  await expect(item.getByRole('link', { name: '进入任务详情' })).toHaveAttribute('href', '/tasks/T-20260827-002')
+  await item.getByRole('button', { name: '进入 T-20260827-002 任务详情' }).click()
+  await expect(page).toHaveURL(/\/tasks\/T-20260827-002$/)
 })
 
 test('员工管理使用列表、筛选分页并优先打开详情抽屉', async ({ page }) => {
   await page.goto('/employees')
-  await page.locator('.employee-filter__status').click()
+  await page.getByTestId('employee-filter-status').locator('.el-select__wrapper').click()
   await expect(page.getByRole('option', { name: '异常' })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByLabel('数字员工列表').getByRole('table').first()).toBeVisible()

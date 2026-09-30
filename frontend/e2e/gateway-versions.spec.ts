@@ -170,7 +170,7 @@ test.describe('API 中转 · 配置草稿与版本', () => {
     await mockGateway(page, { roles: ['view'] })
     await gotoVersions(page)
 
-    await expect(page.getByRole('heading', { level: 3, name: '配置草稿与版本' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(page.getByTestId('gateway-versions-reconcile')).toHaveCount(0)
     await expect(page.getByTestId('gateway-publish')).toHaveCount(0)
     await expect(page.getByTestId('gateway-publish-note')).toHaveCount(0)

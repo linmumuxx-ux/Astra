@@ -1,40 +1,39 @@
 <template>
-  <div class="category-page" data-testid="category-page">
-    <header class="category-page__intro">
-      <div>
-        <h2>任务分类</h2>
-        <ElText type="info">分类用于表示任务所属的业务领域；排序小的排在前面，提示词随分类下发给对应数字员工。</ElText>
-      </div>
-      <ElSpace :size="8">
+  <div class="astra-page" data-testid="category-page">
+    <AstraPageHeader title="任务分类" description="分类用于表示任务所属的业务领域；排序小的排在前面，提示词随分类下发给对应数字员工。" testid="category-header">
+      <template #actions>
         <ElButton :icon="RefreshCw" :loading="loading" data-testid="category-refresh" @click="load">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" data-testid="category-create" @click="beginCreate">新增分类</ElButton>
-      </ElSpace>
-    </header>
+      </template>
+    </AstraPageHeader>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="category-error">
       <ElButton type="primary" data-testid="category-retry" @click="load">重试</ElButton>
     </ElAlert>
 
-    <div class="category-filter" aria-label="任务分类筛选">
-      <ElSelect v-model="status" class="category-filter__status" aria-label="启用状态" placeholder="状态：全部" clearable>
+    <AstraFilterPanel label="任务分类筛选" testid="category-filter">
+      <ElSelect v-model="status" class="astra-filter__select" data-testid="category-filter-status" aria-label="启用状态" placeholder="状态：全部" clearable>
         <ElOption value="enabled" label="已启用" />
         <ElOption value="disabled" label="已停用" />
       </ElSelect>
-      <ElInput
-        v-model="keywordDraft"
-        class="category-filter__search"
-        aria-label="搜索任务分类"
-        placeholder="搜索分类名称 / 描述"
-        clearable
-        @keydown.enter.prevent="applyKeyword"
-        @clear="applyKeyword"
-      >
-        <template #prefix><Search :size="15" /></template>
-      </ElInput>
-      <ElButton type="primary" plain :icon="Search" data-testid="category-search" @click="applyKeyword">搜索</ElButton>
-    </div>
+      <template #search>
+        <ElInput
+          v-model="keywordDraft"
+          class="astra-filter__keyword"
+          data-testid="category-filter-keyword"
+          aria-label="搜索任务分类"
+          placeholder="搜索分类名称 / 描述"
+          clearable
+          @keydown.enter.prevent="applyKeyword"
+          @clear="applyKeyword"
+        >
+          <template #prefix><Search :size="15" /></template>
+        </ElInput>
+        <ElButton type="primary" :icon="Search" data-testid="category-search" @click="applyKeyword">搜索</ElButton>
+      </template>
+    </AstraFilterPanel>
 
-    <section class="category-table-panel" aria-label="任务分类列表">
+    <section class="astra-table-panel" aria-label="任务分类列表">
       <ElTable
         v-loading="loading"
         :data="paged"
@@ -65,7 +64,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="88" fixed="right">
           <template #default="{ row }">
-            <ElSpace class="row-actions" :size="4">
+            <ElSpace class="astra-row-actions" :size="4">
               <ElTooltip content="编辑分类与提示词" placement="top">
                 <ElButton
                   circle
@@ -102,7 +101,7 @@
       </ElTable>
     </section>
 
-    <footer class="category-page__footer">
+    <footer class="astra-page__footer">
       <ElText type="info" data-testid="category-total">共 {{ filtered.length }} 条</ElText>
       <ElPagination
         v-model:current-page="page"
@@ -148,6 +147,8 @@ import {
 } from 'element-plus'
 import { api } from '@/api/client'
 import type { TaskCategory, TaskCategoryWrite } from '@/api/types'
+import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import CategoryEditorDrawer from '@/views/settings/CategoryEditorDrawer.vue'
@@ -280,15 +281,7 @@ onMounted(load)
 </script>
 
 <style scoped>
-.category-page { display: flex; flex-direction: column; gap: 14px; height: calc(100vh - 69px); min-height: 620px; padding: 20px 24px 18px; overflow: hidden; }
-.category-page__intro { display: flex; flex: none; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.category-page__intro h2 { margin: 0 0 2px; font-size: var(--astra-font-title); letter-spacing: -.02em; }
-.category-filter { display: flex; flex: none; align-items: center; gap: 8px; }
-.category-filter__status { flex: none; width: 148px; }
-.category-filter__search { flex: 1 1 240px; min-width: 190px; max-width: 420px; }
-.category-table-panel { flex: 1 1 auto; min-height: 0; overflow: hidden; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel); box-shadow: var(--astra-shadow-panel); }
+/* 页面骨架、标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css，
+   这里只保留表格单元格内部的排版。 */
 .category-num { font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
-.row-actions { justify-content: flex-end; }
-.category-page__footer { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
-@media (max-width: 900px) { .category-page { height: auto; min-height: calc(100vh - 69px); overflow: visible; } .category-table-panel { min-height: 480px; } }
 </style>

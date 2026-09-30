@@ -202,8 +202,9 @@ function visibleRows(page: Page) {
   return nodesSection(page).locator('.el-table__row')
 }
 
-async function openFilterSelect(page: Page, className: string) {
-  await page.locator(`.${className} .el-select__wrapper`).click()
+// 统一样式层后不再有页面自定 class，筛选控件一律用 data-testid 定位。
+async function openFilterSelect(page: Page, testId: string) {
+  await page.getByTestId(testId).locator('.el-select__wrapper').click()
 }
 
 test.describe('API 中转 · 下游节点', () => {
@@ -211,7 +212,7 @@ test.describe('API 中转 · 下游节点', () => {
     await mockGateway(page, { roles: [] })
     await page.goto('/gateway/nodes')
 
-    await expect(page.getByRole('heading', { level: 3, name: '下游节点' })).toBeVisible()
+    await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
     await expect(page.getByTestId('gateway-node-create')).toHaveCount(0)
     const headers = await nodesSection(page).locator('.el-table__header-wrapper th').allInnerTexts()
     expect(headers).not.toContain('操作')
@@ -223,19 +224,19 @@ test.describe('API 中转 · 下游节点', () => {
     await expect(visibleRows(page)).toHaveCount(2)
     await expect(page.getByText('Gamma 桥接')).toBeVisible()
 
-    await page.getByLabel('搜索节点').fill('Beta')
+    await page.getByTestId('node-filter-keyword').fill('Beta')
     await expect(visibleRows(page)).toHaveCount(2)
     await expect(totalText(page)).toContainText('共 2 条')
     await expect(page.getByText('Alpha 1')).toHaveCount(0)
-    await page.getByLabel('搜索节点').fill('')
+    await page.getByTestId('node-filter-keyword').fill('')
 
-    await openFilterSelect(page, 'node-filter__health')
+    await openFilterSelect(page, 'node-filter-health')
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: '健康' }).first().click()
     await expect(totalText(page)).toContainText('共 8 条')
     await expect(page.getByText('Beta 慢速')).toHaveCount(0)
 
     await page.getByRole('button', { name: '清除筛选' }).click()
-    await openFilterSelect(page, 'node-filter__scheduling')
+    await openFilterSelect(page, 'node-filter-scheduling')
     await page.locator('.el-select-dropdown:visible .el-select-dropdown__item', { hasText: '安全下线' }).first().click()
     await expect(totalText(page)).toContainText('共 1 条')
     await expect(page.getByText('Beta 备用')).toBeVisible()
@@ -415,3 +416,4 @@ test.describe('API 中转 · 下游节点', () => {
     await expect(visibleRows(page)).toHaveCount(10)
   })
 })
+

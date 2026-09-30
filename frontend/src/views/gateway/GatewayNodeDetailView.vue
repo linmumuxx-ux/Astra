@@ -2,25 +2,19 @@
   <GatewayGate>
     <ElContainer direction="vertical" class="gateway-node-page" data-testid="gateway-node-detail">
       <ElHeader class="gateway-node-header">
-        <div class="gateway-node-title">
+        <AstraPageHeader :title="node?.name ?? '节点详情'" :description="node?.base_url ?? '正在加载节点…'" testid="gateway-node-header">
           <RouterLink class="gateway-node-back" to="/gateway/nodes">
             <ArrowLeft :size="14" />节点列表
           </RouterLink>
-          <div class="gateway-node-title__row">
-            <h2>{{ node?.name ?? '节点详情' }}</h2>
-            <ElText type="info" class="gateway-node-mono">{{ node?.id ?? '—' }}</ElText>
-          </div>
-          <ElText type="info">
-            {{ node?.base_url ?? '正在加载节点…' }} · 配置态、健康态与调度态相互独立
-          </ElText>
-        </div>
-        <div v-if="node" class="gateway-node-tags" aria-label="节点状态">
-          <ElTag :type="tagType(healthTone(node.health_state))">{{ healthStateLabel(node.health_state) }}</ElTag>
-          <ElTag :type="tagType(schedulingTone(node.scheduling_state))">{{ schedulingStateLabel(node.scheduling_state) }}</ElTag>
-          <ElTag :type="node.config_state === 'ENABLED' ? 'success' : 'info'">{{ configStateLabel(node.config_state) }}</ElTag>
-          <ElTag effect="plain">{{ poolName(node.pool_id) }}</ElTag>
-        </div>
-        <ElSpace class="gateway-node-actions" :size="8">
+          <ElText type="info" class="gateway-node-mono">{{ node?.id ?? '—' }}</ElText>
+          <span v-if="node" class="gateway-node-states" aria-label="节点状态">
+            <ElTag :type="tagType(healthTone(node.health_state))">{{ healthStateLabel(node.health_state) }}</ElTag>
+            <ElTag :type="tagType(schedulingTone(node.scheduling_state))">{{ schedulingStateLabel(node.scheduling_state) }}</ElTag>
+            <ElTag :type="node.config_state === 'ENABLED' ? 'success' : 'info'">{{ configStateLabel(node.config_state) }}</ElTag>
+            <ElTag effect="plain">{{ poolName(node.pool_id) }}</ElTag>
+          </span>
+          <template #actions>
+            <ElSpace class="gateway-node-actions" :size="8">
           <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-node-refresh" @click="load">刷新</ElButton>
           <ElButton v-if="node" :loading="working" :icon="Activity" data-testid="gateway-node-probe" @click="probe">探测</ElButton>
           <ElButton
@@ -47,7 +41,9 @@
             @click="toggleConfig"
           >{{ node.config_state === 'ENABLED' ? '禁用' : '启用' }}</ElButton>
           <ElButton v-if="node && canManage" type="primary" :icon="Pencil" data-testid="gateway-node-edit" @click="openEditor">编辑</ElButton>
-        </ElSpace>
+            </ElSpace>
+          </template>
+        </AstraPageHeader>
       </ElHeader>
 
       <ElMain class="gateway-node-body">
@@ -509,6 +505,7 @@ import {
   type GatewayScopeStats,
   type GatewayStatsWindow,
 } from '@/api/gateway'
+import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { useGatewayAuth } from '@/composables/useGatewayAuth'
@@ -860,16 +857,14 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.gateway-node-page { height: calc(100vh - 68px); overflow: hidden; background: var(--astra-bg-base); }
-.gateway-node-header { --el-header-height: auto; --el-header-padding: 0; display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--astra-border); background: var(--astra-bg-panel); }
-.gateway-node-title { display: grid; min-width: 0; gap: 3px; margin-right: auto; }
+.gateway-node-page { height: calc(100vh - 68px); padding: 16px 24px 18px; overflow: hidden; background: var(--astra-bg-base); }
+/* 标题区由 AstraPageHeader 渲染，页面上边距统一由 .gateway-node-page 提供。 */
+.gateway-node-header { --el-header-height: auto; --el-header-padding: 0; flex: none; }
 .gateway-node-back { display: inline-flex; align-items: center; gap: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
 .gateway-node-back:hover { color: var(--astra-primary-bright); }
-.gateway-node-title__row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.gateway-node-title h2 { margin: 0; color: var(--astra-text-primary); font-size: var(--astra-font-section); line-height: normal; }
-.gateway-node-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gateway-node-states { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .gateway-node-actions { flex: none; }
-.gateway-node-body { --el-main-padding: 16px 24px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.gateway-node-body { --el-main-padding: 0; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 12px; overflow: hidden; }
 .gateway-node-state { flex: none; min-height: 200px; }
 .gateway-node-layout { flex: 1 1 auto; min-height: 0; }
 .gateway-node-nav { --el-aside-width: 168px; overflow: visible; }

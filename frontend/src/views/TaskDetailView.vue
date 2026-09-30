@@ -144,7 +144,7 @@ onBeforeUnmount(() => { clearInterval(timer); events?.close() })
 </script>
 
 <style scoped>
-.task-detail{--el-border-color-lighter:var(--astra-border);height:calc(100vh - 69px);min-height:600px;overflow:hidden}
+.task-detail{--el-border-color-lighter:var(--astra-border);height:calc(100vh - 68px);min-height:600px;overflow:hidden}
 .task-header{--el-header-height:auto;display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
 .task-title{flex:1;min-width:200px;display:grid;gap:3px}
 .task-title h1{margin:0;font-size:var(--astra-font-section);line-height:normal}
