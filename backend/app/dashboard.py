@@ -264,7 +264,7 @@ def _activity_copy(
         return "task_started", f"开始执行：{title}"
     if event.event_type == "TASK_SUCCEEDED":
         return "task_completed", f"完成任务：{title}"
-    if event.event_type in {"TASK_FAILED", "EXECUTION_ERROR"}:
+    if event.event_type in {"TASK_FAILED"}:
         return "task_failed", f"任务失败：{title}"
     return "waiting_human", f"等待人工确认：{title}"
 
@@ -298,3 +298,4 @@ async def dashboard_activity(session: AsyncSession) -> dict:
             }
         )
     return {"items": items}
+

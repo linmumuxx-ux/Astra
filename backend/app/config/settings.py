@@ -87,10 +87,6 @@ class Settings(BaseSettings):
     # freshly submitted prompt must never be classified as failed.
     opencode_no_reply_grace_seconds: int = Field(default=15, ge=1, le=3600)
     opencode_reconcile_interval_seconds: int = Field(default=10, ge=2, le=300)
-    task_review_reconcile_interval_seconds: int = Field(default=30, ge=5, le=3600)
-    # Upper bound on background recovery/repair coroutines so a backlog cannot
-    # spawn unlimited concurrent OpenCode requests.
-    supervisor_max_concurrency: int = Field(default=4, ge=1, le=32)
     # restart must never start a second Session while the old one can still
     # write to the shared task workspace.
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)

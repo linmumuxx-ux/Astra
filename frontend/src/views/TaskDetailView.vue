@@ -13,9 +13,10 @@
       </ElSelect>
       <div class="task-header__actions">
         <ElButton v-if="!task.current_session_id && !task.pending_message_id" type="primary" :disabled="busy" @click="action('start')">启动任务</ElButton>
-        <ElButton v-if="awaitingConfirmation" type="primary" :disabled="busy" @click="action('confirm')">确认完成</ElButton>
-        <ElButton v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" :type="awaitingConfirmation ? 'danger' : ''" :disabled="busy" @click="action('stop')">{{ awaitingConfirmation ? '取消任务' : '停止' }}</ElButton>
+        <ElButton v-if="canFinish" type="primary" :disabled="busy" @click="action('confirm')">确认完成</ElButton>
+        <ElButton v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" type="danger" :disabled="busy" @click="action('stop')">终止任务</ElButton>
         <ElButton v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" :disabled="busy" @click="action('restart')">重新开始（新 Session）</ElButton>
+        <ElButton v-if="task.workspace" @click="openChanges">代码变更</ElButton>
         <ElButton :icon="Info" @click="showInfo = true">任务信息</ElButton>
       </div>
     </ElHeader>
@@ -39,13 +40,26 @@
       <ElEmpty v-else-if="binding" :image-size="80" :description="task?.current_session_id ? 'Session 绑定异常，请重连检查；系统不会自动创建新 Session。' : '任务尚未创建 Session，请先启动任务。'" />
     </ElMain>
 
+    <ElDrawer v-model="showChanges" title="代码变更" size="min(800px, 100%)">
+      <ElTabs v-model="changeMode" @tab-change="loadChanges">
+        <ElTabPane label="任务累计变更" name="task" />
+        <ElTabPane label="当前未提交" name="git" />
+      </ElTabs>
+      <ElAlert v-if="changesError" type="error" :title="changesError" :closable="false" />
+      <ElText v-if="changesLoading">正在读取 Git 变更…</ElText>
+      <ElEmpty v-else-if="!changesError && !changes.length" description="暂无代码变更" />
+      <ElCollapse v-else>
+        <ElCollapseItem v-for="item in changes" :key="item.file" :title="`${item.file}  +${item.additions} / -${item.deletions}`">
+          <pre class="task-diff">{{ item.patch || '二进制文件或无文本差异' }}</pre>
+        </ElCollapseItem>
+      </ElCollapse>
+    </ElDrawer>
     <ElDrawer v-if="task" v-model="showInfo" class="task-info" title="任务信息" size="min(480px, 100%)">
       <ElDescriptions :column="1" border size="small">
         <ElDescriptionsItem label="任务编号">{{ task.id }}</ElDescriptionsItem>
         <ElDescriptionsItem label="任务类型">{{ taskTypeLabel(task.task_type) }}</ElDescriptionsItem>
         <ElDescriptionsItem label="任务分类">{{ categoryName }}</ElDescriptionsItem>
         <ElDescriptionsItem label="优先级">{{ priorityLabel(task.priority) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="完成策略">{{ completionPolicyLabel }}</ElDescriptionsItem>
         <ElDescriptionsItem label="执行员工">{{ employeeName }}</ElDescriptionsItem>
         <ElDescriptionsItem label="当前状态">{{ task.runtime_status_label }}</ElDescriptionsItem>
         <ElDescriptionsItem label="创建时间">{{ formatTime(task.created_at) }}</ElDescriptionsItem>
@@ -67,7 +81,7 @@
 import { ArrowLeft, Info } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ElAlert, ElButton, ElContainer, ElDescriptions, ElDescriptionsItem, ElDrawer, ElEmpty, ElHeader, ElMain, ElOption, ElSelect, ElTag, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElContainer, ElDescriptions, ElDescriptionsItem, ElDrawer, ElEmpty, ElHeader, ElMain, ElOption, ElSelect, ElTabPane, ElTabs, ElTag, ElText } from 'element-plus'
 import { api } from '@/api/client'
 import type { Task, TaskWorkspaceBinding } from '@/api/types'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
@@ -78,7 +92,7 @@ const route = useRoute()
 const store = useAstraStore()
 const task = ref<Task | null>(null)
 const binding = ref<TaskWorkspaceBinding | null>(null)
-const repo = ref<{ name: string; branch: string; commit: string; dirty: boolean; changes: number } | null>(null)
+const repo = ref<{ name: string; branch: string; commit: string; dirty: boolean; changes: number; task_changes?: { changed_files?: number; commits?: string[] } } | null>(null)
 const selectedSession = ref('')
 const error = ref('')
 const busy = ref(false)
@@ -90,16 +104,40 @@ const employeeName = computed(() => {
   return employee ? employeeDisplayName(employee.name) : '未分配员工'
 })
 const categoryName = computed(() => store.categories.find(item => item.id === task.value?.category_id)?.name ?? '未分类')
-const completionPolicyLabel = computed(() => task.value?.completion_policy === 'MANUAL_CONFIRM' ? '需人工确认' : '员工提交后自动完成')
 const repoSummary = computed(() => repo.value
-  ? `${repo.value.name} / ${repo.value.branch || 'detached'} · ${repo.value.commit?.slice(0, 8)} · ${repo.value.dirty ? `${repo.value.changes} 个变更` : '干净'}`
+  ? `${repo.value.name} / ${repo.value.branch || 'detached'} · ${repo.value.commit?.slice(0, 8)} · 累计 ${repo.value.task_changes?.changed_files ?? 0} 个文件 / ${repo.value.task_changes?.commits?.length ?? 0} 次提交 · 未提交 ${repo.value.changes}`
   : '')
-const awaitingConfirmation = computed(() =>
-  task.value?.completion_policy === 'MANUAL_CONFIRM' &&
-  task.value?.status === 'WAITING' &&
-  Boolean(task.value?.submitted_at) &&
-  !task.value?.confirmed_at,
-)
+const canFinish = computed(() => task.value?.current_session_id &&
+  ['RUNNING', 'WAITING', 'FAILED'].includes(task.value.status) && !task.value.pending_message_id)
+const showChanges = ref(false)
+const changesLoading = ref(false)
+const changesError = ref('')
+const changeMode = ref('task')
+const changes = ref<Array<{ file: string; patch: string; additions: number; deletions: number }>>([])
+async function loadRepo(id: string) {
+  try {
+    const value = await api.taskRepo(id)
+    if (id === String(route.params.id)) repo.value = value
+  } catch { if (id === String(route.params.id)) repo.value = null }
+}
+async function loadChanges() {
+  if (!task.value?.current_session_id) return
+  const id = String(route.params.id)
+  const mode = changeMode.value
+  changesLoading.value = true; changesError.value = ''
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_BASE ?? ''}/api/tasks/${encodeURIComponent(id)}/opencode/${encodeURIComponent(task.value.current_session_id)}/vcs/diff?mode=${mode}`)
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || '代码变更读取失败')
+    if (id === String(route.params.id) && mode === changeMode.value) changes.value = data
+    if (id === String(route.params.id)) void loadRepo(id)
+  } catch (reason) {
+    if (id === String(route.params.id) && mode === changeMode.value) changesError.value = reason instanceof Error ? reason.message : '代码变更读取失败'
+  } finally {
+    if (id === String(route.params.id) && mode === changeMode.value) changesLoading.value = false
+  }
+}
+async function openChanges() { showChanges.value = true; await loadChanges() }
 const selectedSessionBinding = computed(() => binding.value?.sessions.find(item => item.id === selectedSession.value))
 const frameUrl = computed(() => {
   if (!selectedSession.value) return ''
@@ -114,7 +152,6 @@ const duration = computed(() => {
 })
 
 let timer: ReturnType<typeof setInterval> | undefined
-let events: EventSource | undefined
 async function load() {
   const id = String(route.params.id)
   try {
@@ -123,9 +160,9 @@ async function load() {
     task.value = nextTask; binding.value = nextBinding
     if (!nextBinding.sessions.some(item => item.id === selectedSession.value)) selectedSession.value = nextTask.current_session_id || ''
     error.value = ''
-    if (nextTask.workspace) api.taskRepo(id).then(value => { repo.value = value }).catch(() => { repo.value = null })
+    if (nextTask.workspace) void loadRepo(id)
     else repo.value = null
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : '任务加载失败' }
+  } catch (reason) { if (id === String(route.params.id)) error.value = reason instanceof Error ? reason.message : '任务加载失败' }
 }
 async function action(name: string) {
   busy.value = true
@@ -137,10 +174,11 @@ async function reconnect() { await action('reconnect'); frameKey.value++ }
 watch(() => route.params.id, () => { selectedSession.value = ''; void load() }, { immediate: true })
 onMounted(() => {
   timer = setInterval(() => { now.value = Date.now() }, 1000)
-  events = new EventSource(`${import.meta.env.VITE_API_BASE ?? ''}/api/events/stream`)
-  events.addEventListener('update', event => { const value = JSON.parse((event as MessageEvent).data); if (value.task_id === route.params.id) void load() })
+  store.connectEvents()
 })
-onBeforeUnmount(() => { clearInterval(timer); events?.close() })
+watch(() => store.lastEvent, event => { if (event?.task_id === route.params.id) void load() })
+watch(() => store.realtimeConnected, connected => { if (connected) void load() })
+onBeforeUnmount(() => { clearInterval(timer) })
 </script>
 
 <style scoped>
@@ -160,4 +198,5 @@ onBeforeUnmount(() => { clearInterval(timer); events?.close() })
 .task-info__paragraph{margin:0;white-space:pre-line;line-height:1.6}
 .task-info__criteria{margin:0;padding-left:18px;display:grid;gap:4px;line-height:1.6}
 .task-info__path{overflow-wrap:anywhere}
+.task-diff{white-space:pre;overflow:auto;font-family:monospace;font-size:12px}
 </style>

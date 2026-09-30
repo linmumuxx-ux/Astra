@@ -311,7 +311,6 @@ test('Git 状态与任务信息抽屉：仓库标签、业务字段与 Session �
     ['任务编号', 'T-SESSIONS'],
     ['任务类型', '问题'],
     ['优先级', '中'],
-    ['完成策略', '员工提交后自动完成'],
     ['执行员工', '员工-01'],
     ['当前状态', '执行中'],
     ['工作目录', workspace],
@@ -406,7 +405,7 @@ test('待确认输入：warning 告警提供核对并重试入口，retry-submis
   expect(await request.postDataJSON()).toEqual({})
 
   await expect(alert).toHaveCount(0)
-  await expect(detail.getByRole('button', { name: '停止' })).toBeVisible()
+  await expect(detail.getByRole('button', { name: '终止任务' })).toBeVisible()
   await expect(frame.locator('#workspace-marker')).toHaveText('task=T-PENDING session=ses_p1 version=1.18.31')
   expect(posts.map(item => item.pathname)).toEqual(['/api/tasks/T-PENDING/retry-submission'])
   expect(errors).toEqual([])
@@ -446,3 +445,4 @@ test('跨任务隔离：切换历史 Session 后经列表进入另一任务，Se
   expect(posts).toEqual([])
   expect(errors).toEqual([])
 })
+

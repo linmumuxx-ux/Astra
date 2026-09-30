@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import shlex
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -12,6 +14,8 @@ from app.domain import ExecutionMode
 from app.models import RuntimeSession
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.session_connection import resolve_environment
+from app.runtime.ssh_client import _run_blocking
+from app.runtime.workspace_files import MAX_UPLOAD, validate_path
 
 
 async def _git(environment, workspace: str, *args: str) -> tuple[int, str]:
@@ -41,22 +45,13 @@ async def workspace_head_commit(environment, workspace: str) -> str | None:
         return None
 
 
-def _status_path(line: str) -> tuple[str, str] | None:
-    if len(line) < 4:
-        return None
-    status = line[:2]
-    path = line[3:]
-    if " -> " in path:
-        path = path.split(" -> ", 1)[1]
-    return status, path
-
-
-async def _task_baseline(session, task_id: str) -> str | None:
+async def _task_baseline(session, task_id: str, workspace: str | None = None) -> str | None:
     return await session.scalar(
         select(RuntimeSession.workspace_base_commit)
         .where(
             RuntimeSession.task_id == task_id,
             RuntimeSession.workspace_base_commit.is_not(None),
+            *([RuntimeSession.workspace == workspace] if workspace else []),
         )
         .order_by(RuntimeSession.created_at, RuntimeSession.id)
         .limit(1)
@@ -78,20 +73,22 @@ async def collect_workspace_changes(session, task) -> dict:
         added: set[str] = set()
         deleted: set[str] = set()
 
-        code, porcelain = await _git(environment, task.workspace, "status", "--porcelain=v1")
+        code, porcelain = await _git(
+            environment, task.workspace, "status", "--porcelain=v1", "-z",
+            "--no-renames", "--untracked-files=all",
+        )
         if code == 0:
-            for line in porcelain.splitlines():
-                parsed = _status_path(line)
-                if not parsed:
+            for entry in porcelain.split("\0"):
+                if len(entry) < 4:
                     continue
-                status, path = parsed
+                status, path = entry[:2], entry[3:]
                 files.add(path)
                 if "?" in status or "A" in status:
                     added.add(path)
                 if "D" in status:
                     deleted.add(path)
 
-        baseline = await _task_baseline(session, task.id)
+        baseline = await _task_baseline(session, task.id, task.workspace)
         commits: list[str] = []
         if baseline:
             code, raw_commits = await _git(
@@ -110,14 +107,12 @@ async def collect_workspace_changes(session, task) -> dict:
                 "diff",
                 "--name-status",
                 "--no-renames",
+                "-z",
                 f"{baseline}..HEAD",
             )
             if diff_code == 0:
-                for line in changed.splitlines():
-                    parts = line.split("\t", 1)
-                    if len(parts) != 2:
-                        continue
-                    status, path = parts
+                entries = changed.split("\0")
+                for status, path in zip(entries[::2], entries[1::2], strict=False):
                     if not path:
                         continue
                     files.add(path)
@@ -140,3 +135,92 @@ async def collect_workspace_changes(session, task) -> dict:
         # Summary generation must never change a valid Session outcome merely
         # because the Workspace is no longer reachable.
         return {}
+
+
+async def _working_text(environment, workspace: str, file: str) -> str:
+    relative = await validate_path(environment, workspace, file)
+    if environment.mode == ExecutionMode.LOCAL:
+        target = Path(workspace) / relative
+        if not target.is_file():
+            return ""
+        if target.stat().st_size > MAX_UPLOAD:
+            raise ValueError("Diff 文件不能超过 20 MB")
+        data = await asyncio.to_thread(target.read_bytes)
+    else:
+        ssh = await ExecutionEnvironmentRuntime(get_settings()).open_session(environment)
+        try:
+            def read():
+                with ssh._client.open_sftp() as sftp:
+                    target = f"{workspace}/{relative}"
+                    try:
+                        size = sftp.stat(target).st_size
+                    except FileNotFoundError:
+                        return b""
+                    if size > MAX_UPLOAD:
+                        raise ValueError("Diff 文件不能超过 20 MB")
+                    with sftp.open(target, "rb") as stream:
+                        return stream.read(MAX_UPLOAD + 1)
+            data = await _run_blocking(read)
+        finally:
+            await ssh.close()
+    if len(data) > MAX_UPLOAD:
+        raise ValueError("Diff 文件不能超过 20 MB")
+    return data.decode("utf-8", errors="replace")
+
+
+async def workspace_diff(
+    session, task, *, cumulative: bool = True, directory: str | None = None,
+    environment=None, workspace: str | None = None,
+) -> list[dict]:
+    """Native diff shape, read directly from the bound Git worktree on either host."""
+    environment = environment or await resolve_environment(session, task)
+    workspace = workspace or task.workspace
+    baseline = await _task_baseline(session, task.id, workspace) if cumulative else None
+    await session.commit()
+    code, _ = await _git(environment, workspace, "rev-parse", "--is-inside-work-tree")
+    if code:
+        return []
+    revision = baseline or "HEAD"
+    path = await validate_path(environment, workspace, directory or ".")
+    code, stats = await _git(
+        environment, workspace, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+        "--numstat", "-z", revision, "--", path,
+    )
+    if code:
+        raise ValueError("任务 Git 基线不可读取，无法展示累计变更")
+    files: dict[str, tuple[int, int]] = {}
+    for entry in stats.split("\0"):
+        fields = entry.split("\t", 2)
+        if len(fields) == 3:
+            additions, deletions, file = fields
+            files[file] = (int(additions) if additions.isdigit() else 0,
+                           int(deletions) if deletions.isdigit() else 0)
+    code, untracked = await _git(environment, workspace, "ls-files", "--others", "--exclude-standard", "-z",
+                                 "--", path)
+    if code == 0:
+        for file in untracked.split("\0"):
+            if file:
+                files.setdefault(file, (0, 0))
+    result = []
+    for file, (additions, deletions) in sorted(files.items()):
+        # Never read a worktree symlink into another project.
+        await validate_path(environment, workspace, file)
+        before_code, before = await _git(environment, workspace, "show", f"{revision}:{file}")
+        after = await _working_text(environment, workspace, file)
+        patch_code, patch = await _git(
+            environment, workspace, "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+            "--no-renames", revision, "--", file,
+        )
+        if patch_code:
+            raise ValueError("Git Diff 读取失败")
+        if before_code and after:
+            before = ""
+            additions = len(after.splitlines())
+            patch = "".join(difflib.unified_diff([], after.splitlines(keepends=True),
+                                               fromfile="/dev/null", tofile=f"b/{file}"))
+        _, name_status = await _git(environment, workspace, "diff", "--no-renames", "--name-status",
+                                    "-z", revision, "--", file)
+        status = "added" if before_code else "deleted" if name_status.startswith("D\0") else "modified"
+        result.append({"file": file, "patch": patch, "before": before, "after": after,
+                       "additions": additions, "deletions": deletions, "status": status})
+    return result

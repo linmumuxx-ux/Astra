@@ -127,7 +127,7 @@ class Task(RuntimeProjection, Base):
     attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     priority: Mapped[str] = mapped_column(String(16), default="MEDIUM")
     priority_weight: Mapped[int] = mapped_column(Integer, default=2)
-    completion_policy: Mapped[str] = mapped_column(String(32), default="AUTO")
+    completion_policy: Mapped[str] = mapped_column(String(32), default="MANUAL_CONFIRM")
     status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
     workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -494,3 +494,4 @@ class KnowledgeAudit(Base):
     actor_role: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+

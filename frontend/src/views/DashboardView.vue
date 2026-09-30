@@ -274,9 +274,9 @@ function teamSummary(team: DashboardTeam) {
 }
 
 function taskTone(status: string) {
-  if (['WAIT_HUMAN', 'SUSPENDED', 'PENDING_CONFIRMATION'].includes(status)) return 'waiting'
-  if (['FAILED', 'EXECUTION_ERROR'].includes(status)) return 'error'
-  if (status === 'COMPLETED') return 'success'
+  if (status === 'WAITING') return 'waiting'
+  if (status === 'FAILED') return 'error'
+  if (status === 'SUCCEEDED') return 'success'
   if (status === 'RUNNING') return 'working'
   return 'neutral'
 }
@@ -337,3 +337,4 @@ onBeforeUnmount(() => {
 @keyframes dashboard-shimmer{to{background-position:-200% 0}}
 @media(max-width:1280px){.dashboard-page{padding-inline:22px}.space-summary{gap:16px}.space-summary__health{width:190px}.summary-metrics>a{min-width:104px;padding-inline:14px}.dashboard-core{grid-template-columns:minmax(0,3fr) minmax(360px,2fr)}.employee-team__members{grid-template-columns:repeat(2,minmax(0,1fr))}.library-scene{grid-template-columns:64px 230px minmax(280px,1fr) 140px}}
 </style>
+

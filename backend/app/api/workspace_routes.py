@@ -22,6 +22,7 @@ from app.executors.errors import OpenCodeSessionNotFound
 from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment, session_tree
+from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
 from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
 from app.schemas import TaskRead
 
@@ -320,8 +321,26 @@ async def native_proxy(
             raise error_response(exc) from exc
         directory = requested_path
     method = request.method
+    if method == "GET" and native_path in {"/vcs/diff", "/vcs/diff/raw"}:
+        try:
+            # `git` is the native uncommitted view; the explicit task view also
+            # includes commits since this workspace's first Session baseline.
+            mode = request.query_params.get("mode", "task")
+            if mode not in {"git", "task"}:
+                raise ValueError("不支持的 Diff 模式")
+            diffs = await workspace_diff(
+                session, task, cumulative=mode == "task", directory=directory,
+                environment=environment, workspace=workspace,
+            )
+            if native_path.endswith("/raw"):
+                return Response("".join(item["patch"] for item in diffs), media_type="text/x-diff")
+            return diffs
+        except Exception as exc:
+            raise error_response(exc) from exc
     match = SESSION_READ.fullmatch(native_path) if method == "GET" else SESSION_WRITE.fullmatch(native_path)
     reply = REPLY.fullmatch(native_path) if method == "POST" else None
+    if method != "GET" and task.status in {"SUCCEEDED", "CANCELED"}:
+        raise HTTPException(409, "任务已结束；请显式重新开始")
     if method != "GET" and session_id != task.current_session_id:
         raise HTTPException(403, "历史 Session 只读")
     if method == "GET" and native_path in {"/global/event", "/event"}:
@@ -360,7 +379,7 @@ async def native_proxy(
                 )
                 return Response(status_code=204)
             if native_path.endswith("/abort") and method == "POST":
-                await RuntimeService(session).stop(task.id)
+                await RuntimeService(session).stop(task.id, cancel_task=False)
                 return True
             if native_path == "/pty":
                 return []  # Arbitrary terminals are outside the task-scoped API boundary.
@@ -489,7 +508,7 @@ async def task_repo(task_id: str, session=Depends(get_session)):
 
     commit = await git("rev-parse", "HEAD")
     branch = await git("branch", "--show-current")
-    changes = await git("status", "--porcelain")
+    changes = await git("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
     origin = await git("config", "--get", "remote.origin.url")
     common_dir = await git("rev-parse", "--path-format=absolute", "--git-common-dir")
     name = (
@@ -497,10 +516,12 @@ async def task_repo(task_id: str, session=Depends(get_session)):
         if origin
         else Path(common_dir).parent.name if common_dir else Path(task.workspace).name
     )
+    task_changes = await collect_workspace_changes(session, task)
     return {
         "name": name,
         "branch": branch,
         "commit": commit,
         "dirty": bool(changes),
-        "changes": len(changes.splitlines()),
+        "changes": sum(bool(entry) for entry in changes.split("\0")),
+        "task_changes": task_changes,
     }

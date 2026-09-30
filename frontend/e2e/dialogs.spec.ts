@@ -152,7 +152,7 @@ test('创建任务必填校验拦截提交并在字段下显示错误', async ({
   await drawer.getByRole('button', { name: '创建任务', exact: true }).click()
   await expect(drawer.getByText('请输入任务标题')).toBeVisible()
   await expect(drawer.getByText('请输入任务描述')).toBeVisible()
-  await expect(drawer.getByText('请输入验收标准内容')).toBeVisible()
+  await expect(drawer.getByText('请输入验收标准内容')).toHaveCount(0)
   await expect(drawer).toBeVisible()
   expect(createRequests).toEqual([])
 })

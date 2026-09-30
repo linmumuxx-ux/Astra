@@ -41,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { BellRing, CheckCircle2, ChevronRight, CircleAlert, FileCheck2, TriangleAlert, X } from 'lucide-vue-next'
+import { BellRing, CheckCircle2, ChevronRight, CircleAlert, TriangleAlert, X } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { AstraEvent, Task } from '@/api/types'
@@ -59,19 +59,17 @@ const triggerLabel = computed(() => pinned.value
   ? '收起通知面板'
   : panelOpen.value ? '固定通知面板' : `展开通知面板，${unreadCount.value} 条需要关注`)
 let compactMedia: MediaQueryList | undefined
-const notificationTypes = new Set(['WAIT_HUMAN', 'RESULT_SUBMITTED', 'TASK_COMPLETED', 'EXECUTION_ERROR', 'TASK_FAILED'])
+const notificationTypes = new Set(['TASK_WAITING', 'TASK_SUCCEEDED', 'TASK_FAILED'])
 const notifications = computed(() => props.events
   .filter((event) => notificationTypes.has(event.event_type))
   .slice(0, 12)
   .map((event) => {
     const task = props.tasks.find((item) => item.id === event.task_id)
     const config = ({
-      WAIT_HUMAN: { title: '等待人工处理', icon: CircleAlert, tone: 'warning' },
-      RESULT_SUBMITTED: { title: '任务结果已生成', icon: FileCheck2, tone: 'success' },
-      TASK_COMPLETED: { title: '任务已完成', icon: CheckCircle2, tone: 'success' },
-      EXECUTION_ERROR: { title: '运行出现异常', icon: TriangleAlert, tone: 'danger' },
+      TASK_WAITING: { title: '等待人工处理', icon: CircleAlert, tone: 'warning' },
+      TASK_SUCCEEDED: { title: '任务已完成', icon: CheckCircle2, tone: 'success' },
       TASK_FAILED: { title: '任务未完成', icon: TriangleAlert, tone: 'danger' },
-    } as const)[event.event_type as 'WAIT_HUMAN' | 'RESULT_SUBMITTED' | 'TASK_COMPLETED' | 'EXECUTION_ERROR' | 'TASK_FAILED']
+    } as const)[event.event_type as 'TASK_WAITING' | 'TASK_SUCCEEDED' | 'TASK_FAILED']
     return { id: String(event.id), title: config?.title ?? '业务消息', icon: config?.icon ?? BellRing, tone: config?.tone ?? 'normal', description: task?.title ?? (platformCopy(event.message) || '任务状态已更新'), createdAt: event.created_at, href: event.task_id ? `/tasks/${event.task_id}` : '/interventions' }
   }))
 const unreadCount = computed(() => notifications.value.filter((item) => !readIds.has(item.id)).length)
@@ -109,3 +107,4 @@ onBeforeUnmount(() => compactMedia?.removeEventListener('change', syncCompactVie
 @media(max-width:1100px){.notification-panel,.notification-panel[data-open='true']{width:100%;height:340px;border-radius:16px;background:rgba(255,255,255,.9)}.notification-panel__trigger{display:none}.notification-panel__content{width:100%;opacity:1;visibility:visible;pointer-events:auto;transform:none}.notification-panel__content>header{padding-right:15px}}
 @media(prefers-reduced-motion:reduce){.notification-panel,.notification-panel__trigger,.notification-panel__content{transition:none}}
 </style>
+

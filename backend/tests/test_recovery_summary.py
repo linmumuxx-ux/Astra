@@ -195,10 +195,25 @@ async def test_old_session_and_old_round_cannot_overwrite(factory):
         assert summary.content_md == "新 Session 总结" and summary.primary_session_id == "ses_2"
 
 
-async def test_manual_confirmation_needs_no_summary(factory):
+async def test_manual_confirmation_needs_no_summary(factory, monkeypatch):
+    class IdleNative:
+        async def session(self, *args): return {"id": "ses_1"}
+        async def status(self, *args): return "idle"
+        async def children(self, *args): return []
+        async def questions(self, *args): return []
+        async def permissions(self, *args): return []
+        async def messages(self, *args): return []
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        yield IdleNative()
+    monkeypatch.setattr("app.runtime.lifecycle.connect", connect)
+    monkeypatch.setattr(
+        "app.runtime.lifecycle.resolve_environment", AsyncMock(return_value=SimpleNamespace())
+    )
     async with factory() as session:
         task = await session.get(Task, "T1")
         task.status = "WAITING"
+        task.workspace = "/bound"
         task.completion_policy = "MANUAL_CONFIRM"
         task.submitted_at = datetime.now(UTC)
         await session.commit()

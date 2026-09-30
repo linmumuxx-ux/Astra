@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -150,86 +151,27 @@ async def test_old_session_error_event_does_not_fail_new_running_round(
     assert task.failure_reason == "old round failed"
 
 
-async def test_slow_artifact_repair_does_not_block_session_discovery(
-    monkeypatch, session_factory
-):
+async def test_supervisor_watches_waiting_task_without_automatic_review(monkeypatch, session_factory):
     async with session_factory() as session:
-        session.add(
-            Task(
-                id="T1",
-                task_type="ISSUE",
-                title="t",
-                status="RUNNING",
-                current_session_id="ses_1",
-                workspace="/tmp/ws",
-            )
-        )
+        session.add(Task(id="T1", task_type="ISSUE", title="t", status="WAITING",
+                         current_session_id="ses_current", workspace="/tmp/ws",
+                         submitted_at=datetime.now(UTC)))
         await session.commit()
-
     monkeypatch.setattr(recovery, "SessionLocal", session_factory)
-    monkeypatch.setattr(recovery, "SUPERVISOR_INTERVAL_SECONDS", 0.05)
-
-    async def noop_refresh(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr(recovery, "refresh_sessions", noop_refresh)
-
     started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def slow_reconcile(*args, **kwargs):
+    async def watch(task_id):
+        assert task_id == "T1"
         started.set()
-        await release.wait()
-        return []
-
-    monkeypatch.setattr(recovery, "reconcile_task_reviews", slow_reconcile)
-
-    discovered: list[str] = []
-    watcher_started = asyncio.Event()
-
-    async def fake_watch(task_id):
-        discovered.append(task_id)
-        if task_id == "T2":
-            watcher_started.set()
         await asyncio.Event().wait()
-
-    monkeypatch.setattr(recovery, "watch_session", fake_watch)
-
+    monkeypatch.setattr(recovery, "watch_session", watch)
     supervisor = asyncio.create_task(recovery.supervise_sessions())
-    await asyncio.wait_for(started.wait(), timeout=2)
-
-    # A new Task must still be discovered while the repair stays blocked.
-    async with session_factory() as session:
-        session.add(
-            Task(
-                id="T2",
-                task_type="ISSUE",
-                title="t2",
-                status="RUNNING",
-                current_session_id="ses_2",
-                workspace="/tmp/ws",
-            )
-        )
-        await session.commit()
-
-    await asyncio.wait_for(watcher_started.wait(), timeout=2)
-    assert "T1" in discovered
-    assert "T2" in discovered
-    assert not release.is_set()
-
-    release.set()
+    await asyncio.wait_for(started.wait(), 2)
+    assert not hasattr(recovery, "reconcile_task_reviews")
     supervisor.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await supervisor
+    await asyncio.gather(supervisor, return_exceptions=True)
 
 
 async def test_supervisor_survives_transient_db_failure(monkeypatch, session_factory):
-    async def noop(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr(recovery, "refresh_sessions", noop)
-    monkeypatch.setattr(recovery, "reconcile_task_reviews", noop)
-
     real_asyncio = asyncio
     delays = []
 
@@ -252,6 +194,7 @@ async def test_supervisor_survives_transient_db_failure(monkeypatch, session_fac
     )
 
     calls = {"count": 0}
+    recovered = real_asyncio.Event()
 
     class UnavailableSession:
         async def __aenter__(self):
@@ -264,6 +207,8 @@ async def test_supervisor_survives_transient_db_failure(monkeypatch, session_fac
         def __call__(self):
             index = calls["count"]
             calls["count"] += 1
+            if calls["count"] >= 5:
+                recovered.set()
             if index < 2:
                 return UnavailableSession()
             return session_factory()
@@ -271,15 +216,13 @@ async def test_supervisor_survives_transient_db_failure(monkeypatch, session_fac
     monkeypatch.setattr(recovery, "SessionLocal", FlakyFactory())
 
     supervisor = asyncio.create_task(recovery.supervise_sessions())
-    for _ in range(500):
-        await real_asyncio.sleep(0)
-        if calls["count"] >= 5:
-            break
-
-    assert not supervisor.done()
-    supervisor.cancel()
-    with pytest.raises(real_asyncio.CancelledError):
-        await supervisor
+    try:
+        await real_asyncio.wait_for(recovered.wait(), 2)
+        assert not supervisor.done()
+    finally:
+        supervisor.cancel()
+        with pytest.raises(real_asyncio.CancelledError):
+            await supervisor
 
     assert calls["count"] >= 5
     assert len(delays) >= 3

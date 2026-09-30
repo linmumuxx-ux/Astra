@@ -40,13 +40,7 @@
           <ElOption v-for="item in priorities" :key="item" :value="item" :label="`${priorityLabel(item)}：${priorityHint(item)}`" />
         </ElSelect>
       </ElFormItem>
-      <ElFormItem prop="completion_policy">
-        <template #label>完成策略 <FieldHelp label="完成策略" help="很高/高优先级默认人工确认。" /></template>
-        <ElRadioGroup v-model="form.completion_policy">
-          <ElRadio value="AUTO">员工提交后自动完成</ElRadio>
-          <ElRadio value="MANUAL_CONFIRM">需人工确认</ElRadio>
-        </ElRadioGroup>
-      </ElFormItem>
+
 
       <ElDivider content-position="left">任务内容</ElDivider>
 
@@ -60,20 +54,19 @@
         </ElUpload>
       </ElFormItem>
 
-      <ElDivider content-position="left">验收标准</ElDivider>
+      <ElDivider content-position="left">验收标准（可选）</ElDivider>
 
       <ElFormItem
         v-for="(item, index) in form.criteria"
         :key="item.key"
         :label="`验收标准 ${index + 1}`"
         :prop="`criteria.${index}.content`"
-        :rules="criterionRules"
       >
         <div class="criterion-row">
           <ElInput v-model.trim="item.content" :placeholder="`验收标准 ${index + 1}`" />
           <ElButton text bg :icon="ArrowUp" title="上移" :disabled="index === 0" :aria-label="`验收标准 ${index + 1} 上移`" @click="moveCriterion(index, -1)" />
           <ElButton text bg :icon="ArrowDown" title="下移" :disabled="index === form.criteria.length - 1" :aria-label="`验收标准 ${index + 1} 下移`" @click="moveCriterion(index, 1)" />
-          <ElButton text bg type="danger" :icon="Trash2" title="删除" :disabled="form.criteria.length === 1" :aria-label="`删除验收标准 ${index + 1}`" @click="removeCriterion(index)" />
+          <ElButton text bg type="danger" :icon="Trash2" title="删除" :aria-label="`删除验收标准 ${index + 1}`" @click="removeCriterion(index)" />
         </div>
       </ElFormItem>
       <ElFormItem>
@@ -115,10 +108,10 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, Paperclip, Plus, Trash2 } from 'lucide-vue-next'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { ElAlert, ElButton, ElDivider, ElDrawer, ElForm, ElFormItem, ElInput, ElOption, ElRadio, ElRadioButton, ElRadioGroup, ElSelect, ElSpace, ElTag, ElUpload } from 'element-plus'
-import type { FormInstance, FormItemRule, FormRules, UploadFile, UploadFiles, UploadUserFile } from 'element-plus'
+import { ElAlert, ElButton, ElDivider, ElDrawer, ElForm, ElFormItem, ElInput, ElOption, ElRadioButton, ElRadioGroup, ElSelect, ElSpace, ElTag, ElUpload } from 'element-plus'
+import type { FormInstance, FormRules, UploadFile, UploadFiles, UploadUserFile } from 'element-plus'
 import { api } from '@/api/client'
-import type { CompletionPolicy, TaskPriority, TaskType } from '@/api/types'
+import type { TaskPriority, TaskType } from '@/api/types'
 import FieldHelp from '@/components/forms/FieldHelp.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { useAstraStore } from '@/stores/astra'
@@ -140,7 +133,6 @@ const form = reactive({
   task_type: 'ISSUE' as TaskType,
   category_id: store.categories[0]?.id ?? '',
   priority: 'MEDIUM' as TaskPriority,
-  completion_policy: 'AUTO' as CompletionPolicy,
   description: '',
   criteria: [{ key: safeUUID(), content: '' }] as Array<{ key: string; content: string }>,
   employee_id: '',
@@ -151,11 +143,9 @@ const formRules: FormRules = {
   category_id: [{ required: true, message: '请选择任务分类', trigger: 'change' }],
   description: [{ required: true, message: '请输入任务描述', trigger: 'blur' }],
 }
-const criterionRules: FormItemRule[] = [{ required: true, message: '请输入验收标准内容', trigger: 'blur' }]
 
 // 分类默认选中第一项沿用旧表单逻辑；列表数据晚于抽屉打开时补齐。
 watch(() => store.categories.length, () => { if (!form.category_id) form.category_id = store.categories[0]?.id ?? '' })
-watch(() => form.priority, (priority) => { form.completion_policy = ['VERY_HIGH', 'HIGH'].includes(priority) ? 'MANUAL_CONFIRM' : 'AUTO' })
 
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 watch(() => [form.task_type, form.category_id], () => {
@@ -222,9 +212,8 @@ async function submit() {
       task_type: form.task_type,
       category_id: form.category_id,
       priority: form.priority,
-      completion_policy: form.completion_policy,
       description: form.description,
-      acceptance_criteria: form.criteria.map((item) => ({ content: item.content })),
+      acceptance_criteria: form.criteria.filter((item) => item.content.trim()).map((item) => ({ content: item.content })),
       attachments: await attachmentPayload(),
       employee_id: form.employee_id || null,
     })

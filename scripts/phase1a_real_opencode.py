@@ -52,7 +52,7 @@ def configure_environment(root: Path, workspace: Path, port: int, model: str, bi
 
 async def wait_for_terminal(task_id: str, timeout: float) -> str:
     from app.database import SessionLocal
-    from app.models import Task
+    from app.models import RuntimeSession, Task
     from app.runtime.lifecycle import RuntimeService
 
     deadline = time.monotonic() + timeout
@@ -61,9 +61,10 @@ async def wait_for_terminal(task_id: str, timeout: float) -> str:
         async with SessionLocal() as session:
             await RuntimeService(session).refresh(task_id)
             task = await session.get(Task, task_id)
-            status = task.status
-            if status in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                return status
+            binding = await session.get(RuntimeSession, task.current_session_id)
+            status = binding.status
+            if status in {"SUCCEEDED", "FAILED", "INTERRUPTED"}:
+                return task.status
         await asyncio.sleep(2)
     return status
 
@@ -249,7 +250,7 @@ def main() -> int:
     result = asyncio.run(run(args.model, args.opencode, args.keep))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     passed = (
-        result["smoke_task_status"] == "SUCCEEDED"
+        result["smoke_task_status"] == "RUNNING"
         and result.get("session_status") == "SUCCEEDED"
         and result.get("synthetic_context_in_session")
         and result.get("smoke_file") == "PHASE1A_OK"

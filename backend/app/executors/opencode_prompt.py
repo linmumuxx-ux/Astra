@@ -105,8 +105,6 @@ def build_task_prompt(
     intervention_instructions = """
 当任务必须询问使用者、等待业务答案或需要操作授权时，必须使用 OpenCode 原生 question Tool
 或 Permission；收到回答或授权后继续当前 Session。
-当任务目标无法达成、无法验证或需要用户后续处理时，同样必须使用 OpenCode 原生 question Tool
-请求人工介入，不得只在最终文本中声明“未完成 / 无法验证 / 需要后续处理”。
 不要用文本标记、自定义 JSON 或约定字符串伪装成人工阻塞状态。
 """
 
@@ -140,7 +138,8 @@ def build_task_prompt(
 1. 完成了什么；
 2. 关键修改是什么；
 3. 已完成哪些验证。
-若任务无法完成、无法验证或需要后续处理，必须先使用上面的 OpenCode 原生 question Tool
-请求人工介入，不要只用最终文本说明。
+每轮回复后仍可在当前 Session 继续交流。只有使用者明确结束任务，Astra 才关闭业务任务。
+无法完成或无法实测时如实说明；仅在需要使用者回答或授权才能继续时提出原生问题。
 {context_text}{retry_text}
 """
+

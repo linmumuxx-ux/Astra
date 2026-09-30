@@ -21,23 +21,19 @@ import { employeeDisplayName, platformCopy } from '@/utils/format'
 const props = defineProps<{ events: AstraEvent[]; employees: Employee[] }>()
 const emit = defineEmits<{ select: [id: string] }>()
 const router = useRouter()
-const activityTypes = new Set([
-  'TASK_ASSIGNED', 'TASK_QUEUED', 'RUN_DISPATCH_FAILED', 'TASK_RUNNING', 'TASK_SUSPENDED', 'WAIT_HUMAN',
-  'TASK_COMPLETED', 'RESULT_SUBMITTED', 'TASK_FAILED', 'EXECUTION_ERROR', 'EMPLOYEE_STATUS_CHANGED',
-])
+const activityTypes = new Set(['TASK_ASSIGNED', 'TASK_RUNNING', 'TASK_WAITING', 'TASK_SUCCEEDED', 'TASK_CANCELED', 'TASK_FAILED', 'EMPLOYEE_STATUS_CHANGED'])
 const activities = computed(() => props.events
   .filter((event) => activityTypes.has(event.event_type))
   .map((event) => {
     const employee = props.employees.find((item) => item.id === event.employee_id)
     const action = ({
-      TASK_ASSIGNED: '领取了新任务', TASK_QUEUED: '运行已进入队列', RUN_DISPATCH_FAILED: '运行投递失败，等待重试', TASK_RUNNING: '开始处理任务', TASK_SUSPENDED: '暂停了当前任务',
-      WAIT_HUMAN: '等待人工确认', TASK_COMPLETED: '完成了任务', RESULT_SUBMITTED: '生成了任务结果',
-      TASK_FAILED: '任务执行失败', EXECUTION_ERROR: '执行发生异常',
+      TASK_ASSIGNED: '领取了新任务', TASK_RUNNING: '持续工作中', TASK_WAITING: '等待人工处理',
+      TASK_SUCCEEDED: '任务已人工确认完成', TASK_CANCELED: '任务已终止', TASK_FAILED: '任务执行失败',
       EMPLOYEE_STATUS_CHANGED: platformCopy(event.message) || '状态已更新',
     }[event.event_type] ?? platformCopy(event.message))
-    const tone = ['WAIT_HUMAN', 'TASK_SUSPENDED'].includes(event.event_type)
+    const tone = ['TASK_WAITING'].includes(event.event_type)
       ? 'warning'
-      : ['TASK_FAILED', 'EXECUTION_ERROR', 'RUN_DISPATCH_FAILED'].includes(event.event_type) ? 'danger' : 'normal'
+      : ['TASK_FAILED'].includes(event.event_type) ? 'danger' : 'normal'
     return { id: event.id, employeeId: event.employee_id, employeeName: employeeDisplayName(employee?.name ?? (event.employee_id || '系统')), taskId: event.task_id, action, createdAt: event.created_at, tone }
   }))
 
@@ -56,3 +52,4 @@ function formatClock(value: string) {
 @media(max-width:900px){.activity-bar__items button:nth-child(n+4){display:none}.activity-bar{padding-inline:12px}.activity-bar>header{padding-right:10px}.activity-bar__items button{padding-inline:9px}}
 @media(max-width:600px){.activity-bar{width:100%;height:48px;padding-inline:9px;border-radius:0}.activity-bar>header{padding-right:8px}.activity-bar>header>svg{padding:6px}.activity-bar__items button:nth-child(n+2){display:none}.activity-bar__items button{padding-inline:8px}.activity-bar__items strong{max-width:90px}.activity-bar__more{display:none}}
 </style>
+

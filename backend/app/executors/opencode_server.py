@@ -169,7 +169,6 @@ class OpenCodeServerClient:
         body: dict[str, Any] = {
             "title": title,
             "metadata": {"astraRuntime": "opencode_server"},
-            "permission": [{"permission": "*", "pattern": "*", "action": "allow"}],
         }
         model = split_model(model_name)
         if model:
@@ -614,3 +613,4 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
         return errors
 
     
+

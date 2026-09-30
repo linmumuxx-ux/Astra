@@ -29,7 +29,13 @@ test.describe('真实 Task / Session Workspace', () => {
     return response.json()
   }
   async function outcome(request: APIRequestContext, id: string, state: string) {
-    await expect.poll(async () => (await get(request, id)).status, { timeout: 100_000, intervals: [300, 600, 1000] }).toBe(state)
+    await expect.poll(async () => {
+      if (state === 'SUCCEEDED') {
+        const binding = await (await request.get(`/api/tasks/${id}/workspace`)).json()
+        return binding.sessions.find((item: any) => item.current)?.status
+      }
+      return (await get(request, id)).status
+    }, { timeout: 100_000, intervals: [300, 600, 1000] }).toBe(state)
     return get(request, id)
   }
   async function open(page: Page, task: any) {
@@ -84,7 +90,17 @@ test.describe('真实 Task / Session Workspace', () => {
     } })
     expect(response.status()).toBe(201)
     a = await createTask(request, 'Task A', 'Use the question tool to ask "Approve workspace edit?" with option "Approve". Wait for the answer. Then change hello.ts from "before" to "after", append "A changed" to README.md, and reply "A_COMPLETE". Do not commit.')
+    const secondEmployee = `${employee}-b`
+    expect((await request.post('/api/employees', { data: {
+      id: secondEmployee, name: secondEmployee, role: '验收员工', auto_claim: false, auto_execute: false,
+      task_types: ['ISSUE'], category_ids: ['testing-platform'], execution_environment: {
+        mode: 'LOCAL', workspace_root: repo, opencode_server_port: port,
+        opencode_path: process.env.ASTRA_REAL_E2E_BINARY || 'opencode', model_name: model,
+      },
+    } })).status()).toBe(201)
+    const firstEmployee = employee; employee = secondEmployee
     b = await createTask(request, 'Task B', 'Append "B isolated" to README.md. Do not change hello.ts. Do not commit. Reply "B_COMPLETE".')
+    employee = firstEmployee
   })
   test.beforeEach(async ({ page }) => {
     expectedFailure = false
@@ -120,12 +136,12 @@ test.describe('真实 Task / Session Workspace', () => {
     const submit = frame(page).getByRole('button', { name: /Submit|Confirm|提交|确认/ }).last()
     if (await submit.isVisible()) await submit.click()
     a = await outcome(request, a.id, 'SUCCEEDED')
-    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 10_000 })
+    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'RUNNING', { timeout: 10_000 })
     await expect(frame(page).locator('[data-component="text-part"]').filter({ hasText: 'A_COMPLETE' }).last()).toBeVisible()
     expect(readFileSync(join(a.workspace, 'hello.ts'), 'utf8')).toContain('"after"')
   })
 
-  test('2 同一 Session 续聊，SSE 驱动 RUNNING 到 SUCCEEDED，无刷新更新', async ({ page, request }) => {
+  test('2 同一 Session 续聊，单轮结束任务保持 RUNNING', async ({ page, request }) => {
     await open(page, a)
     const binding = await (await request.get(`/api/tasks/${a.id}/workspace`)).json()
     const writes: string[] = []
@@ -141,7 +157,7 @@ test.describe('真实 Task / Session Workspace', () => {
     await prompt.press('Enter')
     await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'RUNNING', { timeout: 10_000 })
     a = await outcome(request, a.id, 'SUCCEEDED')
-    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 10_000 })
+    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'RUNNING', { timeout: 10_000 })
     await expect(frame(page).locator('[data-component="text-part"]').filter({ hasText: 'CONTINUE_COMPLETE' }).last()).toBeVisible()
     // OpenCode 原生样式：Astra 不注入主题覆盖，也不添加自定义身份标签。
     await expect(frame(page).locator('#astra-workspace-theme')).toHaveCount(0)
@@ -211,7 +227,7 @@ test.describe('真实 Task / Session Workspace', () => {
     expect(repoInfo.commit).toBe(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: a.workspace, encoding: 'utf8' }).trim())
     expect(repoInfo.branch).toBe(execFileSync('git', ['branch', '--show-current'], { cwd: a.workspace, encoding: 'utf8' }).trim())
     await expect(page.locator('.repo')).toContainText(repoInfo.commit.slice(0, 8))
-    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'SUCCEEDED')
+    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'RUNNING')
     if (await frame(page).getByRole('button', { name: 'Toggle review', exact: true }).getAttribute('aria-expanded') !== 'true') await frame(page).getByRole('button', { name: 'Toggle review', exact: true }).click()
     await frame(page).getByRole('button', { name: 'Open file', exact: true }).click()
     await expect(frame(page).locator('[data-component="file-tree-v2"]').last()).toBeVisible()
@@ -239,15 +255,15 @@ test.describe('真实 Task / Session Workspace', () => {
     await expect(frame(page).getByText('B_COMPLETE', { exact: true })).toHaveCount(0)
   })
 
-  test('6 原生模型错误投影 FAILED；同一 Session 恢复后清除异常', async ({ page, request }) => {
+  test('6 原生模型错误投影 WAITING；同一 Session 恢复后清除异常', async ({ page, request }) => {
     expectedFailure = true
     await open(page, a)
     const response = await request.post(`/api/tasks/${a.id}/opencode/${a.current_session_id}/session/${a.current_session_id}/prompt_async`, { data: {
       model: { providerID: 'missing-e2e-provider', modelID: 'missing-model' }, parts: [{ type: 'text', text: 'Failure acceptance' }],
     } })
     expect(response.status()).toBe(204)
-    a = await outcome(request, a.id, 'FAILED')
-    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'FAILED', { timeout: 10_000 })
+    a = await outcome(request, a.id, 'WAITING')
+    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'WAITING', { timeout: 10_000 })
     // The provider error text is OpenCode-owned copy; Astra must still surface the
     // failure fact and keep the failed native turn visible in the conversation.
     expect(a.failure_reason).toBeTruthy()
@@ -257,7 +273,7 @@ test.describe('真实 Task / Session Workspace', () => {
       model: { providerID, modelID: rest.join('/') }, parts: [{ type: 'text', text: 'Reply RECOVERED_COMPLETE. No tools.' }],
     } })).status()).toBe(204)
     a = await outcome(request, a.id, 'SUCCEEDED')
-    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 10_000 })
+    await expect(page.locator('.task-header .runtime-status-badge')).toHaveAttribute('data-state', 'RUNNING', { timeout: 10_000 })
     await expect(page.locator('.workspace-alert')).toHaveCount(0)
     await expect(frame(page).locator('[data-component="text-part"]').filter({ hasText: 'RECOVERED_COMPLETE' }).last()).toBeVisible()
   })
@@ -270,7 +286,7 @@ test.describe('真实 Task / Session Workspace', () => {
     expect((await request.post(`/api/tasks/${a.id}/reconnect`)).status()).toBe(503)
     await page.reload()
     await expect(page.locator('.workspace-alert')).toContainText('最后已知状态')
-    expect((await get(request, a.id)).status).toBe('SUCCEEDED')
+    expect((await get(request, a.id)).status).toBe('RUNNING')
     await runServer(request)
     await page.locator('.workspace-alert').getByRole('button', { name: '重连', exact: true }).click()
     await expect(page.locator('.workspace-alert')).toHaveCount(0)
@@ -290,3 +306,4 @@ test.describe('真实 Task / Session Workspace', () => {
     expect((await (await request.get(`/api/tasks/${b.id}/workspace`)).json()).sessions).toHaveLength(1)
   })
 })
+

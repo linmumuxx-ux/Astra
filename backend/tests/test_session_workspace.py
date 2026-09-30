@@ -24,8 +24,8 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.session_connection import prepare_workspace
-from app.runtime.workspace_changes import collect_workspace_changes
+from app.runtime.session_connection import _ensure_remote_workspace, prepare_workspace
+from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
 from app.runtime.workspace_files import (
     materialize_task_attachments,
     same_workspace_path,
@@ -253,7 +253,7 @@ async def test_previous_completed_turn_cannot_complete_new_submission(runtime):
         }
     )
     await r.service.refresh("T1")
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
 
 
 async def test_manual_confirm_waits_for_business_confirmation(runtime):
@@ -267,10 +267,10 @@ async def test_manual_confirm_waits_for_business_confirmation(runtime):
     session = await r.session.get(RuntimeSession, "ses_current")
     employee = await r.session.get(DigitalEmployee, "E1")
     assert session.status == "SUCCEEDED"
-    assert r.task.status == "WAITING"
-    assert r.task.submitted_at is not None
+    assert r.task.status == "RUNNING"
+    assert r.task.submitted_at is None
     assert r.task.confirmed_at is None
-    assert employee.current_task_count == 0
+    assert employee.current_task_count == 1
 
     response = await r.api.post("/api/tasks/T1/confirm")
     assert response.status_code == 200
@@ -303,7 +303,7 @@ async def test_auto_final_text_claim_does_not_decide_task_status(runtime):
     await r.service.refresh("T1")
 
     # A plain statement in the final reply never decides the Task status.
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
 
 
 async def test_auto_unverifiable_result_requires_native_question(runtime):
@@ -326,13 +326,14 @@ async def test_auto_completed_turn_projects_succeeded(runtime):
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
     session = await r.session.get(RuntimeSession, "ses_current")
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
     assert session.status == "SUCCEEDED"
 
 
 async def test_retry_submission_aborts_if_stop_invalidates_inflight_send(runtime):
     r = runtime
     pending_id = "msg_retryrace01"
+    r.task.last_message_id = pending_id
     r.task.pending_message_id = pending_id
     r.task.pending_prompt = {
         "action": "prompt_async",
@@ -421,13 +422,15 @@ async def test_delayed_ack_does_not_reopen_succeeded_task(runtime):
     # The background refresh concludes the round and ACKs the submission while
     # the send request is still in flight.
     await _complete_current_turn(r)
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
 
     release.set()
     result = await send_task
 
-    assert result.status == "SUCCEEDED"
-    assert r.task.status == "SUCCEEDED"
+    assert result.status == "RUNNING"
+    assert r.task.status == "RUNNING"
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "SUCCEEDED"
 
 
 async def test_delayed_ack_does_not_clear_manual_confirmation(runtime):
@@ -453,7 +456,7 @@ async def test_delayed_ack_does_not_clear_manual_confirmation(runtime):
     await started.wait()
 
     await _complete_current_turn(r)
-    assert r.task.status == "WAITING"
+    assert r.task.status == "RUNNING"
     response = await r.api.post("/api/tasks/T1/confirm")
     assert response.status_code == 200
     assert r.task.confirmed_at is not None
@@ -470,13 +473,13 @@ async def test_stop_cancels_continued_round_after_lost_ack_on_succeeded_task(run
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
 
     # The user continues on the same Session, but the ACK is lost.
     r.native.fail_after_accept = True
     with pytest.raises(ConnectionError):
         await r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
     assert r.task.pending_message_id is not None
     assert r.native.state == "busy"
 
@@ -493,9 +496,10 @@ async def test_stop_refuses_completed_task_without_active_round(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
     await _complete_current_turn(r)
+    await r.service.confirm_completion("T1")
     assert r.task.status == "SUCCEEDED"
 
-    with pytest.raises(RuntimeStateError, match="已完成"):
+    with pytest.raises(RuntimeStateError, match="已结束"):
         await r.service.stop("T1")
 
     await r.session.refresh(r.task)
@@ -505,6 +509,7 @@ async def test_stop_refuses_completed_task_without_active_round(runtime):
 async def test_retry_submission_converges_when_background_refresh_acks_first(runtime):
     r = runtime
     pending_id = "msg_retryack0001"
+    r.task.last_message_id = pending_id
     r.task.pending_message_id = pending_id
     r.task.pending_prompt = {
         "action": "prompt_async",
@@ -642,7 +647,7 @@ async def test_restart_from_running_definitive_failure_does_not_leave_fake_runni
     created = r.task.current_session_id
     assert created != "ses_current"
     # A definitively failed restart must not leave RUNNING with a dead Session.
-    assert r.task.status == "FAILED"
+    assert r.task.status == "WAITING"
     assert r.task.pending_message_id is None
     assert r.task.pending_prompt is None
     assert r.task.runtime_error
@@ -665,11 +670,9 @@ async def test_retry_submission_is_not_stale_when_bound_session_is_still_running
     binding.status = "RUNNING"
     await r.session.commit()
 
-    result = await r.service.retry_submission("T1")
-
-    assert result.status == "RUNNING"
-    assert r.task.pending_message_id is None
-    assert r.native.abort_count == 0
+    with pytest.raises(RuntimeStateError, match="已结束"):
+        await r.service.retry_submission("T1")
+    assert not r.native.sent
 
 
 async def test_failed_current_turn_summary_never_reuses_previous_success(runtime):
@@ -700,7 +703,7 @@ async def test_failed_current_turn_summary_never_reuses_previous_success(runtime
     await r.service.refresh("T1")
 
     summary = await r.session.scalar(select(TaskSummary).where(TaskSummary.task_id == "T1"))
-    assert r.task.status == "FAILED"
+    assert r.task.status == "WAITING"
     assert summary is None  # Task failure never fabricates a review from the last reply.
 
 
@@ -720,7 +723,7 @@ async def test_turn_without_assistant_reply_projects_failed(runtime):
     r.task.turn_started_at = datetime.now(UTC) - timedelta(minutes=5)
     await r.session.commit()
     await r.service.refresh("T1")
-    assert r.task.status == "FAILED"
+    assert r.task.status == "WAITING"
     assert r.task.failure_reason
 
 
@@ -817,6 +820,7 @@ async def test_restart_does_not_rewrite_business_completion_time(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
     await _complete_current_turn(r)
+    await r.service.confirm_completion("T1")
     first_completed_at = r.task.completed_at
     assert first_completed_at is not None
 
@@ -830,7 +834,7 @@ async def test_restart_does_not_rewrite_business_completion_time(runtime):
         SessionState(status="SUCCEEDED", terminal_reason="completed", finish_reason="stop"),
     )
     await r.session.refresh(r.task)
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
     assert r.task.completed_at == first_completed_at
 
 
@@ -1091,7 +1095,54 @@ async def test_native_abort_accepts_empty_body(runtime):
     await runtime.service.project(runtime.task, "RUNNING")
     response = await runtime.api.post("/api/tasks/T1/opencode/ses_current/session/ses_current/abort")
     assert response.status_code == 200
-    assert runtime.task.status == "CANCELED"
+    assert runtime.task.status == "WAITING"
+
+
+async def test_native_abort_can_continue_on_the_same_session(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
+    response = await r.api.post("/api/tasks/T1/opencode/ses_current/session/ses_current/abort")
+    assert response.status_code == 200
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "INTERRUPTED"
+    await r.service.refresh("T1")
+    assert r.task.status == "WAITING"
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
+    assert r.task.status == "RUNNING"
+    assert r.task.current_session_id == "ses_current"
+    assert binding.status == "RUNNING"
+    assert len(r.native.sent) == 2 and r.native.state == "busy"
+    assert r.native.abort_count == 1
+
+
+async def test_old_ack_does_not_abort_a_new_turn_in_the_same_session(runtime):
+    r = runtime
+    started, release = asyncio.Event(), asyncio.Event()
+    original = r.native.request
+    first_id = "msg_oldack001"
+
+    async def delayed(method, path, **kwargs):
+        result = await original(method, path, **kwargs)
+        if kwargs.get("body", {}).get("messageID") == first_id:
+            started.set()
+            await release.wait()
+        return result
+
+    r.native.request = delayed
+    first = asyncio.create_task(r.service.send("T1", {
+        "messageID": first_id, "parts": [{"type": "text", "text": "first"}],
+    }))
+    await asyncio.wait_for(started.wait(), 2)
+    await _complete_current_turn(r)
+    async with r.factory() as session:
+        await RuntimeService(session).send("T1", {
+            "messageID": "msg_newack002", "parts": [{"type": "text", "text": "next"}],
+        })
+    release.set()
+    await first
+    assert r.task.last_message_id == "msg_newack002"
+    assert r.task.status == "RUNNING"
+    assert r.native.state == "busy" and r.native.abort_count == 0
 
 
 async def test_gateway_rejects_workspace_override_and_foreign_question(runtime):
@@ -1124,7 +1175,7 @@ async def test_timeout_aborts_native_busy_but_waiting_does_not_timeout(runtime):
     await runtime.session.commit()
     await runtime.service.refresh("T1")
     assert runtime.native.state == "idle"
-    assert runtime.task.status == "FAILED"
+    assert runtime.task.status == "WAITING"
     assert "时间上限" in runtime.task.failure_reason
 
 
@@ -1150,7 +1201,7 @@ async def test_succeeded_persists_runtime_session_terminal(runtime):
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
     session = await r.session.get(RuntimeSession, "ses_current")
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
     assert session.status == "SUCCEEDED"
     assert session.finish_reason == "stop"
     assert session.finished_at is not None
@@ -1334,7 +1385,7 @@ async def test_refresh_recovers_unknown_session_to_terminal(runtime):
     await r.service.refresh("T1")
     session = await r.session.get(RuntimeSession, "ses_current")
     assert session.status == "SUCCEEDED"
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
 
 
 @pytest.mark.parametrize("params", [
@@ -1347,31 +1398,42 @@ async def test_gateway_rejects_current_protocol_location_override(runtime, param
     assert response.status_code == 403
 
 
-async def test_native_vcs_diff_is_forwarded_with_workspace_containment(runtime, monkeypatch):
-    nested = runtime.workspace / "src"
-    nested.mkdir()
-    original = httpx.AsyncClient
-    patch = '--- a/src/hello.ts\n+++ b/src/hello.ts\n@@ -1 +1 @@\n-before\n+after\n'
-
-    def upstream(request):
-        assert request.url.params["directory"] == str(nested)
-        if request.url.path.endswith("/raw"):
-            return httpx.Response(200, text=patch, headers={"content-type": "text/x-diff"})
-        return httpx.Response(200, json=[{"file": "src/hello.ts", "patch": patch}])
-
-    monkeypatch.setattr(
-        "app.api.workspace_routes.httpx.AsyncClient",
-        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
-    )
+async def test_native_vcs_diff_uses_bound_git_without_upstream(runtime):
+    repo = runtime.workspace
+    _init_repo(repo)
+    (repo / "hello.ts").write_text("before\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "baseline"], check=True, capture_output=True)
+    (repo / "hello.ts").write_text("after\n")
     base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
-    response = await runtime.api.get(base, params={"directory": str(nested), "mode": "git"})
+    response = await runtime.api.get(base, params={"mode": "git"})
     assert response.status_code == 200
-    assert response.json()[0]["patch"] == patch
-    raw = await runtime.api.get(base + "/raw", params={"directory": str(nested), "mode": "git"})
+    assert response.json()[0]["before"] == "before\n"
+    assert response.json()[0]["after"] == "after\n"
+    raw = await runtime.api.get(base + "/raw", params={"mode": "git"})
     assert raw.status_code == 200
-    assert raw.text == patch
-    outside = await runtime.api.get(base, params={"directory": str(runtime.workspace.parent)})
+    assert "-before\n+after" in raw.text
+    outside = await runtime.api.get(base, params={"directory": str(repo.parent)})
     assert outside.status_code == 403
+
+
+async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):
+    r = runtime
+    _init_repo(r.workspace)
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    binding.workspace_base_commit = subprocess.check_output(
+        ["git", "-C", str(r.workspace), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    (r.workspace / "a.txt").write_text("old task changes\n")
+    new_workspace = tmp_path / "relocated"
+    new_workspace.mkdir()
+    _init_repo(new_workspace)
+    r.task.workspace = str(new_workspace)
+    r.task.current_session_id = "ses_new"
+    await r.session.commit()
+    response = await r.api.get("/api/tasks/T1/opencode/ses_current/vcs/diff")
+    assert response.status_code == 200
+    assert response.json()[0]["after"] == "old task changes\n"
 
 
 async def test_idle_employee_heartbeat_does_not_require_on_demand_server(runtime, monkeypatch):
@@ -1428,21 +1490,17 @@ async def test_stop_can_force_cancel_local_session_when_no_runtime_listener(runt
     assert session.terminal_reason == "aborted"
 
 
-async def test_manual_confirm_blocks_plain_prompt_until_confirmed(runtime):
+async def test_manual_confirm_allows_continuing_without_confirmation(runtime):
     r = runtime
     r.task.completion_policy = "MANUAL_CONFIRM"
     await r.session.commit()
-
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "WAITING"
-
-    with pytest.raises(RuntimeStateError, match="人工确认"):
-        await r.service.send("T1", {"parts": [{"type": "text", "text": "another"}]})
-
-    await r.api.post("/api/tasks/T1/confirm")
-    await r.service.refresh("T1")
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "another"}]})
+    assert r.task.current_session_id == "ses_current"
+    assert len(r.native.sent) == 2
+    assert r.task.submitted_at is None
 
 
 async def test_new_turn_after_confirmation_requires_renewed_confirmation(runtime):
@@ -1463,16 +1521,10 @@ async def test_new_turn_after_confirmation_requires_renewed_confirmation(runtime
     assert r.task.status == "SUCCEEDED"
     assert r.task.confirmed_at is not None
 
-    # A new turn invalidates the previous confirmation and must be confirmed again.
-    await r.service.send("T1", {"parts": [{"type": "text", "text": "new turn"}]})
-    await r.session.refresh(r.task)
-    assert r.task.status == "RUNNING"
-    assert r.task.confirmed_at is None
-
-    await _complete_current_turn(r)
-    await r.session.refresh(r.task)
-    assert r.task.status == "WAITING"
-    assert r.task.confirmed_at is None
+    with pytest.raises(RuntimeStateError, match="已结束"):
+        await r.service.send("T1", {"parts": [{"type": "text", "text": "new turn"}]})
+    assert r.task.status == "SUCCEEDED"
+    assert len(r.native.sent) == 1
 
 
 async def test_child_question_answer_resumes_parent_session(runtime):
@@ -1675,10 +1727,150 @@ async def test_completion_and_restart_do_not_create_reviews(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "SUCCEEDED"
+    assert r.task.status == "RUNNING"
     await r.service.refresh("T1")
     assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 0
     assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
     await r.service.start("T1", restart=True)
     assert r.task.status == "RUNNING"
     assert r.task.current_session_id != "ses_current"
+
+
+async def test_task_diff_retains_committed_and_uncommitted_unicode_files(runtime):
+    r = runtime
+    _init_repo(r.workspace)
+    baseline = subprocess.check_output(
+        ["git", "-C", str(r.workspace), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    binding.workspace_base_commit = baseline
+    await r.session.commit()
+    file = r.workspace / "中文 文件.txt"
+    file.write_text("first\n")
+    subprocess.run(["git", "-C", str(r.workspace), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(r.workspace), "commit", "-m", "result"], check=True, capture_output=True)
+    cumulative = await workspace_diff(r.session, r.task)
+    assert [item["file"] for item in cumulative] == [file.name]
+    assert cumulative[0]["after"] == "first\n"
+    assert cumulative[0]["status"] == "added"
+    assert await workspace_diff(r.session, r.task, cumulative=False) == []
+    file.write_text("second\n")
+    current = await workspace_diff(r.session, r.task, cumulative=False)
+    assert current[0]["before"] == "first\n" and current[0]["after"] == "second\n"
+    (r.workspace / "new.txt").write_text("untracked\n")
+    assert {item["file"] for item in await workspace_diff(r.session, r.task)} == {file.name, "new.txt"}
+    summary = await collect_workspace_changes(r.session, r.task)
+    assert summary["files"] == ["new.txt", file.name]
+    assert summary["changed_files"] == 2
+
+
+async def test_completion_rejects_native_busy_and_pending_requests(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    with pytest.raises(RuntimeStateError, match="仍在执行"):
+        await r.service.confirm_completion("T1")
+    await _complete_current_turn(r)
+    r.native.pending = [{"id": "q1", "sessionID": "ses_current"}]
+    with pytest.raises(RuntimeStateError, match="问题或权限"):
+        await r.service.confirm_completion("T1")
+    r.native.pending = []
+    await r.service.confirm_completion("T1")
+    assert r.task.status == "SUCCEEDED"
+    await r.service.refresh("T1")
+    assert r.task.status == "SUCCEEDED"
+
+
+async def test_busy_observation_does_not_read_full_messages(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    async def unexpected(*args):
+        raise AssertionError("busy observation must not fetch full history")
+    r.native.messages = unexpected
+    await r.service.refresh("T1")
+    assert r.task.status == "RUNNING"
+
+
+async def test_idle_completed_turn_does_not_repeat_full_history_reads(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    async def unexpected(*args):
+        raise AssertionError("idle completed turn must not fetch full history again")
+    r.native.messages = unexpected
+    await r.service.refresh("T1")
+    assert r.task.status == "RUNNING"
+
+
+async def test_new_prompt_resets_timeout_window_after_idle(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
+    await _complete_current_turn(r)
+    r.task.turn_started_at = datetime.now(UTC) - timedelta(days=1)
+    await r.session.commit()
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "next"}]})
+    await r.service.refresh("T1")
+    assert r.native.abort_count == 0
+    assert r.task.status == "RUNNING"
+
+
+async def test_task_worktree_inherits_project_config_and_preserves_its_own(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    _init_repo(root)
+    (root / "opencode.json").write_text('{"model":"company/model"}')
+    env = _workspace_environment(root)
+    task = Task(id="T9", title="t", task_type="ISSUE")
+    task.workspace = await prepare_workspace(task, env)
+    config = Path(task.workspace) / "opencode.json"
+    assert config.read_text() == (root / "opencode.json").read_text()
+    config.write_text('{"model":"task/override"}')
+    await prepare_workspace(task, env)
+    assert config.read_text() == '{"model":"task/override"}'
+
+
+@pytest.mark.parametrize("invalid", ["plain", "nested", "symlink", "foreign", "missing"])
+async def test_remote_worktree_shell_rejects_invalid_reuse(tmp_path, invalid):
+    """Execute the remote shell locally against real Git, without claiming SSH coverage."""
+    root = tmp_path / "project"
+    root.mkdir()
+    _init_repo(root)
+    target = tmp_path / "task"
+    if invalid == "plain":
+        target.mkdir()
+    elif invalid == "nested":
+        target = root / "nested"
+        target.mkdir()
+    elif invalid == "symlink":
+        target.symlink_to(root, target_is_directory=True)
+    elif invalid == "foreign":
+        target.mkdir()
+        _init_repo(target)
+    class ShellRuntime:
+        async def run_remote(self, environment, command):
+            process = await asyncio.create_subprocess_exec(
+                "bash", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await process.communicate()
+            return process.returncode, out.decode(), err.decode()
+    with pytest.raises(RuntimeError):
+        await _ensure_remote_workspace(ShellRuntime(), None, root=str(root), target=str(target),
+                                       reuse_existing=True)
+
+
+async def test_remote_worktree_shell_reuses_absolute_common_dir_and_config(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    _init_repo(root)
+    (root / "opencode.json").write_text('{"model":"company/model"}')
+    target = tmp_path / "task"
+    class ShellRuntime:
+        async def run_remote(self, environment, command):
+            process = await asyncio.create_subprocess_exec(
+                "bash", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await process.communicate()
+            return process.returncode, out.decode(), err.decode()
+    runtime = ShellRuntime()
+    await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target))
+    await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target), reuse_existing=True)
+    assert (target / "opencode.json").read_text() == (root / "opencode.json").read_text()

@@ -4,9 +4,8 @@ import asyncio
 import logging
 from pathlib import Path
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 
-from app.assistant.review import reconcile_task_reviews
 from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.executors.errors import OpenCodeSessionNotFound
@@ -22,43 +21,11 @@ SUPERVISOR_RETRY_MAX_SECONDS = 30
 
 
 def _active_task_filter():
-    # WAITING after MANUAL_CONFIRM submission is a business review state, not
-    # an executing Session that needs an SSE watcher.
     return or_(
         Task.status == "RUNNING",
-        and_(Task.status == "WAITING", Task.submitted_at.is_(None)),
+        Task.status == "WAITING",
         Task.pending_prompt.is_not(None),
     )
-
-
-async def refresh_sessions():
-    async with SessionLocal() as session:
-        ids = (
-            await session.scalars(
-                select(Task.id).where(
-                    Task.current_session_id.is_not(None),
-                    _active_task_filter(),
-                )
-            )
-        ).all()
-    # Each bound Session is refreshed concurrently behind a bound so one slow or
-    # unreachable Session cannot serialize the others.
-    semaphore = asyncio.Semaphore(get_settings().supervisor_max_concurrency)
-
-    async def refresh_one(task_id: str) -> None:
-        async with semaphore:
-            async with SessionLocal() as session:
-                try:
-                    await RuntimeService(session).refresh(task_id)
-                except OpenCodeSessionNotFound:
-                    # refresh() already persisted SESSION_MISSING.
-                    pass
-                except Exception as exc:
-                    await session.rollback()
-                    await RuntimeService(session).disconnected(task_id, exc)
-
-    await asyncio.gather(*(refresh_one(task_id) for task_id in ids), return_exceptions=True)
-    return list(ids)
 
 
 async def _refresh_with_client(task_id: str, client) -> Task | None:
@@ -83,7 +50,7 @@ async def watch_session(task_id):
                     or not task.current_session_id
                     or not (
                         task.status == "RUNNING"
-                        or (task.status == "WAITING" and task.submitted_at is None)
+                        or task.status == "WAITING"
                         or task.pending_prompt
                     )
                 ):
@@ -101,8 +68,6 @@ async def watch_session(task_id):
                 current = await _refresh_with_client(task_id, client)
                 if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
                     return
-                if current.status == "WAITING" and current.submitted_at is not None:
-                    return
                 allowed = await session_tree(client, directory, session_id)
                 deadline = loop.time() + settings.opencode_reconcile_interval_seconds
 
@@ -112,8 +77,6 @@ async def watch_session(task_id):
                     if loop.time() >= deadline:
                         current = await _refresh_with_client(task_id, client)
                         if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                            return
-                        if current.status == "WAITING" and current.submitted_at is not None:
                             return
                         allowed = await session_tree(client, directory, session_id)
                         delay = 1
@@ -170,14 +133,9 @@ async def watch_session(task_id):
                                 )
                             await session.commit()
 
-                    current = await _refresh_with_client(task_id, client)
-
-                    if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                        return
-                    if current.status == "WAITING" and current.submitted_at is not None:
-                        return
-                    allowed = await session_tree(client, directory, session_id)
-                    delay = 1
+                    # Reconcile once for a burst; native SSE still reaches Workspace immediately.
+                    deadline = min(deadline, loop.time() + 0.25)
+                    continue
         except asyncio.CancelledError:
             raise
         except OpenCodeSessionNotFound as exc:
@@ -195,63 +153,12 @@ async def watch_session(task_id):
                 await asyncio.gather(next_event, return_exceptions=True)
 
 
-class _BackgroundWork:
-    """Bounded, single-flight background jobs owned by the Supervisor.
-
-    Jobs run off the supervision loop so a slow assistant dispatch or history
-    recovery can never delay Session discovery or listener management.
-    """
-
-    def __init__(self, limit: int):
-        self._semaphore = asyncio.Semaphore(limit)
-        self._tasks: dict[str, asyncio.Task] = {}
-
-    def running(self, name: str) -> bool:
-        task = self._tasks.get(name)
-        return bool(task and not task.done())
-
-    def spawn(self, name: str, factory) -> None:
-        if self.running(name):
-            return
-
-        async def runner() -> None:
-            async with self._semaphore:
-                await factory()
-
-        task = asyncio.create_task(runner())
-        self._tasks[name] = task
-
-        def _discard(done: asyncio.Task, key: str = name) -> None:
-            if self._tasks.get(key) is done:
-                self._tasks.pop(key, None)
-            if not done.cancelled() and done.exception() is not None:
-                logger.error("后台任务 %s 失败", key, exc_info=done.exception())
-
-        task.add_done_callback(_discard)
-
-    async def shutdown(self) -> None:
-        tasks = list(self._tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
-
-
 async def supervise_sessions():
-    """Own native Session watching and independent assistant review dispatch."""
+    """Own one native Session watcher per active task."""
 
     listeners: dict[str, asyncio.Task] = {}
-    settings = get_settings()
-    loop = asyncio.get_running_loop()
-    work = _BackgroundWork(settings.supervisor_max_concurrency)
-    next_review_reconcile = loop.time() + settings.task_review_reconcile_interval_seconds
     delay = SUPERVISOR_INTERVAL_SECONDS
     try:
-        # Startup recovery/repair is scheduled off-loop: discovery and listener
-        # creation must never wait on a slow OpenCode request.
-        work.spawn("startup_refresh", refresh_sessions)
-        work.spawn("startup_reviews", reconcile_task_reviews)
         while True:
             try:
                 async with SessionLocal() as session:
@@ -274,12 +181,6 @@ async def supervise_sessions():
                         listener.cancel()
                         await asyncio.gather(listener, return_exceptions=True)
 
-                if loop.time() >= next_review_reconcile:
-                    # Never await repair inline; keep supervising while it runs.
-                    work.spawn("reviews", reconcile_task_reviews)
-                    next_review_reconcile = (
-                        loop.time() + settings.task_review_reconcile_interval_seconds
-                    )
                 delay = SUPERVISOR_INTERVAL_SECONDS
             except asyncio.CancelledError:
                 raise
@@ -291,4 +192,3 @@ async def supervise_sessions():
         for listener in listeners.values():
             listener.cancel()
         await asyncio.gather(*listeners.values(), return_exceptions=True)
-        await work.shutdown()

@@ -211,21 +211,12 @@ class TaskCreate(BaseModel):
     category_id: str
     title: str = Field(min_length=1, max_length=240)
     description: str = Field(min_length=1)
-    acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
+    acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     employee_id: str | None = None
     priority: Priority = Priority.MEDIUM
-    completion_policy: CompletionPolicy | None = None
-
-    @model_validator(mode="after")
-    def default_completion_policy(self):
-        if self.completion_policy is None:
-            self.completion_policy = (
-                CompletionPolicy.MANUAL_CONFIRM
-                if self.priority in {Priority.VERY_HIGH, Priority.HIGH}
-                else CompletionPolicy.AUTO
-            )
-        return self
+    # Kept in the API for stored tasks; all new tasks close explicitly.
+    completion_policy: CompletionPolicy = CompletionPolicy.MANUAL_CONFIRM
 
 
 class TaskRead(RuntimeRead):
@@ -292,6 +283,7 @@ class EventRead(ORMModel):
     message: str
     detail: dict[str, Any]
     created_at: datetime
+
 
 
 
