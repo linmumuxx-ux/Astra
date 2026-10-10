@@ -28,6 +28,54 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
 
+export interface EnvironmentOperationEvent {
+  type: 'heartbeat' | 'step' | 'result'
+  name?: string
+  state?: 'running' | 'passed' | 'failed'
+  passed?: boolean
+  detail?: string
+  success?: boolean
+  message?: string
+  status?: string
+}
+
+export async function maintainEnvironment(
+  id: string, action: 'deploy' | 'restart',
+  onEvent: (event: EnvironmentOperationEvent) => void, signal: AbortSignal,
+) {
+  const response = await fetch(`${API_BASE}/api/employees/${encodeURIComponent(id)}/environment/${action}`, {
+    method: 'POST', signal,
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new ApiError(body.detail ?? '环境操作失败', response.status)
+  }
+  if (!response.body) throw new Error('无法读取环境操作进度')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: EnvironmentOperationEvent | undefined
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        const event = JSON.parse(line) as EnvironmentOperationEvent
+        onEvent(event)
+        if (event.type === 'result') result = event
+      }
+      if (done) break
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  if (!result) throw new Error('操作连接已中断，请检查环境状态后重试')
+  return result
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

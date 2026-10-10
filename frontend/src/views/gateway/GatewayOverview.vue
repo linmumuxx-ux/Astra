@@ -96,7 +96,6 @@
         <ElTableColumn label="实例" prop="instance_id" min-width="150"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.instance_id }}</span></template></ElTableColumn>
         <ElTableColumn label="状态" width="86"><template #default="{ row }"><ElTag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template></ElTableColumn>
         <ElTableColumn label="应用版本" min-width="100"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.app_version ?? '—' }}</span></template></ElTableColumn>
-        <ElTableColumn label="配置版本" width="90"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.config_version ?? '—' }}</span></template></ElTableColumn>
         <ElTableColumn label="运行时长" width="90"><template #default="{ row }">{{ formatSeconds(row.uptime_seconds) }}</template></ElTableColumn>
         <ElTableColumn label="活跃" width="64"><template #default="{ row }">{{ row.active ?? '—' }}</template></ElTableColumn>
         <ElTableColumn label="请求 / 错误" width="100"><template #default="{ row }">{{ row.requests ?? '—' }} / {{ row.errors ?? '—' }}</template></ElTableColumn>
@@ -129,19 +128,16 @@ import {
 } from 'element-plus'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayInstance,
   type GatewayNode,
   type GatewayScopeStats,
   type GatewayStatsWindow,
 } from '@/api/gateway'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, formatBytes, formatPercent, formatRelativeTime, formatSeconds } from '@/utils/gateway'
 import { formatTokens } from '@/utils/format'
 import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 
-const { disconnect } = useGatewayAuth()
 const windows: Array<{ id: GatewayStatsWindow; label: string }> = [
   { id: 'hour', label: '本小时' },
   { id: 'today', label: '今日' },
@@ -240,7 +236,6 @@ async function load() {
     nodes.value = nodeList
     instances.value = instanceList
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
     error.value = errorMessage(reason, '总览加载失败')
   } finally {
     loading.value = false

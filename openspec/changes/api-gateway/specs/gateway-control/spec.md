@@ -1,15 +1,23 @@
 ## ADDED Requirements
 
 ### Requirement: 节点、资源池、路由和密钥管理
-The control plane MUST manage nodes, pools, model routes and Gateway Keys with explicit access roles. It MUST encrypt downstream credentials at rest, store only Gateway Key hashes, and return plaintext Gateway Keys only at creation.
+控制面 MUST 随 Astra 管理台直接提供节点、资源池、模型路由与 Gateway Key 管理，不要求独立登录、管理 Token 或角色。控制面 MUST 加密保存下游凭据，只保存 Gateway Key 摘要，并且只在创建时返回 Key 原文。
 
 #### Scenario: Create node and Key
-- **WHEN** an authorized administrator creates a node or Key
+- **WHEN** 使用者在 Astra 管理台创建节点或 Key
 - **THEN** credentials are persisted securely, the response omits downstream secrets, and the Key plaintext is returned once
 
-#### Scenario: Unauthorized mutation
-- **WHEN** a caller lacks the required management role
-- **THEN** the write is rejected and no configuration changes
+#### Scenario: 无管理凭据直接访问
+- **WHEN** 使用者打开 API 中转管理页，或不携带管理凭据调用控制面查询与写接口
+- **THEN** 管理页直接加载数据，接口按业务校验执行操作，不要求登录或管理角色
+
+#### Scenario: 删除独立管理会话
+- **WHEN** 使用者进入 API 中转或刷新管理页
+- **THEN** 页面不显示管理凭据输入、管理身份或退出入口，不读写控制面会话凭据，也不请求管理权限接口
+
+#### Scenario: 启动不要求管理凭据
+- **WHEN** 生产环境已配置主密钥与 Redis，但未提供独立管理凭据
+- **THEN** API 中转通过生产依赖校验并可启动
 
 #### Scenario: Delete active node
 - **WHEN** a node still accepts or serves requests
@@ -26,51 +34,59 @@ The control plane MUST represent configuration, health and scheduling states ind
 - **WHEN** an administrator creates a node without explicitly choosing scheduling and configuration states
 - **THEN** it is created DRAINING and DISABLED with UNKNOWN health, and cannot become ACTIVE without a completed probe (no implicit ACTIVE default)
 
-#### Scenario: Draft edit is isolated from the published runtime
-- **WHEN** an administrator edits an unpublished node's connection fields (base URL, credential, models, health path) or probes the draft
-- **THEN** the published version's health and circuit runtime state is neither cleared nor rewritten, the previously published configuration keeps serving, and the changed connection must be probed before the new configuration can be scheduled
+#### Scenario: 连接修改后重新探测
+- **WHEN** 使用者保存节点连接字段的修改（地址、凭据、模型或健康路径）
+- **THEN** 新连接的健康为 UNKNOWN，重新通过完整探测前不能被调度；旧请求及旧探测结果不能为新连接提供健康授权
 
 #### Scenario: Probe failures and recovery
 - **WHEN** a node fails three successive checks or later passes two successive checks
 - **THEN** health changes to UNHEALTHY or HEALTHY respectively without changing its administrator configuration state
 
-### Requirement: Versioned publication
-The control plane MUST keep edits as draft, validate all references before publication, publish immutable versioned snapshots, and support rollback by issuing a new version from a historical snapshot. Data plane instances MUST atomically adopt one published version.
+### Requirement: 保存后自动生效
+配置表 MUST 是节点、资源池、模型路由与 Gateway Key 的唯一配置事实源。控制面 MUST 在保存时校验参数、引用和业务约束；保存成功后，各 Gateway 实例 MUST 在配置刷新周期内自动读取完整一致的配置并原子替换内存视图，不要求使用者管理草稿、发布、版本历史、回滚或对账。
 
-#### Scenario: Publish invalid draft
-- **WHEN** a draft has a route to a missing or disabled pool
-- **THEN** publication fails and the currently published version stays active
+#### Scenario: 保存配置
+- **WHEN** 使用者成功保存节点、资源池、路由或 Key 的修改
+- **THEN** Gateway 在配置刷新周期内自动采用新配置，无需手动发布；新建 Key 可以直接用于模型调用
 
-#### Scenario: Connection change requires a fresh probe
-- **WHEN** a new version changes a node's connection (base URL, credential, models or health path) and becomes current
-- **THEN** the data plane treats that node as UNKNOWN until the changed connection passes its own probe, and earlier health or circuit results from the previous connection cannot authorise it
+#### Scenario: 保存非法配置
+- **WHEN** 使用者保存不存在的资源池引用、非法连接参数或重复模型路由
+- **THEN** 保存被拒绝，库中的有效配置不变
 
-#### Scenario: Rollback
-- **WHEN** an authorized administrator rolls back to an earlier version
-- **THEN** a new version with that content becomes current and existing in-flight requests complete with their original snapshot
+#### Scenario: 停用资源池
+- **WHEN** 使用者停用仍被路由引用的资源池
+- **THEN** 保存成功，新配置生效后停止向该池调度新请求，已有请求继续完成
+
+#### Scenario: 配置刷新失败与恢复
+- **WHEN** Gateway 读取配置失败或无法构建完整视图，之后数据库恢复
+- **THEN** 失败期间保留最近有效的内存配置，后台继续重试，并在恢复后采用最新保存配置；首次启动且无有效配置时不能向下游转发
+
+#### Scenario: 重启与多个实例
+- **WHEN** Gateway 重启，或多个实例在配置保存后分别刷新
+- **THEN** 各实例从配置表读取同一完整配置，不依赖历史版本或 Redis 发布状态
+
+#### Scenario: 更新期间已有请求
+- **WHEN** 配置被刷新且已有请求或流正在执行
+- **THEN** 旧请求继续使用其原有完整配置，新请求使用刷新后的完整配置，不读取混合状态
+
+#### Scenario: 删除版本接口
+- **WHEN** 使用者打开管理台或请求旧草稿、版本、发布、回滚、对账接口
+- **THEN** 管理台不提供配置版本页面，旧接口不可用
 
 ### Requirement: 吊销立即阻断
-The control plane MUST make a revoked Gateway Key immediately unusable across all data plane instances, without waiting for a new publication. It MUST write an append-only shared revocation state before committing the database revocation, and MUST reject the revoke request with a structured 503 when that shared write fails without claiming success. A revoked Gateway Key MUST remain a permanent database tombstone: rolling back an earlier version MUST NOT delete its row, clear its revocation time or re-enable it, and a rollback whose snapshot contains that Key MUST produce a new snapshot that marks it disabled and revoked while preserving the current revocation time. Concurrent revocations and rollbacks MUST be serialized so a rollback cannot overwrite a revocation.
+控制面 MUST 让已吊销的 Gateway Key 立即在所有数据面实例失效，不等待配置刷新。控制面 MUST 在提交数据库吊销前追加共享阻断状态；共享写入失败时 MUST 返回结构化 503 且不声称成功。已吊销 Key 的数据库记录和吊销时间 MUST 保留，不能因普通编辑而复活。
 
-#### Scenario: Revoke a Key that is still enabled in the published snapshot
-- **WHEN** an administrator revokes a Key that the currently published snapshot still lists as enabled
-- **THEN** new requests with that Key are rejected immediately on every data plane instance, without publishing a new version
+#### Scenario: 吊销尚未刷新到数据面的 Key
+- **WHEN** 使用者吊销一个数据面当前内存配置仍标记为启用的 Key
+- **THEN** 各实例立即拒绝该 Key 的新请求，不等待配置刷新
 
 #### Scenario: Shared revocation write fails
 - **WHEN** the shared revocation state cannot be written (for example Redis is unavailable)
 - **THEN** the revoke request fails with a structured 503, the database revocation is not committed, and the response never claims success
 
-#### Scenario: Rollback cannot revive a revoked Key
-- **WHEN** an administrator rolls back to a version published before the Key was revoked and that version contains the Key
-- **THEN** requests with that Key remain rejected, the database row keeps its revocation time, and the new snapshot marks the Key disabled and revoked
-
-#### Scenario: Rollback to a version without the revoked Key
-- **WHEN** an administrator rolls back to a version that does not contain a revoked Key
-- **THEN** the revoked Key's database row is preserved as a tombstone instead of being deleted
-
-#### Scenario: Concurrent revoke and rollback
-- **WHEN** a revoke and a rollback run concurrently on the same Key
-- **THEN** they are serialized on the Key row, so neither can overwrite the other and the Key stays revoked
+#### Scenario: 编辑不能复活已吊销 Key
+- **WHEN** 使用者编辑已吊销 Key 或尝试重新启用它
+- **THEN** 该 Key 仍保持已吊销状态，数据面继续拒绝调用
 
 ### Requirement: 吊销状态的持久就绪
 The shared revocation state MUST be append-only: synchronization MUST NOT clear existing entries or overwrite a concurrent revocation. Readiness MUST be a sentinel member inside the same revocation set, never a separate key, so that a Redis maxmemory eviction of the set removes the readiness sentinel together with the digests instead of leaving a false positive. Because Redis can be flushed or restarted, the data plane MUST append-sync all revoked Key digests from the database at startup and periodically, and mark the set ready in the same single `SADD` only after that sync. While the sentinel is missing or the shared state is unavailable, the data plane MUST fail closed. The data plane MUST read the sentinel and the digests as members of that one set in a single atomic operation; a missing sentinel MUST make that read itself fail closed, so a flush or whole-key eviction can never let a request through.
@@ -92,8 +108,12 @@ The shared revocation state MUST be append-only: synchronization MUST NOT clear 
 - **THEN** both previously revoked and concurrently revoked digests remain blocked
 
 ### Requirement: 操作审计
-Every management mutation MUST record actor, timestamp, action, result and redacted before/after values without storing plaintext secrets.
+每项管理写操作 MUST 记录来源、时间、操作、结果与脱敏前后值，不保存秘密原文。新操作的来源 MUST 标记为 Astra 系统，不将浏览器提交的身份或角色作为已验证的个人身份；历史审计记录 MUST 保留。
 
 #### Scenario: Update a node credential
 - **WHEN** an administrator replaces a node credential
 - **THEN** audit history identifies the change and never reveals either credential
+
+#### Scenario: 浏览器身份不能伪造审计来源
+- **WHEN** 使用者通过控制面提交写操作，并携带自定义身份或角色 Header
+- **THEN** 操作记录仍使用 Astra 系统来源，不记录该 Header 为操作人

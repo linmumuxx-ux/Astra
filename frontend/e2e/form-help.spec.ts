@@ -179,7 +179,7 @@ test('知识编辑与任务分类保留字段，待处理进入 Workspace', asyn
   const pending = page.getByTestId('intervention-page')
   await expect(pending.getByRole('heading', { name: '待处理', exact: true }).first()).toBeVisible()
   // 人工介入已收敛到任务 Workspace：待处理列表只提供进入 Workspace 的入口。
-  const item = pending.locator('.intervention-task').filter({ hasText: '新增回调场景自动化覆盖' })
+  const item = pending.locator('tbody tr').filter({ hasText: '新增回调场景自动化覆盖' })
   await expect(item).toBeVisible()
   await expect(item.getByRole('button', { name: '进入 T-20260827-002 任务详情' })).toBeVisible()
   await page.screenshot({ path: '../artifacts/form-help/intervention-form.png', fullPage: true })

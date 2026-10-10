@@ -1,7 +1,7 @@
-"""API 中转观测测试：后台探测落库、调用日志分页过滤、范围统计、实例与 Key 自助。
+"""API 中转观测测试：后台探测落库、调用日志分页过滤、范围统计、实例观测。
 
-统计来源固定为 ``gateway_requests``；未知 usage 明确标记，不保存 Prompt。普通
-Gateway Key 只能读取自身日志与统计，管理凭据与浏览器身份 Header 都不作为 Key 身份。
+统计来源固定为 ``gateway_requests``；未知 usage 明确标记，不保存 Prompt。管理台直接
+查询日志与统计；不保存 Prompt 或凭据。
 """
 
 from __future__ import annotations
@@ -21,30 +21,23 @@ from sqlalchemy import select
 
 from app.api.gateway_routes import (
     gateway_cipher,
-    gateway_notifier,
     gateway_probe_client,
     gateway_runtime,
 )
 from app.database import SessionLocal, init_database
-from app.gateway.auth import gateway_credential_store
-from app.gateway.config import GatewayConfigState, PublishedConfig
+from app.gateway.config import GatewayConfig, GatewayConfigState
 from app.gateway.models import (
     GatewayHealthCheck,
-    GatewayKey,
     GatewayNode,
     GatewayRequest,
     utcnow,
 )
-from app.gateway.notifier import InMemoryConfigNotifier
 from app.gateway.probe import ProbeOutcome
 from app.gateway.proxy import GatewayProxy
 from app.gateway.runtime import SCOPE_NODE, InMemoryRuntimeStore
-from app.gateway.security import CredentialCipher, gateway_key_digest, parse_credentials
+from app.gateway.security import CredentialCipher
 from app.gateway.server import GatewayDataPlane
 from app.main import app
-
-ROOT_TOKEN = "obs-root-token"
-VIEW_TOKEN = "obs-view-token"
 
 
 class FakeProbe:
@@ -55,10 +48,6 @@ class FakeProbe:
     async def probe(self, node, probe_types, api_key):
         self.calls.append((node.id, tuple(probe_types)))
         return [ProbeOutcome(probe_type, self.success, 2) for probe_type in probe_types]
-
-
-def auth(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
 
 
 def unique(prefix: str) -> str:
@@ -74,23 +63,9 @@ def _schema():
 @pytest.fixture
 def observability_env():
     master_key = Fernet.generate_key().decode()
-    store = parse_credentials(
-        json.dumps(
-            [
-                {
-                    "name": "root",
-                    "token": ROOT_TOKEN,
-                    "roles": ["view", "node", "route", "key", "publish", "system"],
-                },
-                {"name": "viewer", "token": VIEW_TOKEN, "roles": ["view"]},
-            ]
-        )
-    )
     runtime = InMemoryRuntimeStore()
     overrides = {
-        gateway_credential_store: lambda: store,
         gateway_cipher: lambda: CredentialCipher(master_key),
-        gateway_notifier: lambda: InMemoryConfigNotifier(),
         gateway_probe_client: lambda: FakeProbe(),
         gateway_runtime: lambda: runtime,
     }
@@ -100,12 +75,6 @@ def observability_env():
     finally:
         for dependency in overrides:
             app.dependency_overrides.pop(dependency, None)
-
-
-def create_key(client: TestClient, *, name: str) -> tuple[str, str]:
-    response = client.post("/api/gateway/keys", json={"name": name}, headers=auth(ROOT_TOKEN))
-    assert response.status_code == 201, response.text
-    return response.json()["id"], response.json()["key"]
 
 
 def _add_log(
@@ -184,13 +153,12 @@ def _build_probe_plane(node_id: str, probe: FakeProbe) -> tuple[GatewayDataPlane
     }
     runtime = InMemoryRuntimeStore()
     plane = GatewayDataPlane(
-        config_state=GatewayConfigState(PublishedConfig.from_snapshot(1, snapshot)),
+        config_state=GatewayConfigState(GatewayConfig.from_snapshot(snapshot)),
         runtime=runtime,
         proxy=GatewayProxy(transport=httpx.MockTransport(lambda _request: httpx.Response(200))),
         cipher=CredentialCipher(None),
         session_factory=SessionLocal,
         config_loader=None,
-        version_source=None,
         instance_id="obs-plane",
         heartbeat_interval=3600,
         probe_client=probe,
@@ -279,7 +247,6 @@ def test_request_log_pagination_and_filters(observability_env):
         first_page = client.get(
             "/api/gateway/requests",
             params={"model": model, "page": 1, "page_size": 2},
-            headers=auth(VIEW_TOKEN),
         )
         assert first_page.status_code == 200, first_page.text
         body = first_page.json()
@@ -290,7 +257,6 @@ def test_request_log_pagination_and_filters(observability_env):
         second_page = client.get(
             "/api/gateway/requests",
             params={"model": model, "page": 2, "page_size": 2},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert len(second_page["items"]) == 1
         assert {item["id"] for item in body["items"]} | {
@@ -300,21 +266,18 @@ def test_request_log_pagination_and_filters(observability_env):
         by_status = client.get(
             "/api/gateway/requests",
             params={"model": model, "status_code": 500},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert by_status["total"] == 1
 
         by_error = client.get(
             "/api/gateway/requests",
             params={"model": model, "error_code": "UPSTREAM_500"},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert by_error["total"] == 1
 
         by_id = client.get(
             "/api/gateway/requests",
             params={"request_id": log_ids[0]},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert by_id["total"] == 1
         assert by_id["items"][0]["id"] == log_ids[0]
@@ -322,7 +285,6 @@ def test_request_log_pagination_and_filters(observability_env):
         by_node = client.get(
             "/api/gateway/requests",
             params={"model": model, "node_id": node},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert by_node["total"] == 3
 
@@ -380,7 +342,6 @@ def test_scope_stats_tokens_latency_peak_and_unknown_usage(observability_env):
         response = client.get(
             "/api/gateway/stats",
             params={"scope": "node", "scope_id": node, "window": "7d"},
-            headers=auth(VIEW_TOKEN),
         )
         assert response.status_code == 200, response.text
         stats = response.json()
@@ -409,7 +370,7 @@ def test_scope_stats_tokens_latency_peak_and_unknown_usage(observability_env):
 
 def test_stats_overview_and_missing_scope_validation(observability_env):
     with TestClient(app) as client:
-        overview = client.get("/api/gateway/stats", headers=auth(VIEW_TOKEN))
+        overview = client.get("/api/gateway/stats")
         assert overview.status_code == 200
         assert overview.json()["scope"] == "overview"
         assert overview.json()["scope_id"] is None
@@ -417,14 +378,12 @@ def test_stats_overview_and_missing_scope_validation(observability_env):
         missing = client.get(
             "/api/gateway/stats",
             params={"scope": "node"},
-            headers=auth(VIEW_TOKEN),
         )
         assert missing.status_code == 422
 
         invalid_window = client.get(
             "/api/gateway/stats",
             params={"scope": "overview", "window": "year"},
-            headers=auth(VIEW_TOKEN),
         )
         assert invalid_window.status_code == 422
 
@@ -441,7 +400,6 @@ def test_instances_mark_expired_and_expose_optional_metrics(observability_env):
             {
                 "instance_id": live_id,
                 "app_version": "0.4.0",
-                "config_version": 7,
                 "pid": 4242,
                 "updated_at": utcnow().isoformat(),
                 "requests": 11,
@@ -456,14 +414,14 @@ def test_instances_mark_expired_and_expose_optional_metrics(observability_env):
     asyncio.run(
         observability_env.runtime.heartbeat(
             stale_id,
-            {"instance_id": stale_id, "updated_at": utcnow().isoformat(), "config_version": 3},
+            {"instance_id": stale_id, "updated_at": utcnow().isoformat()},
             1,
         )
     )
     time.sleep(1.1)
 
     with TestClient(app) as client:
-        response = client.get("/api/gateway/instances", headers=auth(VIEW_TOKEN))
+        response = client.get("/api/gateway/instances")
         assert response.status_code == 200, response.text
         by_id = {item["instance_id"]: item for item in response.json()}
 
@@ -474,71 +432,6 @@ def test_instances_mark_expired_and_expose_optional_metrics(observability_env):
     assert by_id[stale_id]["age_seconds"] >= 1
 
 
-# ── Key 自助：只能看自己的日志与统计 ───────────────────────────────────
-
-
-def test_key_self_service_only_sees_own_logs_and_stats(observability_env):
+def test_instances_available_without_management_credentials(observability_env):
     with TestClient(app) as client:
-        key_a_id, key_a_token = create_key(client, name=unique("key-a"))
-        key_b_id, key_b_token = create_key(client, name=unique("key-b"))
-        model = unique("model")
-        log_a = _add_log(key_id=key_a_id, model=model, node_id="gn_shared", status_code=200)
-        log_b = _add_log(key_id=key_b_id, model=model, node_id="gn_shared", status_code=500)
-
-        # 不信任浏览器提交的身份 Header。
-        forged = client.get(
-            "/api/gateway/self/requests",
-            headers={"X-Astra-User-Id": key_a_id, "X-Astra-Role": "admin"},
-        )
-        assert forged.status_code == 401
-
-        # 管理凭据不是 Gateway Key，不能当自助身份。
-        assert client.get("/api/gateway/self/requests", headers=auth(ROOT_TOKEN)).status_code == 401
-
-        own = client.get("/api/gateway/self/requests", headers=auth(key_a_token))
-        assert own.status_code == 200, own.text
-        own_ids = {item["id"] for item in own.json()["items"]}
-        assert log_a in own_ids
-        assert log_b not in own_ids
-
-        # 过滤条件仍受自身 Key 约束，无法越权查看其他 Key。
-        other_attempt = client.get(
-            "/api/gateway/self/requests",
-            params={"key_id": key_b_id},
-            headers=auth(key_a_token),
-        )
-        assert other_attempt.status_code == 200
-        assert {item["id"] for item in other_attempt.json()["items"]} == {log_a}
-
-        stats = client.get("/api/gateway/self/stats", headers=auth(key_a_token))
-        assert stats.status_code == 200
-        assert stats.json()["scope"] == "key"
-        assert stats.json()["scope_id"] == key_a_id
-        assert stats.json()["requests"] == 1
-
-        other_stats = client.get("/api/gateway/self/stats", headers=auth(key_b_token))
-        assert other_stats.json()["scope_id"] == key_b_id
-        assert other_stats.json()["requests"] == 1
-        assert other_stats.json()["errors"] == 1
-
-
-def test_disabled_key_cannot_use_self_service(observability_env):
-    with TestClient(app) as client:
-        key_id, token = create_key(client, name=unique("key-revoked"))
-        revoked = client.delete(f"/api/gateway/keys/{key_id}", headers=auth(ROOT_TOKEN))
-        assert revoked.status_code == 200
-        denied = client.get("/api/gateway/self/requests", headers=auth(token))
-        assert denied.status_code == 403
-
-        async def stored_digest():
-            async with SessionLocal() as session:
-                key = await session.get(GatewayKey, key_id)
-                return key.key_digest
-
-        assert asyncio.run(stored_digest()) == gateway_key_digest(token)
-
-
-def test_instances_requires_management_role(observability_env):
-    with TestClient(app) as client:
-        assert client.get("/api/gateway/instances").status_code == 401
-        assert client.get("/api/gateway/instances", headers=auth(ROOT_TOKEN)).status_code == 200
+        assert client.get("/api/gateway/instances").status_code == 200

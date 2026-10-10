@@ -2,7 +2,7 @@
   <section class="gateway-keys astra-stack" data-testid="gateway-keys">
     <GatewayHeaderActions>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-keys-refresh" @click="load">刷新</ElButton>
-      <ElButton v-if="canKey" type="primary" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
+      <ElButton type="primary" :icon="Plus" data-testid="gateway-keys-create" @click="openCreate">新增 Key</ElButton>
     </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-keys-error">
@@ -77,7 +77,7 @@
       <ElTableColumn label="最近使用" width="104">
         <template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template>
       </ElTableColumn>
-      <ElTableColumn v-if="canKey" label="操作" width="88" fixed="right">
+      <ElTableColumn label="操作" width="88" fixed="right">
         <template #default="{ row }">
           <ElSpace :size="4">
             <ElTooltip content="编辑 Key" placement="top">
@@ -221,7 +221,6 @@ import {
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayKey,
   type GatewayKeyCreated,
 } from '@/api/gateway'
@@ -229,7 +228,6 @@ import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import {
   errorMessage,
   formatDateTime,
@@ -238,8 +236,6 @@ import {
   tokenLimitText,
 } from '@/utils/gateway'
 
-const { hasRole, disconnect } = useGatewayAuth()
-const canKey = computed(() => hasRole('key'))
 const keys = ref<GatewayKey[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -317,7 +313,6 @@ async function load() {
   try {
     keys.value = await gatewayApi.keys()
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
     error.value = errorMessage(reason, 'Key 列表加载失败')
   } finally {
     loading.value = false

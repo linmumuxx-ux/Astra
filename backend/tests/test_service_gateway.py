@@ -1,7 +1,7 @@
 """统一服务脚本的 Gateway 集成校验。
 
 不启动真实进程：只校验 ``scripts/astra_service.py`` 组装出的命令、就绪等待和
-正式模式校验，确保 API 中转数据面以独立进程运行且不自动发布草稿。
+正式模式校验，确保 API 中转数据面以独立进程运行并直接加载保存配置。
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ def _settings(*, gateway_enabled: bool = True, **overrides):
     base = {
         "gateway_enabled": gateway_enabled,
         "gateway_master_key": None,
-        "gateway_control_credentials": "",
         "redis_url": "redis://127.0.0.1:6379/0",
         "mcp_transport": "stdio",
         "resolved_runtime_dir": Path("/tmp/astra-run"),
@@ -88,7 +87,7 @@ def test_start_core_waits_for_gateway_health(monkeypatch):
     assert f"http://127.0.0.1:{service.GATEWAY_PORT}/healthz" in ready_urls
 
 
-def test_gateway_startup_never_publishes_draft():
+def test_gateway_startup_has_no_publication_workflow():
     source = (ROOT / "backend" / "app" / "gateway" / "server.py").read_text(encoding="utf-8")
     assert "publish" not in source.lower()
 
@@ -96,9 +95,8 @@ def test_gateway_startup_never_publishes_draft():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"gateway_master_key": None, "gateway_control_credentials": "admin-token"},
-        {"gateway_master_key": "fernet-key", "gateway_control_credentials": ""},
-        {"gateway_master_key": "fernet-key", "gateway_control_credentials": "admin-token", "redis_url": ""},
+        {"gateway_master_key": None},
+        {"gateway_master_key": "fernet-key", "redis_url": ""},
     ],
 )
 def test_production_gateway_validation_rejects_missing_dependencies(overrides):
@@ -106,19 +104,18 @@ def test_production_gateway_validation_rejects_missing_dependencies(overrides):
         service.validate_gateway_production(_settings(gateway_enabled=True, **overrides))
 
 
-def test_production_gateway_validation_accepts_complete_config():
+def test_production_gateway_validation_accepts_config_without_management_credentials():
     service.validate_gateway_production(
         _settings(
             gateway_enabled=True,
             gateway_master_key="fernet-key",
-            gateway_control_credentials="admin-token",
         )
     )
 
 
 def test_production_gateway_validation_skips_when_disabled():
     service.validate_gateway_production(
-        _settings(gateway_enabled=False, gateway_master_key=None, gateway_control_credentials="")
+        _settings(gateway_enabled=False, gateway_master_key=None)
     )
 
 

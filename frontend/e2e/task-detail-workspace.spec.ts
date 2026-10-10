@@ -57,7 +57,7 @@ type SessionItem = {
   workspace_ui: string
 }
 
-type RepoState = { name: string; branch: string; commit: string; dirty: boolean; changes: number }
+type RepoState = { name: string; branch: string; commit: string; dirty: boolean; changes: number; task_changes?: { changed_files: number; commits: string[] } }
 
 const STATUS_LABEL: Record<string, string> = {
   PENDING: '待执行',
@@ -296,12 +296,12 @@ test('Git 状态与任务信息抽屉：仓库标签、业务字段与 Session �
   const { errors, posts } = await installFixture(page, {
     tasks: [makeTask('T-SESSIONS', '会话切换任务', { status: 'RUNNING', current_session_id: 'ses_new', workspace, started_at: '2026-01-01T00:00:00Z', acceptance_criteria: [{ id: 'ac-1', content: '切换 Session 后 Workspace 不串任务' }] })],
     sessions: { 'T-SESSIONS': sessionsConfig(workspace) },
-    repos: { 'T-SESSIONS': { name: 'demo-repo', branch: 'main', commit: '0123456789abcdef01234567', dirty: true, changes: 3 } },
+    repos: { 'T-SESSIONS': { name: 'demo-repo', branch: 'main', commit: '0123456789abcdef01234567', dirty: true, changes: 3, task_changes: { changed_files: 5, commits: ['commit-one', 'commit-two'] } } },
   })
   await page.goto('/tasks/T-SESSIONS')
   const detail = page.getByTestId('task-workspace')
 
-  await expect(detail.locator('.repo')).toHaveText('demo-repo / main · 01234567 · 3 个变更')
+  await expect(detail.locator('.repo')).toHaveText('demo-repo / main · 01234567 · 累计 5 个文件 / 2 次提交 · 未提交 3')
   await expect(detail.locator('.repo')).toHaveAttribute('title', '0123456789abcdef01234567')
 
   await detail.getByRole('button', { name: '任务信息' }).click()
@@ -338,7 +338,7 @@ test('WAITING 人工确认：确认完成调用 POST confirm 且页面收敛为�
   const detail = page.getByTestId('task-workspace')
 
   await expect(detail.getByRole('button', { name: '确认完成' })).toBeVisible()
-  await expect(detail.getByRole('button', { name: '取消任务' })).toBeVisible()
+  await expect(detail.getByRole('button', { name: '终止任务' })).toBeVisible()
   const confirmResponse = page.waitForResponse(response => response.url().endsWith('/api/tasks/T-CONFIRM/confirm'))
   await detail.getByRole('button', { name: '确认完成' }).click()
   const request = (await confirmResponse).request()
@@ -346,7 +346,7 @@ test('WAITING 人工确认：确认完成调用 POST confirm 且页面收敛为�
   expect(await request.postDataJSON()).toEqual({})
 
   await expect(detail.getByRole('button', { name: '确认完成' })).toHaveCount(0)
-  await expect(detail.getByRole('button', { name: '取消任务' })).toHaveCount(0)
+  await expect(detail.getByRole('button', { name: '终止任务' })).toHaveCount(0)
   await expect(detail.getByRole('button', { name: '重新开始（新 Session）' })).toBeVisible()
   await expect(detail.locator('.runtime-status-badge')).toContainText('已完成')
   await expect(page.locator('.workspace-alert')).toHaveCount(0)
@@ -445,4 +445,3 @@ test('跨任务隔离：切换历史 Session 后经列表进入另一任务，Se
   expect(posts).toEqual([])
   expect(errors).toEqual([])
 })
-

@@ -1,5 +1,4 @@
 <template>
-  <GatewayGate>
     <ElContainer direction="vertical" class="gateway-node-page" data-testid="gateway-node-detail">
       <ElHeader class="gateway-node-header">
         <AstraPageHeader :title="node?.name ?? '节点详情'" :description="node?.base_url ?? '正在加载节点…'" testid="gateway-node-header">
@@ -34,13 +33,13 @@
             @click="restore"
           >恢复调度</ElButton>
           <ElButton
-            v-if="node && canManage"
+            v-if="node"
             :loading="working"
             :icon="node.config_state === 'ENABLED' ? PowerOff : Power"
             data-testid="gateway-node-toggle"
             @click="toggleConfig"
           >{{ node.config_state === 'ENABLED' ? '禁用' : '启用' }}</ElButton>
-          <ElButton v-if="node && canManage" type="primary" :icon="Pencil" data-testid="gateway-node-edit" @click="openEditor">编辑</ElButton>
+          <ElButton v-if="node" type="primary" :icon="Pencil" data-testid="gateway-node-edit" @click="openEditor">编辑</ElButton>
             </ElSpace>
           </template>
         </AstraPageHeader>
@@ -410,7 +409,6 @@
                   <div class="gateway-node-card-head">
                     <div><h4>节点配置</h4><ElText type="info">凭据加密入库，任何视图都不回显明文</ElText></div>
                     <ElButton
-                      v-if="canManage"
                       type="primary"
                       plain
                       :icon="Pencil"
@@ -447,7 +445,6 @@
     </ElContainer>
 
     <GatewayNodeDrawer :open="editorOpen" :node="node" :pools="pools" @close="editorOpen = false" @saved="load" />
-  </GatewayGate>
 </template>
 
 <script setup lang="ts">
@@ -495,7 +492,6 @@ import {
 } from 'element-plus'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayHealthCheck,
   type GatewayNode,
   type GatewayPool,
@@ -508,7 +504,6 @@ import {
 import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { formatTokens } from '@/utils/format'
 import {
   authTypeLabel,
@@ -528,14 +523,11 @@ import {
   schedulingTone,
   type GatewayTone,
 } from '@/utils/gateway'
-import GatewayGate from '@/views/gateway/GatewayGate.vue'
 import GatewayNodeDrawer from '@/views/gateway/GatewayNodeDrawer.vue'
 import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { hasRole, disconnect } = useGatewayAuth()
-const canManage = computed(() => hasRole('node'))
 const nodeId = computed(() => String(route.params.id ?? ''))
 
 // 节点详情不套在网关一级菜单里（见 router 的 /gateway/nodes/:id），
@@ -581,12 +573,6 @@ const allProbes: GatewayProbeType[] = ['NETWORK', 'SERVICE', 'MODEL', 'STREAM']
 // 否则慢响应会把上一个节点 / 上一个统计窗口的数据写回页面。
 let generation = 0
 let statsSeq = 0
-
-// 统计、日志与节点操作和整页加载一致：控制面凭据失效立即退回接入表单，
-// 不再用过期会话继续请求，也不再把 401 当成区块级错误提示。
-function unauthorized(reason: unknown): boolean {
-  return reason instanceof GatewayApiError && reason.status === 401
-}
 
 const windowLabel = computed(() => windows.find((item) => item.id === statsWindow.value)?.label ?? '')
 const probeAuthentication = computed(() => authenticationResult(healthChecks.value))
@@ -716,7 +702,6 @@ async function load(): Promise<void> {
     await loadStats()
   } catch (reason) {
     if (current !== generation) return
-    if (unauthorized(reason)) { disconnect(); return }
     error.value = errorMessage(reason, '节点详情加载失败')
   } finally {
     if (current === generation) {
@@ -737,7 +722,6 @@ async function loadStats(): Promise<void> {
     stats.value = value
   } catch (reason) {
     if (current !== generation || seq !== statsSeq) return
-    if (unauthorized(reason)) { disconnect(); return }
     error.value = errorMessage(reason, '统计加载失败')
   }
 }
@@ -751,7 +735,6 @@ async function loadRequests(target: number = requests.value.page): Promise<void>
     requests.value = page
   } catch (reason) {
     if (current !== generation) return
-    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '日志加载失败'), 'error')
   } finally {
     if (current === generation) logsLoading.value = false
@@ -779,7 +762,6 @@ async function probe(): Promise<void> {
     notify(`探测完成：${passed}/${result.checks.length} 项通过`, passed === result.checks.length ? 'success' : 'info')
     await load()
   } catch (reason) {
-    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '探测失败'), 'error')
   } finally {
     working.value = false
@@ -795,7 +777,6 @@ async function drain(): Promise<void> {
     notify('节点已进入安全下线')
     await load()
   } catch (reason) {
-    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '下线失败'), 'error')
   } finally {
     working.value = false
@@ -809,7 +790,6 @@ async function restore(): Promise<void> {
     notify('节点已恢复调度')
     await load()
   } catch (reason) {
-    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '恢复失败'), 'error')
   } finally {
     working.value = false
@@ -825,7 +805,6 @@ async function toggleConfig(): Promise<void> {
     notify(enable ? '节点已启用' : '节点已禁用')
     await load()
   } catch (reason) {
-    if (unauthorized(reason)) { disconnect(); return }
     notify(errorMessage(reason, '状态更新失败'), 'error')
   } finally {
     working.value = false

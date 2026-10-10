@@ -213,45 +213,6 @@ class NodeProbeResult(BaseModel):
     checks: list[HealthCheckRead]
 
 
-class ValidationErrorRead(BaseModel):
-    code: str
-    message: str
-    resource_type: str | None = None
-    resource_id: str | None = None
-
-
-class DraftValidationRead(BaseModel):
-    valid: bool
-    errors: list[ValidationErrorRead]
-    warnings: list[str]
-    counts: dict[str, int]
-
-
-class PublishRequest(BaseModel):
-    note: str = ""
-
-
-class RollbackRequest(BaseModel):
-    version: int = Field(ge=1)
-
-
-class ConfigVersionRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    version: int
-    status: str
-    source_version: int | None
-    note: str
-    published_by: str
-    published_at: datetime
-    created_at: datetime
-
-
-class ConfigVersionDetail(ConfigVersionRead):
-    snapshot: dict[str, Any]
-
-
 class AuditEventRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -265,11 +226,6 @@ class AuditEventRead(BaseModel):
     before: dict[str, Any]
     after: dict[str, Any]
     created_at: datetime
-
-
-class GatewayPermissions(BaseModel):
-    actor: str
-    roles: list[str]
 
 
 class RequestLogRead(BaseModel):
@@ -354,7 +310,6 @@ class GatewayInstanceRead(BaseModel):
     instance_id: str
     status: str
     app_version: str | None = None
-    config_version: int | None = None
     pid: int | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None

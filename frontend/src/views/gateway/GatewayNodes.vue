@@ -2,7 +2,7 @@
   <section class="gateway-nodes astra-stack" data-testid="gateway-nodes">
     <GatewayHeaderActions>
       <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-nodes-refresh" @click="load">刷新</ElButton>
-      <ElButton v-if="canManage" type="primary" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
+      <ElButton type="primary" :icon="Plus" data-testid="gateway-node-create" @click="openCreate">新增节点</ElButton>
     </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-nodes-error">
@@ -46,7 +46,6 @@
       :pools="pools"
       :busy-id="busyId"
       :loading="loading"
-      :readonly="!canManage"
       :empty-text="hasFilters ? '没有匹配的节点，调整筛选条件后重试。' : '暂无节点，点击「新增节点」开始配置。'"
       @detail="openDetail"
       @probe="onProbe"
@@ -83,22 +82,18 @@ import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElText } 
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayNode,
   type GatewayPool,
   type GatewayProbeType,
 } from '@/api/gateway'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, healthStateLabel, schedulingStateLabel } from '@/utils/gateway'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import GatewayNodeDrawer from '@/views/gateway/GatewayNodeDrawer.vue'
 import GatewayNodeTable from '@/views/gateway/GatewayNodeTable.vue'
 
 const router = useRouter()
-const { hasRole, disconnect } = useGatewayAuth()
-const canManage = computed(() => hasRole('node'))
 const nodes = ref<GatewayNode[]>([])
 const pools = ref<GatewayPool[]>([])
 const loading = ref(false)
@@ -158,7 +153,6 @@ async function load() {
     nodes.value = nodeList
     pools.value = poolList
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
     error.value = errorMessage(reason, '节点列表加载失败')
   } finally {
     loading.value = false

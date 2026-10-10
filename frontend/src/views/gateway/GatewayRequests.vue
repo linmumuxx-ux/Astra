@@ -139,7 +139,6 @@ import {
 } from 'element-plus'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayKey,
   type GatewayNode,
   type GatewayRequestLog,
@@ -148,10 +147,8 @@ import {
 } from '@/api/gateway'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage, formatDateTime } from '@/utils/gateway'
 
-const { disconnect } = useGatewayAuth()
 const page = ref<GatewayRequestPage>({ items: [], total: 0, page: 1, page_size: 50 })
 const nodes = ref<GatewayNode[]>([])
 const keys = ref<GatewayKey[]>([])
@@ -207,7 +204,6 @@ async function loadPage(target = page.value.page) {
   try {
     page.value = await gatewayApi.requests(buildQuery(target))
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
     error.value = errorMessage(reason, '调用日志加载失败')
   } finally {
     loading.value = false

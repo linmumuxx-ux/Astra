@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.environment_routes import router as environment_router
 from app.api.gateway_routes import gateway_error_handler
 from app.api.gateway_routes import router as gateway_router
 from app.api.library_routes import library_error_handler
@@ -74,6 +75,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(environment_router)
 app.include_router(workspace_router)
 app.include_router(library_router)
 app.include_router(assistant_router)

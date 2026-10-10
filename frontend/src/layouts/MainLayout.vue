@@ -118,7 +118,7 @@ const navigation = [
   { to: '/settings', label: '设置', icon: Settings },
 ]
 
-const pendingCount = computed(() => store.tasks.filter((task) =>
+const pendingCount = computed(() => route.path === '/' ? store.homeOverview?.attention_total ?? 0 : store.tasks.filter((task) =>
   ['WAITING', 'FAILED'].includes(task.status) || task.inactivity_alert,
 ).length)
 

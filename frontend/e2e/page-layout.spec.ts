@@ -4,7 +4,6 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 // 全部接口本地 mock，不依赖后端与真实数据。
 
 const NOW = '2026-01-01T00:00:00Z'
-const CONTROL_TOKEN = 'e2e-page-layout-token'
 
 const nodeFixture = {
   id: 'node-alpha', name: 'Alpha 节点', pool_id: 'pool-1', base_url: 'https://alpha.example.test',
@@ -25,9 +24,13 @@ const statsFixture = {
 }
 
 async function mockApi(page: Page) {
-  await page.addInitScript((token) => window.sessionStorage.setItem('astra.gateway.control.token', token), CONTROL_TOKEN)
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => {
     const { pathname, searchParams } = new URL(route.request().url())
+    if (pathname.startsWith('/api/gateway/')) {
+      expect(pathname).not.toBe('/api/gateway/permissions')
+      expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+      expect(route.request().headers().authorization).toBeUndefined()
+    }
     const json = (data: unknown) => route.fulfill({ json: data })
     if (pathname === '/api/events/stream') {
       return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
@@ -62,7 +65,6 @@ async function mockApi(page: Page) {
     if (pathname === '/api/library/knowledge') {
       return json({ items: [], total: searchParams.get('space_id') ? 3 : 39, page: 1, page_size: 20, pages: 2 })
     }
-    if (pathname === '/api/gateway/permissions') return json({ actor: 'e2e-admin', roles: ['system', 'node', 'route', 'key', 'publish'] })
     if (pathname === '/api/gateway/nodes') return json([nodeFixture])
     if (pathname === '/api/gateway/pools') return json([{ id: 'pool-1', name: '默认资源池', description: '', weight: 100, enabled: true, sort_order: 0, created_at: NOW, updated_at: NOW }])
     if (pathname === '/api/gateway/routes') return json([{ id: 'route-1', model: 'gpt-test', pool_id: 'pool-1', description: '', enabled: true, weight: 100, created_at: NOW, updated_at: NOW }])
@@ -70,8 +72,6 @@ async function mockApi(page: Page) {
     if (pathname === '/api/gateway/stats') return json(statsFixture)
     if (pathname === '/api/gateway/requests') return json({ items: [], total: 0, page: 1, page_size: 50 })
     if (pathname === '/api/gateway/instances') return json([])
-    if (pathname === '/api/gateway/config/draft') return json({ valid: true, errors: [], warnings: [], counts: { nodes: 1, pools: 1, routes: 1, keys: 0 } })
-    if (pathname === '/api/gateway/config/versions') return json([])
     return json({})
   })
 }
@@ -225,9 +225,11 @@ test('API 中转左侧竖向子菜单保持正常并高亮当前分区', async (
   await page.goto('/gateway/nodes')
   const menu = page.getByTestId('gateway-page').getByRole('complementary')
   await expect(menu).toBeVisible()
-  for (const id of ['overview', 'nodes', 'routes', 'keys', 'logs', 'versions', 'self']) {
+  for (const id of ['overview', 'nodes', 'routes', 'keys', 'logs']) {
     await expect(page.getByTestId(`gateway-menu-${id}`)).toBeVisible()
   }
+  await expect(page.getByTestId('gateway-menu-versions')).toHaveCount(0)
+  await expect(page.getByTestId('gateway-menu-self')).toHaveCount(0)
   await expect(page.getByTestId('gateway-menu-nodes')).toHaveClass(/is-active/)
   await page.getByTestId('gateway-menu-keys').click()
   await expect(page.getByTestId('gateway-menu-keys')).toHaveClass(/is-active/)

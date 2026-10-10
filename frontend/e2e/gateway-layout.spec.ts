@@ -1,8 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
-// 布局回归不依赖真实网关控制面：/api/gateway/** 全部本地 mock，
-// 控制面 Bearer 仅写入 sessionStorage，与真实凭据体系保持一致。
-const CONTROL_TOKEN = 'e2e-gateway-control-token'
+// 布局回归不依赖真实网关控制面：/api/gateway/** 全部本地 mock。
+// 各管理分区无需输入控制面凭据即可直接访问。
 
 const nodeFixture = {
   id: 'node-alpha',
@@ -60,14 +59,22 @@ const statsFixture = {
 }
 
 async function mockGatewayApi(page: Page) {
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const pathname = new URL(route.request().url()).pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) })
-    if (pathname === '/api/gateway/permissions') return json({ actor: 'e2e-admin', roles: ['system'] })
     if (pathname === '/api/gateway/nodes') return json([nodeFixture])
     if (pathname === '/api/gateway/pools') return json([
       { id: 'pool-1', name: '默认资源池', description: '', weight: 100, enabled: true, sort_order: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
@@ -78,22 +85,14 @@ async function mockGatewayApi(page: Page) {
     if (pathname === '/api/gateway/keys') return json([
       { id: 'key-1', name: '测试 Key', key_prefix: 'agw_e2e', owner_id: null, allowed_models: [], max_concurrency: 4, hourly_token_limit: null, daily_token_limit: null, enabled: true, expires_at: null, last_used_at: null, revoked_at: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
     ])
-    if (pathname === '/api/gateway/requests' || pathname.startsWith('/api/gateway/self/requests')) {
+    if (pathname === '/api/gateway/requests') {
       return json({ items: [], total: 0, page: 1, page_size: 50 })
     }
-    if (pathname === '/api/gateway/stats' || pathname.startsWith('/api/gateway/self/stats')) {
+    if (pathname === '/api/gateway/stats') {
       return json({ ...statsFixture, scope: 'overview' })
     }
     if (pathname === '/api/gateway/instances') return json([])
     if (pathname === '/api/gateway/audits') return json([])
-    if (pathname === '/api/gateway/config/draft') {
-      return json({ valid: true, errors: [], warnings: [], counts: { nodes: 1, pools: 1, routes: 1, keys: 1 } })
-    }
-    if (pathname === '/api/gateway/config/versions') {
-      return json([
-        { id: 1, version: 1, status: 'CURRENT', source_version: null, note: '初始发布', published_by: 'e2e-admin', published_at: '2026-01-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
-      ])
-    }
     if (/^\/api\/gateway\/nodes\/[^/]+\/health-checks$/.test(pathname)) return json([])
     const match = /^\/api\/gateway\/nodes\/([^/]+)$/.exec(pathname)
     if (match) return json({ ...nodeFixture, id: decodeURIComponent(match[1]) })
@@ -109,12 +108,15 @@ const sections = [
   { id: 'routes', label: '资源池与路由', path: '/gateway/routes', heading: '资源池与路由' },
   { id: 'keys', label: 'API Key 管理', path: '/gateway/keys', heading: 'API Key 管理' },
   { id: 'logs', label: '调用日志', path: '/gateway/logs', heading: '调用日志' },
-  { id: 'versions', label: '配置版本', path: '/gateway/versions', heading: '配置版本' },
-  { id: 'self', label: '自助用量', path: '/gateway/self', heading: '自助用量' },
 ]
 
 async function expectSingleHeader(page: import('@playwright/test').Page, heading: string) {
   const header = page.getByTestId('gateway-header')
+  await expect(page.getByTestId('gateway-connect')).toHaveCount(0)
+  await expect(page.getByTestId('gateway-session')).toHaveCount(0)
+  await expect(page.getByTestId('gateway-disconnect')).toHaveCount(0)
+  await expect(page.getByTestId('gateway-menu-versions')).toHaveCount(0)
+  await expect(page.getByTestId('gateway-menu-self')).toHaveCount(0)
   await expect(header.getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
   await expect(header.getByText(heading, { exact: false }).first()).toBeVisible()
   // 全页只有这一个 h2 大标题，子页不再重复一套。
@@ -128,7 +130,7 @@ test.describe('API 中转布局与路由', () => {
     await mockGatewayApi(page)
   })
 
-  test('七个菜单可切换且状态同步', async ({ page }) => {
+  test('五个菜单可切换且状态同步', async ({ page }) => {
     await page.goto('/gateway')
     await expect(page).toHaveURL(/\/gateway\/overview$/)
     await expect(page.getByTestId('gateway-page')).toBeVisible()
@@ -140,11 +142,9 @@ test.describe('API 中转布局与路由', () => {
       await expect(page.getByTestId(`gateway-menu-${section.id}`)).toHaveClass(/is-active/)
       await expectSingleHeader(page, section.heading)
       // 子页的刷新按钮落在父级标题区右侧，不留在内容区里。
-      // 自助用量未接入 Key 时本来就没有刷新按钮。
       const actions = page.locator('#gateway-header-actions')
       await expect(actions).toHaveCount(1)
-      if (section.id === 'self') await expect(actions.locator('> *')).toHaveCount(0)
-      else await expect(actions.getByRole('button', { name: '刷新' })).toBeVisible()
+      await expect(actions.getByRole('button', { name: '刷新' })).toBeVisible()
       for (const other of sections.filter((item) => item.id !== section.id)) {
         await expect(page.getByTestId(`gateway-menu-${other.id}`)).not.toHaveClass(/is-active/)
       }
@@ -154,15 +154,15 @@ test.describe('API 中转布局与路由', () => {
     await expect(page.getByRole('menuitem', { name: 'API 中转' })).toHaveClass(/is-active/)
   })
 
-  test('直接访问与刷新保持对应页面', async ({ page }) => {
-    await page.goto('/gateway/versions')
-    await expectSingleHeader(page, '配置版本')
-    await expect(page.getByTestId('gateway-menu-versions')).toHaveClass(/is-active/)
+  test('无凭据直接访问与刷新保持对应页面', async ({ page }) => {
+    await page.goto('/gateway/keys')
+    await expectSingleHeader(page, 'API Key 管理')
+    await expect(page.getByTestId('gateway-menu-keys')).toHaveClass(/is-active/)
 
     await page.reload()
-    await expect(page).toHaveURL(/\/gateway\/versions$/)
-    await expectSingleHeader(page, '配置版本')
-    await expect(page.getByTestId('gateway-menu-versions')).toHaveClass(/is-active/)
+    await expect(page).toHaveURL(/\/gateway\/keys$/)
+    await expectSingleHeader(page, 'API Key 管理')
+    await expect(page.getByTestId('gateway-menu-keys')).toHaveClass(/is-active/)
   })
 
   test('旧 ?tab= 链接无损转向新路径', async ({ page }) => {
@@ -176,6 +176,15 @@ test.describe('API 中转布局与路由', () => {
 
     await page.goto('/gateway?tab=%E4%B8%8D%E5%AD%98%E5%9C%A8')
     await expect(page).toHaveURL(/\/gateway\/overview$/)
+  })
+
+  test('已删除的配置版本与自助用量链接统一返回运行总览', async ({ page }) => {
+    for (const path of ['/gateway?tab=versions', '/gateway?tab=self', '/gateway/versions', '/gateway/self']) {
+      await page.goto(path)
+      await expect(page).toHaveURL(/\/gateway\/overview$/)
+      await expectSingleHeader(page, '运行总览')
+      await expect(page.getByTestId('gateway-menu-overview')).toHaveClass(/is-active/)
+    }
   })
 
   test('节点详情可从列表进入、深链刷新且旧返回链接可用', async ({ page }) => {
@@ -192,7 +201,7 @@ test.describe('API 中转布局与路由', () => {
 
     await page.getByRole('link', { name: '节点列表' }).click()
     await expect(page).toHaveURL(/\/gateway\/nodes$/)
-    console.log('ERRS', JSON.stringify(errs, null, 2))
+    expect(errs).toEqual([])
     await expectSingleHeader(page, '下游节点')
   })
 })

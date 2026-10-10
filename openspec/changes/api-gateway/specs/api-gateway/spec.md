@@ -14,8 +14,8 @@ Gateway MUST provide OpenAI-compatible model listing and chat completion endpoin
 ### Requirement: 跨实例共享吊销阻断
 Gateway MUST consult a shared, append-only revocation state before reading the request body and before dispatching downstream, and MUST reject a revoked Key immediately even when the published snapshot still lists it as enabled. It MUST fail closed with a structured error when the revocation state is unavailable or not yet synchronized, and MUST NOT disconnect already running streams. Readiness MUST be a sentinel member of the same revocation set, and Gateway MUST read that sentinel and the digest in a single atomic operation on the one set, so a missing sentinel fails closed on its own; it MUST NOT check readiness and the set in separate calls that a flush or a whole-key eviction could split.
 
-#### Scenario: Revoked Key on a still-published snapshot
-- **WHEN** a Key is revoked while the current published snapshot still enables it
+#### Scenario: Revoked Key in a cached configuration
+- **WHEN** a Key is revoked while the current in-memory configuration still enables it
 - **THEN** both `/v1/models` and `/v1/chat/completions` reject it with a structured error before reading the body or contacting a downstream node
 
 #### Scenario: Shared result across instances
@@ -48,12 +48,12 @@ Gateway MUST apply node/key concurrency and node hourly/daily Token policies acr
 ### Requirement: 故障治理与安全重试
 Gateway MUST use active and passive health signals, remove unhealthy nodes after repeated failures, restore them after repeated success, and operate CLOSED/OPEN/HALF_OPEN circuit states. It MAY retry on another node only when a transport error proves the request was not sent downstream.
 
-#### Scenario: Health is scoped to the published connection
-- **WHEN** a node's published connection differs from the connection that produced the current health or circuit result (for example after a publish, a draft edit, or an old instance still serving an older version)
-- **THEN** Gateway does not authorise the new configuration with that mismatched result, across all instances, restarts, rollbacks, and unknown publish outcomes
+#### Scenario: 健康按连接隔离
+- **WHEN** 节点当前保存的连接不同于生成健康或熔断结果的连接，例如连接刚被修改或旧实例仍持有较早配置
+- **THEN** Gateway 不使用不匹配的结果授权新连接，该规则在多实例与重启后仍有效
 
 #### Scenario: Missing runtime health is unknown
-- **WHEN** a node has no runtime health record (reset, expired or lost runtime state), even if the published snapshot recorded HEALTHY
+- **WHEN** a node has no runtime health record (reset, expired or lost runtime state), even if the saved configuration recorded HEALTHY
 - **THEN** Gateway treats it as UNKNOWN and does not schedule it until runtime health is re-established, never falling back to the snapshot
 
 #### Scenario: Connection fails before send

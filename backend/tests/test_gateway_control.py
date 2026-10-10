@@ -1,4 +1,4 @@
-"""API 中转控制面测试：鉴权、凭据脱敏、安全下线、探测、发布 / 回滚与审计。"""
+"""API 中转控制面测试：保存校验、凭据脱敏、安全下线、探测与审计。"""
 
 import asyncio
 import json
@@ -13,32 +13,19 @@ from sqlalchemy import select
 
 from app.api.gateway_routes import (
     gateway_cipher,
-    gateway_notifier,
     gateway_probe_client,
     gateway_runtime,
 )
 from app.database import SessionLocal
-from app.gateway.auth import gateway_credential_store
 from app.gateway.models import (
-    GatewayAuditEvent,
-    GatewayConfigVersion,
     GatewayHealthCheck,
     GatewayKey,
     GatewayNode,
-    utcnow,
 )
-from app.gateway.notifier import InMemoryConfigNotifier
 from app.gateway.probe import HttpGatewayProbeClient, ProbeOutcome
 from app.gateway.runtime import SCOPE_NODE, InMemoryRuntimeStore, node_runtime_scope
-from app.gateway.security import CredentialCipher, gateway_key_digest, parse_credentials
+from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.main import app
-
-ROOT_TOKEN = "it-root-token"
-VIEW_TOKEN = "it-view-token"
-NODE_TOKEN = "it-node-token"
-ROUTE_TOKEN = "it-route-token"
-KEY_TOKEN = "it-key-token"
-PUBLISH_TOKEN = "it-publish-token"
 
 
 class FakeProbe:
@@ -51,10 +38,6 @@ class FakeProbe:
         return [ProbeOutcome(probe_type, self.success, 3) for probe_type in probe_types]
 
 
-def auth(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
 def unique(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:10]}"
 
@@ -62,36 +45,17 @@ def unique(prefix: str) -> str:
 @pytest.fixture
 def gateway_env():
     master_key = Fernet.generate_key().decode()
-    store = parse_credentials(
-        json.dumps(
-            [
-                {
-                    "name": "root",
-                    "token": ROOT_TOKEN,
-                    "roles": ["view", "node", "route", "key", "publish", "system"],
-                },
-                {"name": "viewer", "token": VIEW_TOKEN, "roles": ["view"]},
-                {"name": "node-bot", "token": NODE_TOKEN, "roles": ["node"]},
-                {"name": "route-bot", "token": ROUTE_TOKEN, "roles": ["route"]},
-                {"name": "key-bot", "token": KEY_TOKEN, "roles": ["key"]},
-                {"name": "publisher", "token": PUBLISH_TOKEN, "roles": ["publish"]},
-            ]
-        )
-    )
-    notifier = InMemoryConfigNotifier()
     probe = FakeProbe()
     runtime = InMemoryRuntimeStore()
     overrides = {
-        gateway_credential_store: lambda: store,
         gateway_cipher: lambda: CredentialCipher(master_key),
-        gateway_notifier: lambda: notifier,
         gateway_probe_client: lambda: probe,
         gateway_runtime: lambda: runtime,
     }
     app.dependency_overrides.update(overrides)
     try:
         yield SimpleNamespace(
-            master_key=master_key, notifier=notifier, probe=probe, runtime=runtime
+            master_key=master_key, probe=probe, runtime=runtime
         )
     finally:
         for dependency in overrides:
@@ -102,7 +66,6 @@ def create_pool(client: TestClient, *, enabled: bool = True) -> dict:
     response = client.post(
         "/api/gateway/pools",
         json={"name": unique("pool"), "enabled": enabled},
-        headers=auth(ROOT_TOKEN),
     )
     assert response.status_code == 201, response.text
     return response.json()
@@ -120,7 +83,7 @@ def create_node(
     if api_key is not None:
         payload["api_key"] = api_key
     payload.update(extra)
-    response = client.post("/api/gateway/nodes", json=payload, headers=auth(ROOT_TOKEN))
+    response = client.post("/api/gateway/nodes", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -138,34 +101,40 @@ def create_route(client: TestClient, pool_id: str, model: str) -> dict:
     response = client.post(
         "/api/gateway/routes",
         json={"model": model, "pool_id": pool_id},
-        headers=auth(ROOT_TOKEN),
     )
     assert response.status_code == 201, response.text
     return response.json()
 
 
-def test_control_plane_requires_server_side_credentials(gateway_env):
+def test_control_plane_crud_without_management_credentials(gateway_env):
     with TestClient(app) as client:
-        assert client.get("/api/gateway/pools").status_code == 401
-        # 浏览器提交的身份 Header 不是可信登录。
-        forged = {"X-Astra-User-Id": "admin", "X-Astra-Role": "admin"}
-        assert client.get("/api/gateway/pools", headers=forged).status_code == 401
-        assert client.get("/api/gateway/pools", headers=auth("wrong-token")).status_code == 401
+        assert client.get("/api/gateway/pools").status_code == 200
+        pool = create_pool(client)
+        updated = client.patch(
+            f"/api/gateway/pools/{pool['id']}", json={"name": unique("renamed")}
+        )
+        assert updated.status_code == 200
+        assert any(item["id"] == pool["id"] for item in client.get("/api/gateway/pools").json())
+        assert client.delete(f"/api/gateway/pools/{pool['id']}").status_code == 204
+        assert all(item["id"] != pool["id"] for item in client.get("/api/gateway/pools").json())
+        assert client.get("/api/gateway/permissions").status_code == 404
 
-        assert client.get("/api/gateway/pools", headers=auth(VIEW_TOKEN)).status_code == 200
-        forbidden = client.post(
-            "/api/gateway/pools", json={"name": unique("pool")}, headers=auth(VIEW_TOKEN)
-        )
-        assert forbidden.status_code == 403
-        # 只有节点角色也不能改路由。
-        assert (
-            client.post(
-                "/api/gateway/routes",
-                json={"model": unique("model"), "pool_id": "gp_missing"},
-                headers=auth(NODE_TOKEN),
-            ).status_code
-            == 403
-        )
+
+def test_control_plane_audit_uses_astra_source_despite_forged_identity(gateway_env):
+    with TestClient(app) as client:
+        forged = {
+            "Authorization": "Bearer arbitrary-token",
+            "X-Astra-User-Id": "forged-admin",
+            "X-Astra-Role": "publish",
+        }
+        created = client.post("/api/gateway/pools", json={"name": unique("pool")}, headers=forged)
+        assert created.status_code == 201, created.text
+        audits = client.get(
+            "/api/gateway/audits",
+            params={"resource_type": "pool", "resource_id": created.json()["id"]},
+        ).json()
+        assert audits
+        assert {(item["actor"], item["actor_role"]) for item in audits} == {("astra", "system")}
 
 
 def test_node_credential_encrypted_and_key_hashed_with_redacted_responses(gateway_env):
@@ -180,14 +149,13 @@ def test_node_credential_encrypted_and_key_hashed_with_redacted_responses(gatewa
         created_key = client.post(
             "/api/gateway/keys",
             json={"name": unique("key"), "allowed_models": ["gpt-test"]},
-            headers=auth(ROOT_TOKEN),
         )
         assert created_key.status_code == 201, created_key.text
         raw_key = created_key.json()["key"]
         assert raw_key.startswith("agw_")
         assert created_key.json()["key_prefix"] == raw_key[:12]
 
-        listed = client.get("/api/gateway/keys", headers=auth(VIEW_TOKEN)).json()
+        listed = client.get("/api/gateway/keys").json()
         assert all("key_digest" not in item for item in listed)
         assert all("key" not in item for item in listed)
 
@@ -212,7 +180,6 @@ def test_revoke_key_blocks_shared_state_before_db_and_fails_closed(gateway_env):
         created = client.post(
             "/api/gateway/keys",
             json={"name": unique("key"), "allowed_models": ["gpt-test"]},
-            headers=auth(ROOT_TOKEN),
         )
         assert created.status_code == 201, created.text
         key_id = created.json()["id"]
@@ -224,13 +191,13 @@ def test_revoke_key_blocks_shared_state_before_db_and_fails_closed(gateway_env):
 
         # Redis 不可用：吊销必须结构化 503，且 DB 吊销不得提交——证明共享阻断先写。
         gateway_env.runtime.set_available(False)
-        failed = client.delete(f"/api/gateway/keys/{key_id}", headers=auth(KEY_TOKEN))
+        failed = client.delete(f"/api/gateway/keys/{key_id}")
         assert failed.status_code == 503
         assert asyncio.run(read_key()).revoked_at is None
 
         # 恢复后：先追加共享阻断状态，再提交 DB 吊销，返回成功。
         gateway_env.runtime.set_available(True)
-        revoked = client.delete(f"/api/gateway/keys/{key_id}", headers=auth(KEY_TOKEN))
+        revoked = client.delete(f"/api/gateway/keys/{key_id}")
         assert revoked.status_code == 200, revoked.text
         assert revoked.json()["revoked_at"] is not None
         assert asyncio.run(gateway_env.runtime.is_key_revoked(digest)) is True
@@ -239,7 +206,6 @@ def test_revoke_key_blocks_shared_state_before_db_and_fails_closed(gateway_env):
         audits = client.get(
             "/api/gateway/audits",
             params={"resource_type": "key", "resource_id": key_id},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert any(item["action"] == "key.revoke" for item in audits)
 
@@ -273,18 +239,17 @@ def test_node_must_drain_before_delete(gateway_env):
             client.post(
                 f"/api/gateway/nodes/{node['id']}/probe",
                 json={"probe_types": ALL_PROBES},
-                headers=auth(NODE_TOKEN),
             )
-        activated = client.post(f"/api/gateway/nodes/{node['id']}/activate", headers=auth(NODE_TOKEN))
+        activated = client.post(f"/api/gateway/nodes/{node['id']}/activate")
         assert activated.status_code == 200
         assert activated.json()["scheduling_state"] == "ACTIVE"
 
-        blocked = client.delete(f"/api/gateway/nodes/{node['id']}", headers=auth(NODE_TOKEN))
+        blocked = client.delete(f"/api/gateway/nodes/{node['id']}")
         assert blocked.status_code == 409
-        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain", headers=auth(NODE_TOKEN))
+        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain")
         assert drained.status_code == 200
         assert drained.json()["scheduling_state"] == "DRAINING"
-        deleted = client.delete(f"/api/gateway/nodes/{node['id']}", headers=auth(NODE_TOKEN))
+        deleted = client.delete(f"/api/gateway/nodes/{node['id']}")
         assert deleted.status_code == 204
 
 
@@ -295,20 +260,20 @@ def test_probe_updates_health_streaks_without_touching_configuration(gateway_env
         assert node["health_state"] == "UNKNOWN"
 
         first = client.post(
-            f"/api/gateway/nodes/{node['id']}/probe", json={}, headers=auth(NODE_TOKEN)
+            f"/api/gateway/nodes/{node['id']}/probe", json={}
         )
         assert first.status_code == 200
         assert first.json()["node"]["health_state"] == "UNKNOWN"
 
         second = client.post(
-            f"/api/gateway/nodes/{node['id']}/probe", json={}, headers=auth(NODE_TOKEN)
+            f"/api/gateway/nodes/{node['id']}/probe", json={}
         )
         assert second.json()["node"]["health_state"] == "HEALTHY"
 
         gateway_env.probe.success = False
         for _ in range(3):
             failed = client.post(
-                f"/api/gateway/nodes/{node['id']}/probe", json={}, headers=auth(NODE_TOKEN)
+                f"/api/gateway/nodes/{node['id']}/probe", json={}
             )
         body = failed.json()["node"]
         assert body["health_state"] == "UNHEALTHY"
@@ -317,109 +282,17 @@ def test_probe_updates_health_streaks_without_touching_configuration(gateway_env
         assert body["scheduling_state"] == "DRAINING"
 
 
-def test_publish_validation_rollback_and_audit(gateway_env):
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        node = create_node(client, pool["id"], api_key="sk-original")
-        model = unique("model")
-        create_route(client, pool["id"], model)
-
-        published = client.post(
-            "/api/gateway/config/publish", json={"note": "first"}, headers=auth(ROOT_TOKEN)
-        )
-        assert published.status_code == 200, published.text
-        version_one = published.json()["version"]
-        assert gateway_env.notifier.current == version_one
-
-        # 路由指向禁用资源池时发布会失败，当前版本保持不变。
-        disabled = client.patch(
-            f"/api/gateway/pools/{pool['id']}", json={"enabled": False}, headers=auth(ROUTE_TOKEN)
-        )
-        assert disabled.status_code == 200
-        invalid = client.post(
-            "/api/gateway/config/publish", json={"note": "bad"}, headers=auth(ROOT_TOKEN)
-        )
-        assert invalid.status_code == 422
-        assert invalid.json()["errors"][0]["code"] == "ROUTE_POOL_DISABLED"
-        assert gateway_env.notifier.current == version_one
-
-        client.patch(
-            f"/api/gateway/pools/{pool['id']}", json={"enabled": True}, headers=auth(ROUTE_TOKEN)
-        )
-        updated = client.patch(
-            f"/api/gateway/nodes/{node['id']}", json={"name": "node-renamed"}, headers=auth(NODE_TOKEN)
-        )
-        assert updated.status_code == 200
-        second = client.post(
-            "/api/gateway/config/publish", json={"note": "second"}, headers=auth(ROOT_TOKEN)
-        )
-        assert second.status_code == 200
-        version_two = second.json()["version"]
-        assert version_two > version_one
-
-        rollback = client.post(
-            "/api/gateway/config/rollback",
-            json={"version": version_one},
-            headers=auth(ROOT_TOKEN),
-        )
-        assert rollback.status_code == 200, rollback.text
-        version_three = rollback.json()["version"]
-        assert version_three > version_two
-        assert rollback.json()["source_version"] == version_one
-        assert gateway_env.notifier.current == version_three
-
-        # 回滚同步草稿：节点名恢复为版本 1 的内容。
-        draft_nodes = client.get("/api/gateway/nodes", headers=auth(VIEW_TOKEN)).json()
-        assert [item["name"] for item in draft_nodes if item["id"] == node["id"]] == [
-            node["name"]
-        ]
-
-        versions = client.get("/api/gateway/config/versions", headers=auth(VIEW_TOKEN)).json()
-        by_version = {item["version"]: item["status"] for item in versions}
-        assert by_version[version_three] == "CURRENT"
-        assert by_version[version_two] == "SUPERSEDED"
-
-        detail = client.get(
-            f"/api/gateway/config/versions/{version_two}", headers=auth(VIEW_TOKEN)
-        ).json()
-        assert "api_key_encrypted" not in json.dumps(detail["snapshot"])
-        snapshot_node = next(
-            item for item in detail["snapshot"]["nodes"] if item["id"] == node["id"]
-        )
-        assert snapshot_node["has_api_key"] is True
-
-        audits = client.get(
-            "/api/gateway/audits", params={"resource_type": "config"}, headers=auth(VIEW_TOKEN)
-        ).json()
-        actions = {item["action"] for item in audits}
-        assert {"config.publish", "config.rollback"} <= actions
-
-        async def count_versions():
-            async with SessionLocal() as session:
-                return len(list(await session.scalars(select(GatewayConfigVersion))))
-
-        async def audit_secrets():
-            async with SessionLocal() as session:
-                events = list(await session.scalars(select(GatewayAuditEvent)))
-                return json.dumps([event.before for event in events] + [event.after for event in events])
-
-        assert asyncio.run(count_versions()) == 3
-        audit_text = asyncio.run(audit_secrets())
-        assert "sk-original" not in audit_text
-
-
 def test_credential_replacements_are_audited_without_secrets(gateway_env):
     with TestClient(app) as client:
         pool = create_pool(client)
         node = create_node(client, pool["id"], api_key="sk-before")
         replaced = client.patch(
-            f"/api/gateway/nodes/{node['id']}", json={"api_key": "sk-after"}, headers=auth(NODE_TOKEN)
+            f"/api/gateway/nodes/{node['id']}", json={"api_key": "sk-after"}
         )
         assert replaced.status_code == 200
         audits = client.get(
             "/api/gateway/audits",
             params={"resource_type": "node", "resource_id": node["id"]},
-            headers=auth(VIEW_TOKEN),
         ).json()
         update_events = [item for item in audits if item["action"] == "node.update"]
         assert update_events
@@ -442,7 +315,6 @@ def test_credential_operations_require_master_key(gateway_env):
                 "models": ["gpt-test"],
                 "api_key": "sk-secret",
             },
-            headers=auth(ROOT_TOKEN),
         )
         assert rejected.status_code == 503
         without_secret = client.post(
@@ -453,7 +325,6 @@ def test_credential_operations_require_master_key(gateway_env):
                 "base_url": "https://proxy.example.com",
                 "models": ["gpt-test"],
             },
-            headers=auth(ROOT_TOKEN),
         )
         assert without_secret.status_code == 201
 
@@ -553,7 +424,7 @@ def test_delete_node_requires_zero_active_concurrency(gateway_env):
     with TestClient(app) as client:
         pool = create_pool(client)
         node = create_node(client, pool["id"])
-        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain", headers=auth(NODE_TOKEN))
+        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain")
         assert drained.status_code == 200
 
         # 活跃并发来自与数据面同一事实来源（按 lease 的 ZSET），而非旧计数键。
@@ -561,176 +432,12 @@ def test_delete_node_requires_zero_active_concurrency(gateway_env):
             gateway_env.runtime.acquire(SCOPE_NODE, node["id"], 0, 900)
         )
         assert lease is not None
-        blocked = client.delete(f"/api/gateway/nodes/{node['id']}", headers=auth(NODE_TOKEN))
+        blocked = client.delete(f"/api/gateway/nodes/{node['id']}")
         assert blocked.status_code == 409
 
         asyncio.run(gateway_env.runtime.release(SCOPE_NODE, node["id"], lease))
-        deleted = client.delete(f"/api/gateway/nodes/{node['id']}", headers=auth(NODE_TOKEN))
+        deleted = client.delete(f"/api/gateway/nodes/{node['id']}")
         assert deleted.status_code == 204
-
-
-def test_rollback_preserves_node_health_history(gateway_env):
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        node = create_node(client, pool["id"])
-        for _ in range(2):
-            probed = client.post(
-                f"/api/gateway/nodes/{node['id']}/probe", json={}, headers=auth(NODE_TOKEN)
-            )
-        assert probed.json()["node"]["health_state"] == "HEALTHY"
-        create_route(client, pool["id"], unique("model"))
-        version_one = client.post(
-            "/api/gateway/config/publish", json={"note": "v1"}, headers=auth(ROOT_TOKEN)
-        ).json()["version"]
-        client.patch(
-            f"/api/gateway/nodes/{node['id']}", json={"name": "renamed"}, headers=auth(NODE_TOKEN)
-        )
-        client.post("/api/gateway/config/publish", json={"note": "v2"}, headers=auth(ROOT_TOKEN))
-
-        async def count_health():
-            async with SessionLocal() as session:
-                rows = await session.scalars(
-                    select(GatewayHealthCheck).where(GatewayHealthCheck.node_id == node["id"])
-                )
-                return len(list(rows))
-
-        before = asyncio.run(count_health())
-        assert before == 8
-
-        rollback = client.post(
-            "/api/gateway/config/rollback",
-            json={"version": version_one},
-            headers=auth(ROOT_TOKEN),
-        )
-        assert rollback.status_code == 200, rollback.text
-
-        assert asyncio.run(count_health()) == before
-        refreshed = client.get(f"/api/gateway/nodes/{node['id']}", headers=auth(VIEW_TOKEN)).json()
-        assert refreshed["id"] == node["id"]
-        assert refreshed["name"] == node["name"]
-        # 健康态是运行观测，回滚配置不覆盖它。
-        assert refreshed["health_state"] == "HEALTHY"
-
-
-def test_publish_failure_keeps_immutable_version_and_previous_current(gateway_env):
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-        first = client.post(
-            "/api/gateway/config/publish", json={"note": "v1"}, headers=auth(ROOT_TOKEN)
-        )
-        version_one = first.json()["version"]
-
-        async def explode(_version, _snapshot):
-            raise RuntimeError("redis unavailable")
-
-        gateway_env.notifier.publish = explode
-        failed = client.post(
-            "/api/gateway/config/publish", json={"note": "v2"}, headers=auth(ROOT_TOKEN)
-        )
-        assert failed.status_code == 503
-        # 不谎称旧配置已恢复：响应说明结果未知、待对账，当前版本以运行态为准。
-        assert "对账" in failed.json()["detail"]
-
-        versions = client.get("/api/gateway/config/versions", headers=auth(VIEW_TOKEN)).json()
-        currents = [item for item in versions if item["status"] == "CURRENT"]
-        assert [item["version"] for item in currents] == [version_one]
-        # 结果未知的发布版本作为不可变历史保留，不被删除，并保持待对账（PENDING）。
-        pending_versions = [item["version"] for item in versions if item["status"] == "PENDING"]
-        assert pending_versions == [version_one + 1]
-
-
-def test_concurrent_publishes_keep_unique_versions_and_single_current(gateway_env):
-    from concurrent.futures import ThreadPoolExecutor
-
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-
-        def publish(index: int):
-            return client.post(
-                "/api/gateway/config/publish",
-                json={"note": f"concurrent-{index}"},
-                headers=auth(ROOT_TOKEN),
-            )
-
-        with ThreadPoolExecutor(max_workers=4) as pool_executor:
-            responses = list(pool_executor.map(publish, range(4)))
-        assert all(response.status_code == 200 for response in responses), [
-            response.text for response in responses
-        ]
-
-        versions = client.get("/api/gateway/config/versions", headers=auth(VIEW_TOKEN)).json()
-        numbers = [item["version"] for item in versions]
-        assert len(numbers) == len(set(numbers))
-        currents = [item["version"] for item in versions if item["status"] == "CURRENT"]
-        assert len(currents) == 1
-        assert currents[0] == max(numbers)
-
-
-def test_reconcile_resolves_unknown_publish_outcome(gateway_env):
-    def latest_version() -> int:
-        async def read():
-            async with SessionLocal() as session:
-                row = await session.scalar(
-                    select(GatewayConfigVersion)
-                    .order_by(GatewayConfigVersion.version.desc())
-                    .limit(1)
-                )
-                return row.version if row is not None else 0
-
-        return asyncio.run(read())
-
-    def add_pending(version: int) -> None:
-        async def write():
-            async with SessionLocal() as session:
-                session.add(
-                    GatewayConfigVersion(
-                        version=version,
-                        status="PENDING",
-                        source_version=None,
-                        note="pending",
-                        snapshot={},
-                        published_by="test",
-                        published_at=utcnow(),
-                    )
-                )
-                await session.commit()
-
-        asyncio.run(write())
-
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-        client.post("/api/gateway/config/publish", json={"note": "base"}, headers=auth(ROOT_TOKEN))
-
-        # 运行态（Redis）已写入该版本，只是提升 CURRENT 前中断 → 对账应提升为 CURRENT。
-        promoted = latest_version() + 1
-        add_pending(promoted)
-        gateway_env.notifier.current = promoted
-        response = client.post("/api/gateway/config/reconcile", headers=auth(ROOT_TOKEN))
-        assert response.status_code == 200
-        # 历史用例可能遗留其他 PENDING 版本，对账会一并收敛。
-        assert response.json()["changed"] >= 1
-
-        versions = client.get("/api/gateway/config/versions", headers=auth(VIEW_TOKEN)).json()
-        by_version = {item["version"]: item["status"] for item in versions}
-        assert by_version[promoted] == "CURRENT"
-
-        # 运行态指向别的版本（通知实际未生效）→ 对账标记 FAILED，不谎称生效。
-        unknown = latest_version() + 1
-        add_pending(unknown)
-        gateway_env.notifier.current = promoted
-        response = client.post("/api/gateway/config/reconcile", headers=auth(ROOT_TOKEN))
-        assert response.status_code == 200
-        versions = client.get("/api/gateway/config/versions", headers=auth(VIEW_TOKEN)).json()
-        by_version = {item["version"]: item["status"] for item in versions}
-        assert by_version[unknown] == "FAILED"
-        currents = [item["version"] for item in versions if item["status"] == "CURRENT"]
-        assert currents == [promoted]
 
 
 def test_node_auth_configuration_validated_and_redacted_in_audit(gateway_env):
@@ -740,7 +447,6 @@ def test_node_auth_configuration_validated_and_redacted_in_audit(gateway_env):
         updated = client.patch(
             f"/api/gateway/nodes/{node['id']}",
             json={"auth_type": "HEADER", "auth_header": "X-Api-Key"},
-            headers=auth(NODE_TOKEN),
         )
         assert updated.status_code == 200, updated.text
         assert updated.json()["auth_type"] == "HEADER"
@@ -752,21 +458,18 @@ def test_node_auth_configuration_validated_and_redacted_in_audit(gateway_env):
         audits = client.get(
             "/api/gateway/audits",
             params={"resource_type": "node", "resource_id": node["id"]},
-            headers=auth(VIEW_TOKEN),
         ).json()
         assert "sk-node" not in json.dumps(audits)
 
         unknown_auth = client.patch(
             f"/api/gateway/nodes/{node['id']}",
             json={"auth_type": "TOKEN"},
-            headers=auth(NODE_TOKEN),
         )
         assert unknown_auth.status_code == 409
 
         none_auth = client.patch(
             f"/api/gateway/nodes/{node['id']}",
             json={"auth_type": "NONE"},
-            headers=auth(NODE_TOKEN),
         )
         assert none_auth.status_code == 200, none_auth.text
         assert none_auth.json()["auth_type"] == "NONE"
@@ -787,7 +490,6 @@ def test_node_base_url_must_be_root_without_v1_suffix(gateway_env):
                     "base_url": bad,
                     "models": ["gpt-test"],
                 },
-                headers=auth(ROOT_TOKEN),
             )
             assert rejected.status_code == 409, rejected.text
 
@@ -795,10 +497,9 @@ def test_node_base_url_must_be_root_without_v1_suffix(gateway_env):
         patched = client.patch(
             f"/api/gateway/nodes/{node['id']}",
             json={"base_url": "https://proxy.example.com/v1"},
-            headers=auth(NODE_TOKEN),
         )
         assert patched.status_code == 409
-        refreshed = client.get(f"/api/gateway/nodes/{node['id']}", headers=auth(VIEW_TOKEN)).json()
+        refreshed = client.get(f"/api/gateway/nodes/{node['id']}").json()
         assert refreshed["base_url"] == "https://proxy.example.com"
 
 
@@ -810,7 +511,6 @@ def test_partial_probe_cannot_promote_unknown_health(gateway_env):
             partial = client.post(
                 f"/api/gateway/nodes/{node['id']}/probe",
                 json={"probe_types": ["NETWORK"]},
-                headers=auth(NODE_TOKEN),
             ).json()["node"]
         # 仅局部探测即使连续成功也不能让 UNKNOWN 晋升为 HEALTHY。
         assert partial["health_state"] == "UNKNOWN"
@@ -821,7 +521,6 @@ def test_partial_probe_cannot_promote_unknown_health(gateway_env):
             full = client.post(
                 f"/api/gateway/nodes/{node['id']}/probe",
                 json={"probe_types": ALL_PROBES},
-                headers=auth(NODE_TOKEN),
             ).json()["node"]
         assert full["health_state"] == "HEALTHY"
 
@@ -831,12 +530,12 @@ def test_activating_unhealthy_node_is_rejected(gateway_env):
         pool = create_pool(client)
         node = create_node(client, pool["id"])
         assert node["health_state"] == "UNKNOWN"
-        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain", headers=auth(NODE_TOKEN))
+        drained = client.post(f"/api/gateway/nodes/{node['id']}/drain")
         assert drained.status_code == 200
 
         assert (
             client.post(
-                f"/api/gateway/nodes/{node['id']}/activate", headers=auth(NODE_TOKEN)
+                f"/api/gateway/nodes/{node['id']}/activate"
             ).status_code
             == 409
         )
@@ -844,7 +543,6 @@ def test_activating_unhealthy_node_is_rejected(gateway_env):
             client.patch(
                 f"/api/gateway/nodes/{node['id']}",
                 json={"scheduling_state": "ACTIVE"},
-                headers=auth(NODE_TOKEN),
             ).status_code
             == 409
         )
@@ -858,12 +556,11 @@ def test_activating_unhealthy_node_is_rejected(gateway_env):
                 "models": ["gpt-test"],
                 "scheduling_state": "ACTIVE",
             },
-            headers=auth(ROOT_TOKEN),
         )
         assert explicit.status_code == 409
 
 
-def test_editing_connection_fields_resets_draft_health_scope(gateway_env):
+def test_editing_connection_fields_resets_health_scope(gateway_env):
     with TestClient(app) as client:
         pool = create_pool(client)
         node = create_node(client, pool["id"])
@@ -873,19 +570,18 @@ def test_editing_connection_fields_resets_draft_health_scope(gateway_env):
                 client.post(
                     f"/api/gateway/nodes/{node['id']}/probe",
                     json={"probe_types": ALL_PROBES},
-                    headers=auth(NODE_TOKEN),
                 )
-            return client.get(f"/api/gateway/nodes/{node['id']}", headers=auth(VIEW_TOKEN)).json()
+            return client.get(f"/api/gateway/nodes/{node['id']}").json()
 
         assert become_healthy()["health_state"] == "HEALTHY"
         assert asyncio.run(gateway_env.runtime.health(read_scope(node["id"]))) == "HEALTHY"
 
         # 与连接无关的字段变化不重置健康。
         client.patch(
-            f"/api/gateway/nodes/{node['id']}", json={"weight": 5}, headers=auth(NODE_TOKEN)
+            f"/api/gateway/nodes/{node['id']}", json={"weight": 5}
         )
         assert (
-            client.get(f"/api/gateway/nodes/{node['id']}", headers=auth(VIEW_TOKEN)).json()[
+            client.get(f"/api/gateway/nodes/{node['id']}").json()[
                 "health_state"
             ]
             == "HEALTHY"
@@ -903,15 +599,15 @@ def test_editing_connection_fields_resets_draft_health_scope(gateway_env):
             previous_scope = read_scope(node["id"])
             assert asyncio.run(gateway_env.runtime.health(previous_scope)) == "HEALTHY", payload
             changed = client.patch(
-                f"/api/gateway/nodes/{node['id']}", json=payload, headers=auth(NODE_TOKEN)
+                f"/api/gateway/nodes/{node['id']}", json=payload
             ).json()
-            # 草稿投影重置；连接指纹变化产生新作用域（必须重新探测）。
+            # 健康投影重置；连接指纹变化产生新作用域（必须重新探测）。
             assert changed["health_state"] == "UNKNOWN", payload
             assert changed["success_streak"] == 0, payload
             new_scope = read_scope(node["id"])
             assert new_scope != previous_scope, payload
             assert asyncio.run(gateway_env.runtime.health(new_scope)) is None, payload
-            # 旧作用域运行态不被草稿编辑抹除：它可能仍代表当前已发布连接。
+            # 保留旧作用域运行态，供刷新前已开始的请求继续使用。
             assert asyncio.run(gateway_env.runtime.health(previous_scope)) == "HEALTHY", payload
 
 
@@ -933,162 +629,135 @@ def test_new_node_defaults_to_safe_draining_disabled(gateway_env):
                 "models": ["gpt-test"],
                 "scheduling_state": "ACTIVE",
             },
-            headers=auth(ROOT_TOKEN),
         )
         assert explicit.status_code == 409
 
 
-def test_draft_edit_and_probe_do_not_rewrite_published_runtime(gateway_env):
-    with TestClient(app) as client:
-        pool = create_pool(client)
-        node = create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-        for _ in range(2):
-            client.post(
-                f"/api/gateway/nodes/{node['id']}/probe",
-                json={"probe_types": ALL_PROBES},
-                headers=auth(NODE_TOKEN),
-            )
-        published_scope = read_scope(node["id"])
-        assert asyncio.run(gateway_env.runtime.health(published_scope)) == "HEALTHY"
-        published = client.post(
-            "/api/gateway/config/publish", json={"note": "v1"}, headers=auth(ROOT_TOKEN)
-        )
-        assert published.status_code == 200, published.text
-
-        # 编辑未发布草稿的连接：只影响草稿，已发布连接的健康/熔断保持不变。
-        changed = client.patch(
-            f"/api/gateway/nodes/{node['id']}",
-            json={"base_url": "https://proxy2.example.com"},
-            headers=auth(NODE_TOKEN),
-        ).json()
-        assert changed["health_state"] == "UNKNOWN"
-        draft_scope = read_scope(node["id"])
-        assert draft_scope != published_scope
-        assert asyncio.run(gateway_env.runtime.health(published_scope)) == "HEALTHY"
-        assert asyncio.run(gateway_env.runtime.circuit(published_scope)) == "CLOSED"
-
-        # 手动探测草稿连接成功也不能以草稿结果改写已发布运行态。
-        for _ in range(2):
-            client.post(
-                f"/api/gateway/nodes/{node['id']}/probe",
-                json={"probe_types": ALL_PROBES},
-                headers=auth(NODE_TOKEN),
-            )
-        assert asyncio.run(gateway_env.runtime.health(draft_scope)) == "HEALTHY"
-        assert asyncio.run(gateway_env.runtime.health(published_scope)) == "HEALTHY"
-
-
-def test_production_requires_gateway_control_credentials():
+def test_production_gateway_requires_master_key_and_no_management_config():
     from pydantic import ValidationError
 
     from app.config.settings import Settings
 
-    master_key = Fernet.generate_key().decode()
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="ASTRA_GATEWAY_MASTER_KEY"):
         Settings(
             _env_file=None,
             environment="production",
             gateway_enabled=True,
-            gateway_master_key=master_key,
-            gateway_control_credentials="",
+            gateway_master_key=None,
         )
+    master_key = Fernet.generate_key().decode()
     configured = Settings(
         _env_file=None,
         environment="production",
         gateway_enabled=True,
         gateway_master_key=master_key,
-        gateway_control_credentials="admin-token",
     )
     assert configured.gateway_master_key == master_key
+    assert "gateway_control_credentials" not in Settings.model_fields
 
 
-def test_rollback_to_version_with_revoked_key_keeps_tombstone(gateway_env):
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/gateway/permissions"),
+        ("get", "/api/gateway/config/draft"),
+        ("get", "/api/gateway/config/versions"),
+        ("get", "/api/gateway/config/versions/1"),
+        ("post", "/api/gateway/config/publish"),
+        ("post", "/api/gateway/config/rollback"),
+        ("post", "/api/gateway/config/reconcile"),
+        ("get", "/api/gateway/self/requests"),
+        ("get", "/api/gateway/self/stats"),
+    ],
+)
+def test_removed_gateway_management_portals_return_404(gateway_env, method, path):
+    with TestClient(app) as client:
+        response = client.request(method, path, headers={"Authorization": "Bearer arbitrary-key"})
+        assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"base_url": "   "},
+        {"base_url": "proxy.example.com"},
+        {"base_url": "ftp://proxy.example.com"},
+        {"base_url": "https://"},
+        {"health_path": "ready"},
+    ],
+)
+def test_node_invalid_connection_rejected_when_saved(gateway_env, invalid):
     with TestClient(app) as client:
         pool = create_pool(client)
-        create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-        created = client.post(
-            "/api/gateway/keys",
-            json={"name": unique("key"), "allowed_models": ["gpt-test"]},
-            headers=auth(KEY_TOKEN),
-        )
-        assert created.status_code == 201, created.text
-        key_id = created.json()["id"]
-        digest = gateway_key_digest(created.json()["key"])
-
-        # v1 包含启用中的 Key（enabled=True, revoked_at=None）。
-        version_one = client.post(
-            "/api/gateway/config/publish", json={"note": "v1"}, headers=auth(ROOT_TOKEN)
-        ).json()["version"]
-
-        revoked = client.delete(f"/api/gateway/keys/{key_id}", headers=auth(KEY_TOKEN))
-        assert revoked.status_code == 200, revoked.text
-        assert revoked.json()["enabled"] is False
-        assert revoked.json()["revoked_at"] is not None
-
-        # 回滚到吊销前的 v1：新快照不得再声明该 Key 可用，DB 行保持吊销 tombstone。
-        rollback = client.post(
-            "/api/gateway/config/rollback",
-            json={"version": version_one},
-            headers=auth(ROOT_TOKEN),
-        )
-        assert rollback.status_code == 200, rollback.text
-        new_version = rollback.json()["version"]
-
-        detail = client.get(
-            f"/api/gateway/config/versions/{new_version}", headers=auth(VIEW_TOKEN)
-        ).json()
-        snapshot_key = next(
-            item for item in detail["snapshot"]["keys"] if item["id"] == key_id
-        )
-        assert snapshot_key["enabled"] is False
-        assert snapshot_key["revoked_at"] is not None
-
-        stored = read_key_row(key_id)
-        assert stored is not None
-        assert stored.enabled is False
-        assert stored.revoked_at is not None
-
-        # 模拟 Redis 清空后从 DB 重建永久吊销：摘要仍可被重新同步并生效。
-        assert digest in revoked_key_digests()
-        gateway_env.runtime.clear_revocation_state()
-        assert asyncio.run(gateway_env.runtime.revocation_state_ready()) is False
-        asyncio.run(gateway_env.runtime.sync_revoked_key_digests(revoked_key_digests()))
-        assert asyncio.run(gateway_env.runtime.is_key_revoked(digest)) is True
+        node = create_node(client, pool["id"])
+        create_payload = {
+            "name": unique("invalid-node"),
+            "pool_id": pool["id"],
+            "base_url": "https://proxy.example.com",
+            **invalid,
+        }
+        assert client.post("/api/gateway/nodes", json=create_payload).status_code == 409
+        assert client.patch(f"/api/gateway/nodes/{node['id']}", json=invalid).status_code == 409
+        stored = client.get(f"/api/gateway/nodes/{node['id']}").json()
+        assert stored["base_url"] == node["base_url"]
+        assert stored["health_path"] == node["health_path"]
 
 
-def test_rollback_to_version_without_revoked_key_keeps_db_tombstone(gateway_env):
+@pytest.mark.parametrize("invalid", [{"model": "   "}, {"pool_id": ""}, {"pool_id": "gp_missing"}])
+def test_route_invalid_reference_rejected_when_saved(gateway_env, invalid):
     with TestClient(app) as client:
         pool = create_pool(client)
-        create_node(client, pool["id"])
-        create_route(client, pool["id"], unique("model"))
-        # v1：该 Key 尚未创建。
-        version_one = client.post(
-            "/api/gateway/config/publish", json={"note": "v1"}, headers=auth(ROOT_TOKEN)
-        ).json()["version"]
+        route = create_route(client, pool["id"], unique("model"))
+        create_payload = {"model": unique("invalid-model"), "pool_id": pool["id"], **invalid}
+        assert client.post("/api/gateway/routes", json=create_payload).status_code == 409
+        assert client.patch(f"/api/gateway/routes/{route['id']}", json=invalid).status_code == 409
+        stored = next(item for item in client.get("/api/gateway/routes").json() if item["id"] == route["id"])
+        assert stored["model"] == route["model"]
+        assert stored["pool_id"] == pool["id"]
 
-        created = client.post(
-            "/api/gateway/keys",
-            json={"name": unique("key"), "allowed_models": ["gpt-test"]},
-            headers=auth(KEY_TOKEN),
+
+def test_pool_can_be_disabled_while_referenced_but_cannot_be_deleted(gateway_env):
+    with TestClient(app) as client:
+        pool = create_pool(client)
+        route = create_route(client, pool["id"], unique("model"))
+        disabled = client.patch(f"/api/gateway/pools/{pool['id']}", json={"enabled": False})
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["enabled"] is False
+        assert client.delete(f"/api/gateway/pools/{pool['id']}").status_code == 409
+        assert client.delete(f"/api/gateway/routes/{route['id']}").status_code == 204
+        assert client.delete(f"/api/gateway/pools/{pool['id']}").status_code == 204
+
+
+def test_route_duplicate_model_update_rejected_without_overwriting_existing_route(gateway_env):
+    with TestClient(app) as client:
+        pool = create_pool(client)
+        original = create_route(client, pool["id"], unique("original-model"))
+        another = create_route(client, pool["id"], unique("another-model"))
+        rejected = client.patch(f"/api/gateway/routes/{another['id']}", json={"model": original["model"]})
+        assert rejected.status_code == 409, rejected.text
+        stored = next(
+            item for item in client.get("/api/gateway/routes").json() if item["id"] == another["id"]
         )
-        assert created.status_code == 201, created.text
-        key_id = created.json()["id"]
-        client.post("/api/gateway/config/publish", json={"note": "v2"}, headers=auth(ROOT_TOKEN))
-        client.delete(f"/api/gateway/keys/{key_id}", headers=auth(KEY_TOKEN))
+        assert stored["model"] == another["model"]
 
-        rollback = client.post(
-            "/api/gateway/config/rollback",
-            json={"version": version_one},
-            headers=auth(ROOT_TOKEN),
-        )
-        assert rollback.status_code == 200, rollback.text
 
-        # 回滚到不含该 Key 的版本也不得删除其行，否则 Redis 清空后无法重建永久吊销。
-        stored = read_key_row(key_id)
-        assert stored is not None
-        assert stored.enabled is False
-        assert stored.revoked_at is not None
-        draft_keys = client.get("/api/gateway/keys", headers=auth(VIEW_TOKEN)).json()
-        assert any(item["id"] == key_id for item in draft_keys)
+def test_node_metadata_save_preserves_health_history(gateway_env):
+    with TestClient(app) as client:
+        pool = create_pool(client)
+        node = create_node(client, pool["id"])
+        for _ in range(2):
+            assert client.post(f"/api/gateway/nodes/{node['id']}/probe", json={}).status_code == 200
+
+        async def checks():
+            async with SessionLocal() as session:
+                rows = await session.scalars(
+                    select(GatewayHealthCheck.id).where(GatewayHealthCheck.node_id == node["id"])
+                )
+                return list(rows)
+
+        before = asyncio.run(checks())
+        assert len(before) == 8
+        renamed = client.patch(f"/api/gateway/nodes/{node['id']}", json={"name": unique("renamed-node")})
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["health_state"] == "HEALTHY"
+        assert asyncio.run(checks()) == before

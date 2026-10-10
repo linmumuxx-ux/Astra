@@ -5,6 +5,7 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 from app.config.settings import Settings
 from app.executors.base import ExecutorResult
@@ -51,15 +52,34 @@ async def ensure_remote_mcp_tunnel(
 ) -> str:
     """Keep the reverse MCP tunnel alive beyond any one OpenCode request."""
 
-    if settings.mcp_public_url:
-        return settings.mcp_public_url
+    return await _ensure_service_tunnel(
+        environment, runtime, port=settings.mcp_port,
+        public_url=settings.mcp_public_url, path=settings.mcp_streamable_http_path,
+    )
 
-    key = _mcp_tunnel_key(environment, settings)
+
+async def ensure_remote_gateway_tunnel(environment, settings, runtime) -> str:
+    if settings.remote_gateway_public_url:
+        return settings.remote_gateway_public_url.rstrip("/") + "/v1"
+    parsed = urlparse(settings.remote_gateway_local_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("REMOTE_GATEWAY_LOCAL_URL 必须为本机回环 HTTP 地址")
+    return await _ensure_service_tunnel(
+        environment, runtime, port=parsed.port or 80, public_url=None,
+        path=parsed.path.rstrip("/") + "/v1",
+    )
+
+
+async def _ensure_service_tunnel(environment, runtime, *, port, public_url, path) -> str:
+    if public_url:
+        return public_url
+
+    key = (str(environment.host), int(environment.port), str(environment.username), int(port))
     lock = _mcp_tunnel_locks.setdefault(key, asyncio.Lock())
     async with lock:
         existing = _mcp_tunnels.get(key)
         if existing and existing.session.is_active():
-            return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
+            return f"http://127.0.0.1:{port}{path}"
         if existing:
             try:
                 await existing.tunnel.close()
@@ -70,8 +90,8 @@ async def ensure_remote_mcp_tunnel(
         session = await runtime.open_session(environment)
         try:
             tunnel = await session.open_reverse_tunnel(
-                remote_port=settings.mcp_port,
-                local_port=settings.mcp_port,
+                remote_port=port,
+                local_port=port,
             )
         except Exception:
             # Backend and Celery are separate processes. If another Astra process
@@ -79,17 +99,14 @@ async def ensure_remote_mcp_tunnel(
             # verify that the expected remote loopback port is actually listening.
             code, _, _ = await session.run_command(
                 "command -v ss >/dev/null 2>&1 && "
-                f"ss -ltnH 'sport = :{settings.mcp_port}' | grep -q ."
+                f"ss -ltn 'sport = :{port}' | sed '1d' | grep -q ."
             )
             await session.close()
             if code == 0:
-                return (
-                    f"http://127.0.0.1:{settings.mcp_port}"
-                    f"{settings.mcp_streamable_http_path}"
-                )
+                return f"http://127.0.0.1:{port}{path}"
             raise
         _mcp_tunnels[key] = _PersistentMcpTunnel(session=session, tunnel=tunnel)
-        return f"http://127.0.0.1:{settings.mcp_port}{settings.mcp_streamable_http_path}"
+        return f"http://127.0.0.1:{port}{path}"
 
 
 async def close_remote_mcp_tunnels() -> None:
@@ -141,6 +158,8 @@ class RemoteOpenCodeServerConnection:
                 self.settings,
                 self.runtime,
             )
+            if (self.environment.model_name or "").startswith("astra-gateway/"):
+                await ensure_remote_gateway_tunnel(self.environment, self.settings, self.runtime)
             try:
                 await self.client.health()
             except (OpenCodeServerUnavailable, OpenCodeServerCapabilityError):
@@ -179,12 +198,14 @@ class RemoteOpenCodeServerConnection:
         exit_code, _, _ = await session.run_command(
             f"test -f {workspace}/opencode.json || "
             f"test -f {workspace}/opencode.jsonc || "
-            f"test -f {workspace}/.opencode/opencode.json"
+            f"test -f {workspace}/.opencode/opencode.json || "
+            'test -f "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json" || '
+            'test -f "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc"'
         )
         if exit_code != 0:
             raise RuntimeError(
                 f"远程 Workspace 未提供 OpenCode 配置：{self.environment.workspace_root} "
-                "下无 opencode.json；Astra 不会生成临时配置，请补齐后重试"
+                "及用户全局目录下无 opencode.json；请配置或执行一键部署后重试"
             )
 
     async def _start_server(self, session: SSHSession) -> None:
@@ -194,6 +215,7 @@ class RemoteOpenCodeServerConnection:
         runtime_dir = f"/tmp/astra-opencode-server-$(id -u)-{port}"
         command = (
             "set -eu; umask 077; "
+            'export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; '
             f"runtime_dir={runtime_dir}; "
             'mkdir -p "$runtime_dir"; '
             f"mkdir -p {workspace}; cd {workspace}; "
@@ -206,7 +228,7 @@ class RemoteOpenCodeServerConnection:
             'if test "$old_cwd" = "$(pwd -P)"; then kill "$old_pid" 2>/dev/null || true; '
             'sleep 1; fi ;; esac ;; esac; fi; '
             'if command -v ss >/dev/null 2>&1; then '
-            f'if ss -ltnH "sport = :{port}" | grep -q .; then '
+            f'if ss -ltn "sport = :{port}" | sed "1d" | grep -q .; then '
             f'echo "端口冲突：{port} 已被占用" >&2; exit 1; fi; fi; '
             f'nohup {binary} serve '
             f"--hostname 127.0.0.1 --port {port} "

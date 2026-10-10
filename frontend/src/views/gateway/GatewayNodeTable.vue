@@ -48,7 +48,7 @@
     <ElTableColumn label="最近探测" width="108">
       <template #default="{ row }">{{ formatRelativeTime(row.last_checked_at) }}</template>
     </ElTableColumn>
-    <ElTableColumn v-if="!readonly" label="操作" width="232" fixed="right">
+    <ElTableColumn label="操作" width="232" fixed="right">
       <template #default="{ row }">
         <ElSpace :size="4" @click.stop>
           <ElTooltip content="查看详情" placement="top">
@@ -102,7 +102,6 @@ const props = defineProps<{
   pools: GatewayPool[]
   busyId?: string
   loading?: boolean
-  readonly?: boolean
   emptyText?: string
 }>()
 defineEmits<{

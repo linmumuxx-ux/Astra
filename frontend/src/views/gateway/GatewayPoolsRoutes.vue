@@ -15,7 +15,7 @@
             <h4>资源池</h4>
             <ElText type="info">仍被节点或路由引用的资源池无法删除。</ElText>
           </div>
-          <ElButton v-if="canRoute" type="primary" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
+          <ElButton type="primary" :icon="Plus" data-testid="gateway-pool-create" @click="openPoolCreate">新增资源池</ElButton>
         </div>
       </template>
 
@@ -62,7 +62,7 @@
           </template>
         </ElTableColumn>
         <ElTableColumn label="排序" prop="sort_order" width="80" />
-        <ElTableColumn v-if="canRoute" label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="88" fixed="right">
           <template #default="{ row }">
             <ElSpace :size="4">
               <ElTooltip content="编辑资源池" placement="top">
@@ -100,7 +100,7 @@
             <h4>模型路由</h4>
             <ElText type="info">每条路由把一个模型名指向一个资源池。</ElText>
           </div>
-          <ElButton v-if="canRoute" type="primary" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
+          <ElButton type="primary" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
         </div>
       </template>
 
@@ -152,7 +152,7 @@
             <ElTag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn v-if="canRoute" label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="88" fixed="right">
           <template #default="{ row }">
             <ElSpace :size="4">
               <ElTooltip content="编辑路由" placement="top">
@@ -295,7 +295,6 @@ import {
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   gatewayApi,
-  GatewayApiError,
   type GatewayPool,
   type GatewayRoute,
 } from '@/api/gateway'
@@ -303,11 +302,8 @@ import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
-import { useGatewayAuth } from '@/composables/useGatewayAuth'
 import { errorMessage } from '@/utils/gateway'
 
-const { hasRole, disconnect } = useGatewayAuth()
-const canRoute = computed(() => hasRole('route'))
 const pools = ref<GatewayPool[]>([])
 const routes = ref<GatewayRoute[]>([])
 const loading = ref(false)
@@ -399,7 +395,6 @@ async function load() {
     pools.value = poolList
     routes.value = routeList
   } catch (reason) {
-    if (reason instanceof GatewayApiError && reason.status === 401) { disconnect(); return }
     error.value = errorMessage(reason, '资源池 / 路由加载失败')
   } finally {
     loading.value = false

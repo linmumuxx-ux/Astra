@@ -356,16 +356,30 @@ export interface DashboardOverview {
   running_tasks: number
   completed_today: number
   attention_total: number
+  waiting_tasks: number
+  failed_tasks: number
+  online_employees: number
 }
 
-export interface DashboardEmployee {
+export interface DashboardEmployee extends RuntimeProjection {
   id: string
   name: string
   role: string
   status: string
+  enabled: boolean
   state: 'working' | 'idle' | 'waiting' | 'error'
   state_label: string
-  current_task: { id: string; title: string; status: string } | null
+  current_task: {
+    id: string
+    title: string
+    status: string
+    current_session_id: string | null
+    session_status: string | null
+    runtime_status_label: string
+    runtime_detail: string
+    human_required_reason: string | null
+    runtime_connection: string
+  } | null
 }
 
 export interface DashboardTeam {
@@ -385,8 +399,13 @@ export interface DashboardAttentionItem {
   task_title: string
   employee_id: string | null
   employee_name: string
-  status: 'execution_failed' | 'blocked' | 'waiting' | 'exception'
-  status_label: '执行失败' | '任务阻塞' | '等待处理' | '异常'
+  status: string
+  status_label: string
+  current_session_id: string | null
+  session_status: string | null
+  runtime_detail: string
+  human_required_reason: string | null
+  runtime_connection: string
   occurred_at: string
 }
 

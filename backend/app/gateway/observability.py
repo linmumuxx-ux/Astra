@@ -489,7 +489,6 @@ class GatewayObservabilityService:
             instance_id=str(item.get("instance_id")),
             status=str(item.get("status")),
             app_version=heartbeat.get("app_version"),
-            config_version=heartbeat.get("config_version"),
             pid=heartbeat.get("pid"),
             started_at=_parse_dt(heartbeat.get("started_at")),
             updated_at=updated_at,

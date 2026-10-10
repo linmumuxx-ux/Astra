@@ -74,7 +74,7 @@ def node_block_reason(
     daily: TokenUsage,
     health_state: str | None = None,
 ) -> str | None:
-    # 健康态只认运行态；调用方未提供时按 UNKNOWN 处理，绝不回退发布快照健康。
+    # 健康态只认运行态；调用方未提供时按 UNKNOWN 处理，绝不回退配置健康投影。
     health = health_state if health_state is not None else HEALTH_UNKNOWN
     if node.config_state != CONFIG_ENABLED:
         return REASON_CONFIG_DISABLED

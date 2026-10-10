@@ -315,6 +315,9 @@ async def update_employee_environment(
 ):
     employee = await require_employee(employee_id, session)
     environment = employee.execution_environment
+    from app.runtime.remote_provisioning import guard_environment_write
+
+    await guard_environment_write(session, environment)
     if environment is None:
         environment = OpenCodeExecutionEnvironment(employee_id=employee.id)
         session.add(environment)
@@ -351,35 +354,53 @@ async def update_employee_environment(
 async def test_employee_environment(employee_id: str, session: AsyncSession = Depends(get_session)):
     employee = await require_employee(employee_id, session)
     environment = employee.execution_environment
+    from app.runtime.remote_provisioning import guard_environment_write
+
+    await guard_environment_write(session, environment)
     if not environment:
         raise HTTPException(status_code=409, detail="员工尚未配置 Agent 工作环境")
     environment.status = EnvironmentStatus.CHECKING
+    from datetime import timedelta
+    from uuid import uuid4
+
+    check_id = uuid4().hex
+    environment.status_detail = {"operation": {
+        "id": check_id, "action": "test", "state": "RUNNING",
+        "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+    }}
     await session.commit()
     checked_at = datetime.now(UTC)
     try:
         checks = await ExecutionEnvironmentRuntime().test(environment)
     except Exception as exc:
         checks = [CheckItem("环境检查", False, str(exc))]
-    environment.status = checks_status(checks)
-    environment.last_checked_at = checked_at
-    environment.status_detail = {
+    new_status = checks_status(checks)
+    detail = {
         "checks": [{"name": item.name, "passed": item.passed, "detail": item.detail} for item in checks]
     }
+    result = await session.execute(
+        update(OpenCodeExecutionEnvironment)
+        .where(
+            OpenCodeExecutionEnvironment.id == environment.id,
+            OpenCodeExecutionEnvironment.status_detail["operation"]["id"].as_string() == check_id,
+        )
+        .values(status=new_status, last_checked_at=checked_at, status_detail=detail)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await session.rollback()
+        raise HTTPException(409, "环境状态已变化，旧检查结果未写入")
     session.add(
         Event(
             employee_id=employee.id,
             event_type="ENVIRONMENT_CHECKED",
             phase="environment",
             message="Agent 工作环境检查完成",
-            detail={"status": environment.status, **environment.status_detail},
+            detail={"status": new_status, **detail},
         )
     )
     await session.commit()
-    return {
-        "status": environment.status,
-        "checked_at": checked_at,
-        "checks": environment.status_detail["checks"],
-    }
+    return {"status": new_status, "checked_at": checked_at, "checks": detail["checks"]}
 
 
 @router.get("/employees/{employee_id}/usage")
@@ -412,6 +433,9 @@ async def resume_employee(employee_id: str, session: AsyncSession = Depends(get_
 @router.delete("/employees/{employee_id}")
 async def delete_employee(employee_id: str, session: AsyncSession = Depends(get_session)):
     employee = await require_employee(employee_id, session)
+    from app.runtime.remote_provisioning import guard_environment_write
+
+    await guard_environment_write(session, employee.execution_environment)
     if employee.current_task_count:
         raise HTTPException(status_code=409, detail="员工正在执行任务，不能删除")
     task_count = await session.scalar(

@@ -13,8 +13,6 @@ const GatewayNodes = () => import('@/views/gateway/GatewayNodes.vue')
 const GatewayPoolsRoutes = () => import('@/views/gateway/GatewayPoolsRoutes.vue')
 const GatewayKeys = () => import('@/views/gateway/GatewayKeys.vue')
 const GatewayRequests = () => import('@/views/gateway/GatewayRequests.vue')
-const GatewayVersions = () => import('@/views/gateway/GatewayVersions.vue')
-const GatewaySelfUsage = () => import('@/views/gateway/GatewaySelfUsage.vue')
 const InterventionView = () => import('@/views/InterventionView.vue')
 const SettingsView = () => import('@/views/SettingsView.vue')
 
@@ -25,8 +23,6 @@ const gatewayTabSegments: Record<string, string> = {
   routes: 'routes',
   keys: 'keys',
   logs: 'logs',
-  versions: 'versions',
-  self: 'self',
 }
 
 function gatewayIndexRedirect(to: RouteLocationGeneric) {
@@ -60,8 +56,7 @@ export default createRouter({
             { path: 'routes', name: 'gateway-routes', component: GatewayPoolsRoutes, meta: { title: '资源池与路由' } },
             { path: 'keys', name: 'gateway-keys', component: GatewayKeys, meta: { title: 'API Key 管理' } },
             { path: 'logs', name: 'gateway-logs', component: GatewayRequests, meta: { title: '调用日志' } },
-            { path: 'versions', name: 'gateway-versions', component: GatewayVersions, meta: { title: '配置版本' } },
-            { path: 'self', name: 'gateway-self', component: GatewaySelfUsage, meta: { title: '自助用量' } },
+            { path: ':removed(versions|self)', redirect: '/gateway/overview' },
           ],
         },
         { path: 'gateway/nodes/:id', name: 'gateway-node-detail', component: GatewayNodeDetailView, meta: { title: '节点详情' } },

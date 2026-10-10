@@ -1,8 +1,7 @@
 """API 中转持久化模型。
 
-草稿配置（节点 / Pool / 路由 / Key）保存在可编辑表；发布时生成不可变版本
-快照。调用日志与健康记录只保存元数据，不保存 Prompt、Authorization 或原始
-响应体。
+节点 / Pool / 路由 / Key 表是唯一配置事实源，数据面自动刷新已保存配置。
+调用日志与健康记录只保存元数据，不保存 Prompt、Authorization 或原始响应体。
 """
 
 from __future__ import annotations
@@ -51,14 +50,6 @@ AUTH_HEADER = "HEADER"
 AUTH_NONE = "NONE"
 AUTH_TYPES = (AUTH_BEARER, AUTH_HEADER, AUTH_NONE)
 DEFAULT_HEALTH_PATH = "/health"
-
-# 配置版本状态机：草稿发布先生成不可变 PENDING 版本，运行态通知成功后才提升为
-# CURRENT；通知失败/结果未知保留为 FAILED 或 PENDING，由对账收敛，绝不删除版本。
-VERSION_CURRENT = "CURRENT"
-VERSION_SUPERSEDED = "SUPERSEDED"
-VERSION_PENDING = "PENDING"
-VERSION_FAILED = "FAILED"
-
 
 class GatewayPool(Base):
     __tablename__ = "gateway_pools"
@@ -142,20 +133,6 @@ class GatewayKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
-
-
-class GatewayConfigVersion(Base):
-    __tablename__ = "gateway_config_versions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    version: Mapped[int] = mapped_column(Integer, unique=True, index=True)
-    status: Mapped[str] = mapped_column(String(16), default=VERSION_CURRENT, index=True)
-    source_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    note: Mapped[str] = mapped_column(Text, default="")
-    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    published_by: Mapped[str] = mapped_column(String(120), default="system")
-    published_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class GatewayHealthCheck(Base):

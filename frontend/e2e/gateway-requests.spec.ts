@@ -2,13 +2,11 @@ import { expect, test, type Page } from '@playwright/test'
 
 // 「调用日志」重构回归：/api/gateway/** 全部本地 mock，聚焦服务端能力：
 // 筛选/翻页参数原样透传（page、page_size、request_id、model、node_id、key_id、status_code、error_code）、
-// Token/延迟/吞吐/错误细节展示、空态文案、加载失败重试、只读账号、401 断开回接入页。
-const CONTROL_TOKEN = 'e2e-gateway-requests-token'
+// Token/延迟/吞吐/错误细节展示、空态文案、加载失败重试与无需登录的日志查询。
 
 type Json = Record<string, unknown>
 
 interface MockOptions {
-  roles?: string[]
   empty?: boolean
   failFirst?: boolean
   unauthorized?: boolean
@@ -45,20 +43,26 @@ function buildLogs(): Json[] {
 
 async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockState> {
   const state: MockState = { queries: [], attempts: 0 }
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const request = route.request()
     const method = request.method()
     const url = new URL(request.url())
     const pathname = url.pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
 
-    if (pathname === '/api/gateway/permissions') {
-      return json({ actor: 'e2e-admin', roles: options.roles ?? ['view'] })
-    }
     if (pathname === '/api/gateway/nodes') {
       return json([{ id: 'node-alpha', name: 'Alpha 节点' }])
     }
@@ -71,7 +75,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     if (pathname === '/api/gateway/requests' && method === 'GET') {
       state.attempts += 1
       state.queries.push(Object.fromEntries(url.searchParams.entries()))
-      if (options.unauthorized) return json({ detail: '凭据无效' }, 401)
+      if (options.unauthorized) return json({ detail: '访问被拒绝' }, 401)
       if (options.failFirst && state.attempts === 1) {
         return json({ detail: '网关控制面暂时不可用' }, 500)
       }
@@ -198,8 +202,8 @@ test.describe('API 中转 · 调用日志', () => {
     await expect(logRows(page)).toHaveCount(2)
   })
 
-  test('只读账号可查询日志且没有任何写操作入口', async ({ page }) => {
-    const state = await mockGateway(page, { roles: ['view'] })
+  test('无需登录即可查询日志，日志页面只提供查询操作', async ({ page }) => {
+    const state = await mockGateway(page)
     await page.goto('/gateway/logs')
 
     await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
@@ -210,10 +214,10 @@ test.describe('API 中转 · 调用日志', () => {
     expect(lastQuery(state)).toMatchObject({ page: '1' })
   })
 
-  test('凭据失效（401）断开控制面会话并回到接入页', async ({ page }) => {
+  test('控制面返回 401 时显示请求错误并保留日志页面', async ({ page }) => {
     await mockGateway(page, { unauthorized: true })
     await page.goto('/gateway/logs')
-    await expect(page.getByTestId('gateway-connect')).toBeVisible()
-    await expect(page.getByTestId('gateway-requests')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-requests-error')).toContainText('访问被拒绝')
+    await expect(page.getByTestId('gateway-requests')).toBeVisible()
   })
 })

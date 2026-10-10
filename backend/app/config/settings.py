@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
+    remote_opencode_version: str = "1.2.27"
+    remote_node_version: str = "22.23.3"
+    remote_npm_registry: str = "https://registry.npmmirror.com"
+    remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)
+    remote_gateway_local_url: str = "http://127.0.0.1:8110"
+    remote_gateway_public_url: str | None = None
+
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = Field(default=8201, ge=1, le=65535)
@@ -148,16 +155,14 @@ class Settings(BaseSettings):
     nr_test_system_result_path: str = "/api/astra/tasks/{external_task_id}/result"
     nr_test_system_token: str | None = None
 
-    # API 中转控制面。管理凭据与节点凭据都由服务端校验：浏览器提交的身份 Header 一律不可信。
+    # API 中转：控制面直接管理，Gateway Key 仍用于数据面与 Key 自助鉴权。
     # 主密钥（Fernet）只用于加密节点下游凭据，缺失时拒绝相关写操作；生产环境启动强制校验。
     gateway_enabled: bool = True
     gateway_master_key: str | None = Field(default=None, repr=False)
-    gateway_control_credentials: str = Field(default="", repr=False)
     gateway_probe_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     gateway_health_path: str = "/health"
     gateway_probe_interval_seconds: int = Field(default=300, ge=10, le=86400)
-    gateway_config_channel: str = "astra:gateway:config"
-    # 数据面独立进程（app.gateway.server:app）：实例心跳、租约 TTL、版本轮询与
+    # 数据面独立进程（app.gateway.server:app）：实例心跳、租约 TTL、配置刷新与
     # 运行态健康检查。实例 ID 缺省时按主机名与进程号生成。
     gateway_instance_id: str | None = None
     gateway_heartbeat_interval: int = Field(default=10, ge=1, le=3600)
@@ -193,15 +198,6 @@ class Settings(BaseSettings):
 
         CredentialCipher(value)
         return value.strip()
-
-    @field_validator("gateway_control_credentials")
-    @classmethod
-    def validate_gateway_control_credentials(cls, value: str) -> str:
-        if value and value.strip():
-            from app.gateway.security import parse_credentials
-
-            parse_credentials(value)
-        return value
 
     @field_validator("gateway_health_path")
     @classmethod
@@ -284,10 +280,6 @@ class Settings(BaseSettings):
         if self.gateway_enabled and self.environment == "production":
             if not self.gateway_master_key:
                 raise ValueError("生产模式启用 API 中转时必须配置 ASTRA_GATEWAY_MASTER_KEY")
-            if not self.gateway_control_credentials.strip():
-                raise ValueError(
-                    "生产模式启用 API 中转时必须配置 ASTRA_GATEWAY_CONTROL_CREDENTIALS"
-                )
         return self
 
     def absolute_path(self, value: Path) -> Path:

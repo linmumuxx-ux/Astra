@@ -49,14 +49,6 @@ export function authenticationTone(value: GatewayAuthenticationResult): GatewayT
   return 'neutral'
 }
 
-export const versionStatusLabel = (value: string) =>
-  ({
-    CURRENT: '当前版本',
-    PENDING: '待确认',
-    FAILED: '发布失败',
-    SUPERSEDED: '历史版本',
-  }[value] ?? fallback(value))
-
 export type GatewayTone = 'info' | 'success' | 'warning' | 'danger' | 'neutral'
 
 export function healthTone(value: string): GatewayTone {
@@ -71,13 +63,6 @@ export function schedulingTone(value: string): GatewayTone {
   if (value === 'ACTIVE') return 'success'
   if (value === 'DRAINING') return 'warning'
   if (value === 'BLOCKED') return 'danger'
-  return 'neutral'
-}
-
-export function versionTone(value: string): GatewayTone {
-  if (value === 'CURRENT') return 'success'
-  if (value === 'PENDING') return 'warning'
-  if (value === 'FAILED') return 'danger'
   return 'neutral'
 }
 

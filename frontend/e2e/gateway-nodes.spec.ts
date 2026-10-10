@@ -1,14 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // 「下游节点」重构回归：/api/gateway/** 全部本地 mock（带内存 store，可被操作改写），
-// 覆盖筛选/分页、只读权限、创建/编辑校验与 payload、密钥安全、探测、下线/恢复、
+// 覆盖筛选/分页、无需登录的写操作、创建/编辑校验与 payload、密钥安全、探测、下线/恢复、
 // 启停、删除保护与失败反馈。
-const CONTROL_TOKEN = 'e2e-gateway-nodes-token'
 
 type Json = Record<string, unknown>
 
 interface MockOptions {
-  roles?: string[]
   failFirstNodes?: boolean
   deleteError?: string
 }
@@ -89,20 +87,26 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     deletes: [],
     nodesAttempts: 0,
   }
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const request = route.request()
     const method = request.method()
     const pathname = new URL(request.url()).pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     const body = (): Json => (request.postData() ? JSON.parse(request.postData() as string) : {})
 
-    if (pathname === '/api/gateway/permissions') {
-      return json({ actor: 'e2e-admin', roles: options.roles ?? ['system'] })
-    }
     if (pathname === '/api/gateway/pools') {
       return json([
         { id: 'pool-1', name: '默认资源池', description: '', weight: 100, enabled: true, sort_order: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
@@ -208,14 +212,14 @@ async function openFilterSelect(page: Page, testId: string) {
 }
 
 test.describe('API 中转 · 下游节点', () => {
-  test('列表分页与筛选（只读账号无操作列与新增入口）', async ({ page }) => {
-    await mockGateway(page, { roles: [] })
+  test('无需登录即可查看列表、分页与筛选，并显示写操作入口', async ({ page }) => {
+    await mockGateway(page)
     await page.goto('/gateway/nodes')
 
     await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
-    await expect(page.getByTestId('gateway-node-create')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-create')).toBeVisible()
     const headers = await nodesSection(page).locator('.el-table__header-wrapper th').allInnerTexts()
-    expect(headers).not.toContain('操作')
+    expect(headers).toContain('操作')
 
     await expect(visibleRows(page)).toHaveCount(10)
     await expect(totalText(page)).toContainText('共 12 条')
@@ -249,14 +253,6 @@ test.describe('API 中转 · 下游节点', () => {
     await page.getByRole('link', { name: /Gamma 桥接/ }).click()
     await expect(page).toHaveURL(/\/gateway\/nodes\/node-11$/)
     await expect(page.getByTestId('gateway-node-detail')).toBeVisible()
-  })
-
-  test('node 角色展示新增与操作列', async ({ page }) => {
-    await mockGateway(page, { roles: ['node'] })
-    await page.goto('/gateway/nodes')
-    await expect(page.getByTestId('gateway-node-create')).toBeVisible()
-    const headers = await nodesSection(page).locator('.el-table__header-wrapper th').allInnerTexts()
-    expect(headers).toContain('操作')
   })
 
   test('创建：必填校验、/v1 拦截、健康就绪门禁与两阶段 payload', async ({ page }) => {
@@ -313,7 +309,7 @@ test.describe('API 中转 · 下游节点', () => {
     await expect(totalText(page)).toContainText('共 13 条')
   })
 
-  test('编辑：不回显既有密钥，保存 payload 不含 api_key', async ({ page }) => {
+  test('编辑保存后直接展示最新配置，刷新保留且不回显既有密钥', async ({ page }) => {
     const state = await mockGateway(page)
     await page.goto('/gateway/nodes')
 
@@ -324,12 +320,17 @@ test.describe('API 中转 · 下游节点', () => {
     await expect(secretInput).toHaveValue('')
     await expect(secretInput).toHaveAttribute('placeholder', /留空保持不变/)
     await expect(drawer.getByLabel('节点名称')).toHaveValue('Alpha 1')
+    await drawer.getByLabel('节点名称').fill('Alpha 1 已更新')
 
     await drawer.getByTestId('gateway-node-save').click()
     await expect(drawer).toHaveCount(0)
     expect(state.created).toHaveLength(0)
     expect(state.patched.length).toBeGreaterThanOrEqual(2)
     expect(state.patched.every((payload) => !('api_key' in payload))).toBe(true)
+    expect(state.patched.some((payload) => payload.name === 'Alpha 1 已更新')).toBe(true)
+    await expect(page.getByRole('button', { name: '编辑 Alpha 1 已更新' })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole('button', { name: '编辑 Alpha 1 已更新' })).toBeVisible()
   })
 
   test('未保存修改提醒：继续编辑保留表单，确认后关闭且不提交', async ({ page }) => {
@@ -416,4 +417,3 @@ test.describe('API 中转 · 下游节点', () => {
     await expect(visibleRows(page)).toHaveCount(10)
   })
 })
-

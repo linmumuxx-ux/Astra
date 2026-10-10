@@ -12,6 +12,7 @@
       class="employee-config-form"
       :model="form"
       :rules="formRules"
+      :disabled="maintaining"
       label-position="left"
       label-width="160px"
       scroll-to-error
@@ -136,7 +137,7 @@
               <ElTag :type="statusTagType(selectedEnvironmentStatus)">
                 {{ statusLabel(selectedEnvironmentStatus) }}
               </ElTag>
-              <ElButton :disabled="testing" @click="testConnection"><RefreshCw :size="13" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</ElButton>
+              <ElButton :disabled="testing || maintaining" @click="testConnection"><RefreshCw :size="13" :class="{ spin: testing }" /> {{ testing ? '检测中' : '测试连接' }}</ElButton>
             </ElSpace>
           </ElFormItem>
           <template v-if="selectedEnvironment">
@@ -147,9 +148,20 @@
           </template>
         </template>
 
+        <ElFormItem v-if="!creating && form.environment.mode === 'LINUX_REMOTE'" label="远程部署">
+          <div class="remote-maintenance">
+            <ElSpace wrap :size="8">
+              <ElButton data-testid="deploy-environment" type="primary" :loading="maintenanceAction === 'deploy'" :disabled="maintenanceDisabled" @click="maintain('deploy')">一键部署</ElButton>
+              <ElButton data-testid="restart-environment" :loading="maintenanceAction === 'restart'" :disabled="maintenanceDisabled" @click="maintain('restart')">重启 OpenCode Serve</ElButton>
+            </ElSpace>
+            <p class="maintenance-help">{{ isDirty ? '请先保存配置，再执行部署或重启。' : currentTaskCount > 0 ? '员工有未结束任务，请先结束任务再维护环境。' : '部署会安装依赖、设置 npm 镜像，并备份、合并当前 SSH 用户的全局 OpenCode 模型中转和数字图书馆配置。' }}</p>
+          </div>
+        </ElFormItem>
+
         <div v-if="checks.length" data-testid="environment-checks" class="environment-checks">
           <article v-for="check in checks" :key="check.name">
-            <CheckCircle2 v-if="check.passed" :size="14" class="is-passed" />
+            <RefreshCw v-if="check.state === 'running'" :size="14" class="spin" />
+            <CheckCircle2 v-else-if="check.passed" :size="14" class="is-passed" />
             <CircleX v-else :size="14" class="is-failed" />
             <div><strong>{{ check.name }}</strong><small>{{ check.detail }}</small></div>
           </article>
@@ -168,16 +180,20 @@
       />
     </ElForm>
 
+    <div v-if="maintaining" class="remote-operation-cancel">
+      <ElButton data-testid="cancel-environment-operation" @click="maintenanceController?.abort()">取消操作</ElButton>
+    </div>
+
     <StickyActionBar v-if="isDirty && !embedded" :dirty="isDirty" :saving="saving" :save-label="creating ? '创建员工' : '保存配置'" @save="save" @cancel="reset" />
   </component>
 </template>
 
 <script setup lang="ts">
 import { CheckCircle2, CircleX, Laptop, RefreshCw, Server } from 'lucide-vue-next'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElAlert, ElButton, ElCheckbox, ElCheckboxGroup, ElDivider, ElForm, ElFormItem, ElInput, ElOption, ElRadioGroup, ElRadioButton, ElSelect, ElSpace, ElSwitch, ElTag } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
-import { api } from '@/api/client'
+import { api, maintainEnvironment } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
 import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
 import FieldHelp from '@/components/forms/FieldHelp.vue'
@@ -194,10 +210,13 @@ const store = useAstraStore()
 const formRef = ref<FormInstance | null>(null)
 const saving = ref(false)
 const testing = ref(false)
+const maintenanceAction = ref<'deploy' | 'restart' | null>(null)
+const maintaining = computed(() => maintenanceAction.value !== null)
+const maintenanceController = ref<AbortController | null>(null)
 const statusChanging = ref(false)
 const message = ref('')
 const messageIsError = ref(false)
-const checks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
+const checks = ref<Array<{ name: string; passed: boolean; detail: string; state?: string }>>([])
 const originalSnapshot = ref('')
 
 const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 Agent 工作环境', description: '', host: '', port: 22 as number | string, username: '', ssh_password: '', opencode_server_port: 4096 as number | string, opencode_path: 'opencode', model_name: '', workspace_root: '', labels: [] as string[] })
@@ -264,6 +283,8 @@ function snapshot(): string {
   })
 }
 const isDirty = computed(() => snapshot() !== originalSnapshot.value)
+const maintenanceDisabled = computed(() => isDirty.value || saving.value || testing.value || maintaining.value || currentTaskCount.value > 0)
+const busy = computed(() => saving.value || maintaining.value)
 
 watch([() => props.employee?.id, () => props.creating], () => { fill(props.employee ?? undefined) }, { immediate: true })
 
@@ -281,6 +302,7 @@ function environmentChanged() {
 }
 
 async function save() {
+  if (maintaining.value) return
   message.value = ''; messageIsError.value = false
   const valid = formRef.value ? await formRef.value.validate().catch(() => false) : true
   if (!valid) return
@@ -312,6 +334,37 @@ async function save() {
   } finally { saving.value = false }
 }
 
+async function maintain(action: 'deploy' | 'restart') {
+  if (!props.employee || maintenanceDisabled.value) return
+  maintenanceAction.value = action
+  maintenanceController.value = new AbortController()
+  message.value = action === 'deploy' ? '正在部署远程环境，首次安装可能需要几分钟。' : '正在重启 OpenCode Serve。'
+  messageIsError.value = false
+  checks.value = []
+  try {
+    const result = await maintainEnvironment(props.employee.id, action, (event) => {
+      if (event.type !== 'step' || !event.name) return
+      checks.value = checks.value.filter((item) => item.name !== event.name)
+      checks.value.push({ name: event.name, passed: event.passed ?? false, detail: event.detail || (event.state === 'running' ? '正在执行…' : '完成'), state: event.state })
+    }, maintenanceController.value.signal)
+    message.value = result.success ? action === 'deploy' ? '部署完成，远程员工环境可用。' : 'OpenCode Serve 已重启，健康检查通过。' : result.message || '环境操作失败'
+    messageIsError.value = !result.success
+  } catch (error) {
+    messageIsError.value = true
+    message.value = maintenanceController.value.signal.aborted ? '操作已取消，请核对远端状态后重试。' : error instanceof Error ? error.message : '环境操作失败'
+  } finally {
+    maintenanceAction.value = null
+    maintenanceController.value = null
+    await store.refresh()
+    await nextTick()
+    if (props.employee) {
+      form.environment.opencode_path = props.employee.execution_environment?.opencode_path ?? form.environment.opencode_path
+      form.environment.model_name = props.employee.execution_environment?.model_name ?? ''
+      originalSnapshot.value = snapshot()
+    }
+  }
+}
+
 async function testConnection() {
   if (!props.employee) return
   testing.value = true
@@ -337,11 +390,14 @@ function reset() {
   fill(props.employee ?? undefined)
 }
 
-defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving, reset, save })
+defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving: busy, reset, save })
 </script>
 
 <style scoped>
 .employee-config-form { width: 100%; }
+.remote-maintenance { width: 100%; }
+.remote-operation-cancel { display: flex; justify-content: flex-end; margin-top: 12px; }
+.maintenance-help { margin: 8px 0 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); line-height: 1.6; }
 .employee-config-form :deep(.el-input), .employee-config-form :deep(.el-select) { width: 100%; }
 .employee-config-form :deep(.el-checkbox-group) { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .runtime-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }

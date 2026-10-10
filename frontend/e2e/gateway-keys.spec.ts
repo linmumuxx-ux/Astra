@@ -1,14 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // 「API Key 管理」重构回归：/api/gateway/keys 全部本地 mock（内存 store 可被写操作改写），
-// 覆盖分页/筛选、只读权限、创建/编辑 payload、额度展示、Key 原文一次性与复制、
-// 吊销（确认 + 已吊销禁操作）、服务端 409/500 保留表单、未保存提醒与加载失败重试 / 401 断开。
-const CONTROL_TOKEN = 'e2e-gateway-keys-token'
+// 覆盖分页/筛选、无需登录的写操作、创建/编辑 payload、额度展示、Key 原文一次性与复制、
+// 吊销（确认 + 已吊销禁操作）、服务端 409/500 保留表单、未保存提醒与请求失败重试。
 
 type Json = Record<string, unknown>
 
 interface MockOptions {
-  roles?: string[]
   failFirstKeys?: boolean
   keysUnauthorized?: boolean
   duplicateName409?: boolean
@@ -54,23 +52,29 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     revokes: [],
     keysAttempts: 0,
   }
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const request = route.request()
     const method = request.method()
     const pathname = new URL(request.url()).pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     const body = (): Json => (request.postData() ? JSON.parse(request.postData() as string) : {})
 
-    if (pathname === '/api/gateway/permissions') {
-      return json({ actor: 'e2e-admin', roles: options.roles ?? ['key'] })
-    }
     if (pathname === '/api/gateway/keys' && method === 'GET') {
       state.keysAttempts += 1
-      if (options.keysUnauthorized) return json({ detail: '凭据无效' }, 401)
+      if (options.keysUnauthorized) return json({ detail: '访问被拒绝' }, 401)
       if (options.failFirstKeys && state.keysAttempts === 1) {
         return json({ detail: '网关控制面暂时不可用' }, 500)
       }
@@ -144,14 +148,14 @@ async function selectStatusOption(page: Page, label: string) {
 }
 
 test.describe('API 中转 · API Key 管理', () => {
-  test('列表分页与筛选（只读账号无操作列与新增入口）', async ({ page }) => {
-    await mockGateway(page, { roles: ['view'] })
+  test('无需登录即可分页与筛选，并显示 Key 管理写操作入口', async ({ page }) => {
+    await mockGateway(page)
     await page.goto('/gateway/keys')
 
     await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
-    await expect(page.getByTestId('gateway-keys-create')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-keys-create')).toBeVisible()
     const headers = await page.getByTestId('gateway-keys-table').locator('.el-table__header-wrapper th').allInnerTexts()
-    expect(headers).not.toContain('操作')
+    expect(headers).toContain('操作')
 
     // 12 个 Key → 首页 10 行 + 分页；第二页 2 行，含额度展示（3.6M / 12K）。
     await expect(keyRows(page)).toHaveCount(10)
@@ -242,7 +246,7 @@ test.describe('API 中转 · API Key 管理', () => {
     await expect(page.locator(`text=${secret}`)).toHaveCount(0)
   })
 
-  test('编辑：字段回填、启停与额度 PATCH payload、服务端 500 保留表单', async ({ page }) => {
+  test('编辑保存直接更新额度，刷新保留；启停与服务端 500 保留表单', async ({ page }) => {
     const state = await mockGateway(page)
     await page.goto('/gateway/keys')
 
@@ -286,6 +290,8 @@ test.describe('API 中转 · API Key 管理', () => {
       expires_at: null,
       enabled: true,
     })
+    await expect(keyRows(page).filter({ hasText: 'Alpha 1' })).toContainText('2K / 50K')
+    await page.reload()
     await expect(keyRows(page).filter({ hasText: 'Alpha 1' })).toContainText('2K / 50K')
 
     // 停用走编辑开关。
@@ -349,7 +355,7 @@ test.describe('API 中转 · API Key 管理', () => {
     await expect(keyRows(page).filter({ hasText: 'Alpha 1 改' })).toHaveCount(0)
   })
 
-  test('加载失败展示错误并可重试成功；401 断开回到接入页', async ({ page }) => {
+  test('加载失败展示错误并可重试成功，401 保留管理页面', async ({ page }) => {
     await mockGateway(page, { failFirstKeys: true })
     await page.goto('/gateway/keys')
 
@@ -361,6 +367,8 @@ test.describe('API 中转 · API Key 管理', () => {
 
     await mockGateway(page, { keysUnauthorized: true })
     await page.goto('/gateway/keys')
-    await expect(page.getByTestId('gateway-connect')).toBeVisible()
+    await expect(page.getByTestId('gateway-keys-error')).toContainText('访问被拒绝')
+    await expect(page.getByTestId('gateway-keys')).toBeVisible()
+    await expect(page.getByTestId('gateway-keys-create')).toBeVisible()
   })
 })

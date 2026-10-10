@@ -1,23 +1,26 @@
-"""已发布配置的内存视图与版本收敛。
+"""已保存配置的内存视图与自动刷新。
 
 数据面每次请求只读 :class:`GatewayConfigState` 里的内存快照，绝不查询 MySQL。
-启动时从数据库加载最近一个 ``CURRENT`` 版本；随后由 :class:`ConfigReconciler`
-按 Redis 当前版本号轮询收敛，Redis 通知丢失时也能追平。
+启动及后台刷新从配置表读取同一事务里的完整配置，成功后原子替换内存视图。
+读取失败时保留最近有效配置，不维护版本历史或发布状态。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.gateway.models import VERSION_CURRENT, GatewayConfigVersion
+from app.gateway.models import GatewayKey, GatewayNode, GatewayPool, GatewayRoute
 from app.gateway.runtime import node_runtime_scope
+
+logger = logging.getLogger(__name__)
 
 
 def _text(value: Any, default: str = "") -> str:
@@ -169,19 +172,18 @@ class KeyConfig:
 
 
 @dataclass(frozen=True)
-class PublishedConfig:
-    version: int | None
+class GatewayConfig:
     pools: Mapping[str, PoolConfig]
     nodes: Mapping[str, NodeConfig]
     routes: Mapping[str, RouteConfig]
     keys: Mapping[str, KeyConfig]
 
     @classmethod
-    def empty(cls) -> PublishedConfig:
-        return cls(version=None, pools={}, nodes={}, routes={}, keys={})
+    def empty(cls) -> GatewayConfig:
+        return cls(pools={}, nodes={}, routes={}, keys={})
 
     @classmethod
-    def from_snapshot(cls, version: int | None, snapshot: Mapping[str, Any] | None) -> PublishedConfig:
+    def from_snapshot(cls, snapshot: Mapping[str, Any] | None) -> GatewayConfig:
         data = snapshot or {}
         pools = {
             item["id"]: PoolConfig(
@@ -208,7 +210,7 @@ class PublishedConfig:
             for item in data.get("keys", [])
             if item.get("key_digest")
         }
-        return cls(version=version, pools=pools, nodes=nodes, routes=routes, keys=keys)
+        return cls(pools=pools, nodes=nodes, routes=routes, keys=keys)
 
     @property
     def empty_config(self) -> bool:
@@ -216,72 +218,61 @@ class PublishedConfig:
 
 
 class GatewayConfigState:
-    """进程内原子替换的已发布配置。"""
+    """进程内原子替换的完整配置；旧请求持有旧视图直到结束。"""
 
-    def __init__(self, config: PublishedConfig | None = None) -> None:
-        self._config = config or PublishedConfig.empty()
+    def __init__(self, config: GatewayConfig | None = None) -> None:
+        self._config = config or GatewayConfig.empty()
         self._lock = asyncio.Lock()
 
     @property
-    def config(self) -> PublishedConfig:
+    def config(self) -> GatewayConfig:
         return self._config
 
-    @property
-    def version(self) -> int | None:
-        return self._config.version
-
-    async def replace(self, config: PublishedConfig) -> None:
+    async def replace(self, config: GatewayConfig) -> None:
         async with self._lock:
             self._config = config
 
 
 class ConfigLoader:
-    """从 MySQL 读取已发布版本快照。只在启动与版本收敛时调用。"""
+    """启动与周期刷新时从配置表读取一致视图，不在请求路径查询数据库。"""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def load_current(self) -> PublishedConfig:
-        """只加载最新的 ``CURRENT`` 版本；没有则返回空配置。
-
-        绝不回退到最新 ``PENDING`` / ``FAILED`` / ``SUPERSEDED`` 版本：未生效的
-        发布不存在“近似当前版本”，回退会让数据面采用从未被确认生效的配置。
-        """
-
-        async with self._session_factory() as session:
-            row = await session.scalar(
-                select(GatewayConfigVersion)
-                .where(GatewayConfigVersion.status == VERSION_CURRENT)
-                .order_by(GatewayConfigVersion.version.desc())
-            )
-        if row is None:
-            return PublishedConfig.empty()
-        return PublishedConfig.from_snapshot(row.version, row.snapshot)
-
-    async def load_version(self, version: int) -> PublishedConfig | None:
-        async with self._session_factory() as session:
-            row = await session.scalar(
-                select(GatewayConfigVersion).where(GatewayConfigVersion.version == version)
-            )
-        if row is None:
-            return None
-        return PublishedConfig.from_snapshot(row.version, row.snapshot)
+    async def load_current(self) -> GatewayConfig:
+        async with self._session_factory() as session, session.begin():
+            # 四张表必须来自同一数据库视图。SQLite 的 legacy transaction 模式
+            # 不会为 SELECT 自动 BEGIN；MySQL 显式用 REPEATABLE READ 固定读取视图。
+            dialect = session.get_bind().dialect.name
+            if dialect == "sqlite":
+                await session.execute(text("BEGIN"))
+            elif dialect == "mysql":
+                await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            snapshot: dict[str, Any] = {}
+            for name, model in (
+                ("pools", GatewayPool), ("nodes", GatewayNode),
+                ("routes", GatewayRoute), ("keys", GatewayKey),
+            ):
+                rows = await session.scalars(select(model))
+                snapshot[name] = [
+                    {column.name: getattr(row, column.name) for column in model.__table__.columns}
+                    for row in rows
+                ]
+            return GatewayConfig.from_snapshot(snapshot)
 
 
-class ConfigReconciler:
-    """定期校验 Redis 当前版本并原子替换内存配置。"""
+class ConfigRefresher:
+    """周期读取保存配置，失败保留旧视图，恢复后自动追平。"""
 
     def __init__(
         self,
         *,
         state: GatewayConfigState,
         loader: ConfigLoader,
-        version_source: Any,
         interval: float,
     ) -> None:
         self._state = state
         self._loader = loader
-        self._version_source = version_source
         self._interval = interval
         self._stop = asyncio.Event()
 
@@ -295,13 +286,11 @@ class ConfigReconciler:
 
     async def tick(self) -> None:
         try:
-            remote = await self._version_source.current_version()
-        except Exception:  # noqa: BLE001 - Redis 不可达时保持当前配置并等待恢复
+            config = await self._loader.load_current()
+        except Exception:  # noqa: BLE001 - 数据库故障时保留旧配置并在下一周期重试
+            logger.warning("Gateway 配置刷新失败，保留当前配置", exc_info=True)
             return
-        if remote is None or remote == self._state.version:
-            return
-        config = await self._loader.load_version(int(remote))
-        if config is not None and config.version is not None:
+        if config != self._state.config:
             await self._state.replace(config)
 
     def stop(self) -> None:

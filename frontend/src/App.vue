@@ -20,19 +20,13 @@ const route = useRoute()
 const store = useAstraStore()
 
 watch(() => route.path, (path, previous) => {
-  if (path === '/') {
-    store.disconnectEvents()
-    return
-  }
-  store.connectEvents()
-  if (previous === '/' && !store.loading) store.refresh()
+  store.connectEvents(path !== '/')
+  if (path !== '/' && previous === '/' && !store.loading) store.refresh()
 })
 
 onMounted(() => {
-  if (route.path !== '/') {
-    if (!store.loading && !store.lastUpdated) store.refresh()
-    store.connectEvents()
-  }
+  if (route.path !== '/' && !store.loading && !store.lastUpdated) store.refresh()
+  store.connectEvents(route.path !== '/')
 })
 onBeforeUnmount(() => store.disconnectEvents())
 </script>

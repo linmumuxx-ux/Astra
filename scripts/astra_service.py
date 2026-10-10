@@ -271,11 +271,6 @@ def validate_gateway_production(settings: Any) -> None:
         raise RuntimeError(
             "production mode requires ASTRA_GATEWAY_MASTER_KEY when API gateway is enabled"
         )
-    if not settings.gateway_control_credentials.strip():
-        raise RuntimeError(
-            "production mode requires ASTRA_GATEWAY_CONTROL_CREDENTIALS "
-            "when API gateway is enabled"
-        )
     if not (settings.redis_url or "").strip():
         raise RuntimeError(
             "API gateway requires a configured Redis (ASTRA_REDIS_URL); "

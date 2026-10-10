@@ -189,3 +189,5 @@ Task 是业务闭环边界，OpenCode Session 是执行事实源，`RuntimeSessi
 - [持续任务工作台](docs/design/TASK_WORKBENCH.md)
 - [平台助手](docs/design/PLATFORM_ASSISTANT.md)
 - [原始需求资料](docs/requirements/README.md)
+
+Linux 远程员工的安装、模型中转和数字图书馆接入见 [远程员工部署](docs/REMOTE_EMPLOYEES.md)。

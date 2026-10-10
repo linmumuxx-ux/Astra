@@ -1,7 +1,7 @@
 """API 中转数据面：独立 ASGI 进程 ``app.gateway.server:app``。
 
 与主 Backend 完全分离：只承载模型数据面转发，不把模型长连接放入任务 Runtime。
-启动时加载最近已发布配置，订阅 / 轮询 Redis 版本收敛，并周期写入实例心跳；
+启动时加载已保存配置，后台周期刷新，并周期写入实例心跳；
 每个请求只读内存配置，运行态并发、周期额度与熔断全部经 Redis 原子执行。
 
 只支持 OpenAI 兼容入口：``GET /v1/models`` 与 ``POST /v1/chat/completions``。
@@ -32,7 +32,8 @@ from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.gateway.config import (
     ConfigLoader,
-    ConfigReconciler,
+    ConfigRefresher,
+    GatewayConfig,
     GatewayConfigState,
     KeyConfig,
     NodeConfig,
@@ -66,7 +67,6 @@ from app.gateway.models import (
     GatewayRequest,
     utcnow,
 )
-from app.gateway.notifier import RedisConfigNotifier
 from app.gateway.probe import GatewayProbeClient, HttpGatewayProbeClient
 from app.gateway.proxy import GatewayProxy, NotSentDownstream, build_upstream_headers
 from app.gateway.runtime import (
@@ -203,7 +203,6 @@ class GatewayDataPlane:
         cipher: CredentialCipher,
         session_factory: async_sessionmaker[AsyncSession],
         config_loader: ConfigLoader | None = None,
-        version_source: Any | None = None,
         instance_id: str | None = None,
         heartbeat_interval: float = 10.0,
         heartbeat_ttl: int = 60,
@@ -225,7 +224,6 @@ class GatewayDataPlane:
         self.cipher = cipher
         self._session_factory = session_factory
         self._config_loader = config_loader
-        self._version_source = version_source
         self.instance_id = default_instance_id(instance_id)
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_ttl = heartbeat_ttl
@@ -260,20 +258,19 @@ class GatewayDataPlane:
         # 吊销阻断集合是数据面鉴权的共享事实来源：启动先从 DB 追加同步并在同一集合写入就绪哨兵。
         # 同步失败（DB 或 Redis 不可用）时不写入哨兵，数据面 fail closed 直到后台重试成功。
         await self.sync_revocation_state()
-        # 运行态健康是调度的唯一依据，绝不在启动时用发布快照健康播种：快照健康是
+        # 运行态健康是调度的唯一依据，绝不在启动时用配置健康投影播种：配置健康是
         # 上一次观测的投影，可能已过期，播种会把从未验证的连接伪装成可调度。
         self._runtime_healthy = await self._safe_healthy()
         self._tasks.append(asyncio.create_task(self._runtime_health_loop()))
         self._tasks.append(asyncio.create_task(self._health_probe_loop()))
         self._tasks.append(asyncio.create_task(self._revocation_sync_loop()))
-        if self._config_loader is not None and self._version_source is not None:
-            reconciler = ConfigReconciler(
+        if self._config_loader is not None:
+            refresher = ConfigRefresher(
                 state=self.config_state,
                 loader=self._config_loader,
-                version_source=self._version_source,
                 interval=self._config_poll_interval,
             )
-            self._tasks.append(asyncio.create_task(reconciler.run()))
+            self._tasks.append(asyncio.create_task(refresher.run()))
         self._tasks.append(asyncio.create_task(self._heartbeat_loop()))
 
     async def shutdown(self) -> None:
@@ -398,7 +395,7 @@ class GatewayDataPlane:
         except Exception:  # noqa: BLE001 - 运行态写入失败由下一轮探测重试
             pass
         # 持久化到 gateway_health_checks，并同步节点 DB 健康投影，使管理端与运行态一致。
-        # 只有草稿连接与本次探测的已发布连接一致时才投影，避免旧版本探测判新配置为健康。
+        # 只有保存连接与本次探测的请求使用的连接一致时才投影，避免旧连接探测判新配置为健康。
         try:
             await record_background_probe(
                 self._session_factory, node.id, outcomes, expected_scope=scope
@@ -411,7 +408,6 @@ class GatewayDataPlane:
             "instance_id": self.instance_id,
             "pid": os.getpid(),
             "app_version": self._app_version,
-            "config_version": self.config_state.version,
             "started_at": self._started_at.isoformat(),
             "updated_at": utcnow().isoformat(),
             "uptime_seconds": int((utcnow() - self._started_at).total_seconds()),
@@ -472,9 +468,9 @@ class GatewayDataPlane:
     # ── 端点 ───────────────────────────────────────────────────────────
 
     async def handle_models(self, request: Request) -> JSONResponse:
-        key = self.authenticate(request.headers.get("authorization"))
-        await self._check_revocation(key)
         config = self.config_state.config
+        key = self.authenticate(request.headers.get("authorization"), config=config)
+        await self._check_revocation(key)
         models: list[str] = []
         for model, route in config.routes.items():
             if not route.enabled:
@@ -493,6 +489,7 @@ class GatewayDataPlane:
         return JSONResponse({"object": "list", "data": data})
 
     async def handle_chat(self, request: Request) -> Response:
+        config = self.config_state.config
         started = utcnow()
         record = RequestRecord(id=uuid4().hex, started_at=started)
         self._counters["requests"] += 1
@@ -501,7 +498,7 @@ class GatewayDataPlane:
         deferred = False
         try:
             # 先鉴权再读取请求体：无效 Key 不消费请求体，未授权请求不触发大体积读取。
-            key = self.authenticate(request.headers.get("authorization"))
+            key = self.authenticate(request.headers.get("authorization"), config=config)
             record.key_id = key.id
             record.owner_id = key.owner_id
             # 共享吊销状态必须在读取请求体与调度之前查询：已吊销（或状态不可用）的 Key
@@ -519,7 +516,6 @@ class GatewayDataPlane:
             if key.allowed_models and model not in key.allowed_models:
                 raise key_forbidden(model)
 
-            config = self.config_state.config
             route = config.routes.get(model)
             if route is None or not route.enabled:
                 raise model_not_found(model)
@@ -544,12 +540,12 @@ class GatewayDataPlane:
             tried: set[str] = set()
             for attempt in range(self._max_retries + 1):
                 node, node_lease, reasons = await self._pick_node(
-                    model=model, pool=pool, exclude=tried
+                    config=config, model=model, pool=pool, exclude=tried
                 )
                 if node is None:
                     raise self._no_node_error(reasons)
                 record.node_id = node.id
-                # 被动健康信号也落在连接作用域：只有当前已发布连接的成败才影响调度。
+                # 被动健康信号也落在连接作用域：只有当前请求使用的连接的成败才影响调度。
                 node_scope = node.runtime_scope
                 try:
                     api_key = self._decode_node_key(node)
@@ -613,13 +609,13 @@ class GatewayDataPlane:
 
     # ── 鉴权与路由 ─────────────────────────────────────────────────────
 
-    def authenticate(self, authorization: str | None) -> KeyConfig:
+    def authenticate(self, authorization: str | None, *, config: GatewayConfig) -> KeyConfig:
         if not authorization or not authorization.lower().startswith("bearer "):
             raise unauthorized()
         token = authorization[7:].strip()
         if not token:
             raise unauthorized()
-        key = self.config_state.config.keys.get(gateway_key_digest(token))
+        key = config.keys.get(gateway_key_digest(token))
         if key is None:
             raise unauthorized()
         if not key.enabled or key.revoked_at is not None:
@@ -675,25 +671,27 @@ class GatewayDataPlane:
             ) from exc
 
     async def _pick_node(
-        self, *, model: str, pool: PoolConfig, exclude: set[str]
+        self, *, config: GatewayConfig, model: str, pool: PoolConfig, exclude: set[str]
     ) -> tuple[NodeConfig | None, str | None, dict[str, int]]:
         try:
-            return await self._pick_node_from_runtime(model=model, pool=pool, exclude=exclude)
+            return await self._pick_node_from_runtime(
+                config=config, model=model, pool=pool, exclude=exclude
+            )
         except GatewayDataPlaneError:
             raise
         except Exception as exc:  # noqa: BLE001 - Redis 失败统一结构化 503
             raise runtime_unavailable() from exc
 
     async def _pick_node_from_runtime(
-        self, *, model: str, pool: PoolConfig, exclude: set[str]
+        self, *, config: GatewayConfig, model: str, pool: PoolConfig, exclude: set[str]
     ) -> tuple[NodeConfig | None, str | None, dict[str, int]]:
         buckets = usage_buckets(utcnow(), self._timezone)
         reasons: dict[str, int] = {}
         candidates: list[Candidate] = []
-        for node in self.config_state.config.nodes.values():
+        for node in config.nodes.values():
             if node.pool_id != pool.id or node.id in exclude:
                 continue
-            # 健康/熔断按「已发布连接指纹」作用域读取：旧实例或旧版本的探测结果
+            # 健康/熔断按「请求使用的连接指纹」作用域读取：旧实例或旧连接的探测结果
             # 落在别的键，无法授权当前配置；缺失运行态即为 UNKNOWN，绝不回退快照。
             scope = node.runtime_scope
             active = await self.runtime.active(SCOPE_NODE, node.id)
@@ -827,7 +825,7 @@ class GatewayDataPlane:
             pass
 
     async def _record_node_success(self, node_scope: str | None) -> None:
-        # node_scope 是「节点 ID + 连接指纹」，被动成功只关闭当前已发布连接的熔断。
+        # node_scope 是「节点 ID + 连接指纹」，被动成功只关闭当前请求使用的连接的熔断。
         if not node_scope:
             return
         try:
@@ -1009,7 +1007,6 @@ def create_gateway_app(data_plane: GatewayDataPlane) -> FastAPI:
             {
                 "status": "ok",
                 "instance_id": data_plane.instance_id,
-                "config_version": data_plane.config_state.version,
                 "runtime_healthy": data_plane.runtime_healthy,
             }
         )
@@ -1034,7 +1031,6 @@ def build_default_data_plane() -> GatewayDataPlane:
         cipher=CredentialCipher(settings.gateway_master_key),
         session_factory=SessionLocal,
         config_loader=ConfigLoader(SessionLocal),
-        version_source=RedisConfigNotifier(settings.redis_url, settings.gateway_config_channel),
         instance_id=settings.gateway_instance_id,
         heartbeat_interval=settings.gateway_heartbeat_interval,
         heartbeat_ttl=settings.gateway_heartbeat_ttl,

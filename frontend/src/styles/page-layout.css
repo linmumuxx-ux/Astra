@@ -65,9 +65,6 @@
 .astra-page-header__meta strong { color: var(--astra-text-secondary); }
 .astra-page-header__meta em { font-style: normal; font-variant-numeric: tabular-nums; }
 
-/* 会话身份（API 中转的操作人与角色）：属于整块区域的提示，不是页面操作。 */
-.astra-session { display: inline-flex; align-items: baseline; gap: 6px; }
-
 /* 状态点：服务正常取主色，异常取危险色，由 data-state 切换。 */
 .astra-page-header__meta [data-state='error'] { color: var(--astra-danger); }
 .astra-service-dot {

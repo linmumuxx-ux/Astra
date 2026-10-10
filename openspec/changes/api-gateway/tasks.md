@@ -1,7 +1,7 @@
 ## 1. 控制面基础
 
 - [x] 1.1 定义数据模型、Alembic 迁移、凭据加密与 Key 摘要；只返回脱敏字段。
-- [x] 1.2 实现独立管理鉴权、节点/Pool/Route/Key CRUD、节点安全下线、操作审计。
+- [x] 1.2 实现节点/Pool/Route/Key CRUD、节点安全下线、操作审计；控制面访问随 Astra 管理台。
 - [x] 1.3 实现草稿校验、版本发布、Redis 快照通知和回滚。
 
 ## 2. 数据面
@@ -20,7 +20,7 @@
 - [x] 3.1 持久化调用日志与健康记录，提供 Token/延迟/吞吐/实例统计查询。
 - [x] 3.2 新增 API 中转导航、总览、节点抽屉和详情、Pool/Route/Key/日志/版本管理页面。
 - [x] 3.3 纳入统一服务脚本、部署示例与运维说明。
-  - `scripts/astra_service.py` 在 dev/pro 以独立进程启动 `app.gateway.server:app`（默认 `127.0.0.1:8110`），统一 status/stop/restart 与 `/healthz` 就绪等待；正式模式强制校验主密钥、管理凭据与 Redis。
+  - `scripts/astra_service.py` 在 dev/pro 以独立进程启动 `app.gateway.server:app`（默认 `127.0.0.1:8110`），统一 status/stop/restart 与 `/healthz` 就绪等待；正式模式强制校验主密钥与 Redis。
   - 新增 `deploy/systemd/astra-gateway.service`；nginx 反代 `/v1` 并关闭缓冲；根与 deploy 的 `.env.example` 补网关变量；`docs/DEPLOYMENT.md` 增加部署、运维与 OpenCode baseURL/API Key/Model 示例。
 
 ## 4. 验证
@@ -46,3 +46,19 @@
 - [x] 6.5 新增控制面与数据面测试：吊销未发布立即 401、跨实例共享、回滚旧版本仍拒绝、Redis 故障/哨兵缺失 503、整集合键被删除后 fail closed 并从 DB 重建；真实 Redis 用例沿用 `ASTRA_TEST_REDIS_URL` 条件。
 - [x] 6.6 `is_key_revoked` 用一次原子读取同时判断同一集合内的就绪哨兵与摘要（Redis Lua / 进程内单步），哨兵缺失让该调用本身 fail closed；数据面只做一次该调用，单独的就绪查询仅用于诊断/测试。
 - [x] 6.7 已吊销 Gateway Key 作为 DB 永久 tombstone：`revoke_key` 与 `_apply_snapshot` 用 Key 行锁串行化，回滚旧快照不删除其行、不清除 `revoked_at`、不重新启用；旧快照含该 Key 时回滚新快照改为 disabled+revoked 并保留当前吊销时间；普通未吊销 Key 回滚语义不变。
+
+## 7. 删除控制面登录管理
+
+- [x] 7.1 删除管理 Token、角色依赖与权限接口；控制面无凭据可查询和写入，审计采用固定 Astra 来源，保留 Key 自助与数据面鉴权。
+- [x] 7.2 删除前端登录门禁、会话缓存、身份/退出入口和角色条件；管理页面直接加载与操作，自助用量继续校验独立 Key。
+- [x] 7.3 删除管理凭据配置与生产必填校验，同步环境示例和部署说明；主密钥与 Redis 要求保持有效。
+- [x] 7.4 运行后端针对性测试与静态检查、前端类型检查/构建及 Gateway E2E；按新增场景完成 OpenSpec 验证，真实环境未运行项明确记录。
+  - 2026-10-08：Gateway 后端针对性 104 passed / 2 skipped；全后端 435 passed / 4 skipped；发布对账审计来源补齐后控制面 27 passed。后端 Ruff、管理台 `vue-tsc` / Vite 构建、77 个相关 Chromium E2E、OpenSpec 校验和 diff 检查通过。真实 Redis / OpenCode 与生产部署未在本轮联调，证据和场景映射见 `verification.md`。
+
+## 8. 删除配置版本与自助用量
+
+- [ ] 8.1 删除版本/草稿/发布/回滚/对账与自助 API、模型及会话；保留保存时校验、模型 Key 鉴权、额度和审计。
+- [ ] 8.2 从配置表一致读取完整配置并周期原子刷新；覆盖保存无需发布、重启、多实例、失败重试、进行中请求隔离和连接健康隔离。
+- [ ] 8.3 删除两页及导航、实例配置版本字段，保持五个管理分区与按 Key 日志查询；更新相关 E2E。
+- [ ] 8.4 增加删除版本历史表的迁移并在隔离数据库验证保存配置与吊销记录保留；同步部署文档与环境配置。
+- [ ] 8.5 运行针对性及扩展回归、前端类型检查/构建、管理页 E2E 和 OpenSpec 场景验证；记录真实环境未验证项。

@@ -305,5 +305,28 @@ class SSHSession:
         finally:
             await channel.close()
 
+    async def read_file(self, path: str) -> bytes | None:
+        def read():
+            with self._client.open_sftp() as sftp:
+                try:
+                    with sftp.open(path, "rb") as stream:
+                        content = stream.read(1024 * 1024 + 1)
+                        if len(content) > 1024 * 1024:
+                            raise ValueError("远程配置超过 1 MiB，请人工处理")
+                        return content
+                except FileNotFoundError:
+                    return None
+
+        return await _run_blocking(read)
+
+    async def write_file(self, path: str, content: bytes, *, mode: int = 0o600) -> None:
+        def write():
+            with self._client.open_sftp() as sftp:
+                with sftp.open(path, "wb") as stream:
+                    stream.write(content)
+                sftp.chmod(path, mode)
+
+        await _run_blocking(write)
+
     async def close(self) -> None:
         await _run_blocking(self._client.close)

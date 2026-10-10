@@ -1,14 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
 
 // 「资源池与模型路由」重构回归：/api/gateway/pools|routes 全部本地 mock（内存 store 可被写操作改写），
-// 覆盖分页/筛选、只读权限、池与路由的创建/编辑/删除 payload、模型名唯一预校验、
+// 覆盖分页/筛选、无需登录的写操作、池与路由的创建/编辑/删除 payload、模型名唯一预校验、
 // 服务端唯一性与引用冲突（409 失败保留表单）、未保存提醒与加载失败重试 / 401 断开。
-const CONTROL_TOKEN = 'e2e-gateway-pools-routes-token'
 
 type Json = Record<string, unknown>
 
 interface MockOptions {
-  roles?: string[]
   failFirstPools?: boolean
   poolsUnauthorized?: boolean
 }
@@ -85,23 +83,29 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     routeDeletes: [],
     poolsAttempts: 0,
   }
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const request = route.request()
     const method = request.method()
     const pathname = new URL(request.url()).pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     const body = (): Json => (request.postData() ? JSON.parse(request.postData() as string) : {})
 
-    if (pathname === '/api/gateway/permissions') {
-      return json({ actor: 'e2e-admin', roles: options.roles ?? ['route'] })
-    }
     if (pathname === '/api/gateway/pools' && method === 'GET') {
       state.poolsAttempts += 1
-      if (options.poolsUnauthorized) return json({ detail: '凭据无效' }, 401)
+      if (options.poolsUnauthorized) return json({ detail: '访问被拒绝' }, 401)
       if (options.failFirstPools && state.poolsAttempts === 1) {
         return json({ detail: '网关控制面暂时不可用' }, 500)
       }
@@ -224,17 +228,17 @@ async function selectDrawerOption(page: Page, testId: string, optionText: string
 }
 
 test.describe('API 中转 · 资源池与模型路由', () => {
-  test('列表分页与筛选（只读账号无操作列与新增入口）', async ({ page }) => {
-    await mockGateway(page, { roles: [] })
+  test('无需登录即可分页与筛选，资源池和路由均显示写操作入口', async ({ page }) => {
+    await mockGateway(page)
     await page.goto('/gateway/routes')
 
     await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
-    await expect(page.getByTestId('gateway-pool-create')).toHaveCount(0)
-    await expect(page.getByTestId('gateway-route-create')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-pool-create')).toBeVisible()
+    await expect(page.getByTestId('gateway-route-create')).toBeVisible()
     const poolHeaders = await page.getByTestId('gateway-pool-table').locator('.el-table__header-wrapper th').allInnerTexts()
-    expect(poolHeaders).not.toContain('操作')
+    expect(poolHeaders).toContain('操作')
     const routeHeaders = await page.getByTestId('gateway-route-table').locator('.el-table__header-wrapper th').allInnerTexts()
-    expect(routeHeaders).not.toContain('操作')
+    expect(routeHeaders).toContain('操作')
 
     // 资源池：12 个 → 首页 10 行 + 分页；第二页 2 行。
     await expect(poolRows(page)).toHaveCount(10)
@@ -280,7 +284,7 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await expect(routeTotal(page)).toContainText('共 12 条')
   })
 
-  test('资源池：创建必填校验、payload、编辑回填与删除', async ({ page }) => {
+  test('资源池：创建必填校验、payload、编辑保存直接更新与删除', async ({ page }) => {
     const state = await mockGateway(page)
     await page.goto('/gateway/routes')
 
@@ -315,6 +319,9 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await expect(drawer).toHaveCount(0)
     expect(state.poolPatched.at(-1)).toMatchObject({ name: 'Alpha 1', weight: 80 })
     await expect(poolRows(page).filter({ hasText: 'Alpha 1' })).toBeVisible()
+    await expect(poolRows(page).filter({ hasText: 'Alpha 1' })).toContainText('80')
+    await page.reload()
+    await expect(poolRows(page).filter({ hasText: 'Alpha 1' })).toContainText('80')
 
     // 删除未被任何路由引用的资源池（p5）。
     await page.getByRole('button', { name: '删除 Alpha 5' }).click()
@@ -327,7 +334,7 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await expect(poolRows(page).filter({ hasText: 'Alpha 5' })).toHaveCount(0)
   })
 
-  test('路由：必填、模型名唯一预校验、payload 与删除', async ({ page }) => {
+  test('路由：必填、模型名唯一预校验、保存后直接更新与删除', async ({ page }) => {
     const state = await mockGateway(page)
     await page.goto('/gateway/routes')
 
@@ -366,6 +373,10 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await drawer.getByTestId('gateway-route-save').click()
     await expect(drawer).toHaveCount(0)
     expect(state.routePatched.at(-1)).toMatchObject({ model: 'gpt-4o', weight: 60 })
+    const updatedRow = routeRows(page).filter({ has: page.getByRole('button', { name: '编辑 gpt-4o', exact: true }) })
+    await expect(updatedRow).toContainText('60')
+    await page.reload()
+    await expect(updatedRow).toContainText('60')
 
     // 删除路由走原生确认。
     await page.getByRole('button', { name: '删除 claude-x' }).click()
@@ -439,9 +450,11 @@ test.describe('API 中转 · 资源池与模型路由', () => {
     await expect(routeRows(page)).toHaveCount(10)
   })
 
-  test('401 凭据失效：断开控制面会话回到接入页', async ({ page }) => {
+  test('控制面返回 401 时显示请求错误并保留管理页面', async ({ page }) => {
     await mockGateway(page, { poolsUnauthorized: true })
     await page.goto('/gateway/routes')
-    await expect(page.getByTestId('gateway-connect')).toBeVisible()
+    await expect(page.getByTestId('gateway-pools-routes-error')).toContainText('访问被拒绝')
+    await expect(page.getByTestId('gateway-page')).toBeVisible()
+    await expect(page.getByTestId('gateway-pool-create')).toBeVisible()
   })
 })

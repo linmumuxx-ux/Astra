@@ -19,15 +19,11 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from app.database import SessionLocal, init_database
 from app.gateway.config import (
-    ConfigLoader,
-    ConfigReconciler,
+    GatewayConfig,
     GatewayConfigState,
-    PublishedConfig,
 )
 from app.gateway.errors import (
     CLIENT_DISCONNECTED,
@@ -36,8 +32,7 @@ from app.gateway.errors import (
     QUOTA_EXCEEDED,
     RUNTIME_UNAVAILABLE,
 )
-from app.gateway.models import GatewayConfigVersion, GatewayKey, GatewayRequest, utcnow
-from app.gateway.notifier import InMemoryConfigNotifier
+from app.gateway.models import GatewayKey, GatewayRequest, utcnow
 from app.gateway.probe import ProbeOutcome
 from app.gateway.proxy import GatewayProxy
 from app.gateway.runtime import (
@@ -51,7 +46,6 @@ from app.gateway.runtime import (
 from app.gateway.scheduler import REASON_SCHEDULING
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.server import GatewayDataPlane, RequestRecord, create_gateway_app
-from app.models import Base
 
 RAW_KEY = "agw_" + uuid4().hex
 KEY_DIGEST = gateway_key_digest(RAW_KEY)
@@ -216,16 +210,14 @@ def build_config(
     nodes: list[dict[str, Any]] | None = None,
     key: dict[str, Any] | None = None,
     keys: list[dict[str, Any]] | None = None,
-    version: int = 1,
-) -> PublishedConfig:
+) -> GatewayConfig:
     default_nodes = [
         node_dict(NODE_A, host="node-a.test", cipher=cipher),
         node_dict(NODE_B, host="node-b.test", cipher=cipher),
     ]
     if keys is None:
         keys = [key if key is not None else key_dict()]
-    return PublishedConfig.from_snapshot(
-        version,
+    return GatewayConfig.from_snapshot(
         _snapshot(
             nodes=nodes if nodes is not None else default_nodes,
             routes=[{"id": "gr_test", "model": MODEL, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
@@ -237,7 +229,7 @@ def build_config(
 def build_plane(
     upstream: MockUpstream,
     *,
-    config: PublishedConfig,
+    config: GatewayConfig,
     cipher: CredentialCipher,
     store: InMemoryRuntimeStore | None = None,
     probe_client: Any | None = None,
@@ -246,7 +238,7 @@ def build_plane(
     seed_snapshot_health: bool = True,
 ) -> SimpleNamespace:
     store = store or InMemoryRuntimeStore()
-    # 数据面启动不再用发布快照播种健康；测试显式模拟「Redis 已有连接作用域运行态」。
+    # 数据面启动不再用配置视图播种健康；测试显式模拟「Redis 已有连接作用域运行态」。
     if seed_snapshot_health:
         for node in config.nodes.values():
             asyncio.run(store.seed_health(node.runtime_scope, node.health_state))
@@ -259,7 +251,6 @@ def build_plane(
         cipher=cipher,
         session_factory=SessionLocal,
         config_loader=None,
-        version_source=None,
         instance_id="test-instance",
         heartbeat_interval=3600,
         heartbeat_ttl=60,
@@ -363,6 +354,64 @@ def test_models_lists_allowed_models(runtime_app):
     assert denied.json()["error"]["code"] == "UNAUTHORIZED"
 
 
+@pytest.mark.parametrize("refresh_at", ["body", "lease"])
+def test_request_keeps_one_config_during_refresh(cipher, upstream, refresh_at):
+    old = build_config(
+        cipher,
+        nodes=[node_dict(NODE_A, host="old.test", cipher=cipher)],
+        key=key_dict(owner_id="old-owner"),
+    )
+    new = build_config(
+        cipher,
+        nodes=[node_dict(NODE_B, host="new.test", cipher=cipher)],
+        key=key_dict(owner_id="new-owner"),
+    )
+
+    async def scenario():
+        kv = build_plane(upstream, config=old, cipher=cipher, seed_snapshot_health=False)
+        for node in [*old.nodes.values(), *new.nodes.values()]:
+            await kv.store.seed_health(node.runtime_scope, "HEALTHY")
+        await kv.plane.startup()
+        acquire = kv.store.acquire
+
+        async def acquire_with_refresh(scope, scope_id, limit, ttl):
+            if refresh_at == "lease" and scope == SCOPE_KEY:
+                await kv.state.replace(new)
+            return await acquire(scope, scope_id, limit, ttl)
+
+        kv.store.acquire = acquire_with_refresh
+
+        async def body():
+            yield b'{"model":'
+            if refresh_at == "body":
+                await kv.state.replace(new)
+            yield json.dumps(MODEL).encode() + b',"messages":[]}'
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=create_gateway_app(kv.plane)),
+                base_url="http://gateway.test",
+            ) as client:
+                first = await client.post(
+                    "/v1/chat/completions", content=body(), headers=auth_headers()
+                )
+                second = await client.post(
+                    "/v1/chat/completions",
+                    json={"model": MODEL, "messages": []},
+                    headers=auth_headers(),
+                )
+            return first, second
+        finally:
+            await kv.plane.shutdown()
+
+    first, second = asyncio.run(scenario())
+    assert first.status_code == second.status_code == 200
+    assert [request.url.host for request in upstream.requests] == ["old.test", "new.test"]
+    logs = asyncio.run(_fetch_logs())
+    assert next(log for log in logs if log.node_id == NODE_A).owner_id == "old-owner"
+    assert next(log for log in logs if log.node_id == NODE_B).owner_id == "new-owner"
+
+
 def test_invalid_expired_disabled_and_forbidden_keys(cipher, upstream, monkeypatch):
     for key, expected in [
         (key_dict(expires_at="2000-01-01T00:00:00+00:00"), "KEY_EXPIRED"),
@@ -396,10 +445,10 @@ def test_invalid_key_is_rejected_without_reading_request_body(cipher, upstream):
     assert upstream.requests == []
 
 
-def test_revoked_key_is_blocked_immediately_without_republish(cipher, upstream):
+def test_revoked_key_is_blocked_immediately_before_config_refresh(cipher, upstream):
     kv = build_plane(upstream, config=build_config(cipher), cipher=cipher)
-    # 已发布快照仍是启用状态（enabled=True, revoked_at=None）；共享吊销集合追加摘要后，
-    # 不重新发布也必须立即拒绝，与前端「立即失效」一致。
+    # 缓存配置仍是启用状态（enabled=True, revoked_at=None）；共享吊销集合追加摘要后，
+    # 不等待配置刷新也必须立即拒绝，与前端「立即失效」一致。
     asyncio.run(kv.store.revoke_key_digest(KEY_DIGEST))
     with TestClient(create_gateway_app(kv.plane)) as client:
         chat = client.post(
@@ -437,9 +486,8 @@ def test_revocation_is_shared_across_data_plane_instances(cipher, upstream):
     assert upstream.requests == []
 
 
-def test_rollback_to_old_version_cannot_revive_revoked_key(cipher, upstream):
-    # 回滚到吊销前的旧版本：快照里 Key 仍启用且 revoked_at 为空，但共享阻断集合只增
-    # 不减，旧版本回滚不能复活它。
+def test_cached_enabled_config_cannot_revive_revoked_key(cipher, upstream):
+    # 缓存配置的 Key 仍启用且 revoked_at 为空，但共享阻断立即拒绝已吊销摘要。
     kv = build_plane(
         upstream,
         config=build_config(cipher, key=key_dict(enabled=True, revoked_at=None)),
@@ -974,7 +1022,7 @@ def test_client_disconnect_releases_leases_and_records(cipher, upstream):
     async def scenario():
         await plane.startup()
         try:
-            key = plane.authenticate(f"Bearer {RAW_KEY}")
+            key = plane.authenticate(f"Bearer {RAW_KEY}", config=plane.config_state.config)
             key_lease = await plane.runtime.acquire(SCOPE_KEY, key.id, 0, 900)
             assert key_lease is not None
             node_id = NODE_A
@@ -1036,136 +1084,9 @@ def test_heartbeat_registers_and_retires_instance(cipher, upstream):
 
     registered, after_shutdown = asyncio.run(scenario())
     assert "test-instance" in registered
-    assert registered["test-instance"]["config_version"] == 1
+    assert "config_version" not in registered["test-instance"]
+    assert registered["test-instance"]["app_version"]
     assert "test-instance" not in after_shutdown
-
-def _publish_version(cipher, version: int, snapshot: dict[str, Any]) -> None:
-    async def scenario():
-        async with SessionLocal() as session:
-            session.add(
-                GatewayConfigVersion(
-                    version=version,
-                    status="CURRENT",
-                    source_version=None,
-                    note="test",
-                    snapshot=snapshot,
-                    published_by="test",
-                    published_at=utcnow(),
-                )
-            )
-            await session.commit()
-
-    asyncio.run(scenario())
-
-
-def _single_node_snapshot(cipher) -> dict[str, Any]:
-    return _snapshot(
-        nodes=[node_dict(NODE_A, host="node-a.test", cipher=cipher)],
-        routes=[{"id": "gr_test", "model": MODEL, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
-        keys=[key_dict()],
-    )
-
-
-def test_config_loader_reads_current_published_version(cipher):
-    version = 900001
-    _publish_version(cipher, version, _single_node_snapshot(cipher))
-
-    config = asyncio.run(ConfigLoader(SessionLocal).load_current())
-    assert config.version == version
-    assert NODE_A in config.nodes
-    assert config.routes[MODEL].pool_id == POOL_ID
-
-
-def test_config_loader_ignores_non_current_versions(cipher):
-    current = 900010
-    _publish_version(cipher, current, _single_node_snapshot(cipher))
-
-    async def add_unpublished(version: int, status: str) -> None:
-        async with SessionLocal() as session:
-            session.add(
-                GatewayConfigVersion(
-                    version=version,
-                    status=status,
-                    source_version=None,
-                    note=status,
-                    snapshot=_snapshot(
-                        nodes=[node_dict(NODE_B, host="node-b.test", cipher=cipher)],
-                        routes=[],
-                        keys=[],
-                    ),
-                    published_by="test",
-                    published_at=utcnow(),
-                )
-            )
-            await session.commit()
-
-    # 比 CURRENT 更新的 PENDING / FAILED 版本绝不作为“近似当前版本”被加载。
-    asyncio.run(add_unpublished(current + 1, "PENDING"))
-    asyncio.run(add_unpublished(current + 2, "FAILED"))
-
-    config = asyncio.run(ConfigLoader(SessionLocal).load_current())
-    assert config.version == current
-    assert NODE_A in config.nodes
-    assert NODE_B not in config.nodes
-
-
-def test_config_loader_returns_empty_without_current_version():
-    async def scenario():
-        # 隔离内存库：不受其他用例已发布 CURRENT 版本影响。
-        engine = create_async_engine(
-            "sqlite+aiosqlite://",
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-        factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-        try:
-            async with factory() as session:
-                for version, status in ((1, "PENDING"), (2, "FAILED")):
-                    session.add(
-                        GatewayConfigVersion(
-                            version=version,
-                            status=status,
-                            source_version=None,
-                            note=status,
-                            snapshot={},
-                            published_by="test",
-                            published_at=utcnow(),
-                        )
-                    )
-                await session.commit()
-            return await ConfigLoader(factory).load_current()
-        finally:
-            await engine.dispose()
-
-    config = asyncio.run(scenario())
-    # 只有 PENDING/FAILED 而没有 CURRENT 时必须返回空配置，绝不回退未生效版本。
-    assert config.version is None
-    assert config.empty_config
-    assert config.nodes == {}
-    assert config.routes == {}
-
-
-def test_reconciler_adopts_new_redis_version(cipher):
-    version = 900002
-    _publish_version(cipher, version, _single_node_snapshot(cipher))
-    notifier = InMemoryConfigNotifier()
-    notifier.current = version
-    state = GatewayConfigState(PublishedConfig.empty())
-    reconciler = ConfigReconciler(
-        state=state, loader=ConfigLoader(SessionLocal), version_source=notifier, interval=1
-    )
-
-    asyncio.run(reconciler.tick())
-    assert state.version == version
-    assert NODE_A in state.config.nodes
-
-    # 版本未变化时不重复替换当前配置。
-    snapshot_before = state.config
-    asyncio.run(reconciler.tick())
-    assert state.config is snapshot_before
-
 
 def test_scheduler_reads_live_runtime_health_not_snapshot(cipher, upstream):
     nodes = [node_dict(NODE_A, host="node-a.test", cipher=cipher, health_state="HEALTHY")]
@@ -1177,7 +1098,7 @@ def test_scheduler_reads_live_runtime_health_not_snapshot(cipher, upstream):
         store=store,
         seed_snapshot_health=False,
     )
-    # 发布快照仍是 HEALTHY，但运行态连接作用域健康为 UNHEALTHY。
+    # 配置视图仍是 HEALTHY，但运行态连接作用域健康为 UNHEALTHY。
     node = kv.plane.config_state.config.nodes[NODE_A]
     asyncio.run(store.seed_health(node.runtime_scope, "UNHEALTHY"))
     with TestClient(create_gateway_app(kv.plane)) as client:
@@ -1242,7 +1163,7 @@ def test_passive_transport_failure_degrades_node(cipher, upstream):
 
 
 def test_missing_runtime_health_does_not_fall_back_to_snapshot(cipher, upstream):
-    # 发布快照健康为 HEALTHY，但运行态缺失（如被 reset 清空、Redis 丢失）：
+    # 配置视图健康为 HEALTHY，但运行态缺失（如被 reset 清空、Redis 丢失）：
     # 必须视为 UNKNOWN 而不是回退快照 HEALTHY，否则从未验证的连接仍会被调度。
     nodes = [node_dict(NODE_A, host="node-a.test", cipher=cipher, health_state="HEALTHY")]
     kv = build_plane(
@@ -1263,7 +1184,7 @@ def test_missing_runtime_health_does_not_fall_back_to_snapshot(cipher, upstream)
 
 
 def test_reset_runtime_health_does_not_fall_back_to_snapshot(cipher, upstream):
-    # 直接复现回归：运行态健康被 reset 清空后，调度绝不能回退到发布快照 HEALTHY。
+    # 直接复现回归：运行态健康被 reset 清空后，调度绝不能回退到配置视图 HEALTHY。
     nodes = [node_dict(NODE_A, host="node-a.test", cipher=cipher, health_state="HEALTHY")]
     store = InMemoryRuntimeStore()
     kv = build_plane(upstream, config=build_config(cipher, nodes=nodes), cipher=cipher, store=store)
@@ -1284,7 +1205,7 @@ def test_reset_runtime_health_does_not_fall_back_to_snapshot(cipher, upstream):
 
 
 def test_new_connection_health_is_isolated_by_scope(cipher, upstream):
-    # 旧发布连接的健康作用域已是 HEALTHY；新发布版本换成不同连接后，旧健康不得
+    # 旧连接的健康作用域已是 HEALTHY；新保存配置换成不同连接后，旧健康不得
     # 授权新配置，旧实例后续探测成功也不能把新连接判为 HEALTHY。
     old_config = build_config(
         cipher,

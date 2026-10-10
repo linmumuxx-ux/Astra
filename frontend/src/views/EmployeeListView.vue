@@ -181,7 +181,15 @@ function applySearch() {
 function beginCreate() { modalEmployee.value = null; modalCreating.value = true; modalOpen.value = true }
 function beginEdit(employee: Employee | null) { if (!employee) return; detailId.value = ''; modalEmployee.value = employee; modalCreating.value = false; modalOpen.value = true }
 function closeModal() { modalOpen.value = false; modalEmployee.value = null }
-async function onModalSaved() { await store.refresh(); notify(modalCreating.value ? '数字员工已创建' : '数字员工已更新') }
+async function onModalSaved(id: string) {
+  const wasCreating = modalCreating.value
+  await store.refresh()
+  if (modalOpen.value) {
+    modalCreating.value = false
+    modalEmployee.value = store.employees.find((item) => item.id === id) ?? null
+  }
+  notify(wasCreating ? '数字员工已创建' : '数字员工已更新')
+}
 async function toggleEnabled(employee: Employee) {
   busyId.value = employee.id
   try { await api.updateEmployee(employee.id, { enabled: !employee.enabled }); await store.refresh(); notify(employee.enabled ? '员工已停用' : '员工已启用') }
@@ -198,6 +206,9 @@ async function removeEmployee(employee: Employee) {
 }
 watch([query, status, role, area, enabled], () => { page.value = 1 })
 watch(totalPages, (value) => { page.value = Math.min(page.value, value) })
+watch(() => store.employees, (employees) => {
+  if (modalEmployee.value) modalEmployee.value = employees.find((item) => item.id === modalEmployee.value?.id) ?? null
+})
 onMounted(async () => {
   const editId = typeof route.query.edit === 'string' ? route.query.edit : ''
   const create = route.query.create === '1'

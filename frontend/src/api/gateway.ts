@@ -1,11 +1,7 @@
-// API 中转（Gateway）控制面唯一前端数据层：类型、凭据会话与全部 HTTP 调用。
+// API 中转（Gateway）唯一前端数据层：类型与全部 HTTP 调用。
 // 所有指标字段直接对应后端 gateway-observability 契约，前端不再重算指标口径。
 
-import { ref } from 'vue'
-
 const API_BASE = import.meta.env.VITE_API_BASE ?? ''
-const CONTROL_TOKEN_KEY = 'astra.gateway.control.token'
-const SELF_KEY_KEY = 'astra.gateway.self.key'
 
 export type GatewayConfigState = 'ENABLED' | 'DISABLED'
 export type GatewaySchedulingState = 'ACTIVE' | 'DRAINING' | 'BLOCKED'
@@ -15,11 +11,6 @@ export type GatewayQuotaPolicy = 'STOP' | 'ALERT' | 'RECORD'
 export type GatewayProbeType = 'NETWORK' | 'SERVICE' | 'MODEL' | 'STREAM'
 export type GatewayStatsScope = 'overview' | 'node' | 'pool' | 'model' | 'key'
 export type GatewayStatsWindow = 'hour' | 'today' | '7d' | '30d'
-
-export interface GatewayPermissions {
-  actor: string
-  roles: string[]
-}
 
 export interface GatewayPool {
   id: string
@@ -167,28 +158,6 @@ export interface GatewayValidationError {
   resource_id: string | null
 }
 
-export interface GatewayDraftValidation {
-  valid: boolean
-  errors: GatewayValidationError[]
-  warnings: string[]
-  counts: Record<string, number>
-}
-
-export interface GatewayConfigVersion {
-  id: number
-  version: number
-  status: 'CURRENT' | 'SUPERSEDED' | 'PENDING' | 'FAILED'
-  source_version: number | null
-  note: string
-  published_by: string
-  published_at: string
-  created_at: string
-}
-
-export interface GatewayConfigVersionDetail extends GatewayConfigVersion {
-  snapshot: Record<string, unknown>
-}
-
 export interface GatewayAuditEvent {
   id: number
   actor: string
@@ -280,7 +249,6 @@ export interface GatewayInstance {
   instance_id: string
   status: string
   app_version: string | null
-  config_version: number | null
   pid: number | null
   started_at: string | null
   updated_at: string | null
@@ -315,58 +283,6 @@ export class GatewayApiError extends Error {
   }
 }
 
-// ── 凭据会话：控制面 Bearer 与 Gateway Key 仅存 sessionStorage 或内存 ──
-
-function readSession(key: string): string {
-  if (typeof window === 'undefined') return ''
-  try {
-    return window.sessionStorage.getItem(key) ?? ''
-  } catch {
-    return ''
-  }
-}
-
-function writeSession(key: string, value: string): void {
-  if (typeof window === 'undefined') return
-  try {
-    if (value) window.sessionStorage.setItem(key, value)
-    else window.sessionStorage.removeItem(key)
-  } catch {
-    /* 隐私模式下降级为内存态 */
-  }
-}
-
-const memoryControlToken = ref('')
-const memorySelfKey = ref('')
-
-export function getGatewayToken(): string {
-  return memoryControlToken.value || readSession(CONTROL_TOKEN_KEY)
-}
-
-export function setGatewayToken(token: string): void {
-  memoryControlToken.value = token.trim()
-  writeSession(CONTROL_TOKEN_KEY, memoryControlToken.value)
-}
-
-export function clearGatewayToken(): void {
-  memoryControlToken.value = ''
-  writeSession(CONTROL_TOKEN_KEY, '')
-}
-
-export function getSelfKey(): string {
-  return memorySelfKey.value || readSession(SELF_KEY_KEY)
-}
-
-export function setSelfKey(key: string): void {
-  memorySelfKey.value = key.trim()
-  writeSession(SELF_KEY_KEY, memorySelfKey.value)
-}
-
-export function clearSelfKey(): void {
-  memorySelfKey.value = ''
-  writeSession(SELF_KEY_KEY, '')
-}
-
 function queryString(params: object): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -380,17 +296,11 @@ function queryString(params: object): string {
 interface RequestOptions {
   method?: string
   body?: unknown
-  identity?: 'control' | 'self' | 'none'
 }
 
 async function gatewayRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const identity = options.identity ?? 'control'
   const headers: Record<string, string> = {}
   if (options.body !== undefined) headers['Content-Type'] = 'application/json'
-  if (identity !== 'none') {
-    const token = identity === 'self' ? getSelfKey() : getGatewayToken()
-    if (token) headers.Authorization = `Bearer ${token}`
-  }
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
     headers,
@@ -409,8 +319,6 @@ async function gatewayRequest<T>(path: string, options: RequestOptions = {}): Pr
 }
 
 export const gatewayApi = {
-  permissions: () => gatewayRequest<GatewayPermissions>('/api/gateway/permissions'),
-
   // Pool
   pools: () => gatewayRequest<GatewayPool[]>('/api/gateway/pools'),
   createPool: (body: GatewayPoolWrite) =>
@@ -456,23 +364,7 @@ export const gatewayApi = {
   revokeKey: (id: string) =>
     gatewayRequest<GatewayKey>(`/api/gateway/keys/${id}`, { method: 'DELETE' }),
 
-  // 草稿 / 版本 / 审计
-  draftValidation: () => gatewayRequest<GatewayDraftValidation>('/api/gateway/config/draft'),
-  versions: () => gatewayRequest<GatewayConfigVersion[]>('/api/gateway/config/versions'),
-  version: (version: number) =>
-    gatewayRequest<GatewayConfigVersionDetail>(`/api/gateway/config/versions/${version}`),
-  publish: (note: string) =>
-    gatewayRequest<GatewayConfigVersion>('/api/gateway/config/publish', {
-      method: 'POST',
-      body: { note },
-    }),
-  rollback: (version: number) =>
-    gatewayRequest<GatewayConfigVersion>('/api/gateway/config/rollback', {
-      method: 'POST',
-      body: { version },
-    }),
-  reconcile: () =>
-    gatewayRequest<{ changed: number }>('/api/gateway/config/reconcile', { method: 'POST' }),
+  // 审计
   audits: (params: { resource_type?: string; resource_id?: string; limit?: number } = {}) =>
     gatewayRequest<GatewayAuditEvent[]>(`/api/gateway/audits${queryString(params)}`),
 
@@ -488,14 +380,4 @@ export const gatewayApi = {
     gatewayRequest<GatewayHealthCheck[]>(
       `/api/gateway/nodes/${nodeId}/health-checks${queryString({ limit })}`,
     ),
-
-  // Key 自助：使用 Gateway Key 自身鉴权，只看自己的用量
-  selfRequests: (query: GatewayRequestQuery = {}) =>
-    gatewayRequest<GatewayRequestPage>(`/api/gateway/self/requests${queryString(query)}`, {
-      identity: 'self',
-    }),
-  selfStats: (window: GatewayStatsWindow) =>
-    gatewayRequest<GatewayScopeStats>(`/api/gateway/self/stats${queryString({ window })}`, {
-      identity: 'self',
-    }),
 }

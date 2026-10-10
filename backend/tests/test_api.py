@@ -121,6 +121,9 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
             "team_count",
             "working_employees",
             "running_tasks",
+            "waiting_tasks",
+            "failed_tasks",
+            "online_employees",
             "completed_today",
             "attention_total",
         }
@@ -134,6 +137,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
                     "name",
                     "role",
                     "status",
+                    "enabled",
                     "state",
                     "state_label",
                     "runtime_state", "runtime_status_label", "runtime_detail", "failure",
@@ -162,6 +166,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
 
         activity = client.get("/api/dashboard/activity")
         assert activity.status_code == 200
+        assert len(activity.json()["items"]) <= 12
         assert all("message" not in item and "detail" not in item for item in activity.json()["items"])
 
         knowledge = client.get(

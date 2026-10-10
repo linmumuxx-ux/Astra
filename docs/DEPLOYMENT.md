@@ -116,8 +116,6 @@ ASTRA_GATEWAY_ENABLED=true
 # Fernet 主密钥，用于加密节点下游凭据；生成：
 # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ASTRA_GATEWAY_MASTER_KEY=replace-with-a-fernet-key
-# 管理凭据：JSON 数组（按角色最小授权）或单个 token（授予全部角色）
-ASTRA_GATEWAY_CONTROL_CREDENTIALS=[{"name":"admin","token":"replace-with-a-strong-random-token","roles":["system"]}]
 # 数据面从 DB 追平已吊销 Key 阻断列表的周期（秒），Redis 清空/重启后据此重建。
 # ASTRA_GATEWAY_REVOCATION_SYNC_INTERVAL=60
 # 数据面监听（nginx 反代 /v1 到该端口）
@@ -132,7 +130,7 @@ ASTRA_SERVICE_GATEWAY_PORT=8110
 - MySQL
 - `ASTRA_SEED_DEMO=false`
 - `ASTRA_EXECUTOR_TYPE=opencode_server`
-- 启用 API 中转时：`ASTRA_GATEWAY_MASTER_KEY`、`ASTRA_GATEWAY_CONTROL_CREDENTIALS` 与可用 Redis；Gateway 依赖 MySQL schema 已迁移到最新（由 Backend 的 migration 保证）
+- 启用 API 中转时：`ASTRA_GATEWAY_MASTER_KEY` 与可用 Redis；Gateway 依赖 MySQL schema 已迁移到最新（由 Backend 的 migration 保证）
 
 ## 5. 数据库准备
 
@@ -332,8 +330,10 @@ ASTRA_MCP_TRANSPORT=stdio
 
 API 中转分为两部分：
 
-- 控制面：现有 Backend 的 `/api/gateway` 路由，负责节点、Pool、路由、Gateway Key、探测、草稿/发布/回滚、审计与统计。
+- 控制面：现有 Backend 的 `/api/gateway` 路由，负责节点、Pool、路由、Gateway Key、探测、保存后自动生效、审计与统计。直接随 Astra 管理台使用，无独立登录、管理 Token、角色或退出入口；通过内网或统一入口限制管理台与 Backend 的访问。
 - 数据面：独立进程 `app.gateway.server:app`，只提供 OpenAI 兼容的 `/v1/models` 与 `/v1/chat/completions`。**模型长连接不进入主 Backend**。
+
+模型调用仍要求有效 Gateway Key。独立自助用量页面与 `/api/gateway/self/*` 接口已删除，用量通过管理台 Key 列表和调用日志查看。控制面写操作继续保存脱敏审计，新记录标记来源为 `astra/system`，不代表经过登录验证的个人身份；历史审计记录保留。
 
 `ASTRA_GATEWAY_ENABLED=true` 时，`astra_service.py` 在 dev/pro 都会以独立进程启动数据面，可用同一套命令管理：
 
@@ -348,12 +348,14 @@ systemd 部署使用 `deploy/systemd/astra-gateway.service`；数据面默认监
 运维要点：
 
 - 数据面健康检查：`GET http://127.0.0.1:8110/healthz`，状态文件与其它服务同在 `ASTRA_RUNTIME_DIR/astra-service.json`。
-- 实例心跳、配置版本、连接数、请求/错误计数与 CPU/内存由管理台「API 中转」总览展示；心跳过期只标记实例不可用，不据此推断节点健康。
-- Redis 是数据面并发、额度、熔断、心跳与配置通知的唯一事实来源。Redis 不可用时新请求返回结构化 503，不会退化为进程内计数。
-- Key 吊销立即生效，无需重新发布：控制面先把摘要写入 Redis 共享阻断集合再提交 DB 吊销（Redis 失败返回结构化 503），数据面在读取请求体与调度前原子查询该集合；集合只增不减，回滚旧版本也不会复活。就绪状态是同一集合内的哨兵成员（`__ready__`），不是独立键：Redis 淘汰整个集合键时哨兵与摘要一起消失，不会留下假就绪而放行旧 Key。Redis 清空/重启或集合键被淘汰后由数据面启动与后台周期从 DB 追平（`ASTRA_GATEWAY_REVOCATION_SYNC_INTERVAL`，默认 60 秒），追平前新请求 fail closed，已有长流不断开。
-- 启动只加载最近已发布版本，**不自动发布草稿**。修改配置后必须在「API 中转 → 配置」显式发布；发布失败不影响当前版本。
-- 节点在发布并完成一次健康/模型探测前处于 `UNKNOWN`，不会被调度。
-- 正式模式启用网关时会强制校验主密钥、管理凭据与 Redis；`ASTRA_GATEWAY_MASTER_KEY` 与 `ASTRA_GATEWAY_CONTROL_CREDENTIALS` 只从受保护环境提供，节点下游凭据以主密钥加密入库。
+- 实例心跳、软件版本、连接数、请求/错误计数与 CPU/内存由管理台「API 中转」总览展示；心跳过期只标记实例不可用，不据此推断节点健康。
+- Redis 是数据面并发、额度、熔断、心跳与 Key 吊销的唯一事实来源。Redis 不可用时新请求返回结构化 503，不会退化为进程内计数。
+- Key 吊销立即生效，无需等待配置刷新：控制面先把摘要写入 Redis 共享阻断集合再提交 DB 吊销（Redis 失败返回结构化 503），数据面在读取请求体与调度前原子查询该集合；集合只增不减，旧缓存也不能放行已吊销 Key。就绪状态是同一集合内的哨兵成员（`__ready__`），不是独立键：Redis 淘汰整个集合键时哨兵与摘要一起消失，不会留下假就绪而放行旧 Key。Redis 清空/重启或集合键被淘汰后由数据面启动与后台周期从 DB 追平（`ASTRA_GATEWAY_REVOCATION_SYNC_INTERVAL`，默认 60 秒），追平前新请求 fail closed，已有长流不断开。
+- 节点、Pool、路由、Key 保存后自动生效，无配置版本或手动发布步骤。启动与后台从同一数据库事务读取完整配置，按 `ASTRA_GATEWAY_CONFIG_POLL_INTERVAL` 刷新（默认 10 秒）；停用与 DRAINING 在下次刷新后阻止新调度。已有请求继续使用入口取得的配置。数据库读取失败保留当前有效配置并重试，首次启动失败保持空配置并拒绝模型调用。
+- 新建节点或变更连接的节点完成完整健康/模型探测前处于 `UNKNOWN`，不会被调度。
+- 正式模式启用网关时会强制校验主密钥与 Redis；`ASTRA_GATEWAY_MASTER_KEY` 只从受保护环境提供，节点下游凭据以主密钥加密入库。旧环境的 `ASTRA_GATEWAY_CONTROL_CREDENTIALS` 与 `ASTRA_GATEWAY_CONFIG_CHANNEL` 可删除，新代码不再读取它们。
+
+升级会执行 `0032_gateway_saved_config`，仅删除旧配置版本历史，保留现有配置、吊销、调用日志、健康与审计。**原先保存但尚未发布的配置也会自动生效**，部署前核对当前配置并备份数据库，同步升级 Backend 与 Gateway。历史表删除不可逆；回退旧代码需要恢复升级前数据库备份及旧管理凭据配置。
 
 下游接入（以 OpenCode 自定义 OpenAI 兼容 provider 为例）：
 
@@ -378,7 +380,7 @@ systemd 部署使用 `deploy/systemd/astra-gateway.service`；数据面默认监
 
 - `baseURL`：Gateway 对外地址加 `/v1`（经 nginx；直连开发环境为 `http://127.0.0.1:8110/v1`）。
 - `apiKey`：控制面创建的 Gateway Key，前缀 `agw_`，**仅在创建时返回一次**；不要写入仓库，使用环境变量或秘密系统注入。
-- `models` 的键必须与控制面里已发布的路由模型名一致；调用标识为 `astra-gateway/<路由模型名>`，例如 `astra-gateway/gpt-4o`。
+- `models` 的键必须与控制面里已保存的路由模型名一致；调用标识为 `astra-gateway/<路由模型名>`，例如 `astra-gateway/gpt-4o`。
 
 ## 12. 质量验证
 
@@ -463,7 +465,7 @@ CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 - 8110 端口占用（nginx 反代目标须一致）
 - Redis 可达；数据面在 Redis 不可用时返回结构化 503，不退回进程内计数
 - MySQL schema 是否已迁移到最新
-- 是否已在「API 中转 → 配置」发布至少一个含可用节点与路由的版本
+- 是否已保存路由、启用对应 Pool，并有通过完整探测的可用节点
 
 ### 正式模式拒绝启动
 
@@ -471,7 +473,7 @@ CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 
 - SQLite
 - 非 `opencode_server` Runtime
-- 启用 API 中转时缺少 `ASTRA_GATEWAY_MASTER_KEY`、`ASTRA_GATEWAY_CONTROL_CREDENTIALS` 或 Redis
+- 启用 API 中转时缺少 `ASTRA_GATEWAY_MASTER_KEY` 或 Redis
 - preflight 失败
 - 数据库迁移失败
 - 前端构建失败

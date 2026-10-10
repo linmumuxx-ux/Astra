@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/api/client'
-import type { AstraEvent, Employee, Metrics, Task, TaskCategory } from '@/api/types'
+import type { AstraEvent, DashboardOverview, Employee, Metrics, Task, TaskCategory } from '@/api/types'
 
 export const useAstraStore = defineStore('astra', () => {
   const metrics = ref<Metrics | null>(null)
@@ -14,11 +14,13 @@ export const useAstraStore = defineStore('astra', () => {
   const lastUpdated = ref<Date | null>(null)
   const realtimeConnected = ref(false)
   const lastEvent = ref<AstraEvent | null>(null)
+  const homeOverview = ref<DashboardOverview | null>(null)
   const pendingTaskIds = new Set<string>()
   let pendingFullRefresh = false
   let refreshingEvents = false
   let eventSource: EventSource | null = null
   let refreshTimer = 0
+  let refreshStoreOnEvents = true
 
   const activeTasks = computed(() =>
     tasks.value.filter(
@@ -48,14 +50,22 @@ export const useAstraStore = defineStore('astra', () => {
     }
   }
 
-  function connectEvents() {
+  function connectEvents(refreshData = true) {
+    // 首页只消费事件和连接状态，由自己的聚合接口刷新；全站始终复用一条 SSE。
+    refreshStoreOnEvents = refreshData
+    if (!refreshData) {
+      pendingTaskIds.clear()
+      pendingFullRefresh = false
+      window.clearTimeout(refreshTimer)
+      refreshTimer = 0
+    }
     if (eventSource) return
     const apiBase = import.meta.env.VITE_API_BASE ?? ''
     eventSource = new EventSource(`${apiBase}/api/events/stream`)
     let connectedBefore = false
     eventSource.addEventListener('connected', () => {
       realtimeConnected.value = true
-      if (connectedBefore) {
+      if (connectedBefore && refreshStoreOnEvents) {
         pendingFullRefresh = true
         if (!refreshTimer) refreshTimer = window.setTimeout(refreshTaskEvents, 250)
       }
@@ -66,6 +76,7 @@ export const useAstraStore = defineStore('astra', () => {
       const value = { ...raw, event_type: raw.type } as AstraEvent
       events.value = [value, ...events.value.filter(item => item.id !== value.id)].slice(0, 40)
       lastEvent.value = value
+      if (!refreshStoreOnEvents) return
       if (value.task_id) {
         pendingTaskIds.add(value.task_id)
       } else {
@@ -110,5 +121,5 @@ export const useAstraStore = defineStore('astra', () => {
     refreshTimer = 0
   }
 
-  return { metrics, employees, tasks, categories, events, activeTasks, loading, error, lastUpdated, realtimeConnected, lastEvent, refresh, connectEvents, disconnectEvents }
+  return { metrics, employees, tasks, categories, events, activeTasks, loading, error, lastUpdated, realtimeConnected, lastEvent, homeOverview, refresh, connectEvents, disconnectEvents }
 })

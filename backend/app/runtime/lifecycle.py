@@ -336,6 +336,14 @@ class RuntimeService:
             raise RuntimeStateError("旧 Session 绑定缺失，无法确认旧执行已停止")
 
         environment = employee.execution_environment
+        from fastapi import HTTPException
+
+        from app.runtime.remote_provisioning import guard_environment_write
+
+        try:
+            await guard_environment_write(self.session, environment)
+        except HTTPException as exc:
+            raise RuntimeStateError(str(exc.detail)) from exc
         new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
         reserved = await self.session.execute(

@@ -2,7 +2,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 // 「运行总览」重构回归：/api/gateway/** 全部本地 mock，指标按窗口返回不同数值，
 // 用以证明页面展示直接来自后端观测契约，而不是前端拼装。
-const CONTROL_TOKEN = 'e2e-gateway-overview-token'
 
 const nodeFixtures = [
   { id: 'node-healthy-1', name: 'Healthy One', health_state: 'HEALTHY', scheduling_state: 'ACTIVE', models: ['gpt-a'] },
@@ -71,7 +70,6 @@ const instanceFixture = {
   instance_id: 'gw-node-01:4242',
   status: 'ACTIVE',
   app_version: '1.8.2',
-  config_version: 7,
   pid: 4242,
   started_at: '2026-01-01T00:00:00Z',
   updated_at: new Date().toISOString(),
@@ -85,16 +83,24 @@ const instanceFixture = {
 }
 
 async function mockGatewayApi(page: Page, options: { failFirstStats?: boolean } = {}) {
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
   let statsAttempts = 0
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', (route) => {
     const url = new URL(route.request().url())
     const pathname = url.pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) })
-    if (pathname === '/api/gateway/permissions') return json({ actor: 'e2e-admin', roles: ['system'] })
     if (pathname === '/api/gateway/stats') {
       statsAttempts += 1
       if (options.failFirstStats && statsAttempts === 1) {
@@ -151,6 +157,7 @@ test.describe('API 中转 · 运行总览', () => {
     await expect(instances.getByText('gw-node-01:4242')).toBeVisible()
     await expect(instances.getByText('在线')).toBeVisible()
     await expect(instances.getByText('1.8.2')).toBeVisible()
+    await expect(instances.locator('.el-table__header-wrapper')).not.toContainText('配置版本')
     await expect(instances.getByText('99 / 2')).toBeVisible()
   })
 

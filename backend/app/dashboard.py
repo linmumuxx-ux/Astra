@@ -5,18 +5,18 @@ import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.domain import EmployeeStatus, TaskStatus
-from app.models import DigitalEmployee, Event, Task
-from app.runtime.presentation import TASK_STATUS
+from app.domain import EmployeeStatus, RuntimeSessionStatus, TaskStatus
+from app.models import DigitalEmployee, Event, RuntimeSession, Task
+from app.runtime.presentation import EMPLOYEE_LABELS, TASK_STATUS
 from app.services import dashboard_metrics
 from app.usage import day_bounds
 
 ATTENTION_STATUSES = {key for key, value in TASK_STATUS.items() if value["group"] == "attention"}
-ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING}
+OFFICE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.WAITING, TaskStatus.FAILED}
 ACTIVITY_EVENT_TYPES = {
     "TASK_CREATED",
     "TASK_RUNNING",
@@ -25,7 +25,9 @@ ACTIVITY_EVENT_TYPES = {
     "TASK_WAITING",
     "EMPLOYEE_CREATED",
 }
-TASK_PRIORITY = {key: value["rank"] for key, value in TASK_STATUS.items()}
+OFFICE_TASK_PRIORITY = {
+    TaskStatus.WAITING: 0, TaskStatus.RUNNING: 1, TaskStatus.PENDING: 2, TaskStatus.FAILED: 3,
+}
 KNOWN_TEAMS = (
     ("automation", "自动化工程", 10, re.compile(r"自动化|集成|接口"), {"automation", "integration"}),
     ("testing-platform", "测试平台", 20, re.compile(r"测试平台|平台开发|平台测试"), {"testing-platform"}),
@@ -59,14 +61,83 @@ def _team_identity(employee: DigitalEmployee) -> tuple[str, str, int]:
     return f"team-{digest}", name, 100
 
 
-def _employee_state(status: str) -> tuple[str, str]:
-    if status == EmployeeStatus.WORKING:
-        return "working", "执行中"
-    if status in {EmployeeStatus.WAIT_HUMAN, EmployeeStatus.PAUSED}:
-        return "waiting", "等待"
-    if status == EmployeeStatus.ERROR:
-        return "error", "异常"
-    return "idle", "空闲"
+def _current_session_condition():
+    # Only the task's current, unsuperseded binding can describe its office desk.
+    return and_(
+        RuntimeSession.id == Task.current_session_id,
+        RuntimeSession.task_id == Task.id,
+        RuntimeSession.employee_id == Task.employee_id,
+        RuntimeSession.superseded_by.is_(None),
+    )
+
+
+async def _current_employee_tasks(session: AsyncSession) -> dict[str, tuple[Task, RuntimeSession | None]]:
+    rows = (
+        await session.execute(
+            select(Task, RuntimeSession)
+            .outerjoin(RuntimeSession, _current_session_condition())
+            .where(Task.employee_id.is_not(None), Task.status.in_(OFFICE_TASK_STATUSES))
+            .order_by(Task.updated_at.desc(), Task.id)
+        )
+    ).all()
+    current: dict[str, tuple[Task, RuntimeSession | None]] = {}
+    for task, binding in rows:
+        previous = current.get(task.employee_id)
+        bound_active = binding is not None and task.status in {TaskStatus.RUNNING, TaskStatus.WAITING}
+        rank = (not bound_active, OFFICE_TASK_PRIORITY[task.status])
+        previous_bound_active = previous is not None and previous[1] is not None and previous[0].status in {
+            TaskStatus.RUNNING, TaskStatus.WAITING,
+        }
+        if previous is None or rank < (not previous_bound_active, OFFICE_TASK_PRIORITY[previous[0].status]):
+            current[task.employee_id] = (task, binding)
+    return current
+
+
+def _employee_state(
+    employee: DigitalEmployee, task: Task | None, binding: RuntimeSession | None,
+) -> tuple[str, str]:
+    if not employee.enabled:
+        return "idle", "已停用"
+    if employee.status == EmployeeStatus.OFFLINE:
+        return "idle", employee.runtime_status_label
+    if employee.status == EmployeeStatus.PAUSED:
+        return "waiting", employee.runtime_status_label
+    if employee.status == EmployeeStatus.ERROR:
+        return "error", employee.runtime_status_label
+    if task is None:
+        if employee.status == EmployeeStatus.WAIT_HUMAN:
+            return "waiting", employee.runtime_status_label
+        return "idle", EMPLOYEE_LABELS[EmployeeStatus.IDLE]
+    if task.status == TaskStatus.FAILED or (binding and binding.status == RuntimeSessionStatus.FAILED):
+        return "error", TASK_STATUS[TaskStatus.FAILED]["label"]
+    if binding and binding.status == RuntimeSessionStatus.INTERRUPTED:
+        return "waiting", "当前轮已停止"
+    if task.status == TaskStatus.WAITING or (binding and binding.status == RuntimeSessionStatus.WAITING):
+        return "waiting", TASK_STATUS[TaskStatus.WAITING]["label"]
+    if binding and binding.status == RuntimeSessionStatus.SUCCEEDED:
+        # Native completion does not close the business Task. Keep both facts visible.
+        return "idle", "本轮已结束"
+    if task.status == TaskStatus.PENDING:
+        return "idle", task.runtime_status_label
+    if task.runtime_connection == "UNAVAILABLE":
+        return "waiting", "连接中断"
+    if binding and binding.status == RuntimeSessionStatus.RUNNING and task.runtime_connection == "CONNECTED":
+        return "working", task.runtime_status_label
+    return "idle", "状态待确认"
+
+
+def _office_task(task: Task, binding: RuntimeSession | None) -> dict:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "current_session_id": task.current_session_id,
+        "session_status": binding.status if binding else None,
+        "runtime_status_label": task.runtime_status_label,
+        "runtime_detail": task.runtime_detail,
+        "human_required_reason": task.human_required_reason,
+        "runtime_connection": task.runtime_connection,
+    }
 
 
 def _attention_condition():
@@ -79,13 +150,20 @@ def _attention_condition():
 async def dashboard_overview(session: AsyncSession) -> dict:
     metrics = await dashboard_metrics(session)
     employees = (await session.scalars(select(DigitalEmployee))).all()
+    current_tasks = await _current_employee_tasks(session)
     team_count = len({_team_identity(employee)[0] for employee in employees})
     attention_total = await session.scalar(select(func.count(Task.id)).where(_attention_condition()))
     return {
         "employee_total": len(employees),
         "team_count": team_count,
-        "working_employees": metrics["employee_status_distribution"].get(EmployeeStatus.WORKING, 0),
+        "working_employees": sum(
+            _employee_state(employee, *current_tasks.get(employee.id, (None, None)))[0] == "working"
+            for employee in employees
+        ),
         "running_tasks": metrics["running_tasks"],
+        "waiting_tasks": metrics["waiting_tasks"],
+        "failed_tasks": metrics["failed_tasks"],
+        "online_employees": metrics["online_employees"],
         "completed_today": metrics["completed_today"],
         "attention_total": attention_total or 0,
     }
@@ -97,23 +175,7 @@ async def dashboard_employees(session: AsyncSession) -> dict:
             select(DigitalEmployee).order_by(DigitalEmployee.created_at, DigitalEmployee.id)
         )
     ).all()
-    active_tasks = (
-        await session.scalars(
-            select(Task)
-            .where(Task.status.in_([status.value for status in ACTIVE_TASK_STATUSES]))
-            .order_by(Task.updated_at.desc())
-        )
-    ).all()
-    current_tasks: dict[str, Task] = {}
-    for task in active_tasks:
-        if not task.employee_id:
-            continue
-        existing = current_tasks.get(task.employee_id)
-        if (
-            existing is None
-            or TASK_PRIORITY[TaskStatus(task.status)] < TASK_PRIORITY[TaskStatus(existing.status)]
-        ):
-            current_tasks[task.employee_id] = task
+    current_tasks = await _current_employee_tasks(session)
 
     teams: dict[str, dict] = {}
     for employee in employees:
@@ -122,24 +184,22 @@ async def dashboard_employees(session: AsyncSession) -> dict:
             team_id,
             {"id": team_id, "name": team_name, "order": order, "employee_count": 0, "employees": []},
         )
-        task = current_tasks.get(employee.id)
-        state, _ = _employee_state(employee.status)
-        state_label = employee.runtime_status_label
+        task, binding = current_tasks.get(employee.id, (None, None))
+        state, state_label = _employee_state(employee, task, binding)
         team["employees"].append(
             {
                 "id": employee.id,
                 "name": employee.name,
                 "role": employee.role,
                 "status": employee.status,
+                "enabled": employee.enabled,
                 "runtime_state": employee.runtime_state,
                 "runtime_status_label": employee.runtime_status_label,
                 "runtime_detail": employee.runtime_detail,
                 "failure": employee.failure,
                 "state": state,
                 "state_label": state_label,
-                "current_task": (
-                    {"id": task.id, "title": task.title, "status": task.status} if task else None
-                ),
+                "current_task": _office_task(task, binding) if task else None,
             }
         )
         team["employee_count"] += 1
@@ -153,15 +213,16 @@ def _attention_status(task: Task) -> tuple[str, str]:
 async def dashboard_attention(session: AsyncSession) -> dict:
     rows = (
         await session.execute(
-            select(Task, DigitalEmployee.name)
+            select(Task, DigitalEmployee.name, RuntimeSession)
             .outerjoin(DigitalEmployee, Task.employee_id == DigitalEmployee.id)
+            .outerjoin(RuntimeSession, _current_session_condition())
             .where(_attention_condition())
             .order_by(Task.updated_at.desc())
             .limit(5)
         )
     ).all()
     items = []
-    for task, employee_name in rows:
+    for task, employee_name, binding in rows:
         status, status_label = _attention_status(task)
         occurred_at = task.inactivity_alert_since or task.finished_at or task.updated_at
         items.append(
@@ -172,6 +233,11 @@ async def dashboard_attention(session: AsyncSession) -> dict:
                 "employee_name": employee_name or "未分配",
                 "status": status,
                 "status_label": status_label,
+                "current_session_id": task.current_session_id,
+                "session_status": binding.status if binding else None,
+                "runtime_detail": task.runtime_detail,
+                "human_required_reason": task.human_required_reason,
+                "runtime_connection": task.runtime_connection,
                 "occurred_at": occurred_at,
             }
         )
@@ -277,7 +343,7 @@ async def dashboard_activity(session: AsyncSession) -> dict:
             .outerjoin(Task, Event.task_id == Task.id)
             .where(Event.event_type.in_(ACTIVITY_EVENT_TYPES))
             .order_by(Event.created_at.desc())
-            .limit(8)
+            .limit(12)
         )
     ).all()
     items = []
@@ -298,4 +364,3 @@ async def dashboard_activity(session: AsyncSession) -> dict:
             }
         )
     return {"items": items}
-

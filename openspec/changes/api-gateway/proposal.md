@@ -5,9 +5,10 @@
 ## What Changes
 
 - 新增独立运行的 `astra-gateway`，提供 OpenAI 兼容的 `/v1/models` 与 `/v1/chat/completions`，透传非流式与流式响应。
-- 新增 Astra 控制面：节点、资源池、模型路由、Gateway Key、健康探测、配置草稿/发布/回滚、审计与统计。
-- 新增 Redis 运行态：已发布配置快照、跨实例并发、周期 Token、熔断与心跳；MySQL 保存持久配置与调用记录。
-- 新增「API 中转」一级导航、总览、节点详情、资源池/路由/密钥/日志/配置管理。
+- 新增 Astra 控制面：节点、资源池、模型路由、Gateway Key、健康探测、审计与统计。配置保存后自动生效，删除草稿、版本、手动发布、回滚与对账。
+- Redis 维护跨实例并发、周期 Token、健康/熔断、Key 吊销与心跳；MySQL 配置表是唯一配置事实源，Gateway 启动及后台周期读取一致视图。
+- 「API 中转」一级导航只保留总览、节点、资源池/路由、Key 与调用日志。
+- 控制面直接随 Astra 管理台使用，删除独立管理登录、管理 Token、角色权限与 Key 自助门户；模型调用继续使用 Gateway Key 鉴权。
 - 新增独立服务启动和部署配置。第一阶段不承担下游 Token 刷新、模型协议转换、模型计费或 Prompt 审计。
 
 ## Capabilities
@@ -15,12 +16,12 @@
 ### New Capabilities
 
 - `api-gateway`: 模型统一入口、鉴权、调度、限额、透传、重试与故障治理。
-- `gateway-control`: 控制面配置、探测、发布、回滚、权限与审计。
+- `gateway-control`: 控制面配置、保存后自动生效、探测与审计。
 - `gateway-observability`: 请求记录、Token 和性能统计、实例运行状态与管理页面。
 
 ### Modified Capabilities
 
-无。现有 Task/Run/Employee/Session Runtime 行为保持不变。
+无。现有 Task/Employee/Session Runtime 行为保持不变。
 
 ## Impact
 

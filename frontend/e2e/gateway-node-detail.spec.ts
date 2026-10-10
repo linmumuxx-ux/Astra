@@ -2,8 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 
 // 「节点详情」重构回归：/api/gateway/** 全部本地 mock（带内存 store，可被操作改写），
 // 覆盖深链刷新、左侧竖向二级导航、关键详情字段、探测 / 启停 / 安全下线 / 恢复调度、
-// 编辑抽屉、加载失败重试、只读权限与 401 会话失效。
-const CONTROL_TOKEN = 'e2e-gateway-node-detail-token'
+// 编辑抽屉、无需登录的写操作与请求失败反馈。
 const NODE_ID = 'node-alpha'
 const NODE_PATH = `/gateway/nodes/${NODE_ID}`
 const BETA_ID = 'node-beta'
@@ -12,11 +11,10 @@ const BETA_PATH = `/gateway/nodes/${BETA_ID}`
 type Json = Record<string, unknown>
 
 interface MockOptions {
-  roles?: string[]
   failFirstNode?: boolean
   unauthorized?: boolean
   failLogRefresh?: boolean
-  // 按端点只让非整页请求返回 401，验证统计 / 日志 / 节点操作与整页一致地退回接入表单。
+  // 按端点只让非整页请求返回 401，验证错误反馈保留节点详情页面。
   unauthorizedOn?: 'stats' | 'requests' | 'action'
   // 显式延迟，用来控制响应顺序，复现统计窗口与节点切换的竞态。
   statsDelayMs?: Record<string, number>
@@ -176,22 +174,28 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     nodeAttempts: 0,
     logTotal: 120,
   }
-  await page.addInitScript((token) => {
-    window.sessionStorage.setItem('astra.gateway.control.token', token)
-  }, CONTROL_TOKEN)
+  // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
+  await page.route((url) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/gateway/'), (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    if (pathname === '/api/events/stream') {
+      return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
+    }
+    const data = ['/api/employees', '/api/tasks', '/api/task-categories', '/api/events'].includes(pathname) ? [] : {}
+    return route.fulfill({ json: data })
+  })
   await page.route('**/api/gateway/**', async (route) => {
     const request = route.request()
     const method = request.method()
     const url = new URL(request.url())
     const pathname = url.pathname
+    expect(pathname).not.toBe('/api/gateway/permissions')
+    expect(pathname).not.toMatch(/^\/api\/gateway\/(config|self)(\/|$)/)
+    expect(route.request().headers().authorization).toBeUndefined()
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     const body = (): Json => (request.postData() ? JSON.parse(request.postData() as string) : {})
     const sleep = (ms: number) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve())
 
-    if (pathname === '/api/gateway/permissions') {
-      return json({ actor: 'e2e-admin', roles: options.roles ?? ['node'] })
-    }
     if (pathname === '/api/gateway/pools') {
       return json([
         { id: 'pool-1', name: '默认资源池', description: '', weight: 100, enabled: true, sort_order: 0, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
@@ -199,9 +203,9 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     }
     if (pathname === '/api/gateway/nodes') return json(state.nodes)
     if (pathname === '/api/gateway/requests') {
-      // 首屏之后的日志请求才模拟凭据失效，验证日志自身的 401 也退回接入表单。
+      // 首屏之后的日志请求才模拟 401，验证日志错误不清空其它区块。
       if (options.unauthorizedOn === 'requests' && state.requestPages.length > 0) {
-        return json({ detail: '控制面凭据已失效' }, 401)
+        return json({ detail: '访问被拒绝' }, 401)
       }
       state.requestPages.push(`${url.searchParams.get('node_id')}#${url.searchParams.get('page')}`)
       // 只让首屏之后的日志刷新失败，用来验证「日志失败不牵连其它区块」。
@@ -218,9 +222,9 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     }
     if (pathname === '/api/gateway/stats') {
       const window = url.searchParams.get('window') ?? 'today'
-      // 整页固定拉取的 hour / today 放行，只有交互切换的窗口才模拟凭据失效。
+      // 整页固定拉取的 hour / today 放行，只有交互切换的窗口才模拟访问被拒绝。
       if (options.unauthorizedOn === 'stats' && window !== 'hour' && window !== 'today') {
-        return json({ detail: '控制面凭据已失效' }, 401)
+        return json({ detail: '访问被拒绝' }, 401)
       }
       state.statsWindows.push(window)
       await sleep(options.statsDelayMs?.[window] ?? 0)
@@ -231,7 +235,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     }
     const action = /^\/api\/gateway\/nodes\/([^/]+)\/(probe|drain|activate)$/.exec(pathname)
     if (action && method === 'POST') {
-      if (options.unauthorizedOn === 'action') return json({ detail: '控制面凭据已失效' }, 401)
+      if (options.unauthorizedOn === 'action') return json({ detail: '访问被拒绝' }, 401)
       const id = decodeURIComponent(action[1])
       const kind = action[2]
       const current = state.nodes.find((item) => item.id === id) ?? (state.nodes[0] as Json)
@@ -251,7 +255,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     }
     const single = /^\/api\/gateway\/nodes\/([^/]+)$/.exec(pathname)
     if (single) {
-      if (options.unauthorized) return json({ detail: '控制面凭据已失效' }, 401)
+      if (options.unauthorized) return json({ detail: '访问被拒绝' }, 401)
       const id = decodeURIComponent(single[1])
       if (method === 'GET') {
         state.nodeAttempts += 1
@@ -504,26 +508,26 @@ test.describe('API 中转 · 节点详情', () => {
     await expect(page.getByTestId('gateway-node-info')).toContainText('https://alpha.example.test')
   })
 
-  test('只读权限保留观测与操作入口，隐藏启用与编辑', async ({ page }) => {
-    await mockGateway(page, { roles: [] })
+  test('无需登录即可观测、启停与编辑节点', async ({ page }) => {
+    await mockGateway(page)
     await openDetail(page)
 
     await expect(page.getByTestId('gateway-node-probe')).toBeVisible()
     await expect(page.getByTestId('gateway-node-drain')).toBeVisible()
-    await expect(page.getByTestId('gateway-node-toggle')).toHaveCount(0)
-    await expect(page.getByTestId('gateway-node-edit')).toHaveCount(0)
-    await expect(page.getByTestId('gateway-node-config-edit')).toHaveCount(0)
+    await expect(page.getByTestId('gateway-node-toggle')).toBeVisible()
+    await expect(page.getByTestId('gateway-node-edit')).toBeVisible()
+    await expect(page.getByTestId('gateway-node-config-edit')).toBeVisible()
     await expect(page.getByTestId('gateway-node-info')).toContainText('gpt-test、gpt-pro')
     await expect(page.getByTestId('gateway-node-config')).toContainText('https://alpha.example.test')
   })
 
-  test('控制面凭据失效（401）退回接入表单', async ({ page }) => {
+  test('控制面返回 401 时显示请求错误并保留管理页面', async ({ page }) => {
     await mockGateway(page, { unauthorized: true })
     await page.goto(NODE_PATH)
 
-    await expect(page.getByTestId('gateway-connect')).toBeVisible()
-    await expect(page.getByTestId('gateway-node-detail')).toHaveCount(0)
-    expect(await page.evaluate(() => window.sessionStorage.getItem('astra.gateway.control.token'))).toBeNull()
+    await expect(page.getByTestId('gateway-node-error')).toContainText('访问被拒绝')
+    await expect(page.getByTestId('gateway-node-detail')).toBeVisible()
+    await expect(page.getByTestId('gateway-node-state')).toBeVisible()
   })
 
   test('日志刷新失败只提示错误，不清空其它区块', async ({ page }) => {
@@ -626,7 +630,7 @@ test.describe('API 中转 · 节点详情', () => {
   })
 
   for (const part of ['stats', 'requests', 'action'] as const) {
-    test(`${part} 端点 401 与整页一致退回接入表单`, async ({ page }) => {
+    test(`${part} 端点 401 显示错误且保留节点详情`, async ({ page }) => {
       await mockGateway(page, { unauthorizedOn: part })
       await openDetail(page)
 
@@ -638,10 +642,13 @@ test.describe('API 中转 · 节点详情', () => {
         await page.getByTestId('gateway-node-probe').click()
       }
 
-      await expect(page.getByTestId('gateway-connect')).toBeVisible()
-      await expect(page.getByTestId('gateway-node-detail')).toHaveCount(0)
-      expect(await page.evaluate(() => window.sessionStorage.getItem('astra.gateway.control.token'))).toBeNull()
+      if (part === 'stats') {
+        await expect(page.getByTestId('gateway-node-error')).toContainText('访问被拒绝')
+      } else {
+        await expect(page.locator('.el-notification').filter({ hasText: '访问被拒绝' })).toBeVisible()
+      }
+      await expect(page.getByTestId('gateway-node-detail')).toBeVisible()
+      await expect(page.getByTestId('gateway-node-info')).toContainText('https://alpha.example.test')
     })
   }
 })
-
