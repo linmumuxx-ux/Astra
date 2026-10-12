@@ -27,7 +27,10 @@ async def exercise(client, environment):
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
     from app.config.settings import get_settings
+    from app.database import SessionLocal
     from app.llm_wiki import LlmWikiClient
+    from app.models import DigitalEmployee, RuntimeSession, Task
+    from app.runtime.runtime_context import generate_runtime_context, hash_runtime_context, runtime_context_id
 
     settings = get_settings()
     wiki = LlmWikiClient(settings)
@@ -35,6 +38,16 @@ async def exercise(client, environment):
     marker = "ASTRAE2E" + uuid4().hex[:10].upper()
     source_id = None
     report = {"marker": marker, "checks": {}}
+    token = generate_runtime_context()
+    digest = hash_runtime_context(token)
+    async with SessionLocal() as session:
+        session.add(DigitalEmployee(id=marker, name="知识读取验证", role="test"))
+        session.add(Task(id=marker, title="知识读取来源", task_type="ISSUE", employee_id=marker))
+        session.add(RuntimeSession(
+            id=f"ses_{marker}", task_id=marker, employee_id=marker, workspace="/library-probe",
+            environment={}, runtime_context_hash=digest, runtime_context_id=runtime_context_id(digest),
+        ))
+        await session.commit()
 
     def api(method, path, **kwargs):
         response = client.request(method, "/api/library" + path, **kwargs)
@@ -60,6 +73,8 @@ async def exercise(client, environment):
         await mcp.initialize()
 
         async def tool(name, **arguments):
+            if name in {"library_search", "library_get"}:
+                arguments["runtime_context"] = token
             result = await mcp.call_tool(name, arguments)
             if result.is_error:
                 raise RuntimeError(str(result.content))
@@ -90,25 +105,26 @@ async def exercise(client, environment):
                 entry.name: entry.input_schema
                 for entry in (await mcp.list_tools()).tools
             }
-            assert tools["library_search"]["required"] == ["query"]
-            assert tools["library_get"]["required"] == ["resource_id"]
+            assert set(tools["library_search"]["required"]) == {"runtime_context", "query"}
+            assert set(tools["library_get"]["required"]) == {"runtime_context", "resource_id"}
+            assert "library_submit_experience" not in tools
             report["checks"]["mcp_schema"] = "passed"
             space = api("POST", "/spaces", json={"name": marker})
-            candidate = await tool(
-                "library_submit_experience",
-                title=f"{marker} 流水线环境初始化超时",
-                summary=f"{marker} 验证记录",
-                content_md=(
+            candidate = api("POST", "/knowledge", json={
+                "type": "experience",
+                "title": f"{marker} 流水线环境初始化超时",
+                "summary": f"{marker} 验证记录",
+                "content_md": (
                     f"# {marker} 流水线环境初始化超时\n\n"
                     f"仅用于 Astra 知识服务接入测试。故障标识是 {marker}。\n"
                     "现象：流水线环境初始化等待超过三十秒。\n"
                     "处理：将初始化超时调整为一百二十秒，然后重新初始化环境。\n"
                     "验证口令 INITIALCHECK：初始化日志出现 ready。"
                 ),
-            )
+            })
             source_id = candidate["id"]
-            assert candidate["status"] == "candidate"
-            report["checks"]["candidate_not_exported"] = "passed"
+            assert candidate["status"] == "draft"
+            report["checks"]["manual_draft_not_exported"] = "passed"
             api(
                 "POST",
                 f"/knowledge/{source_id}/publish",
@@ -166,7 +182,7 @@ async def exercise(client, environment):
             report["known_limitation"] = (
                 "共享 Wiki 页面可能保留已归档来源的正文；rescan 不代表加工完成"
             )
-            return report
+            return report, token
         finally:
             if source_id:
                 detail = api("GET", f"/knowledge/{source_id}")
@@ -175,7 +191,7 @@ async def exercise(client, environment):
                 assert_synced()
 
 
-async def verify_unavailable(environment):
+async def verify_unavailable(environment, token):
     """Exercise a real refused connection without stopping the user's llm_wiki."""
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -200,7 +216,7 @@ async def verify_unavailable(environment):
         ):
             await mcp.initialize()
             result = await mcp.call_tool(
-                "library_search", {"query": "流水线环境初始化超时"}
+                "library_search", {"runtime_context": token, "query": "流水线环境初始化超时"}
             )
             assert result.is_error
             assert any(
@@ -230,8 +246,8 @@ def main():
         from app.main import app
 
         with TestClient(app) as client:
-            report = asyncio.run(exercise(client, environment))
-        asyncio.run(verify_unavailable(environment))
+            report, token = asyncio.run(exercise(client, environment))
+        asyncio.run(verify_unavailable(environment, token))
         report["checks"]["service_unavailable_no_fallback"] = "passed"
         print(json.dumps(report, ensure_ascii=False, indent=2))
         output = ROOT / ".astra" / "library-e2e-result.json"

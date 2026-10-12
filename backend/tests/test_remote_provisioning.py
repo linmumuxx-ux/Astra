@@ -427,3 +427,60 @@ async def test_port_conflict_is_returned_without_reporting_success():
     with pytest.raises(RuntimeError, match="端口冲突"):
         await RemoteOpenCodeServerConnection(env, get_settings(), None)._start_server(SSH())
     await RemoteProvisioner(env, op)._finish(False, "port conflict")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="Node.js required for npm installation metadata")
+@pytest.mark.parametrize("outcome", ["success", "install-failed", "wrong-version"])
+def test_npm_install_migrates_manual_binary_and_preserves_it_on_failure(tmp_path, outcome):
+    import os
+
+    fixture_root = tmp_path / "employee home"
+    stub_dir = tmp_path / "tools"
+    stub_dir.mkdir()
+    target = tmp_path / "opencode"
+    target.write_text("#!/bin/sh\nprintf '1.18.33\\n'\n")
+    target.chmod(0o755)
+    calls = tmp_path / "npm-calls"
+    npm = stub_dir / "npm"
+    npm.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >>"$npm_calls"
+test "$install_outcome" != install-failed || exit 17
+prefix="$fixture_root/npm"
+mkdir -p "$prefix/bin" "$prefix/lib/node_modules/opencode-ai"
+printf '{"version":"1.18.33"}' >"$prefix/lib/node_modules/opencode-ai/package.json"
+actual=1.18.33
+test "$install_outcome" != wrong-version || actual=1.2.27
+printf '#!/bin/sh\\nprintf "%s\\\\n"\\n' "$actual" >"$prefix/bin/opencode"
+chmod 755 "$prefix/bin/opencode"
+"""
+    )
+    npm.chmod(0o755)
+    script = Path("app/runtime/remote_install.sh").read_text()
+    source = script.split("# Keep npm's installation", 1)[1].split("step 'OpenCode 安装' passed", 1)[0]
+    source = source[source.index("\n") + 1 :].replace("$HOME/.local/share/astra", "$fixture_root")
+    env = dict(os.environ, PATH=str(stub_dir) + os.pathsep + os.environ["PATH"])
+    env.update(
+        fixture_root=str(fixture_root),
+        npm_calls=str(calls),
+        binary=str(target),
+        opencode_version="1.18.33",
+        npm_registry="https://registry.example.invalid",
+        install_outcome=outcome,
+    )
+    result = subprocess.run(["bash", "-eu", "-c", source], env=env, capture_output=True, text=True)
+    if outcome != "success":
+        assert result.returncode != 0
+        assert not target.is_symlink()
+        assert "1.18.33" in target.read_text()
+        return
+    assert result.returncode == 0, result.stderr
+    assert target.is_symlink()
+    assert "opencode-ai@1.18.33" in calls.read_text()
+    assert "--registry https://registry.example.invalid" in calls.read_text()
+    assert "--include=optional" in calls.read_text()
+    # A satisfied npm package is reused; a matching standalone binary alone was not.
+    again = subprocess.run(["bash", "-eu", "-c", source], env=env, capture_output=True, text=True)
+    assert again.returncode == 0, again.stderr
+    assert len(calls.read_text().splitlines()) == 1

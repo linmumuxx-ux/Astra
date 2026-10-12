@@ -12,11 +12,13 @@
         <ElOption v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id" :label="`Session #${binding.sessions.length - index} · ${item.current ? '当前' : '历史只读'}`" />
       </ElSelect>
       <div class="task-header__actions">
-        <ElButton v-if="!task.current_session_id && !task.pending_message_id" type="primary" :disabled="busy" @click="action('start')">启动任务</ElButton>
-        <ElButton v-if="canFinish" type="primary" :disabled="busy" @click="action('confirm')">确认完成</ElButton>
-        <ElButton v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" type="danger" :disabled="busy" @click="action('stop')">终止任务</ElButton>
-        <ElButton v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" :disabled="busy" @click="action('restart')">重新开始（新 Session）</ElButton>
+        <ElButton :icon="RefreshCw" :loading="loading" :disabled="busy || loading" data-testid="task-detail-refresh" @click="load">刷新</ElButton>
+        <ElButton v-if="!task.current_session_id && !task.pending_message_id" type="primary" :disabled="busy || loading" @click="action('start')">启动任务</ElButton>
+        <ElButton v-if="canFinish" type="primary" :disabled="busy || loading" @click="action('confirm')">确认完成</ElButton>
+        <ElButton v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" type="danger" :disabled="busy || loading" @click="action('stop')">终止任务</ElButton>
+        <ElButton v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" :disabled="busy || loading" @click="action('restart')">重新开始（新 Session）</ElButton>
         <ElButton v-if="task.workspace" @click="openChanges">代码变更</ElButton>
+        <ElButton v-if="task.current_session_id" data-testid="task-review-open" @click="showReview = true">总结与经验</ElButton>
         <ElButton :icon="Info" @click="showInfo = true">任务信息</ElButton>
       </div>
     </ElHeader>
@@ -32,8 +34,9 @@
       >
         <div class="workspace-alert__body">
           <span>最后已知状态：{{ task?.runtime_status_label }}</span>
-          <ElButton :disabled="busy" @click="reconnect">重连</ElButton>
-          <ElButton v-if="task?.pending_message_id" :disabled="busy" @click="action('retry-submission')">核对并重试未确认输入</ElButton>
+          <ElButton :loading="loading" :disabled="busy || loading" @click="load">刷新状态</ElButton>
+          <ElButton :disabled="busy || loading" @click="reconnect">重连</ElButton>
+          <ElButton v-if="task?.pending_message_id" :disabled="busy || loading" @click="action('retry-submission')">核对并重试未确认输入</ElButton>
         </div>
       </ElAlert>
       <iframe v-if="frameUrl" :key="frameKey" :src="frameUrl" title="OpenCode Task Workspace" class="task-detail__frame" allow="clipboard-read; clipboard-write" />
@@ -53,6 +56,32 @@
           <pre class="task-diff">{{ item.patch || '二进制文件或无文本差异' }}</pre>
         </ElCollapseItem>
       </ElCollapse>
+    </ElDrawer>
+    <ElDrawer v-model="showReview" title="任务总结与经验" size="min(720px, 100%)" data-testid="task-review-drawer">
+      <ElAlert v-if="reviewError" :title="reviewError" type="error" :closable="false" />
+      <template v-if="review">
+        <div class="task-review__status">
+          <ElTag data-testid="task-review-status" :type="review.status === 'failed' ? 'danger' : 'info'">{{ reviewStatusLabel }}</ElTag>
+          <ElText type="info">已尝试 {{ review.attempts }} 次</ElText>
+          <ElButton :loading="reviewLoading" @click="loadReview(String(route.params.id))">刷新复盘</ElButton>
+          <ElButton v-if="review.can_retry && review.enabled" type="primary" :loading="reviewRetrying" data-testid="task-review-retry" @click="retryReview">重试复盘</ElButton>
+        </div>
+        <ElAlert v-if="!review.enabled" title="后台复盘未启用，请启用平台助手后刷新。" type="info" :closable="false" />
+        <ElAlert v-if="review.error" :title="review.error" type="error" :closable="false" />
+        <ElAlert v-if="review.summary && !review.summary_current" title="以下是历史轮次总结，当前轮次尚未完成复盘。" type="warning" :closable="false" />
+        <div v-if="review.summary" class="task-review__summary" data-testid="task-review-summary" v-html="safeSummary" />
+        <ElEmpty v-else :description="review.status === 'not_ready' ? '人工确认任务完成后，后台自动生成总结。' : '尚未生成任务总结，可刷新查看复盘进度。'" />
+        <h3>关联经验</h3>
+        <ElText type="info">候选经验须经人工审核发布；任务成功不代表经验已验证。</ElText>
+        <ul v-if="review.experiences.length" class="task-review__experiences" data-testid="task-review-experiences">
+          <li v-for="item in review.experiences" :key="item.id">
+            <RouterLink :to="{ path: '/library', query: { knowledge: item.id } }">{{ item.title }}</RouterLink>
+            <ElTag size="small">{{ knowledgeStatusLabel[item.status] }}</ElTag>
+            <ElTag size="small" :type="item.verification_status === 'verified' ? 'success' : 'info'">{{ verificationLabel[item.verification_status] }}</ElTag>
+          </li>
+        </ul>
+        <ElEmpty v-else description="暂无关联经验；没有可复用价值时允许只保存总结。" :image-size="50" />
+      </template>
     </ElDrawer>
     <ElDrawer v-if="task" v-model="showInfo" class="task-info" title="任务信息" size="min(480px, 100%)">
       <ElDescriptions :column="1" border size="small">
@@ -78,12 +107,14 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowLeft, Info } from 'lucide-vue-next'
+import { ArrowLeft, Info, RefreshCw } from 'lucide-vue-next'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElContainer, ElDescriptions, ElDescriptionsItem, ElDrawer, ElEmpty, ElHeader, ElMain, ElOption, ElSelect, ElTabPane, ElTabs, ElTag, ElText } from 'element-plus'
 import { api } from '@/api/client'
-import type { Task, TaskWorkspaceBinding } from '@/api/types'
+import type { Task, TaskReview, TaskWorkspaceBinding } from '@/api/types'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, formatTaskDuration, formatTime, priorityLabel, taskTypeLabel } from '@/utils/format'
@@ -96,8 +127,38 @@ const repo = ref<{ name: string; branch: string; commit: string; dirty: boolean;
 const selectedSession = ref('')
 const error = ref('')
 const busy = ref(false)
+const loading = ref(false)
 const showInfo = ref(false)
 const frameKey = ref(0)
+const review = ref<TaskReview | null>(null)
+const showReview = ref(false)
+const reviewError = ref('')
+const reviewLoading = ref(false)
+const reviewRetrying = ref(false)
+const reviewLabels = { not_ready: '待人工确认完成', pending: '等待后台复盘', running: '正在复盘', completed: '复盘完成', failed: '复盘失败' }
+const knowledgeStatusLabel = { draft: '草稿', candidate: '待审核', published: '已发布', archived: '已归档', rejected: '已拒绝' }
+const verificationLabel = { unverified: '未验证', verified: '已验证', failed: '验证失败' }
+const reviewStatusLabel = computed(() => review.value ? reviewLabels[review.value.status] : '')
+const safeSummary = computed(() => DOMPurify.sanitize(marked.parse(review.value?.summary || '', { async: false }) as string, { USE_PROFILES: { html: true } }))
+async function loadReview(id: string) {
+  reviewLoading.value = true
+  try {
+    const value = await api.taskReview(id)
+    if (id === String(route.params.id)) { review.value = value; reviewError.value = '' }
+  } catch (reason) {
+    if (id === String(route.params.id)) reviewError.value = reason instanceof Error ? reason.message : '复盘读取失败'
+  } finally { if (id === String(route.params.id)) reviewLoading.value = false }
+}
+async function retryReview() {
+  const id = String(route.params.id)
+  reviewRetrying.value = true
+  try {
+    const value = await api.retryTaskReview(id)
+    if (id === String(route.params.id)) { review.value = value; reviewError.value = '' }
+  } catch (reason) {
+    if (id === String(route.params.id)) reviewError.value = reason instanceof Error ? reason.message : '复盘重试失败'
+  } finally { reviewRetrying.value = false }
+}
 
 const employeeName = computed(() => {
   const employee = store.employees.find(item => item.id === task.value?.employee_id)
@@ -167,15 +228,26 @@ const duration = computed(() => {
 })
 
 let timer: ReturnType<typeof setInterval> | undefined
-async function load() {
+let loadRequest: { id: string; promise: Promise<void> } | null = null
+function load() {
   const id = String(route.params.id)
+  if (loadRequest?.id === id) return loadRequest.promise
+  loading.value = true
+  const promise = loadTask(id).finally(() => {
+    if (loadRequest?.promise === promise) { loadRequest = null; loading.value = false }
+  })
+  loadRequest = { id, promise }
+  return promise
+}
+async function loadTask(id: string) {
   try {
     const [nextTask, nextBinding] = await Promise.all([api.task(id), api.taskWorkspace(id)])
     if (id !== String(route.params.id)) return
     task.value = nextTask; binding.value = nextBinding
+    void loadReview(id)
     if (!nextBinding.sessions.some(item => item.id === selectedSession.value)) selectedSession.value = nextTask.current_session_id || ''
     error.value = ''
-    if (nextTask.workspace) void loadRepo(id)
+    if (nextTask.workspace) await loadRepo(id)
     else repo.value = null
   } catch (reason) { if (id === String(route.params.id)) error.value = reason instanceof Error ? reason.message : '任务加载失败' }
 }
@@ -186,13 +258,10 @@ async function action(name: string) {
   finally { busy.value = false }
 }
 async function reconnect() { await action('reconnect'); frameKey.value++ }
-watch(() => route.params.id, () => { selectedSession.value = ''; void load() }, { immediate: true })
+watch(() => route.params.id, () => { selectedSession.value = ''; review.value = null; showReview.value = false; reviewError.value = ''; void load() }, { immediate: true })
 onMounted(() => {
   timer = setInterval(() => { now.value = Date.now() }, 1000)
-  store.connectEvents()
 })
-watch(() => store.lastEvent, event => { if (event?.task_id === route.params.id) void load() })
-watch(() => store.realtimeConnected, connected => { if (connected) void load() })
 onBeforeUnmount(() => { clearInterval(timer); diffRequest?.abort() })
 </script>
 
@@ -214,4 +283,11 @@ onBeforeUnmount(() => { clearInterval(timer); diffRequest?.abort() })
 .task-info__criteria{margin:0;padding-left:18px;display:grid;gap:4px;line-height:1.6}
 .task-info__path{overflow-wrap:anywhere}
 .task-diff{white-space:pre;overflow:auto;font-family:monospace;font-size:12px}
+.task-review__status{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.task-review__summary{line-height:1.7;overflow-wrap:anywhere;margin:18px 0;color:var(--astra-text-primary)}
+.task-review__summary :deep(pre){overflow:auto;padding:12px;background:var(--astra-bg-base)}
+.task-review__summary :deep(img){max-width:100%}
+.task-review__experiences{list-style:none;padding:0;display:grid;gap:12px}
+.task-review__experiences li{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.task-review__experiences a{color:var(--astra-primary);margin-right:auto}
 </style>

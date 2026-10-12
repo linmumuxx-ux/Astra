@@ -109,7 +109,7 @@
 
 <script setup lang="ts">
 import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   ElAlert,
@@ -150,7 +150,6 @@ const nodes = ref<GatewayNode[]>([])
 const instances = ref<GatewayInstance[]>([])
 const loading = ref(false)
 const error = ref('')
-let timer: ReturnType<typeof setInterval> | undefined
 
 const windowLabel = computed(() => windows.find((item) => item.id === statsWindow.value)?.label ?? '')
 
@@ -243,11 +242,7 @@ async function load() {
 }
 
 watch(statsWindow, load)
-onMounted(() => {
-  void load()
-  timer = globalThis.setInterval(() => { if (!document.hidden) void load() }, 30_000)
-})
-onBeforeUnmount(() => { if (timer !== undefined) globalThis.clearInterval(timer) })
+onMounted(() => { void load() })
 </script>
 
 <style scoped>

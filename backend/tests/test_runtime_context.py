@@ -128,22 +128,13 @@ async def test_old_session_token_resolves_old_not_current():
         assert current.session_id == "ses_b"
 
 
-async def test_runtime_submission_ignores_agent_supplied_identity():
+async def test_employee_cannot_use_removed_runtime_experience_submission():
     async with context_session() as (session, token):
-        detail = await KnowledgeService(session).mcp_submit_experience(
-            LibrarySubmitExperienceInput(
-                title="升级后缓存未刷新",
-                summary="清理缓存后重启服务",
-                content_md="## 处理\n\n清理缓存。",
-                source_employee_id="FORGED",
-                source_task_id="FORGED_TASK",
-            ),
-            runtime_context=token,
-        )
-        item = await session.get(KnowledgeItem, detail.id)
-    assert item.source_task_id == "T1"
-    assert item.source_employee_id == "E1"
-    assert item.source_session_id == "ses_a"
+        with pytest.raises(TypeError, match="runtime_context"):
+            await KnowledgeService(session).mcp_submit_experience(
+                LibrarySubmitExperienceInput(title="员工经验", content_md="处理规则"),
+                runtime_context=token,
+            )
 
 
 async def test_runtime_library_read_records_task_session_and_knowledge(monkeypatch):

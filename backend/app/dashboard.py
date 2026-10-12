@@ -191,6 +191,7 @@ async def dashboard_employees(session: AsyncSession) -> dict:
                 "id": employee.id,
                 "name": employee.name,
                 "role": employee.role,
+                "character_id": employee.character_id,
                 "status": employee.status,
                 "enabled": employee.enabled,
                 "runtime_state": employee.runtime_state,
@@ -341,8 +342,15 @@ async def dashboard_activity(session: AsyncSession) -> dict:
             select(Event, DigitalEmployee.name, Task.title, Task.source)
             .outerjoin(DigitalEmployee, Event.employee_id == DigitalEmployee.id)
             .outerjoin(Task, Event.task_id == Task.id)
-            .where(Event.event_type.in_(ACTIVITY_EVENT_TYPES))
-            .order_by(Event.created_at.desc())
+            .where(
+                Event.event_type.in_(ACTIVITY_EVENT_TYPES),
+                # 已删除目标的历史事件不能挤占首页，也不能提供失效的详情入口。
+                or_(
+                    and_(Event.task_id.is_not(None), Task.id.is_not(None)),
+                    and_(Event.task_id.is_(None), DigitalEmployee.id.is_not(None)),
+                ),
+            )
+            .order_by(Event.created_at.desc(), Event.id.desc())
             .limit(12)
         )
     ).all()

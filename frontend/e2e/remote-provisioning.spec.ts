@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 async function remoteFixture(page: Page, mode = 'LINUX_REMOTE') {
   const employee = {
-    id: 'remote-test', name: '远程测试员工', role: '开发', description: '', default_work_area: 'development',
+    id: 'remote-test', name: '远程测试员工', role: '开发', description: '', character_id: 0, default_work_area: 'development',
     status: 'IDLE', task_types: ['ISSUE', 'REQUIREMENT'], category_ids: [], enabled: true,
     auto_claim: false, auto_execute: false, current_task_count: 0, last_heartbeat: null,
     runtime_state: 'IDLE', runtime_status_label: '空闲', runtime_detail: '', failure: null,

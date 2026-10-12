@@ -1,3 +1,5 @@
+"""Experience identity is global; verification requires cited execution evidence."""
+
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -9,22 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.library_schemas import LibrarySubmitExperienceInput
 from app.library_service import KnowledgeService
-from app.models import (
-    Base,
-    DigitalEmployee,
-    ExperienceEvidence,
-    KnowledgeItem,
-    OpenCodeExecutionEnvironment,
-    RuntimeSession,
-    Task,
-    TaskSummary,
-)
-from app.runtime.environment import environment_snapshot
-from app.runtime.runtime_context import (
-    generate_runtime_context,
-    hash_runtime_context,
-    runtime_context_id,
-)
+from app.models import Base, DigitalEmployee, ExperienceEvidence, KnowledgeItem, RuntimeSession, Task
 
 
 @asynccontextmanager
@@ -34,280 +21,44 @@ async def experience_session():
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
-        employee = DigitalEmployee(id="E1", name="Engineer", role="build", status="IDLE")
-        environment = OpenCodeExecutionEnvironment(
-            employee_id="E1", mode="LOCAL", name="test", workspace_root="/tmp/ws", status="AVAILABLE"
-        )
-        session.add_all([employee, environment])
-        await session.flush()
-        task = Task(
-            id="T1",
-            title="Cache bug",
-            task_type="ISSUE",
-            status="RUNNING",
-            employee_id="E1",
-            current_session_id="ses_a",
-            workspace="/tmp/ws",
-            last_message_id="a1",
-            execution_environment_snapshot=environment_snapshot(environment),
-        )
-        token_a = generate_runtime_context()
-        digest_a = hash_runtime_context(token_a)
-        session.add_all(
-            [
-                task,
-                RuntimeSession(
-                    id="ses_a",
-                    task_id="T1",
-                    employee_id="E1",
-                    workspace="/tmp/ws",
-                    environment=environment_snapshot(environment),
-                    status="RUNNING",
-                    last_message_id="a1",
-                    runtime_context_hash=digest_a,
-                    runtime_context_id=runtime_context_id(digest_a),
-                ),
-            ]
-        )
+        session.add(DigitalEmployee(id="E1", name="员工", role="build"))
+        for index in (1, 2):
+            session.add(Task(id=f"T{index}", title="任务", task_type="ISSUE", status="SUCCEEDED",
+                             employee_id="E1", current_session_id=f"ses_{index}"))
+            session.add(RuntimeSession(id=f"ses_{index}", task_id=f"T{index}", employee_id="E1",
+                                       workspace="/test", environment={}, status="SUCCEEDED"))
         await session.commit()
-        yield session, token_a
+        yield session, "unused"
     await engine.dispose()
 
 
-async def submit(service, token, *, title="缓存未刷新", content="清理缓存后重启", type_="fix"):
-    return await service.mcp_submit_experience(
-        LibrarySubmitExperienceInput(
-            title=title,
-            summary="处理步骤",
-            content_md=content,
-            experience_type=type_,
-        ),
-        runtime_context=token,
-    )
-
-
-async def test_running_submission_is_unverified_until_round_is_accepted():
-    async with experience_session() as (session, token):
+async def test_exact_experience_is_reused_across_tasks_and_titles():
+    async with experience_session() as (session, _):
         service = KnowledgeService(session)
-        detail = await submit(service, token)
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.origin == "runtime"
-        assert item.source_session_id == "ses_a"
-        assert item.source_ref_snapshot["turn_anchor_id"] == "a1"
-        assert item.dedupe_key == "session:ses_a"
-        assert item.fingerprint
-        assert item.verification_status == "unverified"
-        assert item.session_status_at_submission == "RUNNING"
-        assert item.verified_at is None
-
-        # A successful Session alone is not enough: the business round must be
-        # accepted with a current summary.
-        runtime_session = await session.get(RuntimeSession, "ses_a")
-        runtime_session.status = "SUCCEEDED"
-        runtime_session.last_message_id = "a-final"
-        await session.commit()
-        assert await service.reconcile_session_verification("ses_a") == 0
-
-        task = await session.get(Task, "T1")
-        task.status = "SUCCEEDED"
-        session.add(
-            TaskSummary(
-                id="TS-R",
-                task_id="T1",
-                primary_session_id="ses_a",
-                referenced_session_ids=["ses_a"],
-                summary="缓存刷新问题处理结果",
-                content_md="缓存刷新问题处理结果",
-                source_status="SUCCEEDED",
-                generation=1,
-                stale=False,
-                source_ref_snapshot={"turn_anchor_id": "a1"},
+        ids = []
+        for index in (1, 2):
+            item = await service.mcp_submit_experience(
+                LibrarySubmitExperienceInput(title=f"标题{index}", content_md="同一判断处理验证方法",
+                                             evidence=[
+                    {"evidence_type": "message", "message_id": f"msg_{index}"},
+                ]), review_session=await session.get(RuntimeSession, f"ses_{index}"), review_key=str(index),
             )
-        )
-        await session.commit()
-
-        assert await service.reconcile_session_verification("ses_a") == 1
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "verified"
-        assert item.verification_session_status == "SUCCEEDED"
-        assert item.verification_message_id == "a-final"
-        assert item.session_last_message_id_at_verification == "a-final"
-        assert item.verified_at is not None
-        # Reconcile is idempotent.
-        assert await service.reconcile_session_verification("ses_a") == 0
-
-
-async def test_failed_source_session_never_verifies():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        detail = await submit(service, token)
-        runtime_session = await session.get(RuntimeSession, "ses_a")
-        runtime_session.status = "FAILED"
-        await session.commit()
-        assert await service.reconcile_session_verification("ses_a") == 0
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "unverified" and item.verified_at is None
-
-
-async def test_verified_experience_is_not_downgraded_after_continue_failure():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        detail = await submit(service, token)
-        runtime_session = await session.get(RuntimeSession, "ses_a")
-        runtime_session.status = "SUCCEEDED"
-        runtime_session.last_message_id = "a1"
-        task = await session.get(Task, "T1")
-        task.status = "SUCCEEDED"
-        session.add(
-            TaskSummary(
-                id="TS-DOWN",
-                task_id="T1",
-                primary_session_id="ses_a",
-                referenced_session_ids=["ses_a"],
-                summary="缓存刷新问题处理结果",
-                content_md="缓存刷新问题处理结果",
-                source_status="SUCCEEDED",
-                generation=1,
-                stale=False,
-                source_ref_snapshot={"turn_anchor_id": "a1"},
-            )
-        )
-        await session.commit()
-        assert await service.reconcile_session_verification("ses_a") == 1
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "verified"
-
-        runtime_session.status = "FAILED"
-        await session.commit()
-        assert await service.reconcile_session_verification("ses_a") == 0
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "verified"
-        assert item.verification_session_status == "SUCCEEDED"
-
-
-async def test_unconfirmed_manual_confirm_round_is_not_verified():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        detail = await submit(service, token)
-        runtime_session = await session.get(RuntimeSession, "ses_a")
-        runtime_session.status = "SUCCEEDED"
-        runtime_session.last_message_id = "a-final"
-        task = await session.get(Task, "T1")
-        task.completion_policy = "MANUAL_CONFIRM"
-        task.status = "WAITING"
-        task.submitted_at = datetime.now(UTC)
-        task.confirmed_at = None
-        session.add(
-            TaskSummary(
-                id="TS-WAIT",
-                task_id="T1",
-                primary_session_id="ses_a",
-                referenced_session_ids=["ses_a"],
-                summary="执行已完成，等待人工确认",
-                content_md="执行已完成，等待人工确认",
-                source_status="WAITING",
-                generation=1,
-                stale=False,
-                source_ref_snapshot={"turn_anchor_id": "a1"},
-            )
-        )
-        await session.commit()
-
-        assert await service.reconcile_session_verification("ses_a") == 0
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "unverified"
-        assert item.verified_at is None
-
-
-async def test_later_round_success_does_not_verify_earlier_submission():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        detail = await submit(service, token)  # submitted in round "a1"
-
-        # A later round ("a2") becomes the accepted result.
-        task = await session.get(Task, "T1")
-        task.last_message_id = "a2"
-        task.status = "SUCCEEDED"
-        runtime_session = await session.get(RuntimeSession, "ses_a")
-        runtime_session.status = "SUCCEEDED"
-        runtime_session.last_message_id = "a-final"
-        session.add(
-            TaskSummary(
-                id="TS-ROUND2",
-                task_id="T1",
-                primary_session_id="ses_a",
-                referenced_session_ids=["ses_a"],
-                summary="第二轮处理成功",
-                content_md="第二轮处理成功",
-                source_status="SUCCEEDED",
-                generation=2,
-                stale=False,
-            )
-        )
-        await session.commit()
-
-        assert await service.reconcile_session_verification("ses_a") == 0
-        item = await session.get(KnowledgeItem, detail.id)
-        assert item.verification_status == "unverified"
-        assert item.verified_at is None
-
-
-async def test_fingerprint_dedupes_same_experience_in_one_session():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        first = await submit(service, token)
-        second = await submit(service, token, content="清理缓存后重启")
-        assert first.id == second.id
+            ids.append(item.id)
+        assert ids[0] == ids[1]
         assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
-
-        other = await submit(service, token, title="另一个问题", content="另一套处理")
-        assert other.id != first.id
-        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 2
+        assert await session.scalar(select(func.count()).select_from(ExperienceEvidence)) == 2
+        assert item.verification_status == "unverified"
 
 
-async def test_manual_experience_dedupes_without_a_session():
-    async with experience_session() as (session, _token):
+async def test_manual_experience_is_unverified_and_deduped():
+    async with experience_session() as (session, _):
         service = KnowledgeService(session)
-        first = await service.mcp_submit_experience(
-            LibrarySubmitExperienceInput(title="人工经验", content_md="同样内容")
-        )
-        second = await service.mcp_submit_experience(
-            LibrarySubmitExperienceInput(title="人工经验", content_md="同样内容")
-        )
+        payload = LibrarySubmitExperienceInput(title="人工经验", content_md="同样内容")
+        first = await service.mcp_submit_experience(payload)
+        second = await service.mcp_submit_experience(payload)
         assert first.id == second.id
-        item = await session.get(KnowledgeItem, first.id)
-        assert item.origin == "manual"
-        assert item.dedupe_key == "manual:mcp"
+        assert first.verification_status == "unverified"
 
-
-async def test_evidence_keeps_session_provenance():
-    async with experience_session() as (session, token):
-        service = KnowledgeService(session)
-        detail = await service.mcp_submit_experience(
-            LibrarySubmitExperienceInput(
-                title="证据来源",
-                content_md="内容",
-                evidence=[
-                    {
-                        "evidence_type": "message",
-                        "message_id": "a1",
-                        "part_id": "p1",
-                        "file_path": "src/cache.py",
-                        "diff_hash": "deadbeef",
-                    }
-                ],
-            ),
-            runtime_context=token,
-        )
-        evidence = await session.scalar(
-            select(ExperienceEvidence).where(ExperienceEvidence.knowledge_id == detail.id)
-        )
-        assert evidence.source_session_id == "ses_a"
-        assert evidence.message_id == "a1"
-        assert evidence.part_id == "p1"
-        assert evidence.file_path == "src/cache.py"
-        assert evidence.diff_hash == "deadbeef"
-        assert evidence.captured_at is not None
 
 def test_published_knowledge_survives_task_deletion():
     from app.database import SessionLocal
@@ -369,7 +120,7 @@ async def test_usage_completed_tasks_share_experience_completion_definition():
         task = await session.get(Task, "T1")
         task.status = "SUCCEEDED"
         task.completed_at = datetime.now(UTC)
-        runtime_session = await session.get(RuntimeSession, "ses_a")
+        runtime_session = await session.get(RuntimeSession, "ses_1")
         runtime_session.status = "SUCCEEDED"
         await session.commit()
 
@@ -377,3 +128,56 @@ async def test_usage_completed_tasks_share_experience_completion_definition():
 
         assert COMPLETED_TASK_STATUS == TaskStatus.SUCCEEDED
         assert usage["completed_tasks"] == 1
+
+
+async def test_human_content_edit_refreshes_identity_and_verification():
+    from app.library_schemas import KnowledgePatch
+    from app.library_service import LibraryPrincipal, experience_fingerprint
+
+    async with experience_session() as (session, _):
+        service = KnowledgeService(session)
+        saved = await service.mcp_submit_experience(LibrarySubmitExperienceInput(
+            title="原有方法", content_md="原有方法正文",
+        ))
+        item = await session.get(KnowledgeItem, saved.id)
+        item.verification_status = "verified"
+        await session.commit()
+        updated = await service.update_knowledge(
+            item.id, KnowledgePatch(content_md="新增未验证边界"),
+            LibraryPrincipal(user_id="admin", role="admin"),
+        )
+        assert updated.verification_status == "unverified"
+        assert item.fingerprint == experience_fingerprint("新增未验证边界")
+        different = await service.mcp_submit_experience(LibrarySubmitExperienceInput(
+            title="原有方法的新证据", content_md="原有方法正文",
+        ))
+        assert different.id != item.id
+
+
+def test_exact_fingerprint_preserves_code_case_and_indentation():
+    from app.library_service import experience_fingerprint
+
+    assert experience_fingerprint("assert Foo") != experience_fingerprint("assert foo")
+    assert experience_fingerprint("if ok:\n    run()") != experience_fingerprint("if ok:\nrun()")
+    assert experience_fingerprint("规则\r\n方法") == experience_fingerprint("规则\n方法")
+
+
+async def test_concurrent_exact_submissions_share_one_record(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'concurrent.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def save(title):
+        async with factory() as session:
+            return (await KnowledgeService(session).mcp_submit_experience(
+                LibrarySubmitExperienceInput(title=title, content_md="同一可复用判断与验证方法"),
+            )).id
+
+    try:
+        ids = await asyncio.gather(save("任务甲的提炼"), save("任务乙的提炼"))
+        assert ids[0] == ids[1]
+        async with factory() as session:
+            assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
+    finally:
+        await engine.dispose()

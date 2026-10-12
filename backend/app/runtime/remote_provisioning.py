@@ -233,6 +233,7 @@ class RemoteProvisioner:
                     select(GatewayKey).where(
                         GatewayKey.key_digest == gateway_key_digest(raw),
                         GatewayKey.owner_id == self.environment.employee_id,
+                        GatewayKey.deleted_at.is_(None),
                     )
                 )
                 if key:

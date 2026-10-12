@@ -136,6 +136,7 @@ def test_home_dashboard_exposes_only_aggregated_business_sections():
                     "id",
                     "name",
                     "role",
+                    "character_id",
                     "status",
                     "enabled",
                     "state",

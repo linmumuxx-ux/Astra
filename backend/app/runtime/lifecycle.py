@@ -1101,6 +1101,25 @@ class RuntimeService:
             if any(item.get("sessionID") in allowed for item in pending):
                 raise RuntimeStateError("仍有问题或权限请求，请先在 Workspace 处理")
             messages, count = await self._collect_final_usage(client, directory, session_id)
+            # Capture the native root outcome before taking the Task lock. Usage
+            # includes descendants; they must never determine the root's result.
+            final_state = None
+            try:
+                root_messages = await client.messages(directory, session_id)
+                final_state = derive_session_state(
+                    messages=root_messages,
+                    server_status="idle",
+                    has_pending_question=False,
+                    has_pending_permission=False,
+                    pending_ack=False,
+                    turn_anchor_id=anchor,
+                    turn_started_at=task.turn_started_at,
+                )
+            except Exception:
+                # Native existence, idle status and pending-input checks above
+                # already permit human closure. Index/review capture must not
+                # add another prerequisite for completing the business task.
+                logger.exception("Failed to capture confirmed Session outcome for %s", session_id)
         task = await self.lock_task(task_id)
         if task.current_session_id != session_id or task.last_message_id != anchor or task.pending_message_id:
             await self.session.rollback()
@@ -1112,6 +1131,8 @@ class RuntimeService:
             raise RuntimeStateError("任务已终止")
         if messages is not None:
             await self._update_session_usage(task, messages, native_session_count=count)
+        if final_state is not None:
+            await self._sync_session_state(task, final_state)
         task.confirmed_at = datetime.now(UTC)
         task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None

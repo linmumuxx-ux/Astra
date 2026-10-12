@@ -12,7 +12,7 @@
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
-| `ASTRA_REMOTE_OPENCODE_VERSION` | `1.2.27` | 固定 OpenCode 发布版本 |
+| `ASTRA_REMOTE_OPENCODE_VERSION` | `1.18.33` | 固定 OpenCode npm 包版本 |
 | `ASTRA_REMOTE_NODE_VERSION` | `22.23.3` | 固定 Node.js 版本 |
 | `ASTRA_REMOTE_NPM_REGISTRY` | `https://registry.npmmirror.com` | 当前 SSH 用户的 npm registry |
 | `ASTRA_REMOTE_DEPLOY_TIMEOUT_SECONDS` | `1200` | 单次维护最长秒数 |
@@ -22,8 +22,9 @@
 ## 安装和配置范围
 
 - root 用户自动安装系统依赖；非 root 用户必须已有必要系统工具、可用 Git，软件安装到用户目录，缺少管理员权限时明确失败。
-- 支持 x86_64 / aarch64 的 Debian/Ubuntu、RHEL 系列。下载校验 SHA256，OpenCode 实际版本必须匹配指定版本。
-- CentOS 7 使用独立 Vault repo 配置安装依赖，不改原 yum 源；旧 glibc x86_64 使用 Node glibc-217 构建、OpenCode baseline-musl 和隔离的 Alpine musl/C++ 运行库。仅为 musl 加载器增加运行库路径，不替换系统 glibc。Git 低于 2.20 时编译 2.43.7。CentOS 7 已停止维护，建议后续迁移受维护系统。
+- 支持 x86_64 / aarch64 的 Debian/Ubuntu、RHEL 系列。OpenCode 统一使用 `npm install --global --prefix "$HOME/.local/share/astra/npm" --registry <配置的镜像> --include=optional opencode-ai@<指定版本>` 安装，npm 验证包完整性，实际可执行版本必须匹配。仅验证成功后才将员工配置的执行路径链接到 npm 安装目录；旧的独立二进制即使版本相同，也会迁移到 npm 管理。已满足要求的 npm 安装会复用。
+- 内嵌工作区前端同步到上游 `v1.18.33`，提供对应版本的静态资源；保留已发布的旧版本资源供历史 Session 使用。
+- CentOS 7 使用独立 Vault repo 配置安装依赖，不改原 yum 源；旧 glibc x86_64 使用 Node glibc-217 构建、npm 包自动选择的 OpenCode 平台二进制和隔离的 Alpine musl/C++ 运行库。仅为 musl 加载器增加运行库路径，不替换系统 glibc。Git 低于 2.20 时编译 2.43.7。CentOS 7 已停止维护，建议后续迁移受维护系统。
 - 工程目录为空时初始化 Git 和初始提交；非空且不是 Git 仓库时拒绝，已有仓库保留原内容。
 - 在远端用户的 `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json` 合并 `astra-gateway` provider、默认模型和 `nexus-library` MCP。写入前备份为 `.astra-backup-<操作ID>`，配置及备份权限为 0600，其他 provider/MCP/字段保留。已有 JSONC 或无效 JSON 时拒绝覆盖，需人工合并。
 - 同一 SSH 用户的全局配置对该用户的其他 OpenCode 工程也生效；需要独立配置时使用独立 Linux 账号。

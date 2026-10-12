@@ -29,6 +29,17 @@
       <ElFormItem label="员工名称" prop="name">
         <ElInput v-model.trim="form.name" placeholder="员工-04" />
       </ElFormItem>
+      <ElFormItem label="员工形象" prop="character_id">
+        <div class="employee-character-field">
+          <ElRadioGroup v-model="form.character_id" class="employee-character-options" aria-label="员工形象" data-testid="employee-character-picker">
+            <ElRadio v-for="character in employeeCharacters" :key="character.id" :value="character.id" border>
+              <img :src="employeeCharacterSource(character.id)" alt="" draggable="false" />
+              <span>{{ character.name }}</span>
+            </ElRadio>
+          </ElRadioGroup>
+          <p class="employee-character-help">与首页数字空间共用形象，保存后应用到该员工。</p>
+        </div>
+      </ElFormItem>
       <ElFormItem label="岗位" prop="role">
         <ElInput v-model.trim="form.role" placeholder="测试平台开发" />
       </ElFormItem>
@@ -191,7 +202,7 @@
 <script setup lang="ts">
 import { CheckCircle2, CircleX, Laptop, RefreshCw, Server } from 'lucide-vue-next'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { ElAlert, ElButton, ElCheckbox, ElCheckboxGroup, ElDivider, ElForm, ElFormItem, ElInput, ElOption, ElRadioGroup, ElRadioButton, ElSelect, ElSpace, ElSwitch, ElTag } from 'element-plus'
+import { ElAlert, ElButton, ElCheckbox, ElCheckboxGroup, ElDivider, ElForm, ElFormItem, ElInput, ElOption, ElRadio, ElRadioGroup, ElRadioButton, ElSelect, ElSpace, ElSwitch, ElTag } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { api, maintainEnvironment } from '@/api/client'
 import type { Employee, TaskCategory, TaskType } from '@/api/types'
@@ -200,6 +211,7 @@ import FieldHelp from '@/components/forms/FieldHelp.vue'
 import IdDisplay from '@/components/astra/IdDisplay.vue'
 import StickyActionBar from '@/components/astra/StickyActionBar.vue'
 import { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/sceneLayout'
+import { employeeCharacters, employeeCharacterSource } from '@/features/workspace/characterAssets'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, formatTime, statusLabel, statusTagType } from '@/utils/format'
 
@@ -220,7 +232,7 @@ const checks = ref<Array<{ name: string; passed: boolean; detail: string; state?
 const originalSnapshot = ref('')
 
 const emptyEnvironment = () => ({ mode: 'LOCAL' as 'LOCAL' | 'LINUX_REMOTE', name: '本地 Agent 工作环境', description: '', host: '', port: 22 as number | string, username: '', ssh_password: '', opencode_server_port: 4096 as number | string, opencode_path: 'opencode', model_name: '', workspace_root: '', labels: [] as string[] })
-const form = reactive({ id: '', name: '', role: '', description: '', default_work_area: 'development' as WorkspaceAreaId, task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, environment: emptyEnvironment() })
+const form = reactive({ id: '', name: '', role: '', description: '', character_id: 0, default_work_area: 'development' as WorkspaceAreaId, task_types: ['ISSUE', 'REQUIREMENT'] as TaskType[], category_ids: [] as string[], enabled: true, auto_claim: true, auto_execute: true, environment: emptyEnvironment() })
 
 const portValidator = (_rule: unknown, value: unknown, callback: (error?: Error) => void) => {
   const numeric = Number(value)
@@ -264,6 +276,7 @@ function fill(employee?: Employee) {
   const environment = employee?.execution_environment
   Object.assign(form, {
     id: employee?.id ?? '', name: employee?.name ?? '', role: employee?.role ?? '', description: employee?.description ?? '',
+    character_id: employee?.character_id ?? 0,
     default_work_area: employee?.default_work_area ?? 'development',
     task_types: [...(employee?.task_types ?? ['ISSUE', 'REQUIREMENT'])],
     category_ids: [...(employee?.category_ids ?? props.categories.filter((item) => item.enabled).map((item) => item.id))],
@@ -278,6 +291,7 @@ function fill(employee?: Employee) {
 function snapshot(): string {
   return JSON.stringify({
     id: form.id, name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area,
+    character_id: form.character_id,
     task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute,
     environment: { mode: form.environment.mode, name: form.environment.name, description: form.environment.description, host: form.environment.host ?? null, port: Number(form.environment.port), username: form.environment.username ?? null, opencode_server_port: Number(form.environment.opencode_server_port ?? 4096), opencode_path: form.environment.opencode_path, model_name: form.environment.model_name ?? null, workspace_root: form.environment.workspace_root, ssh_password: form.environment.ssh_password || null },
   })
@@ -292,7 +306,7 @@ function environmentPayload() {
   return { ...form.environment, host: form.environment.mode === 'LOCAL' ? null : form.environment.host || null, username: form.environment.mode === 'LOCAL' ? null : form.environment.username || null, ssh_password: form.environment.mode === 'LINUX_REMOTE' ? form.environment.ssh_password || null : null, model_name: form.environment.model_name || null }
 }
 function employeePayload() {
-  return { name: form.name, role: form.role, description: form.description, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute }
+  return { name: form.name, role: form.role, description: form.description, character_id: form.character_id, default_work_area: form.default_work_area, task_types: form.task_types, category_ids: form.category_ids, enabled: form.enabled, auto_claim: form.auto_claim, auto_execute: form.auto_execute }
 }
 function normalizedEnvironment(value: ReturnType<typeof environmentPayload> | Employee['execution_environment']) {
   return value ? { mode: value.mode, name: value.name, description: value.description ?? '', host: value.host ?? null, port: Number(value.port), username: value.username ?? null, opencode_server_port: Number(value.opencode_server_port ?? 4096), opencode_path: value.opencode_path, model_name: value.model_name ?? null, workspace_root: value.workspace_root, labels: [...(value.labels ?? [])] } : null
@@ -395,6 +409,15 @@ defineExpose({ getDirty: () => isDirty.value, dirty: isDirty, saving: busy, rese
 
 <style scoped>
 .employee-config-form { width: 100%; }
+.employee-character-field { width: 100%; }
+.employee-character-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; width: 100%; }
+.employee-character-options :deep(.el-radio) { display: flex; justify-content: center; height: auto; min-width: 0; margin: 0; padding: 8px 4px; border-radius: var(--el-border-radius-base); }
+.employee-character-options :deep(.el-radio__input) { position: absolute; top: 8px; left: 8px; }
+.employee-character-options :deep(.el-radio__label) { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 0; font-size: var(--astra-font-helper); }
+.employee-character-options img { display: block; width: 64px; height: 80px; object-fit: contain; }
+.employee-character-options :deep(.el-radio.is-checked) { background: var(--el-color-primary-light-9); }
+.employee-character-help { margin: 8px 0 0; color: var(--el-text-color-secondary); font-size: var(--astra-font-helper); line-height: 1.6; }
+@media (max-width: 600px) { .employee-character-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .remote-maintenance { width: 100%; }
 .remote-operation-cancel { display: flex; justify-content: flex-end; margin-top: 12px; }
 .maintenance-help { margin: 8px 0 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); line-height: 1.6; }

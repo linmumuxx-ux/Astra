@@ -40,6 +40,11 @@ async def factory(monkeypatch):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         session.add(DigitalEmployee(id="E1", name="员工", role="build"))
+        environment = OpenCodeExecutionEnvironment(
+            employee_id="E1", mode="LOCAL", name="test", workspace_root="/bound", status="AVAILABLE",
+        )
+        session.add(environment)
+        await session.flush()
         session.add(
             Task(
                 id="T1",
@@ -57,13 +62,31 @@ async def factory(monkeypatch):
                 task_id="T1",
                 employee_id="E1",
                 workspace="/bound",
-                environment={},
+                environment=environment_snapshot(environment),
                 status="SUCCEEDED",
                 last_message_id="msg_200",
             )
         )
         await session.commit()
     monkeypatch.setattr(review, "SessionLocal", factory)
+    native = [
+        {"info": {"id": "msg_002", "role": "user"},
+         "parts": [{"id": "prt_2", "type": "text", "text": "人工纠正"}]},
+        {"info": {"id": "msg_test", "role": "assistant"}, "parts": [
+            {"id": "prt_test", "type": "tool", "tool": "bash",
+             "state": {"status": "completed", "input": {"command": "pytest"},
+                       "output": "2 passed"}},
+        ]},
+    ]
+
+    @asynccontextmanager
+    async def native_connection(*args, **kwargs):
+        yield SimpleNamespace(
+            children=AsyncMock(return_value=[]),
+            messages_page=AsyncMock(return_value={"messages": native, "next_before": None}),
+        )
+
+    monkeypatch.setattr(review, "connect", native_connection)
     yield factory
     await engine.dispose()
 
@@ -151,7 +174,9 @@ async def test_atomic_submission_failure_can_retry(factory, monkeypatch):
         return await original(self, *args, **kwargs)
 
     monkeypatch.setattr(review.KnowledgeService, "mcp_submit_experience", fail_second)
-    experiences = [review.ReviewExperience(title=str(i), content_md=f"判断处理验证 {i}") for i in range(2)]
+    experiences = [review.ReviewExperience(title=str(i), content_md=f"判断处理验证 {i}", evidence=[
+        {"message_id": "msg_002", "part_id": "prt_2", "evidence_type": "human_correction"},
+    ]) for i in range(2)]
     async with factory() as session:
         with pytest.raises(RuntimeError):
             await submit(session, experiences=experiences)
@@ -372,6 +397,8 @@ async def test_review_keeps_historical_protocol_as_fact_without_candidate(factor
 async def test_review_reads_remote_bound_session_with_pagination(factory, monkeypatch):
     """RuntimeSession -> immutable environment -> remote connection -> workspace -> paginated messages."""
     async with factory() as session:
+        await session.delete(await session.scalar(select(OpenCodeExecutionEnvironment)))
+        await session.flush()
         environment = OpenCodeExecutionEnvironment(
             employee_id="E1",
             mode="LINUX_REMOTE",
@@ -416,3 +443,300 @@ async def test_review_reads_remote_bound_session_with_pagination(factory, monkey
     assert seen["ssh_password"] == "secret"
     assert client.messages_page.await_args.args[0] == Path("/srv/ws/T1")
     assert page["messages"] == [{"info": {"id": "msg_2"}, "parts": []}]
+
+
+def experience(**changes):
+    return review.ReviewExperience(**{
+        "title": "复用判断方法", "content_md": "先比较直连与缓存结果，再检查键构造，验证多租户隔离。",
+        "evidence": [{"message_id": "msg_002", "part_id": "prt_2",
+                      "evidence_type": "human_correction", "content": "人工纠正"}],
+        **changes,
+    })
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "WAITING", "FAILED", "CANCELED"])
+async def test_unconfirmed_rounds_do_not_dispatch_or_submit(factory, monkeypatch, status):
+    client = SimpleNamespace(create_session=AsyncMock(), prompt_async=AsyncMock())
+    monkeypatch.setattr(review, "AssistantOpenCodeClient", lambda: client)
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.status = status
+        await session.commit()
+        with pytest.raises(ValueError, match="人工确认"):
+            await submit(session)
+    assert await review.reconcile_task_reviews() == []
+    client.create_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize("evidence,error", [
+    ([], "真实执行证据"),
+    ([{"message_id": "invented", "evidence_type": "message"}], "消息不存在"),
+    ([{"message_id": "msg_002", "part_id": "invented", "evidence_type": "message"}], "片段不存在"),
+    ([{"message_id": "msg_002", "evidence_type": "message", "content": "伪造结果"}], "摘录"),
+    ([{"message_id": "msg_002", "part_id": "prt_2", "evidence_type": "verification",
+       "result": "passed", "content": "人工纠正"}], "工具结果"),
+])
+async def test_evidence_is_checked_before_atomic_save(factory, evidence, error):
+    async with factory() as session:
+        with pytest.raises(ValueError, match=error):
+            await submit(session, experiences=[experience(evidence=evidence)])
+        await session.rollback()
+        assert await session.scalar(select(func.count()).select_from(TaskSummary)) == 0
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
+
+
+@pytest.mark.parametrize("verified", [False, True])
+async def test_task_success_is_not_experience_verification(factory, verified):
+    proof = [{"message_id": "msg_test", "part_id": "prt_test", "evidence_type": "verification",
+              "result": "passed", "content": "2 passed"}]
+    async with factory() as session:
+        result = await submit(session, experiences=[experience(**({"evidence": proof} if verified else {}))])
+        item = await session.get(KnowledgeItem, result["candidate_ids"][0])
+        assert item.verification_status == ("verified" if verified else "unverified")
+        assert item.status == "candidate"
+        assert item.verification_message_id == ("msg_test" if verified else None)
+
+
+async def test_more_than_two_experiences_need_independent_value(factory):
+    async with factory() as session:
+        experiences = [experience(title=str(i), content_md=f"独立方法 {i}") for i in range(3)]
+        with pytest.raises(ValueError, match="独立复用价值"):
+            await submit(session, experiences=experiences)
+        for i, item in enumerate(experiences):
+            item.independent_value = f"适用于独立场景 {i}"
+        result = await submit(session, experiences=experiences)
+        assert len(result["candidate_ids"]) == 3
+
+
+async def second_task(session):
+    binding = await session.get(RuntimeSession, "ses_1")
+    task = Task(id="T2", title="另一个缓存任务", task_type="ISSUE", status="SUCCEEDED",
+                employee_id="E1", current_session_id="ses_2", last_message_id="msg_001")
+    second = RuntimeSession(id="ses_2", task_id="T2", employee_id="E1", workspace="/bound",
+                            environment=binding.environment, status="SUCCEEDED", last_message_id="msg_200")
+    session.add_all([task, second])
+    await session.commit()
+    return task, second
+
+
+async def test_semantic_merge_retains_evidence_and_links_both_tasks(factory):
+    from app.assistant.tool_gateway import experience_search
+    from app.models import ExperienceEvidence
+
+    async with factory() as session:
+        first = await submit(session, experiences=[experience()])
+        target = first["candidate_ids"][0]
+        task, binding = await second_task(session)
+        found = await experience_search(session, keyword="缓存")
+        assert [i["id"] for i in found["items"]] == [target]
+        result = await review.submit_review(
+            session, task_id=task.id, source_session_id=binding.id,
+            expected_review_id=review.review_id(task, binding), task_summary="另一任务的客观总结",
+            experiences=[experience(merge_into_id=target, merge_reason="同一缓存键判断与多租户验证方法",
+                                    content_md="合并后：先隔离直连与缓存路径，再统一键构造并验证多租户。")],
+        )
+        assert result["candidate_ids"] == [target]
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
+        assert await session.scalar(select(func.count()).select_from(ExperienceEvidence)) == 2
+        for task_id in ("T1", "T2"):
+            detail = await review.review_detail(session, await session.get(Task, task_id))
+            assert [i["id"] for i in detail["experiences"]] == [target]
+
+
+async def test_published_experience_reuse_only_appends_evidence(factory):
+    from app.models import ExperienceEvidence
+
+    async with factory() as session:
+        first = await submit(session, experiences=[experience()])
+        item = await session.get(KnowledgeItem, first["candidate_ids"][0])
+        item.status, item.verification_status = "published", "verified"
+        content, fingerprint = item.content_md, item.fingerprint
+        await session.commit()
+        task, binding = await second_task(session)
+        result = await review.submit_review(
+            session, task_id=task.id, source_session_id=binding.id,
+            expected_review_id=review.review_id(task, binding), task_summary="复用了既有正式知识",
+            experiences=[experience(merge_into_id=item.id, merge_reason="方法一致，补充证据",
+                                    content_md="模型不能替换这段正式正文")],
+        )
+        assert result["candidate_ids"] == [item.id]
+        await session.refresh(item)
+        assert (item.content_md, item.fingerprint, item.status) == (content, fingerprint, "published")
+        assert item.verification_status == "verified"
+        assert await session.scalar(select(func.count()).select_from(ExperienceEvidence)) == 2
+
+
+async def test_failed_review_retry_reuses_record_and_completed_retry_is_noop(factory):
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        binding = await session.get(RuntimeSession, "ses_1")
+        key = review.review_id(task, binding)
+        session.add(TaskReview(id=key, task_id=task.id, source_session_id=binding.id,
+                               source_status=task.status, status="failed", error="网络中断", attempts=1))
+        await session.commit()
+        detail = await review.retry_review(session, task.id)
+        assert detail["status"] == "pending" and detail["error"] is None
+        assert await session.scalar(select(func.count()).select_from(TaskReview)) == 1
+        await submit(session)
+        assert (await review.retry_review(session, task.id))["status"] == "completed"
+        assert await session.scalar(select(func.count()).select_from(TaskSummary)) == 1
+
+
+async def test_evidence_read_race_cannot_write_old_round(factory, monkeypatch):
+    original = review.validate_evidence
+
+    async def reopen(*args):
+        verified = await original(*args)
+        async with factory() as other:
+            task = await other.get(Task, "T1")
+            task.last_message_id = "new_turn"
+            await other.commit()
+        return verified
+
+    monkeypatch.setattr(review, "validate_evidence", reopen)
+    async with factory() as session:
+        with pytest.raises(ValueError, match="轮次"):
+            await submit(session, experiences=[experience()])
+        await session.rollback()
+        assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
+
+
+def test_review_is_registered_in_real_beat_and_control_worker():
+    from app.runtime.celery_app import celery
+
+    entry = celery.conf.beat_schedule["astra-task-review"]
+    assert entry["task"] in celery.tasks
+    assert celery.conf.task_routes[entry["task"]]["queue"] == "control"
+
+
+async def test_confirmation_syncs_native_root_before_review_dispatch(factory, monkeypatch):
+    native = [
+        {"info": {"id": "msg_001", "role": "user"}, "parts": []},
+        {"info": {"id": "msg_200", "role": "assistant", "finish": "stop",
+                  "time": {"completed": 1_800_000_000_000}},
+         "parts": [{"id": "final", "type": "text", "text": "已完成"}]},
+    ]
+
+    @asynccontextmanager
+    async def native_connection(*args, **kwargs):
+        yield SimpleNamespace(
+            session=AsyncMock(return_value={"id": "ses_1"}), status=AsyncMock(return_value="idle"),
+            children=AsyncMock(return_value=[]), questions=AsyncMock(return_value=[]),
+            permissions=AsyncMock(return_value=[]), messages=AsyncMock(return_value=native),
+        )
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", native_connection)
+    monkeypatch.setattr(
+        "app.runtime.lifecycle.resolve_environment", AsyncMock(return_value=SimpleNamespace()),
+    )
+    client = SimpleNamespace(create_session=AsyncMock(return_value="review_1"), prompt_async=AsyncMock())
+    monkeypatch.setattr(review, "AssistantOpenCodeClient", lambda: client)
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.status, task.workspace = "RUNNING", "/bound"
+        binding = await session.get(RuntimeSession, "ses_1")
+        binding.status, binding.last_message_id = "RUNNING", "msg_001"
+        await session.commit()
+        assert await review.reconcile_task_reviews() == []
+        await RuntimeService(session).confirm_completion(task.id)
+        assert task.status == "SUCCEEDED" and task.confirmed_at
+        assert binding.status == "SUCCEEDED" and binding.last_message_id == "msg_200"
+    assert await review.reconcile_task_reviews() == ["T1"]
+    assert await review.reconcile_task_reviews() == []
+
+
+async def test_expired_review_can_retry_but_live_lease_cannot(factory):
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        binding = await session.get(RuntimeSession, "ses_1")
+        job = TaskReview(id=review.review_id(task, binding), task_id=task.id,
+                         source_session_id=binding.id, source_status=task.status,
+                         status="running", retry_at=datetime.now(UTC) + timedelta(minutes=1))
+        session.add(job)
+        await session.commit()
+        with pytest.raises(ValueError, match="仍在执行"):
+            await review.retry_review(session, task.id)
+        job.retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+        detail = await review.review_detail(session, task)
+        assert detail["status"] == "failed" and detail["can_retry"] and "超时" in detail["error"]
+        assert (await review.retry_review(session, task.id))["status"] == "pending"
+
+
+async def test_candidate_content_change_revokes_previous_verification(factory):
+    async with factory() as session:
+        proof = [{"message_id": "msg_test", "part_id": "prt_test", "evidence_type": "verification",
+                  "result": "passed", "content": "2 passed"}]
+        first = await submit(session, experiences=[experience(evidence=proof)])
+        target = first["candidate_ids"][0]
+        assert (await session.get(KnowledgeItem, target)).verification_status == "verified"
+        task, binding = await second_task(session)
+        await review.submit_review(
+            session, task_id=task.id, source_session_id=binding.id,
+            expected_review_id=review.review_id(task, binding), task_summary="新增未验证边界",
+            experiences=[experience(merge_into_id=target, merge_reason="补充同一方法的边界",
+                                    content_md="含新边界的处理方法，尚未验证新增范围。")],
+        )
+        item = await session.get(KnowledgeItem, target)
+        assert item.verification_status == "unverified" and item.verified_at is None
+
+
+async def test_mcp_returns_actionable_validation_error(factory, monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from app.assistant import mcp_server
+
+    monkeypatch.setattr(mcp_server, "SessionLocal", factory)
+    monkeypatch.setattr(mcp_server, "submit_review", AsyncMock(side_effect=ValueError("经验证据摘录不符")))
+    server = mcp_server.build_assistant_mcp_server()
+    with pytest.raises(ToolError, match="经验证据摘录不符"):
+        await server.call_tool("nexus_task_review_submit", {
+            "task_id": "T1", "source_session_id": "ses_1", "review_id": "round",
+            "task_summary": "任务总结", "experiences": [],
+        })
+
+
+async def test_failed_command_cannot_be_marked_verified(factory, monkeypatch):
+    @asynccontextmanager
+    async def native_connection(*args, **kwargs):
+        yield SimpleNamespace(children=AsyncMock(return_value=[]), messages_page=AsyncMock(return_value={
+            "messages": [{"info": {"id": "failed", "role": "assistant"}, "parts": [
+                {"id": "part", "type": "tool", "tool": "bash", "state": {
+                    "status": "completed", "metadata": {"exit": 1}, "output": "1 failed",
+                }},
+            ]}], "next_before": None,
+        }))
+
+    monkeypatch.setattr(review, "connect", native_connection)
+    async with factory() as session:
+        with pytest.raises(ValueError, match="失败的工具执行"):
+            await submit(session, experiences=[experience(evidence=[{
+                "message_id": "failed", "part_id": "part", "evidence_type": "verification",
+                "result": "passed", "content": "1 failed",
+            }])])
+
+
+async def test_review_capture_failure_does_not_block_human_completion(factory, monkeypatch):
+    @asynccontextmanager
+    async def native_connection(*args, **kwargs):
+        yield SimpleNamespace(
+            session=AsyncMock(return_value={"id": "ses_1"}), status=AsyncMock(return_value="idle"),
+            children=AsyncMock(return_value=[]), questions=AsyncMock(return_value=[]),
+            permissions=AsyncMock(return_value=[]),
+            messages=AsyncMock(side_effect=ConnectionError("读取失败")),
+        )
+
+    monkeypatch.setattr("app.runtime.lifecycle.connect", native_connection)
+    monkeypatch.setattr(
+        "app.runtime.lifecycle.resolve_environment", AsyncMock(return_value=SimpleNamespace()),
+    )
+    async with factory() as session:
+        task = await session.get(Task, "T1")
+        task.status, task.workspace = "RUNNING", "/bound"
+        binding = await session.get(RuntimeSession, "ses_1")
+        binding.status = "UNKNOWN"
+        await session.commit()
+        await RuntimeService(session).confirm_completion(task.id)
+        assert task.status == "SUCCEEDED" and task.confirmed_at
+        assert binding.status == "UNKNOWN"  # Business acceptance never fabricates execution success.
+        assert review.review_ready(task, binding)

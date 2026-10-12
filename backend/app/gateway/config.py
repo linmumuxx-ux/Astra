@@ -253,7 +253,10 @@ class ConfigLoader:
                 ("pools", GatewayPool), ("nodes", GatewayNode),
                 ("routes", GatewayRoute), ("keys", GatewayKey),
             ):
-                rows = await session.scalars(select(model))
+                stmt = select(model)
+                if model is GatewayKey:
+                    stmt = stmt.where(GatewayKey.deleted_at.is_(None))
+                rows = await session.scalars(stmt)
                 snapshot[name] = [
                     {column.name: getattr(row, column.name) for column in model.__table__.columns}
                     for row in rows

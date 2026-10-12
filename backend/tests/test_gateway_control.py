@@ -17,14 +17,18 @@ from app.api.gateway_routes import (
     gateway_runtime,
 )
 from app.database import SessionLocal
+from app.gateway.config import ConfigLoader, GatewayConfigState
 from app.gateway.models import (
     GatewayHealthCheck,
     GatewayKey,
     GatewayNode,
+    GatewayRequest,
 )
 from app.gateway.probe import HttpGatewayProbeClient, ProbeOutcome
+from app.gateway.proxy import GatewayProxy
 from app.gateway.runtime import SCOPE_NODE, InMemoryRuntimeStore, node_runtime_scope
 from app.gateway.security import CredentialCipher, gateway_key_digest
+from app.gateway.server import GatewayDataPlane, create_gateway_app
 from app.main import app
 
 
@@ -191,13 +195,13 @@ def test_revoke_key_blocks_shared_state_before_db_and_fails_closed(gateway_env):
 
         # Redis 不可用：吊销必须结构化 503，且 DB 吊销不得提交——证明共享阻断先写。
         gateway_env.runtime.set_available(False)
-        failed = client.delete(f"/api/gateway/keys/{key_id}")
+        failed = client.post(f"/api/gateway/keys/{key_id}/revoke")
         assert failed.status_code == 503
         assert asyncio.run(read_key()).revoked_at is None
 
         # 恢复后：先追加共享阻断状态，再提交 DB 吊销，返回成功。
         gateway_env.runtime.set_available(True)
-        revoked = client.delete(f"/api/gateway/keys/{key_id}")
+        revoked = client.post(f"/api/gateway/keys/{key_id}/revoke")
         assert revoked.status_code == 200, revoked.text
         assert revoked.json()["revoked_at"] is not None
         assert asyncio.run(gateway_env.runtime.is_key_revoked(digest)) is True
@@ -208,6 +212,105 @@ def test_revoke_key_blocks_shared_state_before_db_and_fails_closed(gateway_env):
             params={"resource_type": "key", "resource_id": key_id},
         ).json()
         assert any(item["action"] == "key.revoke" for item in audits)
+        assert any(item["id"] == key_id for item in client.get("/api/gateway/keys").json())
+
+
+@pytest.mark.parametrize("state", ["enabled", "disabled", "revoked"])
+def test_delete_key_preserves_history_and_permanent_revocation(gateway_env, state):
+    with TestClient(app) as client:
+        created = client.post("/api/gateway/keys", json={"name": unique("delete-key")}).json()
+        key_id = created["id"]
+        digest = gateway_key_digest(created["key"])
+        if state == "disabled":
+            assert client.patch(f"/api/gateway/keys/{key_id}", json={"enabled": False}).status_code == 200
+        elif state == "revoked":
+            assert client.post(f"/api/gateway/keys/{key_id}/revoke").status_code == 200
+        original_revoked_at = read_key_row(key_id).revoked_at
+        request_id = unique("historical-request")
+
+        async def save_request():
+            async with SessionLocal.begin() as session:
+                session.add(GatewayRequest(id=request_id, key_id=key_id, status_code=200, total_tokens=9))
+
+        asyncio.run(save_request())
+        cached_config = asyncio.run(ConfigLoader(SessionLocal).load_current())
+        assert digest in cached_config.keys
+        deleted = client.delete(f"/api/gateway/keys/{key_id}")
+        assert deleted.status_code == 204, deleted.text
+        assert deleted.content == b""
+        assert all(item["id"] != key_id for item in client.get("/api/gateway/keys").json())
+        stored = read_key_row(key_id)
+        assert stored.deleted_at is not None
+        assert stored.revoked_at is not None
+        assert stored.enabled is False
+        assert stored.key_digest == digest
+        if original_revoked_at is not None:
+            assert stored.revoked_at == original_revoked_at
+        assert asyncio.run(gateway_env.runtime.is_key_revoked(digest)) is True
+        assert digest not in asyncio.run(ConfigLoader(SessionLocal).load_current()).keys
+
+        plane = GatewayDataPlane(
+            config_state=GatewayConfigState(cached_config), runtime=gateway_env.runtime,
+            proxy=GatewayProxy(transport=httpx.MockTransport(lambda _request: httpx.Response(200))),
+            cipher=CredentialCipher(None), session_factory=SessionLocal,
+        )
+        with TestClient(create_gateway_app(plane)) as data_client:
+            rejected = data_client.get("/v1/models", headers={"Authorization": f"Bearer {created['key']}"})
+        assert rejected.status_code == 401
+        assert rejected.json()["error"]["code"] == "KEY_DISABLED"
+
+        assert client.patch(f"/api/gateway/keys/{key_id}", json={"enabled": True}).status_code == 404
+        assert client.post(f"/api/gateway/keys/{key_id}/revoke").status_code == 404
+        assert client.delete(f"/api/gateway/keys/{key_id}").status_code == 404
+
+        audits = client.get(
+            "/api/gateway/audits", params={"resource_type": "key", "resource_id": key_id}
+        ).json()
+        assert any(item["action"] == "key.create" for item in audits)
+        deletion = next(item for item in audits if item["action"] == "key.delete")
+        assert deletion["before"]["deleted_at"] is None
+        assert deletion["after"]["deleted_at"] is not None
+        assert created["key"] not in json.dumps(audits)
+        assert digest not in json.dumps(audits)
+
+        async def check_history_and_rebuild_revocation():
+            async with SessionLocal() as session:
+                request = await session.get(GatewayRequest, request_id)
+                assert request.key_id == key_id
+                assert request.total_tokens == 9
+            # 使用全新运行态，证明删除后的持久行仍参与数据面的阻断重建。
+            runtime = InMemoryRuntimeStore()
+            plane = GatewayDataPlane(
+                config_state=GatewayConfigState(), runtime=runtime,
+                proxy=GatewayProxy(), cipher=CredentialCipher(None), session_factory=SessionLocal,
+            )
+            assert await plane.sync_revocation_state() is True
+            assert await runtime.is_key_revoked(digest) is True
+
+        asyncio.run(check_history_and_rebuild_revocation())
+
+
+def test_delete_key_fails_closed_and_can_retry(gateway_env):
+    with TestClient(app) as client:
+        created = client.post("/api/gateway/keys", json={"name": unique("delete-retry")}).json()
+        key_id = created["id"]
+        gateway_env.runtime.set_available(False)
+        failed = client.delete(f"/api/gateway/keys/{key_id}")
+        assert failed.status_code == 503, failed.text
+        assert failed.json()["detail"]
+        stored = read_key_row(key_id)
+        assert stored.deleted_at is None
+        assert stored.revoked_at is None
+        assert stored.enabled is True
+        assert any(item["id"] == key_id for item in client.get("/api/gateway/keys").json())
+        audits = client.get(
+            "/api/gateway/audits", params={"resource_type": "key", "resource_id": key_id}
+        ).json()
+        assert not any(item["action"] == "key.delete" for item in audits)
+
+        gateway_env.runtime.set_available(True)
+        assert client.delete(f"/api/gateway/keys/{key_id}").status_code == 204
+        assert read_key_row(key_id).deleted_at is not None
 
 
 def revoked_key_digests() -> set[str]:

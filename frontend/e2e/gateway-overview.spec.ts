@@ -187,3 +187,27 @@ test.describe('API 中转 · 运行总览', () => {
     await expect(page.getByTestId('gateway-header').getByRole('heading', { level: 2, name: 'API 中转' })).toBeVisible()
   })
 })
+
+
+test('网关总览闲置与切回前台不轮询，手动刷新仍请求当前窗口', async ({ page }) => {
+  await page.clock.install()
+  const requests: string[] = []
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/api/')) requests.push(path)
+  })
+  await mockGatewayApi(page)
+  await page.goto('/gateway/overview')
+  await expect(metricValue(page, 'requests')).toHaveText('120')
+  const refresh = page.getByTestId('gateway-overview-refresh')
+  await expect(refresh).toBeEnabled()
+  const baseline = [...requests]
+  await page.clock.fastForward(120_000)
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+  await page.clock.runFor(500)
+  expect(requests).toEqual(baseline)
+  expect(requests).not.toContain('/api/events/stream')
+  await refresh.click()
+  await expect(refresh).toBeEnabled()
+  expect(requests.filter(path => path === '/api/gateway/stats')).toHaveLength(2)
+})

@@ -56,17 +56,13 @@ from app.models import (
     KnowledgeUsage,
     RuntimeSession,
     Task,
-    TaskSummary,
     utcnow,
 )
-from app.runtime.experience_verification import experience_item_is_verified
 from app.runtime.runtime_context import RuntimeContext
 from app.runtime.runtime_context import resolve_runtime_context as _resolve_runtime_context
 from app.usage import day_bounds
 
 KNOWLEDGE_TYPES = {"document", "rule", "guide", "experience", "faq", "tool", "example"}
-EXPERIENCE_TYPES = {"root_cause", "fix", "environment", "test_rule", "tool_usage", "other"}
-_WHITESPACE = re.compile(r"\s+")
 logger = logging.getLogger(__name__)
 
 
@@ -88,20 +84,19 @@ def _source_markdown(item: KnowledgeItem) -> str:
     )
 
 
-def _normalized(value: str | None) -> str:
-    return _WHITESPACE.sub(" ", value or "").strip().casefold()
+def experience_fingerprint(content_md: str) -> str:
+    # Case and indentation can change code semantics; leave semantic matching
+    # to the reviewer rather than silently flattening distinct rules here.
+    canonical = content_md.replace("\r\n", "\n").strip()
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def experience_fingerprint(*, experience_type: str | None, title: str, content_md: str) -> str:
-    """Stable identity for one reusable experience, independent of volatile ids."""
-    material = "|".join(
-        [
-            _normalized(experience_type or "other"),
-            _normalized(title),
-            _normalized(content_md),
-        ]
-    )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+def invalidate_experience_verification(item: KnowledgeItem) -> None:
+    item.verification_status = "unverified"
+    item.verified_at = item.verification_message_id = item.verification_session_status = None
+    item.session_last_message_id_at_verification = None
+
+
 KNOWLEDGE_STATUSES = {"draft", "candidate", "published", "archived", "rejected"}
 FEEDBACK_TYPES = {"helpful", "incorrect", "outdated", "missing", "mismatch"}
 ROLE_ALIASES = {
@@ -796,8 +791,13 @@ class KnowledgeService:
         values = payload.model_dump(exclude_unset=True)
         if "space_id" in values:
             await self._space(values["space_id"], principal)
+        if (item.type == "experience" and "content_md" in values
+                and values["content_md"] != item.content_md):
+            invalidate_experience_verification(item)
         for key, value in values.items():
             setattr(item, key, value)
+        if item.type == "experience" and "content_md" in values:
+            item.fingerprint = experience_fingerprint(item.content_md)
         item.updated_by = principal.user_id
         await self._audit(item, "updated", principal, {"fields": sorted(values)})
         await self.session.commit()
@@ -966,8 +966,13 @@ class KnowledgeService:
         await self._space(payload.space_id, principal)
         previous_status = item.status
         values = payload.model_dump(exclude_unset=True)
+        if (item.type == "experience" and "content_md" in values
+                and values["content_md"] != item.content_md):
+            invalidate_experience_verification(item)
         for key, value in values.items():
             setattr(item, key, value)
+        if item.type == "experience":
+            item.fingerprint = experience_fingerprint(item.content_md)
         item.status = "published"
         item.published_by = principal.user_id
         item.published_at = utcnow()
@@ -1318,238 +1323,131 @@ class KnowledgeService:
         self,
         payload: LibrarySubmitExperienceInput,
         *,
-        runtime_context: str | None = None,
         review_session: RuntimeSession | None = None,
         review_key: str | None = None,
+        merge_into_id: str | None = None,
+        merge_reason: str = "",
+        verified_message_id: str | None = None,
         commit: bool = True,
     ) -> KnowledgeDetail:
-        source_session_id: str | None = None
-        runtime_session: RuntimeSession | None = None
-        origin = "manual"
-        if runtime_context:
-            context = await _resolve_runtime_context(self.session, runtime_context)
-            # Runtime identity is never taken from Agent-supplied arguments.
-            payload = payload.model_copy(
-                update={
-                    "source_employee_id": context.employee_id,
-                    "source_task_id": context.task_id,
-                }
-            )
-            source_session_id = context.session_id
-            runtime_session = await self.session.get(RuntimeSession, source_session_id)
-            origin = "runtime"
-        if review_session is not None:
-            runtime_session = review_session
-            source_session_id = review_session.id
-            origin = "assistant"
+        """Internal candidate writer. Employee MCP deliberately has no submission tool.
+
+        Native citations are checked by submit_review before entering this short
+        transaction. Exact identity is global; semantic identity is selected by
+        the review model after reading similar candidates and published items.
+        """
+        source_session_id = review_session.id if review_session else None
+        if review_session:
             payload = payload.model_copy(update={
                 "source_employee_id": review_session.employee_id,
                 "source_task_id": review_session.task_id,
             })
         employee, task = await self._validate_source_context(
-            payload.source_employee_id,
-            payload.source_task_id,
+            payload.source_employee_id, payload.source_task_id,
         )
-        experience_type = (
-            payload.experience_type if payload.experience_type in EXPERIENCE_TYPES else "other"
-        )
-        fingerprint = experience_fingerprint(
-            experience_type=experience_type,
-            title=payload.title,
-            content_md=payload.content_md,
-        )
-        created_by = f"employee:{payload.source_employee_id}" if payload.source_employee_id else "mcp"
-        dedupe_key = f"session:{source_session_id}" if source_session_id else f"manual:{created_by}"
-        if review_session is not None:
-            dedupe_key = f"review:{review_key}"
-            created_by = "assistant:nexus-task-experience-review"
-        experience_data = dict(payload.experience_data)
-        experience_data.setdefault("source", origin)
-        snapshot = {
-            "task_id": task.id if task else None,
-            "task_title": task.title if task else None,
-            "employee_id": payload.source_employee_id,
-            "session_id": source_session_id,
-            "submitted_at": utcnow().isoformat(),
-        }
-        if runtime_session:
-            # Bind the submission to the turn it was produced in so a later
-            # round's success can never validate an earlier round's candidate.
-            snapshot["turn_anchor_id"] = task.last_message_id if task else None
-
-        existing = await self.session.scalar(
+        fingerprint = experience_fingerprint(payload.content_md)
+        actor = "assistant:nexus-task-experience-review" if review_session else "manual"
+        exact = await self.session.scalar(
             select(KnowledgeItem).where(
-                KnowledgeItem.dedupe_key == dedupe_key,
-                KnowledgeItem.fingerprint == fingerprint,
-            )
+                KnowledgeItem.type == "experience",
+                KnowledgeItem.status.in_(("candidate", "published")),
+                or_(KnowledgeItem.fingerprint == fingerprint,
+                    KnowledgeItem.content_md == payload.content_md),
+            ).order_by(KnowledgeItem.status.desc(), KnowledgeItem.created_at).limit(1)
+            .with_for_update().execution_options(populate_existing=True)
         )
-        if existing:
-            existing.summary = payload.summary
-            existing.content_md = payload.content_md
-            existing.tags = payload.tags
-            existing.experience_type = experience_type
-            existing.scope = payload.scope or {}
-            existing.experience_data = {**existing.experience_data, **experience_data}
-            existing.updated_by = created_by
-            existing.updated_at = utcnow()
-            if runtime_session:
-                existing.source_ref_snapshot = {
-                    **(existing.source_ref_snapshot or {}),
-                    "turn_anchor_id": task.last_message_id if task else None,
-                }
-                await self._apply_runtime_verification(existing, runtime_session, task)
-            if commit:
-                await self.session.commit()
-            else:
-                await self.session.flush()
-            return await self.get_detail(
-                existing.id, LibraryPrincipal(user_id="mcp-review", role="reviewer")
+        item = exact
+        if merge_into_id and item is None:
+            if not review_session or not merge_reason.strip():
+                raise LibraryConflict("语义合并必须说明适用条件与方法一致的依据")
+            item = await self.session.scalar(select(KnowledgeItem).where(
+                KnowledgeItem.id == merge_into_id,
+            ).with_for_update().execution_options(populate_existing=True))
+            if not item or item.type != "experience" or item.status not in {"candidate", "published"}:
+                raise LibraryConflict("合并目标必须是候选或已发布经验")
+        created = item is None
+        if created:
+            item = KnowledgeItem(
+                id=_new_id("KNOW"), title=payload.title, type="experience",
+                summary=payload.summary, content_md=payload.content_md,
+                status="candidate", verification_status="unverified", tags=payload.tags,
+                source_type="agent_experience" if review_session else "manual",
+                source_ref=payload.source_task_id, source_employee_id=payload.source_employee_id,
+                source_task_id=payload.source_task_id, source_session_id=source_session_id,
+                origin="assistant" if review_session else "manual",
+                dedupe_key="global-experience", fingerprint=fingerprint,
+                experience_type=payload.experience_type or "other", scope=payload.scope,
+                source_ref_snapshot={
+                    "task_id": task.id if task else None, "task_title": task.title if task else None,
+                    "employee_id": payload.source_employee_id, "session_id": source_session_id,
+                    "turn_anchor_id": task.last_message_id if task else None, "review_id": review_key,
+                },
+                experience_data=payload.experience_data, created_by=actor, updated_by=actor,
             )
-
-        item = KnowledgeItem(
-            id=_new_id("KNOW"),
-            space_id=None,
-            title=payload.title,
-            type="experience",
-            summary=payload.summary,
-            content_md=payload.content_md,
-            status="candidate",
-            verification_status="unverified",
-            tags=payload.tags,
-            source_type="agent_experience",
-            source_ref=payload.source_task_id,
-            source_employee_id=payload.source_employee_id,
-            source_task_id=payload.source_task_id,
-            source_session_id=source_session_id,
-            origin=origin,
-            dedupe_key=dedupe_key,
-            fingerprint=fingerprint,
-            experience_type=experience_type,
-            scope=payload.scope or {},
-            source_ref_snapshot=snapshot,
-            experience_data=experience_data,
-            created_by=created_by,
-            updated_by=created_by,
-        )
-        if runtime_session:
-            await self._apply_runtime_verification(item, runtime_session, task)
-        self.session.add(item)
-        await self.session.flush()
+            try:
+                # A unique global fingerprint closes concurrent exact inserts.
+                async with self.session.begin_nested():
+                    self.session.add(item)
+                    await self.session.flush()
+            except IntegrityError:
+                item = await self.session.scalar(select(KnowledgeItem).where(
+                    KnowledgeItem.dedupe_key == "global-experience",
+                    KnowledgeItem.fingerprint == fingerprint,
+                ).with_for_update())
+                if item is None or item.status not in {"candidate", "published"}:
+                    raise LibraryConflict("重复经验已被归档或拒绝，请人工审核") from None
+                created = False
+        elif item.status == "candidate" and merge_into_id and not exact:
+            # The model submits a consolidated rule, retaining all prior evidence.
+            item.title, item.summary, item.content_md = payload.title, payload.summary, payload.content_md
+            item.tags = list(dict.fromkeys([*(item.tags or []), *payload.tags]))
+            item.fingerprint = fingerprint
+            invalidate_experience_verification(item)
+            item.updated_by = actor
+        # Published content and its approval are immutable to automatic reviews.
+        existing_refs = set((await self.session.execute(select(
+            ExperienceEvidence.source_session_id, ExperienceEvidence.message_id,
+            ExperienceEvidence.part_id, ExperienceEvidence.evidence_type,
+        ).where(ExperienceEvidence.knowledge_id == item.id))).all())
         for evidence in payload.evidence:
-            self.session.add(
-                ExperienceEvidence(
-                    knowledge_id=item.id,
-                    task_id=evidence.task_id or payload.source_task_id,
-                    source_session_id=source_session_id,
-                    message_id=evidence.message_id,
-                    part_id=evidence.part_id,
-                    file_path=evidence.file_path,
-                    diff_hash=evidence.diff_hash,
-                    evidence_type=evidence.evidence_type,
-                    content=evidence.content,
-                    uri=evidence.uri,
-                    result=evidence.result,
-                    captured_at=utcnow(),
-                )
-            )
-        principal = LibraryPrincipal(user_id=item.created_by, role="viewer")
+            ref = (source_session_id, evidence.message_id, evidence.part_id, evidence.evidence_type)
+            if ref in existing_refs:
+                continue
+            existing_refs.add(ref)
+            self.session.add(ExperienceEvidence(
+                knowledge_id=item.id, task_id=payload.source_task_id,
+                source_session_id=source_session_id, message_id=evidence.message_id,
+                part_id=evidence.part_id, file_path=evidence.file_path, diff_hash=evidence.diff_hash,
+                evidence_type=evidence.evidence_type, content=evidence.content,
+                uri=evidence.uri, result=evidence.result, captured_at=utcnow(),
+            ))
+        if verified_message_id and item.status == "candidate":
+            item.verification_status = "verified"
+            item.verification_message_id = verified_message_id
+            item.verification_session_status = review_session.status
+            item.session_last_message_id_at_verification = review_session.last_message_id
+            item.verified_at = utcnow()
+        if created and review_session:
+            item.session_status_at_submission = review_session.status
         await self._audit(
-            item,
-            "candidate_submitted",
-            principal,
-            {
-                "employee_id": employee.id if employee else None,
-                "task_id": task.id if task else None,
-                "session_id": source_session_id,
-                "evidence_count": len(payload.evidence),
-            },
+            item, "candidate_submitted" if created else "experience_reused",
+            LibraryPrincipal(user_id=actor, role="viewer"),
+            {"task_id": task.id if task else None, "session_id": source_session_id,
+             "review_id": review_key, "merge_reason": merge_reason,
+             "evidence_count": len(payload.evidence)},
         )
-        self.session.add(
-            KnowledgeUsage(
-                resource_id=f"astra:{item.id}",
-                knowledge_id=item.id,
-                employee_id=payload.source_employee_id,
-                task_id=payload.source_task_id,
-                session_id=source_session_id,
-                tool_name="nexus_task_review_submit" if review_session else "library_submit_experience",
-                action="experience_submitted",
-                result={"status": "candidate"},
-            )
-        )
+        self.session.add(KnowledgeUsage(
+            resource_id=f"astra:{item.id}", knowledge_id=item.id,
+            employee_id=employee.id if employee else None, task_id=task.id if task else None,
+            session_id=source_session_id, tool_name="nexus_task_review_submit",
+            action="experience_submitted" if created else "experience_reused",
+            result={"status": item.status},
+        ))
         if commit:
             await self.session.commit()
         else:
             await self.session.flush()
-        return await self.get_detail(item.id, LibraryPrincipal(user_id="mcp-review", role="reviewer"))
-
-    async def _apply_runtime_verification(
-        self, item: KnowledgeItem, runtime_session: RuntimeSession, task: Task | None
-    ) -> None:
-        item.session_status_at_submission = runtime_session.status
-        summary = (
-            await self.session.scalar(
-                select(TaskSummary).where(TaskSummary.task_id == item.source_task_id)
-            )
-            if item.source_task_id
-            else None
-        )
-        if experience_item_is_verified(item, task, summary, runtime_session):
-            item.verification_status = "verified"
-            item.verification_session_status = "SUCCEEDED"
-            item.verification_message_id = runtime_session.last_message_id
-            item.session_last_message_id_at_verification = runtime_session.last_message_id
-            item.verified_at = utcnow()
-
-    async def reconcile_session_verification(self, session_id: str | None) -> int:
-        """Verify candidates only when their own round is the accepted result.
-
-        A successful Session is necessary but not sufficient: the source Task must
-        be business-accepted with a current summary, and the candidate's round
-        must be the accepted round. This never batch-verifies older candidates.
-        """
-
-        if not session_id:
-            return 0
-        runtime_session = await self.session.get(RuntimeSession, session_id)
-        if not runtime_session or runtime_session.status != "SUCCEEDED":
-            return 0
-        items = (
-            await self.session.scalars(
-                select(KnowledgeItem).where(
-                    KnowledgeItem.source_session_id == session_id,
-                    KnowledgeItem.type == "experience",
-                    KnowledgeItem.verification_session_status.is_(None),
-                )
-            )
-        ).all()
-        if not items:
-            return 0
-        now = utcnow()
-        verified = 0
-        task_cache: dict[str, tuple[Task | None, TaskSummary | None]] = {}
-        for item in items:
-            task_id = item.source_task_id
-            if not task_id:
-                continue
-            if task_id not in task_cache:
-                task_cache[task_id] = (
-                    await self.session.get(Task, task_id),
-                    await self.session.scalar(
-                        select(TaskSummary).where(TaskSummary.task_id == task_id)
-                    ),
-                )
-            task, summary = task_cache[task_id]
-            if not experience_item_is_verified(item, task, summary, runtime_session):
-                continue
-            item.verification_status = "verified"
-            item.verification_session_status = "SUCCEEDED"
-            item.verification_message_id = runtime_session.last_message_id
-            item.session_last_message_id_at_verification = runtime_session.last_message_id
-            item.verified_at = now
-            verified += 1
-        if verified:
-            await self.session.commit()
-        return verified
+        return await self.get_detail(item.id, LibraryPrincipal(user_id="review", role="reviewer"))
 
     async def mcp_feedback(self, payload: LibraryFeedbackInput) -> LibraryResourceFeedbackResult:
         resource_id = wiki_resource_path(payload.resource_id)

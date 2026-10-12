@@ -173,9 +173,7 @@ const serviceStatus = ref<LibraryServiceStatus | null>(null)
 const serviceError = ref('')
 const resyncing = ref(false)
 const refreshing = ref(false)
-let serviceTimer = 0
 let serviceLoading = false
-let disposed = false
 async function loadServiceStatus() {
   if (serviceLoading) return
   serviceLoading = true
@@ -183,10 +181,10 @@ async function loadServiceStatus() {
   catch (error) { serviceError.value = message(error, '知识服务状态加载失败'); serviceStatus.value = null }
   finally {
     serviceLoading = false
-    if (!disposed) serviceTimer = window.setTimeout(loadServiceStatus, 10000)
   }
 }
 async function refreshAll() {
+  if (refreshing.value) return
   refreshing.value = true
   try { await Promise.all([loadAll(), loadServiceStatus()]) } finally { refreshing.value = false }
 }
@@ -195,7 +193,6 @@ async function resyncKnowledge() {
   try {
     const result = await api.libraryResync()
     notify(`已提交 ${result.pending_count} 条同步任务`)
-    window.clearTimeout(serviceTimer)
     await loadServiceStatus()
   } catch (error) { serviceError.value = message(error, '重新同步失败') }
   finally { resyncing.value = false }
@@ -276,7 +273,7 @@ onMounted(async () => {
   const knowledgeId = typeof route.query.knowledge === 'string' ? route.query.knowledge : ''
   if (knowledgeId) await openDetail(knowledgeId, false)
 })
-onBeforeUnmount(() => { disposed = true; window.clearTimeout(serviceTimer); window.clearTimeout(searchTimer) })
+onBeforeUnmount(() => { window.clearTimeout(searchTimer) })
 watch(queryInput, (value) => {
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => { filters.keyword = value.trim(); filters.page = 1; statsActive.value = filters.keyword ? 'search' : 'all'; loadList() }, 320)

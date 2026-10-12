@@ -102,6 +102,7 @@ export interface Employee extends RuntimeProjection {
   name: string
   role: string
   description: string
+  character_id: number
   default_work_area: 'development' | 'collaboration' | 'pantry' | 'integration' | 'meeting' | 'special'
   status: string
   task_types: TaskType[]
@@ -178,6 +179,18 @@ export interface AstraEvent {
   message: string
   detail: Record<string, unknown>
   created_at: string
+}
+
+export interface TaskReview {
+  status: 'not_ready' | 'pending' | 'running' | 'completed' | 'failed'
+  error: string | null
+  attempts: number
+  retry_at: string | null
+  enabled: boolean
+  can_retry: boolean
+  summary: string | null
+  summary_current: boolean
+  experiences: Array<{ id: string; title: string; status: KnowledgeStatus; verification_status: VerificationStatus }>
 }
 
 
@@ -365,6 +378,7 @@ export interface DashboardEmployee extends RuntimeProjection {
   id: string
   name: string
   role: string
+  character_id: number
   status: string
   enabled: boolean
   state: 'working' | 'idle' | 'waiting' | 'error'

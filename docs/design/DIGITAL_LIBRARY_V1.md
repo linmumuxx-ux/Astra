@@ -41,9 +41,9 @@
 
 ## 3. 数据与状态流
 
-数字员工只能调用 `library_submit_experience` 创建 `type=experience`、`status=candidate` 的记录。服务端验证 Employee、Task、Run 是否存在且关联一致，同时写入 ExperienceEvidence、KnowledgeUsage 和 KnowledgeAudit。
+数字员工只执行任务、查询和反馈正式知识。人工确认任务完成后，后台复盘统一调用 `nexus_task_review_submit` 保存 TaskSummary 与候选经验。经验必须引用真实 Session 消息和片段；先比较相似候选及正式知识，优先合并候选或追加正式知识的证据。任务成功不能代替经验验证。
 
-审核者在同一个知识详情弹框中编辑标题、标签、目标空间和 Markdown。发布后状态变为 `published`，记录审核人和时间；当前 V1 使用数据库关键词检索，因此提交事务完成后即可被 `library_search` 命中，不依赖异步索引任务。
+审核者在同一个知识详情弹框中编辑标题、标签、目标空间和 Markdown。发布后状态变为 `published`，记录审核人和时间，并通过现有同步流程写入 llm_wiki；候选不进入员工检索。发布和验证是独立维度，后台不自动发布或改写正式正文。
 
 `library_search` 记录搜索曝光，但不增加引用次数。只有 `library_get` 把完整知识放入员工上下文时，才记录 `action=reference` 并增加 `reference_count`。
 
@@ -74,7 +74,7 @@ Web 网关头：
 | reviewer | 查看候选经验、发布、驳回、要求补充 |
 | admin | 全部能力 |
 
-MCP Streamable HTTP 支持部署环境提供的 Bearer Token；非 loopback 监听但未配置 `ASTRA_MCP_API_KEY` 时拒绝启动。所有 MCP 读写还要求真实 `employee_id`，Task/Run 上下文在服务端校验。
+MCP Streamable HTTP 支持部署环境提供的 Bearer Token；非 loopback 监听但未配置 `ASTRA_MCP_API_KEY` 时拒绝启动。员工查询和读取使用平台注入的 `runtime_context`，服务端从 RuntimeSession 解析来源身份；经验提交只开放给后台复盘助手。
 
 Markdown 在浏览器中先由 `marked` 解析，再由 DOMPurify 过滤；脚本、事件属性和不安全链接不会进入详情 DOM。弹框使用 `max-height: 80vh`、固定 Header/Footer、正文独立滚动，打开时锁定背景页面，关闭后恢复原滚动位置。
 
@@ -83,7 +83,6 @@ Markdown 在浏览器中先由 `marked` 解析，再由 DOMPurify 过滤；脚�
 - `library_search`
 - `library_get`
 - `library_related`
-- `library_submit_experience`
 - `library_feedback`
 
 本地 stdio：

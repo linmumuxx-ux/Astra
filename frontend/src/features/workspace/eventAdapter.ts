@@ -1,7 +1,6 @@
 import type { AstraEvent, Employee, Task } from '@/api/types'
 import { employeeCurrentTask } from '@/features/employees/presentation'
 import { employeeDisplayName, platformCopy } from '@/utils/format'
-import { assignEmployeeCharacterIndices } from './characterAssets'
 import { EMPLOYEE_STATE_PRESENTATION, resolveEmployeeState, type EmployeeState } from './employeeStateMachine'
 import { workspaceAreaMap, type WorkspaceAreaId } from './sceneLayout'
 import { taskWorkspaceArea } from './taskAreaMapping'
@@ -44,7 +43,6 @@ export function adaptWorkspaceEmployees(
   events: AstraEvent[],
   now = Date.now(),
 ): WorkspaceEmployee[] {
-  const characterIndices = assignEmployeeCharacterIndices(employees.map((employee) => employee.id))
   const latestEvents = new Map<string, AstraEvent>()
   for (const event of events) {
     if (!event.employee_id) continue
@@ -74,7 +72,7 @@ export function adaptWorkspaceEmployees(
     return {
       employee,
       id: employee.id,
-      characterIndex: characterIndices.get(employee.id) ?? 0,
+      characterIndex: employee.character_id,
       name: employeeDisplayName(employee.name),
       role: employee.role,
       state,
@@ -99,4 +97,3 @@ export function workspaceEmployeeMatches(employee: WorkspaceEmployee, query: str
   if (!normalized) return true
   return `${employee.name} ${employee.employee.name} ${employee.id} ${employee.role} ${employee.currentTaskName}`.toLowerCase().includes(normalized)
 }
-

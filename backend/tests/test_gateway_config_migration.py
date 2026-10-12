@@ -51,7 +51,12 @@ def upgrade(database_path, revision):
 
 def retained_rows(connection):
     return {
-        model.__tablename__: [dict(row) for row in connection.execute(select(model.__table__)).mappings()]
+        model.__tablename__: [
+            dict(row)
+            for row in connection.execute(
+                select(Table(model.__tablename__, MetaData(), autoload_with=connection))
+            ).mappings()
+        ]
         for model in RETAINED_MODELS
     }
 
@@ -139,5 +144,54 @@ def test_0032_drops_history_without_applying_old_snapshot_or_changing_saved_data
             key = connection.execute(select(GatewayKey.enabled, GatewayKey.revoked_at)).one()
             assert key.enabled is False
             assert key.revoked_at is not None
+    finally:
+        engine.dispose()
+
+
+def test_0034_adds_deletion_marker_without_changing_existing_keys(tmp_path):
+    database_path = tmp_path / "key-deletion-upgrade.db"
+    upgrade(database_path, "0033_employee_character")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            keys = Table("gateway_keys", MetaData(), autoload_with=connection)
+            connection.execute(keys.insert().values(
+                id="gk_keep", name="已有 Key", key_prefix="agw_keep", key_digest="keep-digest",
+                allowed_models=[], max_concurrency=0, enabled=True,
+                created_at=utcnow(), updated_at=utcnow(),
+            ))
+            before = dict(connection.execute(select(keys)).mappings().one())
+    finally:
+        engine.dispose()
+
+    upgrade(database_path, "head")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            keys = Table("gateway_keys", MetaData(), autoload_with=connection)
+            upgraded = dict(connection.execute(select(keys)).mappings().one())
+            assert upgraded.pop("deleted_at") is None
+            assert upgraded == before
+            connection.execute(keys.update().values(enabled=False, revoked_at=utcnow(), deleted_at=utcnow()))
+            deleted = dict(connection.execute(select(keys)).mappings().one())
+    finally:
+        engine.dispose()
+
+    environment = {
+        **os.environ, "ASTRA_DATABASE_URL": f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        "ASTRA_ENVIRONMENT": "development", "ASTRA_SEED_DEMO": "false",
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "0033_employee_character"],
+        cwd=BACKEND, env=environment, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            keys = Table("gateway_keys", MetaData(), autoload_with=connection)
+            assert "deleted_at" not in keys.c
+            deleted.pop("deleted_at")
+            assert dict(connection.execute(select(keys)).mappings().one()) == deleted
     finally:
         engine.dispose()

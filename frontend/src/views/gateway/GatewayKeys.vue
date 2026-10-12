@@ -77,7 +77,7 @@
       <ElTableColumn label="最近使用" width="104">
         <template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template>
       </ElTableColumn>
-      <ElTableColumn label="操作" width="88" fixed="right">
+      <ElTableColumn label="操作" width="124" fixed="right">
         <template #default="{ row }">
           <ElSpace :size="4">
             <ElTooltip content="编辑 Key" placement="top">
@@ -85,6 +85,9 @@
             </ElTooltip>
             <ElTooltip content="吊销 Key（立即失效，不可恢复）" placement="top">
               <ElButton circle type="danger" :icon="Ban" :aria-label="`吊销 ${row.name}`" :disabled="busy || Boolean(row.revoked_at)" @click="revoke(row as GatewayKey)" />
+            </ElTooltip>
+            <ElTooltip content="删除 Key" placement="top">
+              <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" :loading="deletingId === row.id" @click="removeKey(row as GatewayKey)" />
             </ElTooltip>
           </ElSpace>
         </template>
@@ -194,7 +197,7 @@
 </template>
 
 <script setup lang="ts">
-import { Ban, Copy, Pencil, Plus, RefreshCw, Search } from 'lucide-vue-next'
+import { Ban, Copy, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
@@ -241,7 +244,8 @@ const loading = ref(false)
 const error = ref('')
 const saving = ref(false)
 const revokingId = ref('')
-const busy = computed(() => loading.value || saving.value || Boolean(revokingId.value))
+const deletingId = ref('')
+const busy = computed(() => loading.value || saving.value || Boolean(revokingId.value) || Boolean(deletingId.value))
 
 const drawerOpen = ref(false)
 const formRef = ref<FormInstance>()
@@ -434,6 +438,26 @@ async function revoke(key: GatewayKey) {
     notify(errorMessage(reason, '吊销失败'), 'error')
   } finally {
     revokingId.value = ''
+  }
+}
+
+async function removeKey(key: GatewayKey) {
+  const confirmed = await confirmDialog({
+    title: '删除 Gateway Key',
+    message: `确认删除「${key.name}」？删除后该 Key 将立即失效并从列表移除，无法恢复；历史调用和审计记录仍保留。`,
+    confirmLabel: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  deletingId.value = key.id
+  try {
+    await gatewayApi.deleteKey(key.id)
+    notify('Key 已删除')
+    await load()
+  } catch (reason) {
+    notify(errorMessage(reason, '删除 Key 失败'), 'error')
+  } finally {
+    deletingId.value = ''
   }
 }
 

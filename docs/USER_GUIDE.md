@@ -11,6 +11,10 @@ Astra 用于长期数字员工的任务分配、工作观察、人工介入和�
 - 管理台：`http://localhost:5173`
 - API 文档：`http://localhost:8100/docs`
 
+管理台已关闭自动刷新。页面进入时加载数据，此后通过各页面的“刷新”按钮查看最新任务、员工、待处理事项、知识服务与网关状态；执行管理操作成功后仍会更新结果。切回浏览器标签页不会自动刷新，通知数量也以最近一次加载为准。首页显示快照更新时间并保持工位工作动画静止。
+
+平台助手回复、任务工作台的消息流与权限确认继续正常使用。更新部署后，请重新加载已打开的页面，使关闭自动刷新的改动生效。
+
 ## 2. 首次启动
 
 Windows 公司电脑：
@@ -81,6 +85,7 @@ V0.4 默认提供：
 
 - 员工 ID：创建后不可修改
 - 员工名称
+- 员工形象：在新建或编辑数字员工时，从首页数字空间的九种形象中选择并保存；首页、员工列表和详情共用该选择，多位员工可以使用同一形象。
 - 岗位与说明
 - 启用状态
 
@@ -307,12 +312,13 @@ scripts/astra_service.py
 页面的“知识服务状态”显示最近源文件同步时间、待同步和失败数量；维护者可点击“重新同步”。
 同步完成表示源文件已被扫描接受，加工完成时间由 llm_wiki 决定。
 
-Agent 使用以下 Astra Library MCP 工具，不需要提供 employee/task/run：
+数字员工只执行任务，后台在人工确认完成后统一生成任务总结和候选经验。任务详情的“总结与经验”展示复盘状态、目标、处理过程、实际结果、验证和遗留问题；失败或超时可重试。没有可复用方法时只保存总结，不要求凑经验数量。相似经验优先合并或补充证据，候选仍需人工审核发布。
 
-- `library_search(query, limit=10)`：返回 `resource_id/title/path/excerpt/score`。
-- `library_get(resource_id)`：读取完整 Wiki Markdown，并记一次 `read`。
+Agent 使用以下 Astra Library MCP 工具，查询和读取时回传平台注入的 `runtime_context`，不自行提供来源身份：
+
+- `library_search(runtime_context, query, limit=10)`：返回 `resource_id/title/path/excerpt/score`。
+- `library_get(runtime_context, resource_id)`：读取完整 Wiki Markdown，并记一次 `read`。
 - `library_feedback(resource_id, feedback_type, comment=None)`：支持 helpful、incorrect、outdated、missing、mismatch。
-- `library_submit_experience(title, summary, content_md, ...)`：始终创建候选经验；来源身份可选。
 - `library_related(resource_id)`：当前明确返回相关知识能力暂不可用。
 
 搜索返回只记为 `search_hit`，不计入主要读取指标。“知识使用情况”按资源展示读取次数、使用知识数和反馈数。

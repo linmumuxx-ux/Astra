@@ -18,12 +18,11 @@ from app.database import SessionLocal
 from app.executors.errors import OpenCodeSessionNotFound
 from app.library_schemas import ExperienceEvidenceWrite, LibrarySubmitExperienceInput
 from app.library_service import KnowledgeService
-from app.models import RuntimeSession, Task, TaskReview, TaskSummary
+from app.models import ExperienceEvidence, KnowledgeItem, RuntimeSession, Task, TaskReview, TaskSummary
 from app.runtime.session_connection import connect, resolve_runtime_session_environment, session_tree
+from app.runtime.summary import summary_is_complete
 
 logger = logging.getLogger(__name__)
-TERMINAL_TASKS = ("SUCCEEDED", "FAILED", "CANCELED")
-TERMINAL_SESSIONS = ("SUCCEEDED", "FAILED", "INTERRUPTED")
 REVIEW_TIMEOUT = timedelta(minutes=30)
 
 
@@ -35,11 +34,156 @@ class ReviewExperience(BaseModel):
     content_md: str = Field(min_length=1)
     evidence: list[ExperienceEvidenceWrite] = Field(default_factory=list, max_length=100)
     tags: list[str] = Field(default_factory=list, max_length=50)
+    merge_into_id: str | None = Field(default=None, max_length=64)
+    merge_reason: str = Field(default="", max_length=2000)
+    independent_value: str = Field(default="", max_length=2000)
+
+
+def review_ready(task: Task, binding: RuntimeSession | None) -> bool:
+    return bool(
+        task.status == "SUCCEEDED" and not task.pending_message_id
+        and binding and binding.id == task.current_session_id
+        and binding.task_id == task.id and not binding.superseded_by
+    )
 
 
 def review_id(task: Task, binding: RuntimeSession) -> str:
     facts = [task.id, binding.id, task.last_message_id, binding.last_message_id, task.status]
     return hashlib.sha256(json.dumps(facts).encode()).hexdigest()
+
+
+async def review_detail(session, task: Task) -> dict:
+    binding = await session.get(RuntimeSession, task.current_session_id) if task.current_session_id else None
+    job = await session.get(TaskReview, review_id(task, binding)) if binding else None
+    summary = await session.scalar(select(TaskSummary).where(TaskSummary.task_id == task.id))
+    ready = review_ready(task, binding)
+    expired = bool(job and job.status == "running" and job.retry_at <= datetime.now(UTC))
+    rows = (await session.scalars(
+        select(KnowledgeItem).where(
+            or_(
+                KnowledgeItem.source_task_id == task.id,
+                KnowledgeItem.id.in_(select(ExperienceEvidence.knowledge_id).where(
+                    ExperienceEvidence.task_id == task.id
+                )),
+            ),
+            KnowledgeItem.type == "experience",
+        ).order_by(KnowledgeItem.created_at)
+    )).all()
+    return {
+        "status": "failed" if expired else job.status if job else "pending" if ready else "not_ready",
+        "error": "复盘超时，尚未收到结构化提交" if expired else job.error if job else None,
+        "attempts": job.attempts if job else 0,
+        "retry_at": job.retry_at.isoformat() if job else None,
+        "enabled": get_settings().assistant_enabled,
+        "can_retry": ready and (not job or job.status == "failed" or expired),
+        "summary": summary.content_md if summary else None,
+        "summary_current": summary_is_complete(summary, task),
+        "experiences": [
+            {"id": item.id, "title": item.title, "status": item.status,
+             "verification_status": item.verification_status}
+            for item in rows
+        ],
+    }
+
+
+async def retry_review(session, task_id: str) -> dict:
+    task = await session.scalar(select(Task).where(Task.id == task_id).with_for_update()
+                                .execution_options(populate_existing=True))
+    if not task:
+        raise ValueError("任务不存在")
+    binding = await session.get(RuntimeSession, task.current_session_id) if task.current_session_id else None
+    if not review_ready(task, binding):
+        raise ValueError("仅人工确认完成的当前任务可以复盘")
+    key = review_id(task, binding)
+    job = await session.get(TaskReview, key)
+    if job and job.status in {"completed", "pending"}:
+        await session.commit()
+        return await review_detail(session, task)
+    if job and job.status == "running" and job.retry_at > datetime.now(UTC):
+        raise ValueError("复盘仍在执行，请稍后重试")
+    if job is None:
+        job = TaskReview(id=key, task_id=task.id, source_session_id=binding.id,
+                         source_status=task.status, turn_anchor_id=task.last_message_id,
+                         final_message_id=binding.last_message_id)
+        session.add(job)
+    job.status, job.error, job.retry_at = "pending", None, datetime.now(UTC)
+    await session.commit()
+    return await review_detail(session, task)
+
+
+async def validate_evidence(
+    binding: RuntimeSession, environment, experiences: list[ReviewExperience],
+) -> list[str | None]:
+    """Resolve native citations outside the result transaction; never trust invented ids/results."""
+    if not experiences:
+        return []
+    directory = Path(binding.workspace)
+    messages = {}
+    async with connect(environment) as client:
+        for native_id in sorted(await session_tree(client, directory, binding.id)):
+            before = None
+            seen = set()
+            while True:
+                page = await client.messages_page(directory, native_id, limit=50, before=before)
+                for message in page["messages"]:
+                    messages[message["info"]["id"]] = message
+                before = page["next_before"]
+                if not before:
+                    break
+                if before in seen:
+                    raise ValueError("会话分页游标重复，无法核实完整证据")
+                seen.add(before)
+    verified_messages = []
+    for experience in experiences:
+        if not experience.evidence:
+            raise ValueError("经验必须引用真实执行证据")
+        verified = None
+        for evidence in experience.evidence:
+            if evidence.task_id not in (None, binding.task_id):
+                raise ValueError("经验证据不属于当前任务")
+            message = messages.get(evidence.message_id)
+            if not message:
+                raise ValueError("经验证据引用的消息不存在")
+            parts = message.get("parts", [])
+            part = next((p for p in parts if p.get("id") == evidence.part_id), None)
+            if evidence.part_id and part is None:
+                raise ValueError("经验证据引用的片段不存在")
+            if part and (part.get("synthetic") or part.get("ignored")):
+                raise ValueError("内部合成消息不能作为经验依据")
+            source = part if part else message
+            excerpt = " ".join((evidence.content or "").split())
+            def strings(value):
+                if isinstance(value, str):
+                    yield value
+                elif isinstance(value, dict):
+                    for child in value.values():
+                        yield from strings(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        yield from strings(child)
+
+            native = " ".join(" ".join(strings(source)).split())
+            if excerpt and excerpt not in native:
+                raise ValueError(f"经验证据摘录与原生消息不符：{evidence.message_id}/{evidence.part_id}")
+            if (evidence.result == "passed"
+                    and evidence.evidence_type in {"verification", "human_verification"}):
+                if not excerpt or not part:
+                    raise ValueError("经验验证必须引用具体片段及真实验证摘录")
+                if evidence.evidence_type == "verification":
+                    state = part.get("state") or {}
+                    if (part.get("type") != "tool" or state.get("status") != "completed"
+                            or not state.get("output")):
+                        raise ValueError("经验验证必须来自已完成的工具结果")
+                    if (state.get("metadata") or {}).get("exit", 0) != 0:
+                        raise ValueError("失败的工具执行不能标记为验证通过")
+                    output = " ".join(str(state["output"]).split())
+                    if excerpt not in output:
+                        raise ValueError("验证摘录必须来自工具输出")
+                elif message["info"].get("role") != "user" or part.get("type") != "text":
+                    raise ValueError("人工验证必须来自使用者消息")
+                verified = evidence.message_id
+        verified_messages.append(verified)
+    return verified_messages
 
 
 async def session_messages(
@@ -97,21 +241,31 @@ async def submit_review(
     task_summary = task_summary.strip()
     if not task_summary:
         raise ValueError("任务总结不能为空")
+    if len(experiences) > 2 and any(not e.independent_value for e in experiences):
+        raise ValueError("超过两条经验时，每条须说明独立复用价值")
+    task = await session.get(Task, task_id, populate_existing=True)
+    binding = await session.get(RuntimeSession, source_session_id, populate_existing=True)
+    if not task or not binding or not review_ready(task, binding):
+        raise ValueError("Task 与当前 Session 不匹配或尚未人工确认完成，旧 Session 不能覆盖新结果")
+    if expected_review_id != review_id(task, binding):
+        raise ValueError("执行轮次已变化，请重新读取完整会话")
+    job = await session.get(TaskReview, expected_review_id, populate_existing=True)
+    if job and job.status == "completed":
+        return job.result
+    environment = await resolve_runtime_session_environment(session, binding) if experiences else None
+    await session.commit()
+    verified_messages = await validate_evidence(binding, environment, experiences)
     task = await session.scalar(
         select(Task).where(Task.id == task_id).with_for_update().execution_options(populate_existing=True)
     )
     binding = await session.get(RuntimeSession, source_session_id, populate_existing=True)
     if not task or not binding or binding.task_id != task_id or task.current_session_id != binding.id:
         raise ValueError("Task 与当前 Session 不匹配，旧 Session 不能覆盖新结果")
-    if (
-        task.status not in TERMINAL_TASKS
-        or binding.status not in TERMINAL_SESSIONS
-        or task.pending_message_id
-    ):
-        raise ValueError("任务及 Session 尚未结束")
+    if not review_ready(task, binding):
+        raise ValueError("任务尚未人工确认完成或 Session 已被替代")
     if expected_review_id != review_id(task, binding):
         raise ValueError("执行轮次已变化，请重新读取完整会话")
-    job = await session.get(TaskReview, expected_review_id)
+    job = await session.get(TaskReview, expected_review_id, populate_existing=True)
     if job and job.status == "completed":
         return job.result
     if job is None:
@@ -129,15 +283,12 @@ async def submit_review(
         summary = TaskSummary(id=f"TS-{uuid4().hex[:12]}", task_id=task.id, generation=0)
         session.add(summary)
     summary.generation += 1
-    summary.summary = task_summary
     summary.content_md = task_summary
     summary.source_status = task.status
     summary.primary_session_id = binding.id
     summary.referenced_session_ids = [binding.id]
     summary.generated_by = "nexus-task-experience-review"
     summary.stale = False
-    summary.key_changes = {}
-    summary.acceptance_results = []
     summary.source_ref_snapshot = {
         "task_id": task.id,
         "task_title": task.title,
@@ -149,12 +300,16 @@ async def submit_review(
     await session.flush()
     candidates = []
     library = KnowledgeService(session)
-    for experience in experiences:
-        if any(e.task_id not in (None, task.id) for e in experience.evidence):
-            raise ValueError("经验证据不属于当前任务")
-        payload = LibrarySubmitExperienceInput(**experience.model_dump())
+    for experience, verified_message in zip(experiences, verified_messages, strict=True):
+        payload = LibrarySubmitExperienceInput(**experience.model_dump(
+            exclude={"merge_into_id", "merge_reason", "independent_value"}
+        ))
+        if experience.independent_value:
+            payload.experience_data = {"independent_value": experience.independent_value}
         item = await library.mcp_submit_experience(
-            payload, review_session=binding, review_key=job.id, commit=False
+            payload, review_session=binding, review_key=job.id, commit=False,
+            merge_into_id=experience.merge_into_id, merge_reason=experience.merge_reason,
+            verified_message_id=verified_message,
         )
         candidates.append(item.id)
     job.status = "completed"
@@ -195,8 +350,8 @@ async def reconcile_task_reviews(limit: int = 100) -> list[str]:
                     ),
                 )
                 .where(
-                    Task.status.in_(TERMINAL_TASKS),
-                    RuntimeSession.status.in_(TERMINAL_SESSIONS),
+                    Task.status == "SUCCEEDED",
+                    RuntimeSession.superseded_by.is_(None),
                     Task.pending_message_id.is_(None),
                     or_(
                         TaskReview.id.is_(None),
@@ -215,10 +370,10 @@ async def reconcile_task_reviews(limit: int = 100) -> list[str]:
         try:
             async with SessionLocal() as session:
                 task = await session.scalar(select(Task).where(Task.id == task_id).with_for_update())
-                if not task or task.status not in TERMINAL_TASKS or task.pending_message_id:
+                if not task or task.status != "SUCCEEDED" or task.pending_message_id:
                     continue
                 binding = await session.get(RuntimeSession, task.current_session_id)
-                if not binding or binding.status not in TERMINAL_SESSIONS:
+                if not review_ready(task, binding):
                     continue
                 job_id = review_id(task, binding)
                 job = await session.get(TaskReview, job_id)

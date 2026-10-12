@@ -17,10 +17,9 @@ from sqlalchemy.orm import selectinload
 
 from app.assistant.cards import employee_card, knowledge_card, session_card, task_card
 from app.assistant.operations import OperationService
-from app.assistant.review import review_id
+from app.assistant.review import review_detail
 from app.domain import RuntimeSessionStatus, TaskStatus
-from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task, TaskReview, TaskSummary
-from app.runtime.summary import summary_is_complete
+from app.models import DigitalEmployee, KnowledgeItem, RuntimeSession, Task
 
 MAX_LIMIT = 50
 
@@ -83,17 +82,9 @@ async def task_get(session: AsyncSession, task_id: str) -> dict[str, Any]:
         "human_required_reason": task.human_required_reason,
         "card": task_card(task),
     }
-    summary = await session.scalar(select(TaskSummary).where(TaskSummary.task_id == task.id))
-    binding = await session.get(RuntimeSession, task.current_session_id) if task.current_session_id else None
-    job = await session.get(TaskReview, review_id(task, binding)) if binding else None
     detail["current_session_id"] = task.current_session_id
-    detail["task_summary"] = summary.content_md if summary_is_complete(summary, task) else None
-    detail["review"] = {
-        "status": job.status if job else "pending",
-        "error": job.error if job else None,
-        "attempts": job.attempts if job else 0,
-        "retry_at": job.retry_at.isoformat() if job else None,
-    }
+    detail["review"] = await review_detail(session, task)
+    detail["task_summary"] = detail["review"]["summary"] if detail["review"]["summary_current"] else None
     return detail
 
 
@@ -389,6 +380,26 @@ async def knowledge_search(session: AsyncSession, *, keyword: str, limit: int = 
         for item in rows
     ]
     return {"items": items, "total": len(items)}
+
+
+async def experience_search(
+    session: AsyncSession, *, keyword: str = "", limit: int = 20, offset: int = 0,
+) -> dict:
+    limit, offset = max(1, min(limit, MAX_LIMIT)), max(0, offset)
+    query = select(KnowledgeItem).where(
+        KnowledgeItem.type == "experience", KnowledgeItem.status.in_(("candidate", "published")),
+    )
+    if keyword.strip():
+        like = f"%{keyword.strip()}%"
+        query = query.where(or_(KnowledgeItem.title.ilike(like), KnowledgeItem.summary.ilike(like),
+                                KnowledgeItem.content_md.ilike(like)))
+    total = await session.scalar(select(func.count()).select_from(query.subquery()))
+    items = (await session.scalars(query.order_by(KnowledgeItem.updated_at.desc(), KnowledgeItem.id)
+                                  .offset(offset).limit(limit))).all()
+    return {"items": [{"id": i.id, "title": i.title, "summary": i.summary,
+                       "content_md": i.content_md, "status": i.status, "tags": i.tags}
+                      for i in items], "total": total,
+            "next_offset": offset + len(items) if offset + len(items) < total else None}
 
 
 async def knowledge_get(session: AsyncSession, knowledge_id: str) -> dict[str, Any]:

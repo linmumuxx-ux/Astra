@@ -97,47 +97,46 @@ fi
 git version
 step 'Git 工作树' passed
 step 'OpenCode 安装' running
-if ! test -x "$binary" || test "$("$binary" --version 2>/dev/null || true)" != "$opencode_version"; then
-  variant="linux-$arch"
-  if test "$arch" = x64; then variant="$variant-baseline"; fi
-  if test "$old_glibc" = true || test -e /etc/alpine-release; then variant="$variant-musl"; fi
-  archive="opencode-$variant.tar.gz"
-  download "https://api.github.com/repos/anomalyco/opencode/releases/tags/v$opencode_version" "$cache/opencode-release.json"
-  digest=$(node -e 'const r=require(process.argv[1]); const a=r.assets.find(a=>a.name===process.argv[2]); if(!a?.digest?.startsWith("sha256:"))process.exit(1); process.stdout.write(a.digest.slice(7))' "$cache/opencode-release.json" "$archive")
-  download "https://github.com/anomalyco/opencode/releases/download/v$opencode_version/$archive" "$cache/$archive"
-  (cd "$cache"; printf '%s  %s\n' "$digest" "$archive" | sha256sum -c -)
-  mkdir -p "$cache/opencode-$opencode_version"
-  tar -xzf "$cache/$archive" -C "$cache/opencode-$opencode_version"
-  if test "$old_glibc" = true; then
-    test "$(id -u)" = 0 || { echo '旧 glibc 需要管理员安装 musl 运行库' >&2; exit 1; }
-    musl_root="$HOME/.local/share/astra/musl-runtime"
-    if ! test -x "$musl_root/sbin/apk"; then
-      alpine_archive=alpine-minirootfs-3.22.6-x86_64.tar.gz
-      alpine_url=https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64
-      download "$alpine_url/$alpine_archive" "$cache/$alpine_archive"
-      download "$alpine_url/$alpine_archive.sha256" "$cache/alpine-sha256.txt"
-      (cd "$cache"; sha256sum -c alpine-sha256.txt)
-      mkdir -p "$musl_root"
-      tar -xzf "$cache/$alpine_archive" -C "$musl_root"
-    fi
-    # apk verifies repository/package signatures with the official rootfs keys.
-    SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt "$musl_root/lib/ld-musl-x86_64.so.1" \
-      --library-path "$musl_root/lib:$musl_root/usr/lib" "$musl_root/sbin/apk" \
-      --root "$musl_root" --keys-dir "$musl_root/etc/apk/keys" \
-      --repositories-file "$musl_root/etc/apk/repositories" --no-scripts add libgcc libstdc++
-    if ! test -e /lib/ld-musl-x86_64.so.1; then ln -s "$musl_root/lib/ld-musl-x86_64.so.1" /lib/ld-musl-x86_64.so.1; fi
-    # Only musl's loader reads this file; glibc/Node/Git paths stay untouched.
-    musl_paths=/etc/ld-musl-x86_64.path
-    if ! grep -Fq "$musl_root/usr/lib" "$musl_paths" 2>/dev/null; then
-      test -e "$musl_paths" || printf '%s\n' /lib:/usr/local/lib:/usr/lib >"$musl_paths"
-      printf '\n%s\n' "$musl_root/lib:$musl_root/usr/lib" >>"$musl_paths"
-    fi
+if test "$old_glibc" = true; then
+  test "$(id -u)" = 0 || { echo '旧 glibc 需要管理员安装 musl 运行库' >&2; exit 1; }
+  musl_root="$HOME/.local/share/astra/musl-runtime"
+  if ! test -x "$musl_root/sbin/apk"; then
+    alpine_archive=alpine-minirootfs-3.22.6-x86_64.tar.gz
+    alpine_url=https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64
+    download "$alpine_url/$alpine_archive" "$cache/$alpine_archive"
+    download "$alpine_url/$alpine_archive.sha256" "$cache/alpine-sha256.txt"
+    (cd "$cache"; sha256sum -c alpine-sha256.txt)
+    mkdir -p "$musl_root"
+    tar -xzf "$cache/$alpine_archive" -C "$musl_root"
   fi
-  "$cache/opencode-$opencode_version/opencode" --version
-  mkdir -p "$(dirname "$binary")"
-  install -m 755 "$cache/opencode-$opencode_version/opencode" "$binary"
+  # apk verifies repository/package signatures with the official rootfs keys.
+  SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt "$musl_root/lib/ld-musl-x86_64.so.1" \
+    --library-path "$musl_root/lib:$musl_root/usr/lib" "$musl_root/sbin/apk" \
+    --root "$musl_root" --keys-dir "$musl_root/etc/apk/keys" \
+    --repositories-file "$musl_root/etc/apk/repositories" --no-scripts add libgcc libstdc++
+  if ! test -e /lib/ld-musl-x86_64.so.1; then ln -s "$musl_root/lib/ld-musl-x86_64.so.1" /lib/ld-musl-x86_64.so.1; fi
+  # Only musl's loader reads this file; glibc/Node/Git paths stay untouched.
+  musl_paths=/etc/ld-musl-x86_64.path
+  if ! grep -Fq "$musl_root/usr/lib" "$musl_paths" 2>/dev/null; then
+    test -e "$musl_paths" || printf '%s\n' /lib:/usr/local/lib:/usr/lib >"$musl_paths"
+    printf '\n%s\n' "$musl_root/lib:$musl_root/usr/lib" >>"$musl_paths"
+  fi
 fi
-test "$("$binary" --version)" = "$opencode_version" || { echo 'OpenCode 实际版本与发布版本不符' >&2; exit 1; }
+# Keep npm's installation independent of the selected Node.js release directory.
+npm_prefix="$HOME/.local/share/astra/npm"
+npm_binary="$npm_prefix/bin/opencode"
+npm_package="$npm_prefix/lib/node_modules/opencode-ai/package.json"
+installed_version=$(node -e 'try { const p=require(process.argv[1]); process.stdout.write(p.version || "") } catch {}' "$npm_package")
+if test "$installed_version" != "$opencode_version" || ! test -x "$npm_binary" || test "$("$npm_binary" --version 2>/dev/null || true)" != "$opencode_version"; then
+  npm install --global --prefix "$npm_prefix" --registry "$npm_registry" \
+    --include=optional --no-audit --no-fund --fetch-retries=2 --fetch-timeout=120000 \
+    "opencode-ai@$opencode_version"
+fi
+# Validate npm's executable before replacing a previous manually installed binary.
+test "$("$npm_binary" --version)" = "$opencode_version" || { echo 'npm 安装的 OpenCode 实际版本与目标版本不符' >&2; exit 1; }
+mkdir -p "$(dirname "$binary")"
+if test "$binary" != "$npm_binary"; then ln -sfn "$npm_binary" "$binary"; fi
+test "$("$binary" --version)" = "$opencode_version" || { echo 'OpenCode 执行路径未指向目标 npm 版本' >&2; exit 1; }
 step 'OpenCode 安装' passed
 step '工程目录' running
 mkdir -p "$workspace"

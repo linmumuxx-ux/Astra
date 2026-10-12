@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.library_routes import library_principal
+from app.assistant.review import retry_review, review_detail
 from app.config.settings import get_settings
 from app.dashboard import (
     dashboard_activity,
@@ -529,6 +530,20 @@ async def create_task(payload: TaskCreate, session: AsyncSession = Depends(get_s
 @router.get("/tasks/{task_id}", response_model=TaskRead)
 async def get_task(task_id: str, session: AsyncSession = Depends(get_session)):
     return await require_task(task_id, session)
+
+
+@router.get("/tasks/{task_id}/review")
+async def get_task_review(task_id: str, session: AsyncSession = Depends(get_session)):
+    return await review_detail(session, await require_task(task_id, session))
+
+
+@router.post("/tasks/{task_id}/review/retry")
+async def retry_task_review(task_id: str, session: AsyncSession = Depends(get_session)):
+    await require_task(task_id, session)
+    try:
+        return await retry_review(session, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 DELETABLE_TASK_STATUSES = frozenset(

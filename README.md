@@ -149,7 +149,9 @@ CI 使用相同入口，不再依赖 Shell 脚本。
 
 ## Runtime 说明
 
-Task 是业务闭环边界，OpenCode Session 是执行事实源，`RuntimeSession` 只保存 Session 绑定、终态和用量索引，不复制消息或执行日志。Task 完成后生成一条 `TaskSummary`；重新执行会创建新的 OpenCode Session。
+Task 是业务闭环边界，OpenCode Session 是执行事实源，`RuntimeSession` 只保存 Session 绑定、终态和用量索引，不复制消息或执行日志。人工确认完成后，后台自动复盘并更新该任务唯一的 `TaskSummary`，任务结束不等待复盘；重新执行会创建新的 OpenCode Session。
+
+数字员工只负责执行、查询和反馈知识；后台复盘统一提炼经验，允许零条，通常不超过两条。相似经验优先合并候选或补充正式知识的证据，执行成功不等于经验已验证。候选须经人工审核后发布。任务详情的“总结与经验”可查看总结、复盘状态、关联经验，并重试失败或超时的复盘。自动复盘依赖已启用的平台助手、Celery Beat 和 Control Worker。
 
 本地数字员工的 OpenCode Server 采用按需启动：空闲时 Server 未运行属于正常状态；任务启动、重连、停止和历史 Session 读取时会按需检查并启动对应员工 Serve。网络或 Runtime 不可达不会被直接等同于任务失败。
 

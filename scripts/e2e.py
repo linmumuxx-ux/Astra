@@ -206,6 +206,7 @@ def main() -> int:
                 "ASTRA_DATABASE_URL": f"sqlite+aiosqlite:///{(run_dir / 'astra-e2e.db').as_posix()}",
                 "ASTRA_WORKSPACE_ROOT": str(run_dir / "workspaces"),
                 "ASTRA_SEED_DEMO": "true",
+                "ASTRA_ASSISTANT_ENABLED": "false",
                 "ASTRA_REDIS_URL": redis_url,
                 "ASTRA_EXECUTOR_TYPE": "opencode_cli_fallback",
                 "ASTRA_SCOUT_INTERVAL": "3600",

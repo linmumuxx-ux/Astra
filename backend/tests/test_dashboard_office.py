@@ -296,3 +296,28 @@ async def test_office_activity_returns_twelve_latest_business_events(office_sess
     assert items[-1]["created_at"] == now + timedelta(seconds=3)
     assert all(item["kind"] == "task_started" and item["target_id"] == "T-office" for item in items)
     assert all("message" not in item and "detail" not in item for item in items)
+
+
+async def test_office_activity_excludes_deleted_targets_before_limit(office_session):
+    await employee_task(office_session)
+    now = datetime.now(UTC)
+    valid = Event(
+        task_id="T-office", employee_id="E-office", event_type="TASK_SUCCEEDED",
+        message="完成任务", created_at=now - timedelta(minutes=1),
+    )
+    office_session.add(valid)
+    for index in range(15):
+        office_session.add(Event(
+            task_id=f"T-deleted-{index}", event_type="TASK_RUNNING",
+            message="历史任务", created_at=now + timedelta(seconds=index),
+        ))
+    office_session.add(Event(
+        employee_id="E-deleted", event_type="EMPLOYEE_CREATED", message="历史员工", created_at=now,
+    ))
+    await office_session.commit()
+
+    items = (await dashboard_activity(office_session))["items"]
+
+    assert [item["id"] for item in items] == [valid.id]
+    assert items[0]["description"] == "完成任务：真实工作"
+    assert items[0]["target_id"] == "T-office"

@@ -11,12 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from app.assistant import tool_gateway
 from app.assistant.operations import OperationError
 from app.assistant.review import ReviewExperience, session_messages, submit_review
 from app.config.settings import get_settings
 from app.database import SessionLocal
+from app.library_service import LibraryError
 
 
 def build_assistant_mcp_server() -> MCPServer:
@@ -38,8 +40,8 @@ def build_assistant_mcp_server() -> MCPServer:
         async with SessionLocal() as session:
             try:
                 return await coro_factory(session)
-            except OperationError as exc:
-                raise ValueError(str(exc)) from exc
+            except (OperationError, LibraryError, ValueError) as exc:
+                raise ToolError(str(exc)) from None
 
     # ── Task Tools ────────────────────────────────────────────
 
@@ -187,6 +189,13 @@ def build_assistant_mcp_server() -> MCPServer:
         return await _run(lambda session: submit_review(
             session, task_id=task_id, source_session_id=source_session_id,
             expected_review_id=review_id, task_summary=task_summary, experiences=experiences,
+        ))
+
+    @server.tool(name="nexus_experience_search", structured_output=True)
+    async def nexus_experience_search(keyword: str = "", limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """复盘专用：分页检索候选与已发布经验，比较语义后指定 merge_into_id；不发布知识。"""
+        return await _run(lambda session: tool_gateway.experience_search(
+            session, keyword=keyword, limit=limit, offset=offset,
         ))
 
     @server.tool(name="nexus_session_failure_summary", structured_output=True)

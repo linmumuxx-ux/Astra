@@ -14,7 +14,6 @@ from app.database import SessionLocal
 from app.library_schemas import (
     LibraryFeedbackInput,
     LibrarySearchInput,
-    LibrarySubmitExperienceInput,
 )
 from app.library_service import KnowledgeService, LibraryError
 from app.llm_wiki import LlmWikiError
@@ -34,7 +33,7 @@ class StaticTokenVerifier:
             token=token,
             client_id="nexus-digital-employee",
             subject="nexus-library-client",
-            scopes=["library:read", "library:feedback", "library:submit"],
+            scopes=["library:read", "library:feedback"],
         )
 
 
@@ -53,10 +52,10 @@ def build_mcp_server() -> MCPServer:
         name="NEXUS Digital Library",
         title="NEXUS 数字图书馆",
         version="1.0.0",
-        description="统一查询、引用、反馈和提交候选经验的知识服务。",
+        description="数字员工查询、引用和反馈正式知识的服务。",
         instructions=(
             "先使用 library_search 查找正式知识，再用 library_get 将选中的 Markdown 放入任务上下文。"
-            "可复用经验只能通过 library_submit_experience 提交为 candidate，不能直接发布。"
+            "只负责执行任务；任务总结与经验由人工确认完成后的后台复盘统一处理。"
         ),
         token_verifier=verifier,
         auth=auth,
@@ -102,42 +101,6 @@ def build_mcp_server() -> MCPServer:
                 return await KnowledgeService(session).mcp_related(resource_id)
             except (LibraryError, LlmWikiError) as exc:
                 raise ToolError(str(exc)) from None
-
-    @server.tool(name="library_submit_experience", structured_output=True)
-    async def library_submit_experience(
-        runtime_context: str,
-        title: str,
-        summary: str,
-        content_md: str,
-        experience_type: str | None = None,
-        scope: dict[str, Any] | None = None,
-        evidence: list[dict[str, Any]] | None = None,
-        tags: list[str] | None = None,
-        experience_data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """提交可复用经验；来源身份由服务端根据 runtime_context 解析，始终创建候选。"""
-
-        try:
-            payload = LibrarySubmitExperienceInput(
-                title=title,
-                summary=summary,
-                content_md=content_md,
-                experience_type=experience_type,
-                scope=scope or {},
-                evidence=evidence or [],
-                tags=tags or [],
-                experience_data=experience_data or {},
-            )
-        except ValidationError as exc:
-            raise ToolError(str(exc)) from None
-        async with SessionLocal() as session:
-            try:
-                result = await KnowledgeService(session).mcp_submit_experience(
-                    payload, runtime_context=runtime_context
-                )
-            except (LibraryError, RuntimeContextError) as exc:
-                raise ToolError(str(exc)) from None
-        return result.model_dump(mode="json")
 
     @server.tool(name="library_feedback", structured_output=True)
     async def library_feedback(

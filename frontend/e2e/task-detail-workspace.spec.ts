@@ -445,3 +445,112 @@ test('跨任务隔离：切换历史 Session 后经列表进入另一任务，Se
   expect(posts).toEqual([])
   expect(errors).toEqual([])
 })
+
+
+test('任务详情首次读取失败可手动重试，不发送任务控制操作', async ({ page }) => {
+  const task = makeTask('T-RETRY', '失败重试任务')
+  const { posts, errors } = await installFixture(page, { tasks: [task] })
+  let attempts = 0
+  await page.route('**/api/tasks/T-RETRY', async route => {
+    attempts += 1
+    await route.fulfill(attempts === 1 ? { status: 503, json: { detail: '任务暂时无法获取' } } : { json: task })
+  })
+  await page.goto('/tasks/T-RETRY')
+  await expect(page.getByRole('alert')).toContainText('任务暂时无法获取')
+  await page.getByRole('button', { name: '刷新状态' }).click()
+  await expect(page.locator('.task-header')).toContainText('失败重试任务')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(attempts).toBe(2)
+  expect(posts).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test('任务详情仅手动刷新任务、绑定和仓库，刷新中防重入且保留历史 Session', async ({ page }) => {
+  await page.clock.install()
+  const requests: string[] = []
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/api/')) requests.push(path)
+  })
+  const id = 'T-MANUAL'
+  const workspace = '/ws/tasks/T-MANUAL'
+  const task = makeTask(id, '手动刷新任务', { status: 'RUNNING', runtime_state: 'RUNNING', runtime_status_label: '执行中', current_session_id: 'ses_new', workspace })
+  const { frame, posts, errors } = await installFixture(page, {
+    tasks: [task], sessions: { [id]: sessionsConfig(workspace) },
+    repos: { [id]: { name: 'Astra', branch: 'main', commit: 'abcdef01', dirty: false, changes: 0 } },
+  })
+  await page.goto(`/tasks/${id}`)
+  await expect(frame.locator('#workspace-marker')).toContainText('session=ses_new')
+  const refresh = page.getByTestId('task-detail-refresh')
+  await expect(refresh).toBeEnabled()
+  const select = page.getByTestId('session-select')
+  await select.click()
+  await page.getByRole('option', { name: /历史只读/ }).click()
+  await expect(frame.locator('#workspace-marker')).toContainText('session=ses_old')
+  const baseline = [...requests]
+  project(task, 'WAITING', '等待人工确认')
+  await page.clock.fastForward(60_000)
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('online'))
+  })
+  await page.clock.runFor(500)
+  expect(requests).toEqual(baseline)
+  expect(requests).not.toContain('/api/events/stream')
+
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route(`**/api/tasks/${id}`, async route => {
+    await gate
+    await route.fulfill({ json: task })
+  })
+  await refresh.click()
+  await expect.poll(() => requests.filter(path => path === `/api/tasks/${id}`).length).toBe(2)
+  await refresh.evaluate(button => { button.click(); button.click() })
+  release()
+  await expect(refresh).toBeEnabled()
+  await expect(page.locator('.task-header')).toContainText('等待人工或外部条件')
+  expect(requests.filter(path => path === `/api/tasks/${id}`)).toHaveLength(2)
+  expect(requests.filter(path => path === `/api/tasks/${id}/workspace`)).toHaveLength(2)
+  expect(requests.filter(path => path === `/api/tasks/${id}/repo`)).toHaveLength(2)
+  await expect(select).toHaveAttribute('data-session-id', 'ses_old')
+  await expect(frame.locator('#workspace-marker')).toContainText('session=ses_old')
+  expect(posts).toEqual([])
+  expect(errors).toEqual([])
+})
+
+test('任务复盘展示总结、经验与失败原因，重试不重启执行任务', async ({ page }) => {
+  const id = 'T-REVIEW'
+  const workspace = '/ws/tasks/T-REVIEW'
+  const { posts, errors } = await installFixture(page, {
+    tasks: [makeTask(id, '任务复盘验证', { status: 'SUCCEEDED', current_session_id: 'ses_new', workspace })],
+    sessions: { [id]: sessionsConfig(workspace) },
+  })
+  const review = {
+    status: 'failed', error: '读取原生会话超时', attempts: 1, retry_at: null,
+    enabled: true, can_retry: true, summary_current: true,
+    summary: '## 任务目标\n\n修复缓存失效。\n\n## 验证情况\n\n两个租户读取一致。',
+    experiences: [{ id: 'KNOW-REUSE', title: '缓存键隔离判断方法', status: 'candidate', verification_status: 'unverified' }],
+  }
+  let retries = 0
+  await page.route(`**/api/tasks/${id}/review`, route => route.fulfill({ json: review }))
+  await page.route(`**/api/tasks/${id}/review/retry`, route => {
+    retries++
+    review.status = 'pending'; review.error = ''; review.can_retry = false
+    return route.fulfill({ json: review })
+  })
+  await page.goto(`/tasks/${id}`)
+  await page.getByTestId('task-review-open').click()
+  const drawer = page.getByTestId('task-review-drawer')
+  await expect(drawer.getByTestId('task-review-status')).toHaveText('复盘失败')
+  await expect(drawer).toContainText('读取原生会话超时')
+  await expect(drawer.getByTestId('task-review-summary').getByRole('heading', { name: '任务目标' })).toBeVisible()
+  await expect(drawer.getByTestId('task-review-experiences')).toContainText('未验证')
+  await expect(drawer.getByRole('link', { name: '缓存键隔离判断方法' })).toHaveAttribute('href', '/library?knowledge=KNOW-REUSE')
+  await drawer.getByTestId('task-review-retry').click()
+  await expect(drawer.getByTestId('task-review-status')).toHaveText('等待后台复盘')
+  await expect(drawer.getByTestId('task-review-retry')).toHaveCount(0)
+  expect(retries).toBe(1)
+  expect(posts).toEqual([])
+  expect(errors).toEqual([])
+})

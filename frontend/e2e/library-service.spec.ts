@@ -3,9 +3,12 @@ import { expect, test } from '@playwright/test'
 // 知识服务状态并入页面首行的标题信息区，不再单独占一整行。
 // 页面骨架与权限由本地 mock 提供，本用例只验证标题信息区里服务状态的展示与重新同步。
 test('library service shows failures and queues a manual resync', async ({ page }) => {
+  await page.clock.install()
+  const requests: string[] = []
   let resynced = false
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => {
     const { pathname } = new URL(route.request().url())
+    requests.push(pathname)
     if (pathname === '/api/events/stream') {
       return route.fulfill({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: '' })
     }
@@ -56,6 +59,16 @@ test('library service shows failures and queues a manual resync', async ({ page 
   await expect(meta.getByTestId('library-service-state')).toHaveText('知识服务：异常')
   await expect(meta.getByTestId('library-service-queue')).toHaveText('待同步 1 · 同步失败 2')
   await expect(page_.locator('.library-service-bar')).toHaveCount(0)
+
+  // 原 10 秒服务状态轮询不再运行；手动刷新仍可更新。
+  const baseline = [...requests]
+  await page.clock.fastForward(60_000)
+  await page.clock.runFor(500)
+  expect(requests).toEqual(baseline)
+  expect(requests).not.toContain('/api/events/stream')
+  await page_.getByTestId('library-refresh').click()
+  await expect(page_.getByTestId('library-refresh')).toBeEnabled()
+  expect(requests.filter(path => path === '/api/library/service/status')).toHaveLength(2)
 
   await meta.getByRole('button', { name: '重新同步' }).click()
   await expect(meta.getByTestId('library-service-queue')).toHaveText('待同步 3 · 同步失败 0')

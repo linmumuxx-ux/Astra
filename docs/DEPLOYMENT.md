@@ -132,6 +132,11 @@ ASTRA_SERVICE_GATEWAY_PORT=8110
 - `ASTRA_EXECUTOR_TYPE=opencode_server`
 - 启用 API 中转时：`ASTRA_GATEWAY_MASTER_KEY` 与可用 Redis；Gateway 依赖 MySQL schema 已迁移到最新（由 Backend 的 migration 保证）
 
+API Key 删除需要数据库迁移到 `0034_gateway_key_deletion`，前后端应同时升级。
+`DELETE /api/gateway/keys/{id}` 现在执行删除并返回 204；仅吊销改用
+`POST /api/gateway/keys/{id}/revoke`。删除保留阻断摘要、历史调用和审计，
+从管理列表移除且不可恢复；Redis 不可用时拒绝删除并保留记录。
+
 ## 5. 数据库准备
 
 首次使用管理员账号创建数据库和最小权限账号：

@@ -58,6 +58,7 @@ class DigitalEmployee(RuntimeProjection, Base):
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
+    character_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     default_work_area: Mapped[str] = mapped_column(
         String(32), default="development", server_default="development"
     )
@@ -494,4 +495,3 @@ class KnowledgeAudit(Base):
     actor_role: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
-

@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
-    remote_opencode_version: str = "1.2.27"
+    remote_opencode_version: str = "1.18.33"
     remote_node_version: str = "22.23.3"
     remote_npm_registry: str = "https://registry.npmmirror.com"
     remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)

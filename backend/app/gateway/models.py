@@ -131,6 +131,7 @@ class GatewayKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 

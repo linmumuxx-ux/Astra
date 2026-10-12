@@ -362,7 +362,9 @@ export const gatewayApi = {
   updateKey: (id: string, body: Partial<GatewayKeyWrite>) =>
     gatewayRequest<GatewayKey>(`/api/gateway/keys/${id}`, { method: 'PATCH', body }),
   revokeKey: (id: string) =>
-    gatewayRequest<GatewayKey>(`/api/gateway/keys/${id}`, { method: 'DELETE' }),
+    gatewayRequest<GatewayKey>(`/api/gateway/keys/${id}/revoke`, { method: 'POST' }),
+  deleteKey: (id: string) =>
+    gatewayRequest<void>(`/api/gateway/keys/${id}`, { method: 'DELETE' }),
 
   // 审计
   audits: (params: { resource_type?: string; resource_id?: string; limit?: number } = {}) =>

@@ -296,12 +296,11 @@ def test_candidate_experience_mcp_flow_preserves_provenance_and_review_audit():
         assert stored.status == "published"
 
 
-def test_mcp_server_exposes_only_the_five_v1_library_tools():
+def test_employee_mcp_exposes_read_and_feedback_without_experience_submission():
     tools = asyncio.run(mcp.list_tools())
     assert {tool.name for tool in tools} == {
         "library_search",
         "library_get",
         "library_related",
-        "library_submit_experience",
         "library_feedback",
     }

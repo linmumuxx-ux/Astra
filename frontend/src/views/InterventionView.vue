@@ -1,6 +1,10 @@
 <template>
   <div class="astra-page" data-testid="intervention-page">
-    <AstraPageHeader title="待处理" description="处理需要人工介入或继续执行的任务。" testid="intervention-header" />
+    <AstraPageHeader title="待处理" description="处理需要人工介入或继续执行的任务。" testid="intervention-header">
+      <template #actions>
+        <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="intervention-refresh" @click="store.refresh()">刷新</ElButton>
+      </template>
+    </AstraPageHeader>
 
     <AstraFilterPanel label="待处理筛选" testid="intervention-filter">
       <ElButton
@@ -43,8 +47,8 @@
 </template>
 
 <script setup lang="ts">
-import { ExternalLink } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { ExternalLink, RefreshCw } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElEmpty, ElSpace, ElTable, ElTableColumn, ElText, ElTooltip, vLoading } from 'element-plus'
 import type { Task } from '@/api/types'
@@ -61,6 +65,7 @@ const selected = ref<string>('WAITING')
 const tasks = computed(() => store.tasks.filter((task) => task.status === selected.value))
 const countOf = (state: string) => store.tasks.filter((task) => task.status === state).length
 const openTask = (task: Task) => router.push(`/tasks/${task.id}`)
+onMounted(() => { void store.refresh() })
 </script>
 
 <style scoped>

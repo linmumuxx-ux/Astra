@@ -148,6 +148,7 @@ class EmployeeCreate(BaseModel):
     name: str
     role: str
     description: str = ""
+    character_id: int = Field(default=0, ge=0, le=8, strict=True)
     default_work_area: Literal[
         "development", "collaboration", "pantry", "integration", "meeting", "special"
     ] = "development"
@@ -163,6 +164,7 @@ class EmployeePatch(BaseModel):
     name: str | None = None
     role: str | None = None
     description: str | None = None
+    character_id: int = Field(default=0, ge=0, le=8, strict=True)
     default_work_area: (
         Literal["development", "collaboration", "pantry", "integration", "meeting", "special"] | None
     ) = None
@@ -178,6 +180,7 @@ class EmployeeRead(RuntimeRead):
     name: str
     role: str
     description: str
+    character_id: int
     default_work_area: str
     status: str
     task_types: list[str]
@@ -283,7 +286,6 @@ class EventRead(ORMModel):
     message: str
     detail: dict[str, Any]
     created_at: datetime
-
 
 
 

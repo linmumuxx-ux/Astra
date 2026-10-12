@@ -10,7 +10,7 @@
 
 <script setup lang="ts">
 import { ElConfigProvider } from 'element-plus'
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { onMounted, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AstraConfirmHost from '@/components/astra/AstraConfirmHost.vue'
 import AssistantDrawer from '@/features/assistant/AssistantDrawer.vue'
@@ -20,13 +20,10 @@ const route = useRoute()
 const store = useAstraStore()
 
 watch(() => route.path, (path, previous) => {
-  store.connectEvents(path !== '/')
   if (path !== '/' && previous === '/' && !store.loading) store.refresh()
 })
 
 onMounted(() => {
   if (route.path !== '/' && !store.loading && !store.lastUpdated) store.refresh()
-  store.connectEvents(route.path !== '/')
 })
-onBeforeUnmount(() => store.disconnectEvents())
 </script>

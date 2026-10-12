@@ -5,7 +5,7 @@
     data-testid="employee-config-modal"
     :model-value="true"
     :title="drawerTitle"
-    size="600px"
+    size="min(600px, 100vw)"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     :before-close="requestClose"

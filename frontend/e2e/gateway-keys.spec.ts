@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 // 「API Key 管理」重构回归：/api/gateway/keys 全部本地 mock（内存 store 可被写操作改写），
 // 覆盖分页/筛选、无需登录的写操作、创建/编辑 payload、额度展示、Key 原文一次性与复制、
-// 吊销（确认 + 已吊销禁操作）、服务端 409/500 保留表单、未保存提醒与请求失败重试。
+// 吊销、删除（确认/取消/失败重试/分页修正）、服务端错误、未保存提醒与请求失败重试。
 
 type Json = Record<string, unknown>
 
@@ -17,6 +17,7 @@ interface MockState {
   created: Json[]
   patched: Json[]
   revokes: string[]
+  deletes: string[]
   keysAttempts: number
 }
 
@@ -50,6 +51,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
     created: [],
     patched: [],
     revokes: [],
+    deletes: [],
     keysAttempts: 0,
   }
   // 隔离 Astra 全局数据与事件流，避免未连接后端影响页面导航。
@@ -101,7 +103,7 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
       // 原文只在 201 响应里出现一次，store 内不再保留。
       return json({ ...created, key: 'agw_new1_5c0a4b8e2d7f41a0_secret' }, 201)
     }
-    const keySingle = /^\/api\/gateway\/keys\/([^/]+)$/.exec(pathname)
+    const keySingle = /^\/api\/gateway\/keys\/([^/]+)(\/revoke)?$/.exec(pathname)
     if (keySingle) {
       const id = decodeURIComponent(keySingle[1])
       const index = state.keys.findIndex((item) => item.id === id)
@@ -114,11 +116,16 @@ async function mockGateway(page: Page, options: MockOptions = {}): Promise<MockS
         state.keys[index] = updated
         return json(updated)
       }
-      if (method === 'DELETE') {
+      if (method === 'POST' && keySingle[2] === '/revoke') {
         state.revokes.push(id)
         const revoked = { ...key, revoked_at: '2026-01-07T00:00:00Z' }
         state.keys[index] = revoked
         return json(revoked)
+      }
+      if (method === 'DELETE' && !keySingle[2]) {
+        state.deletes.push(id)
+        state.keys.splice(index, 1)
+        return route.fulfill({ status: 204 })
       }
     }
     return json({ detail: `未 mock 的网关请求：${method} ${pathname}` })
@@ -353,6 +360,70 @@ test.describe('API 中转 · API Key 管理', () => {
     await expect(drawer).toHaveCount(0)
     expect(state.patched).toHaveLength(0)
     await expect(keyRows(page).filter({ hasText: 'Alpha 1 改' })).toHaveCount(0)
+  })
+
+  test('删除：取消不写入，确认移除并在刷新后保持，启用和停用 Key 均可删除', async ({ page }) => {
+    const state = await mockGateway(page)
+    await page.goto('/gateway/keys')
+    const button = page.getByRole('button', { name: '删除 Alpha 5', exact: true })
+    await expect(button).toBeVisible()
+    await button.click()
+    const confirm = page.getByTestId('astra-confirm-dialog')
+    await expect(confirm).toContainText('删除 Gateway Key')
+    await expect(confirm).toContainText('立即失效并从列表移除')
+    await expect(confirm).toContainText('历史调用和审计记录仍保留')
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    expect(state.deletes).toEqual([])
+    await expect(button).toBeEnabled()
+
+    await button.click()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(page.locator('.el-notification').filter({ hasText: 'Key 已删除' })).toBeVisible()
+    await expect(keyRows(page).filter({ hasText: 'Alpha 5' })).toHaveCount(0)
+    await expect(keyTotal(page)).toContainText('共 11 条')
+    expect(state.deletes).toEqual(['k5'])
+    expect(state.revokes).toEqual([])
+    await page.reload()
+    await expect(keyTotal(page)).toContainText('共 11 条')
+    await expect(keyRows(page).filter({ hasText: 'Alpha 5' })).toHaveCount(0)
+
+    await page.getByRole('button', { name: '删除 Beta 停用', exact: true }).click()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(keyTotal(page)).toContainText('共 10 条')
+    expect(state.deletes).toEqual(['k5', 'k10'])
+    await expect(keyRows(page).filter({ hasText: 'Beta 停用' })).toHaveCount(0)
+  })
+
+  test('删除：失败保留记录且可重试，已吊销 Key 可删除，末页删除后修正页码', async ({ page }) => {
+    const state = await mockGateway(page)
+    await page.goto('/gateway/keys')
+    await page.getByTestId('gateway-keys-pagination').locator('.el-pager li', { hasText: '2' }).click()
+    await expect(page.getByRole('button', { name: '吊销 Gamma 吊销', exact: true })).toBeDisabled()
+    const button = page.getByRole('button', { name: '删除 Gamma 吊销', exact: true })
+    await expect(button).toBeEnabled()
+    await page.route('**/api/gateway/keys/k11', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback()
+      await route.fulfill({ status: 503, json: { detail: 'Key 阻断状态未能写入，请稍后重试' } })
+    })
+    const confirm = page.getByTestId('astra-confirm-dialog')
+    await button.click()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(page.locator('.el-notification').filter({ hasText: 'Key 阻断状态未能写入' })).toBeVisible()
+    await expect(button).toBeEnabled()
+    await expect(keyTotal(page)).toContainText('共 12 条')
+    expect(state.deletes).toEqual([])
+
+    await page.unroute('**/api/gateway/keys/k11')
+    await button.click()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(keyRows(page)).toHaveCount(1)
+    await expect(keyTotal(page)).toContainText('共 11 条')
+    await page.getByRole('button', { name: '删除 Delta 限额', exact: true }).click()
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(keyRows(page)).toHaveCount(10)
+    await expect(keyTotal(page)).toContainText('共 10 条')
+    await expect(page.getByTestId('gateway-keys-pagination').locator('.el-pager li.is-active')).toHaveText('1')
+    expect(state.deletes).toEqual(['k11', 'k12'])
   })
 
   test('加载失败展示错误并可重试成功，401 保留管理页面', async ({ page }) => {

@@ -142,7 +142,7 @@ import { employeeDisplayName, formatTime, platformCopy, priorityLabel, taskTypeL
 const store = useAstraStore()
 const route = useRoute()
 const router = useRouter()
-const createOpen = ref(false)
+const createOpen = ref(route.query.create === '1')
 const pageSize = ref(20)
 const currentPage = ref(1)
 type ListAction = 'start' | 'cancel' | 'rerun' | 'delete'

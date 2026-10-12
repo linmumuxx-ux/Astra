@@ -2,6 +2,7 @@ import asyncio
 
 from celery import Celery
 
+from app.assistant.review import reconcile_task_reviews
 from app.config.settings import get_settings
 from app.database import init_database, worker_session
 from app.runtime.dispatcher import Dispatcher
@@ -23,8 +24,10 @@ celery.conf.update(
         "astra.dispatch": {"queue": "control"},
         "astra.heartbeat-check": {"queue": "control"},
         "astra.employee-heartbeat": {"queue": "control"},
+        "astra.task-review": {"queue": "control"},
     },
     beat_schedule={
+        "astra-task-review": {"task": "astra.task-review", "schedule": 30.0},
         "astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval},
         "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
         "astra-heartbeat-check": {
@@ -54,6 +57,11 @@ def run_async(coro):
         _loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_loop)
     return _loop.run_until_complete(coro)
+
+
+@celery.task(name="astra.task-review")
+def task_review() -> list[str]:
+    return run_async(reconcile_task_reviews())
 
 
 @celery.task(name="astra.scout")

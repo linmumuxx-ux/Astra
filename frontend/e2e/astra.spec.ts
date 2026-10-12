@@ -28,8 +28,8 @@ test('首页展示数字办公室、业务导航和真实聚合数据', async ({
   await expect(dashboard.getByRole('heading', { name: '数字办公室', level: 1 })).toBeVisible()
   await expect(dashboard.getByTestId('digital-office-scene')).toBeVisible()
   await expect(dashboard.getByRole('heading', { name: /需要你处理/, level: 2 })).toBeVisible()
-  await expect(dashboard.getByRole('heading', { name: '实时动态', level: 2 })).toBeVisible()
-  await expect(dashboard.locator('.office-footer__stats')).toBeVisible()
+  await expect(dashboard.getByRole('heading', { name: '最近动态', level: 2 })).toBeVisible()
+  await expect(dashboard.locator('.office-summary')).toBeVisible()
   await expect(dashboard.getByRole('link', { name: '数字图书馆', exact: true })).toBeVisible()
   await expect(dashboard.locator('canvas')).toHaveCount(0)
 
@@ -38,13 +38,13 @@ test('首页展示数字办公室、业务导航和真实聚合数据', async ({
     await expect(navigation.getByRole('menuitem', { name: new RegExp(label) })).toBeVisible()
   }
   await expect(page.getByRole('link', { name: '消息通知' })).toBeVisible()
-  expect(requests.filter((path) => path === '/api/events/stream')).toHaveLength(1)
+  expect(requests.filter((path) => path === '/api/events/stream')).toHaveLength(0)
   expect(requests).not.toContain('/api/tasks')
 
   const refreshed = page.waitForResponse((response) => response.url().includes('/api/dashboard/overview'))
   await dashboard.getByRole('button', { name: '刷新首页数据' }).click()
   await refreshed
-  await expect(dashboard.getByText(/工位更新 \d{2}:\d{2}/)).toBeVisible()
+  await expect(dashboard.getByText(/工位更新 \d{2}\/\d{2} \d{2}:\d{2}/)).toBeVisible()
 
   const pageSize = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }))
   expect(pageSize.scrollWidth).toBeLessThanOrEqual(pageSize.clientWidth)
@@ -64,8 +64,8 @@ test('首页待处理模块失败仍展示其他模块并保留任务直达', as
   await expect(dashboard.getByText('当前无需处理')).toHaveCount(0)
   await expect(dashboard.getByText('暂无最近动态')).toBeVisible()
   await expect(dashboard.getByTestId('office-workstation')).not.toHaveClass(/office-workstation--working/)
-  await expect(dashboard.locator('.office-footer__stats')).toContainText('今日完成 36')
-  await expect(dashboard.locator('.office-footer__stats').getByRole('link', { name: /等待确认/ })).toHaveAttribute('href', '/interventions')
+  await expect(dashboard.locator('.office-summary')).toContainText('今日完成36')
+  await expect(dashboard.locator('.office-summary').getByRole('link', { name: /待处理/ })).toHaveAttribute('href', '/interventions')
 
   await dashboard.getByRole('radio', { name: /^工作中/ }).press('Space')
   await expect(dashboard.getByRole('radio', { name: /^工作中/ })).toBeChecked()
@@ -486,6 +486,7 @@ test('抽屉创建员工：自动检测环境、深链再编辑与干净关闭',
   await expect(modal).toBeVisible()
   await modal.getByLabel('员工 ID', { exact: true }).fill(employeeId)
   await modal.getByLabel('员工名称', { exact: true }).fill(`抽屉创建员工 ${suffix}`)
+  await modal.getByText('形象 9', { exact: true }).click()
   await modal.getByLabel('岗位', { exact: true }).fill('抽屉自动化员工')
   await modal.getByLabel('OpenCode Server Port', { exact: true }).fill(String(opencodeServerPort))
   await modal.getByLabel('工作空间', { exact: true }).fill(process.env.E2E_EMPLOYEE_WORKSPACE ?? './workspaces')
@@ -497,10 +498,12 @@ test('抽屉创建员工：自动检测环境、深链再编辑与干净关闭',
   const employee = await created.json()
   expect(employee.execution_environment.status).toBe('AVAILABLE')
   expect(employee.auto_claim).toBe(false)
+  expect(employee.character_id).toBe(8)
 
   await page.goto(`/employees?edit=${employeeId}`)
   await expect(modal).toBeVisible()
   await expect(modal.getByText(employeeId)).toBeVisible()
+  await expect(modal.getByRole('radio', { name: '形象 9', exact: true })).toBeChecked()
   await expect(modal.getByRole('switch', { name: '自动领取任务', exact: true })).not.toBeChecked()
   await modal.getByRole('button', { name: '取消', exact: true }).click()
   await expect(modal).toBeHidden()

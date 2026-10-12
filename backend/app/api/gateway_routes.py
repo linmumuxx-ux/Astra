@@ -295,12 +295,20 @@ async def update_key(
     )
 
 
-@router.delete("/keys/{key_id}", response_model=GatewayKeyRead)
+@router.post("/keys/{key_id}/revoke", response_model=GatewayKeyRead)
 async def revoke_key(
     key_id: str,
     service: GatewayControlService = Depends(gateway_service),
 ):
     return await service.revoke_key(key_id, actor="astra", actor_role="system")
+
+
+@router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_key(
+    key_id: str,
+    service: GatewayControlService = Depends(gateway_service),
+):
+    await service.delete_key(key_id, actor="astra", actor_role="system")
 
 
 # ── 审计 ─────────────────────────────────────────────────────────────

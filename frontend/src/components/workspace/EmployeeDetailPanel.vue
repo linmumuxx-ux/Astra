@@ -4,7 +4,7 @@
       <aside class="employee-drawer" role="dialog" aria-modal="true" :aria-labelledby="drawerTitleId">
         <header>
           <div class="employee-drawer__identity">
-            <EmployeeAvatar :employee="employee.employee" :character-index="employee.characterIndex" size="large" />
+            <EmployeeAvatar :employee="employee.employee" size="large" />
             <span><small>{{ employee.id }}</small><strong :id="drawerTitleId">{{ employee.name }}</strong><em>{{ employee.role }}</em></span>
           </div>
           <button type="button" aria-label="关闭员工详情" @click="emit('close')"><X :size="18" /></button>

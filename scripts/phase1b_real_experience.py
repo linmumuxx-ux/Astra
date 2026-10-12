@@ -177,6 +177,7 @@ async def run(model: str | None, binary: str, timeout: int):
 
     from app.assistant.client import AssistantOpenCodeClient
     from app.assistant.review import reconcile_task_reviews
+    from app.assistant.server import AssistantOpenCodeServerManager
     from app.database import SessionLocal, engine
     from app.models import (
         Base,
@@ -229,8 +230,7 @@ async def run(model: str | None, binary: str, timeout: int):
                 )
             )
         await session.commit()
-    environment = dict(os.environ)
-    environment.pop("OPENCODE_SERVER_PASSWORD", None)
+    environment = AssistantOpenCodeServerManager(get_settings()).process_environment()
     log = (root / "opencode.log").open("w")
     process = subprocess.Popen(
         [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)],
@@ -253,6 +253,8 @@ async def run(model: str | None, binary: str, timeout: int):
                     ) from None
                 await asyncio.sleep(0.5)
         reconcile_started = time.monotonic()
+        mcp_status = await client._inner.request("GET", "/mcp", directory=client.workspace)
+        assert mcp_status.get("nexus-assistant", {}).get("status") == "connected", mcp_status
         await reconcile_task_reviews()
         deadline = time.monotonic() + timeout
         summaries = []

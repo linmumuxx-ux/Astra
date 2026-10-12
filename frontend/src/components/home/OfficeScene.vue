@@ -1,11 +1,12 @@
 <template>
   <section class="office-scene" data-testid="digital-office-scene" aria-label="数字办公室工位">
     <header class="office-scene__toolbar">
-      <div class="office-scene__identity"><Monitor :size="18" /><h2>办公区</h2><span>{{ employees.length }} 位员工</span></div>
+      <div class="office-scene__identity"><Monitor :size="18" /><h2>办公区</h2></div>
       <ElRadioGroup class="office-scene__state" v-model="stateFilter" aria-label="状态筛选">
         <ElRadioButton value="all">全部员工</ElRadioButton>
         <ElRadioButton value="working">工作中 <span>{{ workingCount }}</span></ElRadioButton>
         <ElRadioButton value="attention">待处理 <span>{{ attentionCount }}</span></ElRadioButton>
+        <ElRadioButton value="unavailable">离线 / 停用</ElRadioButton>
       </ElRadioGroup>
       <ElSelect v-model="teamFilter" aria-label="团队筛选" class="office-scene__team">
         <ElOption label="全部团队" value="all" />
@@ -32,7 +33,7 @@
       </div>
     </div>
     <footer class="office-scene__legend" aria-label="工位状态图例">
-      <span><i data-state="working" />工作中</span><span><i data-state="idle" />空闲</span><span><i data-state="attention" />需要人工</span><span><i data-state="error" />异常</span>
+      <span><i data-state="working" />工作中</span><span><i data-state="idle" />空闲</span><span><i data-state="waiting" />等待 / 暂停</span><span><i data-state="attention" />需要人工</span><span><i data-state="error" />异常</span><span><i data-state="offline" />离线 / 停用</span>
       <small>{{ visibleEmployees.length }} / {{ employees.length }} 位员工</small>
     </footer>
   </section>
@@ -66,7 +67,7 @@ const attentionCount = computed(() => props.employees.filter(employee => ['atten
 const visibleEmployees = computed(() => {
   const query = props.query.trim().toLocaleLowerCase('zh-CN')
   return props.employees.filter(employee => (teamFilter.value === 'all' || employee.teamId === teamFilter.value)
-    && (stateFilter.value === 'all' || (stateFilter.value === 'working' ? ['working', 'thinking'] : ['attention', 'error']).includes(employee.status))
+    && (stateFilter.value === 'all' || (stateFilter.value === 'working' ? ['working', 'thinking'] : stateFilter.value === 'unavailable' ? ['offline', 'disabled'] : ['attention', 'error']).includes(employee.status))
     && (!query || `${employee.name} ${employee.role} ${employee.taskTitle ?? ''}`.toLocaleLowerCase('zh-CN').includes(query)))
 })
 function resetFilters() { teamFilter.value = 'all'; stateFilter.value = 'all' }
@@ -75,13 +76,12 @@ watch(teams, (value) => { if (!value.some(team => team.id === teamFilter.value))
 // 首次历史快照不播放“刚完成”。动态与工位接口可先后返回，
 // 尚未对应到空闲工位的新完成事件，等员工快照更新后再反馈。
 let seenEventIds: Set<number> | null = null
-watch(() => [props.officeEvents, props.employees, props.live] as const, ([events]) => {
+watch(() => [props.officeEvents, props.employees] as const, ([events]) => {
   if (!events) return
   const currentEventIds = new Set(events.map(event => event.id))
   if (!seenEventIds) { seenEventIds = currentEventIds; return }
   seenEventIds = new Set([...seenEventIds].filter(id => currentEventIds.has(id)))
-  // 重连快照尚未就绪时不播放，也不消费随后到达的新事件。
-  if (!props.live) return
+  // 完成反馈来自手动获取的新动态，与持续工作动画分开处理。
   for (const event of events) {
     if (seenEventIds.has(event.id)) continue
     if (event.kind !== 'task_completed' || !event.employeeId) { seenEventIds.add(event.id); continue }
@@ -99,13 +99,22 @@ onBeforeUnmount(() => { completionTimers.forEach(timer => window.clearTimeout(ti
 
 <style scoped>
 .office-scene{min-width:0;overflow:hidden;border:1px solid var(--astra-border);border-radius:16px;background:var(--astra-bg-panel)}
-.office-scene__toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px}.office-scene__toolbar :deep(.el-radio-button__inner){display:inline-flex;align-items:center;gap:5px}.office-scene__identity{display:flex;align-items:center;gap:9px;min-width:0}.office-scene__identity>svg{color:var(--astra-primary)}.office-scene__identity h2{margin:0;font-size:var(--astra-font-section)}.office-scene__identity>span{color:var(--astra-text-muted);font-size:var(--astra-font-helper);white-space:nowrap}.office-scene__team{width:190px;flex:none}
+.office-scene__toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;flex-wrap:wrap}.office-scene__toolbar :deep(.el-radio-button__inner){display:inline-flex;align-items:center;gap:5px;padding-inline:11px}.office-scene__identity{display:flex;align-items:center;gap:7px;min-width:0}.office-scene__identity>svg{color:var(--astra-primary)}.office-scene__identity h2{margin:0;font-size:var(--astra-font-subtitle)}.office-scene__team{width:150px;flex:none}
 
-.office-scene__room{position:relative;height:clamp(460px,calc(100vh - 365px),760px);overflow:hidden;border-top:1px solid var(--astra-border);background:var(--astra-bg-base);isolation:isolate}
+.office-scene__room{position:relative;height:clamp(340px,calc(100vh - 435px),600px);overflow:hidden;border-top:1px solid var(--astra-border);background:var(--astra-bg-base);isolation:isolate}
+.office-scene__room:has(.office-workstation:nth-child(-n+3):last-child){height:clamp(300px,calc(100vh - 480px),430px)}
 .office-scene__backdrop{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
-.office-scene__viewport{position:absolute;inset:32% 0 0;z-index:1;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.office-scene__viewport{position:absolute;inset:18% 0 0;z-index:1;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .office-scene__viewport:focus-visible{outline:2px solid var(--astra-primary);outline-offset:-3px}
-.office-scene__desks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:24px 8px;padding:12px 14% 42px}
+.office-scene__desks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start;gap:14px 12px;padding:12px 7% 24px}
+.office-scene__desks:has(>.office-workstation:nth-child(2):last-child){grid-template-columns:repeat(2,minmax(0,260px));justify-content:center}
+.office-scene__desks:has(>.office-workstation:only-child){grid-template-columns:minmax(0,280px);justify-content:center}
+.office-scene__desks:has(>.office-workstation:nth-child(-n+3):last-child) :deep(.office-workstation__scene){transform:scale(1.1);transform-origin:top center;margin-block:6px 14px}
 .office-scene__legend{display:flex;align-items:center;gap:16px;min-height:48px;padding:10px 22px;flex-wrap:wrap;color:var(--astra-text-muted);font-size:var(--astra-font-helper)}.office-scene__legend>span{display:flex;align-items:center;gap:5px}.office-scene__legend i{width:7px;height:7px;border-radius:50%;background:var(--astra-text-muted)}.office-scene__legend i[data-state='working']{background:var(--astra-primary)}.office-scene__legend i[data-state='attention']{background:var(--astra-warning)}.office-scene__legend i[data-state='error']{background:var(--astra-danger)}.office-scene__legend small{margin-left:auto;font-size:inherit;font-variant-numeric:tabular-nums}
 .office-scene__empty{display:grid;justify-items:center;align-content:center;min-height:100%;padding:32px 24px 64px;text-align:center;color:var(--astra-text-muted)}.office-scene__empty h3{margin:14px 0 0;color:var(--astra-text-secondary);font-size:var(--astra-font-subtitle)}.office-scene__empty p{margin:8px 0 18px;font-size:var(--astra-font-body);overflow-wrap:anywhere}
+.office-scene__legend i[data-state='waiting']{background:var(--astra-warning)}
+.office-scene__legend i[data-state='offline']{background:var(--astra-bg-panel);border:1px solid var(--astra-text-muted)}
+@media(max-width:1200px){.office-scene__desks{padding-inline:5%}.office-scene__toolbar{gap:8px}.office-scene__team{width:130px}.office-scene__identity{display:none}}
+@media(max-height:780px){.office-scene__viewport{inset-block-start:12%}.office-scene__desks:has(>.office-workstation:nth-child(-n+3):last-child) :deep(.office-workstation__scene){transform:none;margin:-2px auto 0}}
+@media(max-width:700px){.office-scene__desks{grid-template-columns:repeat(2,minmax(0,1fr));padding-inline:10px}.office-scene__state{max-width:100%;overflow-x:auto}.office-scene__legend{gap:10px;padding:10px 14px}}
 </style>

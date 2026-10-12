@@ -500,12 +500,16 @@ class GatewayControlService:
 
     async def list_keys(self) -> list[GatewayKey]:
         return list(
-            await self._session.scalars(select(GatewayKey).order_by(GatewayKey.created_at.desc()))
+            await self._session.scalars(
+                select(GatewayKey)
+                .where(GatewayKey.deleted_at.is_(None))
+                .order_by(GatewayKey.created_at.desc())
+            )
         )
 
     async def get_key(self, key_id: str) -> GatewayKey:
         key = await self._session.get(GatewayKey, key_id)
-        if not key:
+        if not key or key.deleted_at is not None:
             raise GatewayNotFound("Gateway Key 不存在")
         return key
 
@@ -555,18 +559,7 @@ class GatewayControlService:
     async def revoke_key(self, key_id: str, *, actor: str, actor_role: str) -> GatewayKey:
         key = await self.get_key(key_id)
         before = self._redact_key(key)
-        # 先写共享阻断状态再提交 DB 吊销：数据面配置缓存尚未刷新时也必须立即
-        # 阻断旧 Key。Redis 失败时返回结构化 503，不提交 DB 吊销。
-        if self._runtime is None:
-            raise GatewayRuntimeUnavailable("运行态未配置，无法写入吊销阻断状态，已拒绝吊销")
-        try:
-            await self._runtime.revoke_key_digest(key.key_digest)
-        except Exception as exc:  # noqa: BLE001 - Redis 不可达时拒绝吊销
-            raise GatewayRuntimeUnavailable(
-                "吊销阻断状态未能写入运行态（Redis 不可用），已拒绝吊销，请稍后重试"
-            ) from exc
-        key.enabled = False
-        key.revoked_at = utcnow()
+        await self._block_key(key)
         self._audit(
             actor=actor,
             actor_role=actor_role,
@@ -578,6 +571,37 @@ class GatewayControlService:
         )
         await self._commit()
         return key
+
+    async def delete_key(self, key_id: str, *, actor: str, actor_role: str) -> None:
+        key = await self.get_key(key_id)
+        before = self._redact_key(key)
+        await self._block_key(key)
+        key.deleted_at = utcnow()
+        self._audit(
+            actor=actor,
+            actor_role=actor_role,
+            action="key.delete",
+            resource_type="key",
+            resource_id=key.id,
+            before=before,
+            after=self._redact_key(key),
+        )
+        await self._commit()
+
+    async def _block_key(self, key: GatewayKey) -> None:
+        # 先写共享阻断状态再提交 DB 吊销：数据面配置缓存尚未刷新时也必须立即
+        # 阻断旧 Key。Redis 失败时返回结构化 503，不提交 DB 吊销或删除。
+        if self._runtime is None:
+            raise GatewayRuntimeUnavailable("运行态未配置，无法写入 Key 阻断状态，操作已拒绝")
+        try:
+            await self._runtime.revoke_key_digest(key.key_digest)
+        except Exception as exc:  # noqa: BLE001 - Redis 不可达时拒绝吊销和删除
+            raise GatewayRuntimeUnavailable(
+                "Key 阻断状态未能写入运行态（Redis 不可用），操作已拒绝，请稍后重试"
+            ) from exc
+        key.enabled = False
+        if key.revoked_at is None:
+            key.revoked_at = utcnow()
 
 
     async def _record_runtime_probe(
@@ -620,6 +644,7 @@ class GatewayControlService:
             "enabled": key.enabled,
             "expires_at": _iso(key.expires_at),
             "revoked_at": _iso(key.revoked_at),
+            "deleted_at": _iso(key.deleted_at),
         }
 
     @staticmethod
