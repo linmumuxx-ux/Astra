@@ -39,3 +39,44 @@
 - **WHEN** 一位员工的 Agent 对同一讨论中的另一位员工调用联系工具
 - **THEN** 对方 Session 收到这条提示并可以被唤醒
 - **THEN** 工具结果不包含代替对方写好的答复
+
+#### Scenario: Peer without a prior mention still receives a channel session
+
+- **WHEN** 被联系的同事属于同一讨论，但这次人类消息没有点名该同事
+- **THEN** 系统为该同事创建或复用这条讨论上的 Session，并把提示交给该 Session
+- **THEN** 这次解析不代替该同事调用聊天，也不生成该同事的回复
+
+### Requirement: A channel keeps each employee's identity
+
+讨论中的发言 SHALL 按说话人区分。人类消息来自 Nexus 保存的用户消息。数字员工的发言 SHALL 读取该员工自己在这条讨论中的 Session，并用该员工的标识展示。刷新讨论后仍然能看到这些发言。系统 MUST NOT 把一位员工的 Session 文本标成另一位员工。
+
+#### Scenario: Restore a multi-employee transcript
+
+- **WHEN** 讨论中已有用户消息，且某位成员的 Session 里有助手文本
+- **THEN** 读取讨论消息时，用户消息的发送者是用户，助手文本的发送者是该成员
+- **THEN** Nexus 的消息表里仍然只有用户发言
+
+### Requirement: Channel files are sent like private chat
+
+团队消息的附件 SHALL 使用与私聊相同的模型输入。文本和日志进入文本块。图片进入数据块。读不到的二进制只说明没有放进模型输入。
+
+#### Scenario: A log attachment is included in the named employee's input
+
+- **WHEN** 用户在讨论中点名一位员工并附上文本日志
+- **THEN** 只有该员工的运行收到包含日志正文的内容块
+
+### Requirement: Peer contact does not loop
+
+同一次讨论里，系统 SHALL 拒绝同一发送方把同一句话再次交给同一位同事。每位发送方在同一讨论中的联系次数 SHALL 有上限。讨论内的联系总次数 SHALL 有上限。达到上限时，联系工具 SHALL 得到停止继续联系的说明，并且不再投递。该上限 MUST 仍允许一位员工联系下一位同事。
+
+#### Scenario: Repeated and extra contacts stop
+
+- **WHEN** 同一发送方再次提交已经交给对方的同一句话，或已达到该发送方的联系次数
+- **THEN** 解析不返回可投递的 Session
+- **THEN** 联系工具不把这条消息再写入对方 inbox
+
+#### Scenario: A second employee can still contact a third
+
+- **WHEN** 第一位员工已经联系过同事，第二位员工再联系另一位尚未被禁用的成员
+- **THEN** 解析返回第三位成员在该讨论中的 Session
+- **THEN** 被禁用的成员不会被这次联系唤醒

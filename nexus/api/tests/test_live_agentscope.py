@@ -566,6 +566,224 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")
 
 
+def _assistant_text(client: httpx.Client, session_id: str | None, agent_id: str) -> str:
+    if not session_id:
+        return ""
+    remote = client.get(
+        f"{AGENTSCOPE}/sessions/{session_id}/messages",
+        headers=AGENT_HEADERS,
+        params={"agent_id": agent_id, "limit": 50},
+    )
+    if remote.status_code != 200:
+        return ""
+    parts: list[str] = []
+    for message in remote.json().get("messages", []):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else []
+        texts = []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+        parts.append("\n".join(texts))
+    return "\n".join(part for part in parts if part)
+
+
+def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
+    suffix = uuid.uuid4().hex[:6]
+    ops_name = f"运营{suffix}"
+    eng_name = f"自动{suffix}"
+    tool_name = f"工具{suffix}"
+    created_ids: list[str] = []
+    with httpx.Client(timeout=_timeout(30)) as client:
+        try:
+            ops = _create_employee(
+                client,
+                ops_name,
+                f"运行{suffix}",
+                (
+                    f"用户提到自动化失败时，必须调用 contact_employee。"
+                    f"employee_name 为{eng_name}。"
+                    "message 写：请看自动化失败。"
+                    "不要代替对方写结论，也不要再次调用这个工具。"
+                ),
+            )["employee"]
+            eng = _create_employee(
+                client,
+                eng_name,
+                f"自动工程{suffix}",
+                (
+                    f"收到同事提示后，调用 contact_employee，employee_name 为{tool_name}。"
+                    "message 写：请看工具侧。不要代替对方写结论。"
+                ),
+            )["employee"]
+            tools = _create_employee(
+                client,
+                tool_name,
+                f"工具工程{suffix}",
+                "收到同事提示后说明你负责工具工程。不要调用 contact_employee。",
+            )["employee"]
+            created_ids.extend([ops["id"], eng["id"], tools["id"]])
+            channel = client.post(
+                f"{NEXUS}/api/v1/channels",
+                json={
+                    "name": f"故障{suffix}",
+                    "description": "自动化失败后的同事协助",
+                    "member_ids": [ops["id"], eng["id"], tools["id"]],
+                },
+            )
+            assert channel.status_code == 201, channel.text
+            channel_id = channel.json()["id"]
+            uploaded = client.post(
+                f"{NEXUS}/api/v1/attachments",
+                files={"file": ("fail.log", b"FAIL-TOKEN-55\n", "text/plain")},
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            sent = client.post(
+                f"{NEXUS}/api/v1/channels/{channel_id}/messages",
+                json={
+                    "text": f"@{ops_name} 自动化失败了，日志在附件里。",
+                    "attachment_ids": [uploaded.json()["id"]],
+                },
+            )
+            assert sent.status_code == 200, sent.text
+            triggered = sent.json()["triggered"]
+            assert [item["employee_id"] for item in triggered] == [ops["id"]]
+            assert triggered[0]["accepted"] is True, sent.text
+            ops_session = triggered[0]["session_id"]
+            assert ops_session and ops_session != ops["mailbox_session_id"]
+
+            collected: dict[str, list[dict]] = {ops["id"]: [], eng["id"]: [], tools["id"]: []}
+            errors: list[BaseException] = []
+            threads: list[threading.Thread] = []
+            seen_sessions: set[str] = set()
+
+            def read_member(employee_id: str) -> None:
+                url = f"{NEXUS}/api/v1/channels/{channel_id}/members/{employee_id}/stream"
+                try:
+                    with httpx.Client(timeout=_timeout(45)) as stream_client:
+                        with stream_client.stream("GET", url) as response:
+                            response.raise_for_status()
+                            for line in response.iter_lines():
+                                if not line or line.startswith(":") or not line.startswith("data:"):
+                                    continue
+                                payload = json.loads(line[len("data:") :].strip())
+                                collected[employee_id].append(payload)
+                                if payload.get("type") in {"REPLY_END", "NEXUS_UPSTREAM_ERROR"}:
+                                    return
+                except BaseException as exc:  # noqa: BLE001 - 记下真实流错误
+                    errors.append(exc)
+
+            def watch(employee_id: str) -> None:
+                if employee_id in seen_sessions:
+                    return
+                seen_sessions.add(employee_id)
+                thread = threading.Thread(target=read_member, args=(employee_id,), daemon=True)
+                threads.append(thread)
+                thread.start()
+
+            watch(ops["id"])
+            deadline = time.monotonic() + 110
+            ops_done_at: float | None = None
+            while time.monotonic() < deadline:
+                listing = client.get(f"{NEXUS}/api/v1/channels/{channel_id}/messages")
+                assert listing.status_code == 200, listing.text
+                for member in listing.json()["members"]:
+                    if member["agentscope_session_id"]:
+                        watch(member["employee_id"])
+                if any(item.get("type") == "REPLY_END" for item in collected[ops["id"]]):
+                    if ops_done_at is None:
+                        ops_done_at = time.monotonic()
+                    if time.monotonic() - ops_done_at > 25:
+                        break
+                time.sleep(2)
+            for thread in threads:
+                thread.join(timeout=40)
+
+            log_seen = False
+            for _ in range(30):
+                remote = client.get(
+                    f"{AGENTSCOPE}/sessions/{ops_session}/messages",
+                    headers=AGENT_HEADERS,
+                    params={"agent_id": ops["agentscope_agent_id"], "limit": 50},
+                )
+                if remote.status_code == 200 and "FAIL-TOKEN-55" in remote.text:
+                    log_seen = True
+                    break
+                time.sleep(1)
+            transcript = client.get(f"{NEXUS}/api/v1/channels/{channel_id}/messages").json()
+            senders = {item["sender"] for item in transcript["messages"]}
+            assert "user" in senders
+            assert senders <= {"user", ops["id"], eng["id"], tools["id"]}
+            remote_text = {
+                employee["id"]: _assistant_text(client, bound, employee["agentscope_agent_id"])
+                for employee, bound in (
+                    (ops, ops_session),
+                    (
+                        eng,
+                        next(
+                            item["agentscope_session_id"]
+                            for item in transcript["members"]
+                            if item["employee_id"] == eng["id"]
+                        ),
+                    ),
+                    (
+                        tools,
+                        next(
+                            item["agentscope_session_id"]
+                            for item in transcript["members"]
+                            if item["employee_id"] == tools["id"]
+                        ),
+                    ),
+                )
+            }
+            for item in transcript["messages"]:
+                if item["sender"] == "user":
+                    continue
+                assert item["text"] in remote_text[item["sender"]]
+                assert item["id"].startswith(f"agent_{item['sender']}_")
+            first = client.get(
+                f"{NEXUS}/api/v1/peers/resolve",
+                params={"session_id": ops_session, "name": eng_name, "message": f"补一句{suffix}"},
+            )
+            second = client.get(
+                f"{NEXUS}/api/v1/peers/resolve",
+                params={"session_id": ops_session, "name": eng_name, "message": f"补一句{suffix}"},
+            )
+            assert second.status_code == 409, second.text
+            if first.status_code == 200:
+                assert first.json()["agent_id"] == eng["agentscope_agent_id"]
+                assert first.json()["session_id"] != eng["mailbox_session_id"]
+                assert "同样的话" in second.json()["detail"]
+            print(
+                json.dumps(
+                    {
+                        "ops_tools": tool_names(collected[ops["id"]]),
+                        "ops_deltas": deltas(collected[ops["id"]])[:180],
+                        "eng_tools": tool_names(collected[eng["id"]]),
+                        "eng_deltas": deltas(collected[eng["id"]])[:180],
+                        "tool_deltas": deltas(collected[tools["id"]])[:180],
+                        "sessions": sorted(seen_sessions),
+                        "senders": sorted(senders),
+                        "log_seen": log_seen,
+                        "resolve_statuses": [first.status_code, second.status_code],
+                        "stream_errors": [str(item) for item in errors],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            assert not errors, errors
+            assert log_seen
+            assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in collected[ops["id"]])
+        finally:
+            for employee_id in created_ids:
+                client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")
+
+
 def _body(
     name: str,
     domain: str,

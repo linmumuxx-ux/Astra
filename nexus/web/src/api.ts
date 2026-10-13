@@ -133,7 +133,7 @@ export async function saveChannel(body: { name: string; description: string; mem
   );
 }
 
-export async function channelMessages(id: string): Promise<Channel & { messages: ChatMessage[] }> {
+export async function channelMessages(id: string): Promise<Channel & { messages: ChatMessage[]; history_error?: string }> {
   return read(await fetch(`/api/v1/channels/${id}/messages`));
 }
 

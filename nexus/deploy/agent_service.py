@@ -79,6 +79,21 @@ def main() -> None:
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 
+def peer_error_text(response, employee_name: str) -> str:
+    detail = ""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+        detail = payload["detail"]
+    if detail:
+        return detail
+    if response.status_code == 404:
+        return f"没有找到可联系的员工：{employee_name}"
+    return "没有把消息交给对方。"
+
+
 async def deliver_peer_hint(
     httpx_module,
     deliver_to_inbox,
@@ -91,21 +106,13 @@ async def deliver_peer_hint(
     employee_name: str,
     message: str,
 ) -> str:
-    async with httpx_module.AsyncClient(timeout=10) as client:
+    async with httpx_module.AsyncClient(timeout=20) as client:
         response = await client.get(
             f"{nexus_api}/api/v1/peers/resolve",
-            params={"session_id": session_id, "name": employee_name},
+            params={"session_id": session_id, "name": employee_name, "message": message},
         )
-    if response.status_code == 404:
-        detail = ""
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
-        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
-            detail = payload["detail"]
-        return detail or f"没有找到可联系的员工：{employee_name}"
-    response.raise_for_status()
+    if response.status_code >= 400:
+        return peer_error_text(response, employee_name)
     peer = response.json()
     hint = hint_block(hint=message, source=peer.get("sender_name") or agent_id)
     await deliver_to_inbox(

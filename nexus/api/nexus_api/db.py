@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS attachments (
     path TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS peer_deliveries (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    sender_agent_id TEXT NOT NULL,
+    target_agent_id TEXT NOT NULL,
+    message_key TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 

@@ -33,6 +33,8 @@ IMAGE_BY_SUFFIX = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
+SENDER_CONTACT_LIMIT = 2
+SCOPE_CONTACT_LIMIT = 6
 
 
 class EmployeeBody(BaseModel):
@@ -240,6 +242,85 @@ def merge_transcript(
                 )
             index += 1
     return merged
+
+
+def assistant_messages(remote: list[Any], employee_id: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for message in remote:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        text = block_text(message.get("content"))
+        if not text:
+            continue
+        raw_id = message.get("id")
+        suffix = raw_id if isinstance(raw_id, str) and raw_id else str(len(found))
+        created = message.get("created_at")
+        found.append(
+            {
+                "id": f"agent_{employee_id}_{suffix}",
+                "sender": employee_id,
+                "text": text,
+                "attachments": [],
+                "accepted": True,
+                "created_at": created if isinstance(created, str) else "",
+            }
+        )
+    return found
+
+
+def interleave_messages(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    combined: list[dict[str, Any]] = []
+    for group in groups:
+        combined.extend(group)
+    combined.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            0 if item.get("sender") == "user" else 1,
+            str(item.get("id") or ""),
+        )
+    )
+    return combined
+
+
+def reserve_peer_delivery(
+    connection,
+    scope: str,
+    sender_agent_id: str,
+    target_agent_id: str,
+    message: str,
+) -> None:
+    """同一句话只投一次。每位发送方、每场讨论还有很小的次数上限。"""
+    key = message.strip()
+    duplicate = connection.execute(
+        """
+        SELECT 1 FROM peer_deliveries
+        WHERE scope = ? AND sender_agent_id = ? AND target_agent_id = ? AND message_key = ?
+        """,
+        (scope, sender_agent_id, target_agent_id, key),
+    ).fetchone()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="已经把同样的话交给对方，不要再联系。")
+    sender_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM peer_deliveries WHERE scope = ? AND sender_agent_id = ?",
+        (scope, sender_agent_id),
+    ).fetchone()["count"]
+    if sender_count >= SENDER_CONTACT_LIMIT:
+        raise HTTPException(status_code=409, detail="你在这次讨论里已经联系过同事，不要继续互相调用。")
+    scope_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM peer_deliveries WHERE scope = ?",
+        (scope,),
+    ).fetchone()["count"]
+    if scope_count >= SCOPE_CONTACT_LIMIT:
+        raise HTTPException(status_code=409, detail="这次讨论的同事联系已经达到上限，停止继续联系。")
+    connection.execute(
+        """
+        INSERT INTO peer_deliveries (
+            id, scope, sender_agent_id, target_agent_id, message_key, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (new_id("peer"), scope, sender_agent_id, target_agent_id, key, utcnow()),
+    )
+    connection.commit()
 
 
 def lines(values: list[str]) -> list[str]:
@@ -927,9 +1008,28 @@ def create_app() -> FastAPI:
         return channel_payload(connection, channel_id)
 
     @app.get("/api/v1/channels/{channel_id}/messages")
-    def channel_messages(channel_id: str, connection=Depends(database)):
+    async def channel_messages(channel_id: str, request: Request, connection=Depends(database)):
         channel = channel_payload(connection, channel_id)
-        channel["messages"] = list_messages(connection, channel_id=channel_id)
+        local = list_messages(connection, channel_id=channel_id)
+        replies: list[dict[str, Any]] = []
+        errors: list[str] = []
+        client = client_of(request)
+        if client.configured:
+            for member in channel["members"]:
+                session_id = member["agentscope_session_id"]
+                if not session_id:
+                    continue
+                employee = load_employee(connection, member["employee_id"])
+                if not employee["agentscope_agent_id"]:
+                    continue
+                try:
+                    remote = await client.list_session_messages(employee["agentscope_agent_id"], session_id)
+                except AgentScopeError as exc:
+                    errors.append(f"{employee['name']}：{exc.detail}")
+                    continue
+                replies.extend(assistant_messages(remote, employee["id"]))
+        channel["messages"] = interleave_messages(local, replies)
+        channel["history_error"] = " ".join(errors)
         return channel
 
     def mentions(text: str, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -961,6 +1061,8 @@ def create_app() -> FastAPI:
         members = [load_employee(connection, item["employee_id"]) for item in channel["members"]]
         named = mentions(body.text, members)
         client = client_of(request)
+        files = [(item["name"], item["type"], Path(item["path"]).read_bytes()) for item in attachments]
+        content = model_input_blocks(body.text, files)
         triggered: list[dict[str, Any]] = []
         for employee in named:
             result = {
@@ -998,7 +1100,7 @@ def create_app() -> FastAPI:
                 await client.trigger_chat(
                     employee["agentscope_agent_id"],
                     session_id,
-                    [{"type": "text", "text": body.text.strip() or "（附件）"}],
+                    content,
                     "user",
                 )
                 result.update(accepted=True, session_id=session_id)
@@ -1006,6 +1108,12 @@ def create_app() -> FastAPI:
                 result["detail"] = exc.detail
                 result["session_id"] = binding["agentscope_session_id"]
             triggered.append(result)
+        if any(item["accepted"] for item in triggered):
+            connection.execute("UPDATE messages SET accepted = 1 WHERE id = ?", (message["id"],))
+            connection.commit()
+            message = message_from_row(
+                connection.execute("SELECT * FROM messages WHERE id = ?", (message["id"],)).fetchone()
+            )
         employee_messages = connection.execute(
             "SELECT COUNT(*) AS count FROM messages WHERE channel_id = ? AND sender != 'user'",
             (channel_id,),
@@ -1035,7 +1143,13 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/v1/peers/resolve")
-    def resolve_peer(session_id: str, name: str, connection=Depends(database)) -> dict[str, str]:
+    async def resolve_peer(
+        session_id: str,
+        name: str,
+        request: Request,
+        connection=Depends(database),
+        message: str = "",
+    ) -> dict[str, str]:
         target_name = name.strip()
         private = connection.execute(
             "SELECT * FROM conversations WHERE agentscope_session_id = ?",
@@ -1054,6 +1168,13 @@ def create_app() -> FastAPI:
             )
             if unreachable:
                 raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            reserve_peer_delivery(
+                connection,
+                f"private:{sender['id']}",
+                sender["agentscope_agent_id"],
+                target["agentscope_agent_id"],
+                message,
+            )
             return {
                 "agent_id": target["agentscope_agent_id"],
                 "session_id": target["mailbox_session_id"],
@@ -1066,22 +1187,64 @@ def create_app() -> FastAPI:
         if member is None:
             raise HTTPException(status_code=404, detail="没有找到可联系的员工")
         sender = load_employee(connection, member["employee_id"])
+        if not sender["agentscope_agent_id"]:
+            raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+        channel = connection.execute(
+            "SELECT name FROM channels WHERE id = ?",
+            (member["channel_id"],),
+        ).fetchone()
         peers = connection.execute(
             "SELECT * FROM channel_members WHERE channel_id = ?",
             (member["channel_id"],),
         ).fetchall()
+        client = client_of(request)
         for peer in peers:
             employee = load_employee(connection, peer["employee_id"])
             if employee["name"] != target_name or employee["id"] == sender["id"]:
                 continue
             if not employee["enabled"]:
                 raise HTTPException(status_code=404, detail="该员工已禁用，不能开始新的运行")
-            if employee["agentscope_agent_id"] and peer["agentscope_session_id"]:
-                return {
-                    "agent_id": employee["agentscope_agent_id"],
-                    "session_id": peer["agentscope_session_id"],
-                    "sender_name": sender["name"],
-                }
+            if not employee["agentscope_agent_id"]:
+                raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            peer_session = peer["agentscope_session_id"]
+            if not peer_session:
+                if not client.configured:
+                    raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
+                try:
+                    peer_session = await client.create_session(
+                        employee["agentscope_agent_id"],
+                        channel["name"] if channel is not None else employee["name"],
+                    )
+                except AgentScopeError as exc:
+                    raise HTTPException(status_code=503, detail=exc.detail) from exc
+                connection.execute(
+                    """
+                    UPDATE channel_members SET agentscope_session_id = ?
+                    WHERE channel_id = ? AND employee_id = ? AND agentscope_session_id IS NULL
+                    """,
+                    (peer_session, member["channel_id"], employee["id"]),
+                )
+                connection.commit()
+                stored = connection.execute(
+                    """
+                    SELECT agentscope_session_id FROM channel_members
+                    WHERE channel_id = ? AND employee_id = ?
+                    """,
+                    (member["channel_id"], employee["id"]),
+                ).fetchone()
+                peer_session = stored["agentscope_session_id"] or peer_session
+            reserve_peer_delivery(
+                connection,
+                member["channel_id"],
+                sender["agentscope_agent_id"],
+                employee["agentscope_agent_id"],
+                message,
+            )
+            return {
+                "agent_id": employee["agentscope_agent_id"],
+                "session_id": peer_session,
+                "sender_name": sender["name"],
+            }
         raise HTTPException(status_code=404, detail="没有找到可联系的员工")
 
     async def proxy_stream(
