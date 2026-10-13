@@ -1,8 +1,10 @@
 ## Why
 
-0.xx 把员工身份与执行节点混用，不能承载 1.0 的长期职责与多用户数字团队。按用户提供的完整产品基线，从固定提交重建领域、运行树和 schema，完整验收后一次切换。
+0.xx 把员工身份与执行节点混用，不能承载 1.0 的长期职责与多用户数字团队。领域、运行树和 schema 仍从固定提交重建。产品完成定义已收成 `docs/astra-1.0/SLIM_BASELINE.md` 的一条垂直切片；原「不裁剪、全量验收后一次切换」不再是 1.0 门禁。
 
 ## What Changes
+
+下列条目是立项时的完整重建描述。1.0 要关闭的范围以 `docs/astra-1.0/SLIM_BASELINE.md` 和 `tasks.md` 为准。正式三维首页、企业 IM、Skill 全链路、全量治理配额和公司 ETL 切换已降为 Post-1.0。
 
 - **BREAKING**：新 `apps/api`、`apps/web`、`domains`，仅公开 `/api/v1`；移除旧业务运行入口与兼容逻辑。
 - 新建员工/岗位/目标、持续 Inbox/Routine/Persona、团队 Channel、正式交接、Worker 池与独立验收。
@@ -35,4 +37,4 @@
 
 ## Impact
 
-重建 Python/FastAPI/SQLAlchemy/MySQL/Celery 与 Vue3/Element Plus 应用；旧库保持冻结备份边界，正式应用不得读取旧库。保留成熟 Runtime 与工作区 UI 的选择性复用，所有复制有来源与依赖审计。完整基线见用户原始设计包；不裁剪范围，不以规划或模拟验收宣告完成。
+重建 Python/FastAPI/SQLAlchemy/MySQL/Celery 与 Vue3/Element Plus 应用；旧库保持冻结备份边界，正式应用不得读取旧库。保留成熟 Runtime 与工作区 UI 的选择性复用，所有复制有来源与依赖审计。1.0 范围以 `docs/astra-1.0/SLIM_BASELINE.md` 为准。Post-1.0 项见 `tasks.md`。不以规划或模拟验收宣告切片完成。

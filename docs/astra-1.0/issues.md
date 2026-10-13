@@ -1,17 +1,33 @@
 # Astra 1.0 未闭环与已修问题
 
-2026-10-13。此文件是验证问题记录，实施仍以 OpenSpec `tasks.md` 为唯一清单。以下必需能力不会从 1.0 范围移除；全部闭环前不得正式切换或宣称完成。
+2026-10-13 起按 `SLIM_BASELINE.md` 重排。此文件是验证问题记录，实施仍以 OpenSpec `tasks.md` 为唯一清单。1.0 完成只看垂直切片。下表第一节是切片阻断；第二节是 post-1.0，不阻塞 1.0。
 
-| 必需能力 | 当前缺口 | 验收依据 |
+## 垂直切片阻断
+
+分项 live 报告已经覆盖 DM 隔离、Routine 唤醒、原生执行和独立验收，但它们不是同一次切片验收。在一条真实链关闭之前，不得宣称 1.0 完成。
+
+| 切片步骤 | 已有事实 | 仍阻断完成的部分 |
 | --- | --- | --- |
-| Task 原生执行及独立验收 | 真实启动、采集、人类及独立 Persona 验收已通；跨主机产物转移、Goal 跟踪、pause/stop/takeover 与未知副作用对账全链尚未通 | worker-task-execution；任务并行/恢复/旧 attempt 隔离 |
-| 完整持续履职与协作 | 全部业务 MCP Tool、外部连接器、同级冲突裁决、完整多员工修复复验流程未通 | continuous-duty、team-collaboration；真实多员工验收 |
-| 知识与成长 | 成熟 Wiki/Experience 服务提取、Skill 提案/Worker 验证/审批/发布/效果/回滚尚未通 | knowledge-growth；不能以 Memory 通过替代 |
-| 模型 API 与资源治理 | Provider/密钥/路由/硬配额/成本指标尚未通；目前预算只门禁新增 Persona 回合，Task 工程预算预留/硬限制未接 | trusted-governance；真实成本归属与预算控制 |
-| 消息完整性 | 受控附件、外部 Binding、订阅/通知偏好未接；页面明确禁用附件入口 | team-collaboration；受权引用/隔离/防循环 |
-| 组织运营 | 调岗、归档责任清点、Goal 主责转让、完整绩效与预算流程未通 | digital-team-identity；在途工作不能丢失 |
-| 部署和恢复 | Linux 原生 Runtime/SSH 已验证；远程 Task 工作区、公司全服务部署、Workspace UI 授权代理、全分页、内网冷构建、依赖全锁、灾备未通 | runtime 兼容与全部页面/运维门禁 |
-| 正式迁移切换 | 仅只读查验既有 Linux 连接配置；未冻结/导出/导入真实历史，Session/Workspace/Knowledge/Skill/会话未逐条签收；同步 ETL MySQL 未验，旧树仍为复制来源 | one-time-0xx-migration；真实报告、停旧、单运行树 |
+| Human↔Employee DM | 持久 DM、成员隔离、引用与因果限制有测试和页面证据 | 尚未与后面五步出现在同一次验收里 |
+| Inbox / Routine 唤醒 | 真实 Redis/Celery/Beat 与短 Persona 回合已通过；观察和业务动作分开提交 | 该次 Persona 验收没有创建 Task，唤醒没有接到建 Task |
+| 创建 Task | 新 API 与员工页可以创建 Task，业务主责是 Employee | 需要出现在上述同一条链中 |
+| Worker / OpenCode 执行 | 隔离环境与 Linux 1.19.0 上的原生执行已通过；TaskExecution 只索引证据 | 旧轮次隔离尚未和 DM、唤醒串在同一次切片里。跨主机转移不是本项阻断 |
+| 独立验收 | 人类与独立员工已按原生证据逐条验收；Worker 自报完成不能闭环 | 该结论需要留在同一切片证据中，不能只用分项报告代替 |
+| 一张风险写入批准卡 | 具体审批、版本复验和幂等已有测试 | 切片要求这张卡出现在同一条风险写入上。硬配额和成本看板不是本项 |
+| 新路径不暴露旧入口 | 新 API、服务和 agents 的 AST 检查禁止导入 `backend.app` | `deploy/systemd/` 仍以 `/opt/astra/backend` 为工作目录，仓库仍保留 `backend/`、`frontend/`。1.0 要让新应用路径停止把它们当运行入口。删除树留到切换之后 |
+
+## Post-1.0
+
+| 延后能力 | 当前缺口 | 为什么不阻塞 1.0 |
+| --- | --- | --- |
+| 跨主机产物、Goal 跟踪、pause/stop/takeover、未知副作用总账 | 分项执行已通，这些全链未通 | 超出「Worker 执行 + 独立验收」 |
+| 外部连接器、同级冲突裁决、完整多员工修复复验、全部业务 Tool | 未通 | 切片只要 DM、Inbox/Routine 和建 Task |
+| Skill 提案 / 验证 / 审批 / 发布 / 观察 / 回滚，以及成熟 Wiki/Experience 提取 | 未通。Memory 通过不能代替 | 完整 Skill 产品为 post-1.0 |
+| Provider、密钥、路由、硬配额、成本看板 | 未通。现有预算只阻止把未知 Persona 用量当成零 | 网关硬配额和成本看板为 post-1.0 |
+| 受控附件、企业 IM Binding、订阅/通知偏好 | 未接；页面拒绝伪造附件成功 | 企业 IM 与附件为 post-1.0 |
+| 调岗、归档责任清点、Goal 转让、绩效与完整预算流程 | 未通 | 组织运营全流程为 post-1.0 |
+| 正式 WebGL 三维首页、全部页面同时验收、内网冷构建与全分页 | 状态驱动空间和九类页面基础交互已有证据 | 三维首页和「全部页面同时变绿」为 post-1.0 |
+| 公司全量 ETL 与删除旧树 | 真实历史未冻结导入；Session/Workspace/Knowledge/Skill 未逐类签收；旧树仍是复制来源 | 一次性迁移工具保留。公司切换和删树为 post-1.0 |
 
 ## 本地验证中已处理
 

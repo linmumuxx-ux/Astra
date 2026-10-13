@@ -1,6 +1,6 @@
 # Astra 1.0 当前接口与 Tool 契约
 
-API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`openapi.json` 和 `tools.json` 从真实路由/注册表导出，运行 `python deploy/v1/export_contracts.py` 可刷新。此文列出当前已接通契约；原设计要求但尚未实现的接口仍属于必需范围。
+API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`openapi.json` 和 `tools.json` 从真实路由/注册表导出，运行 `python deploy/v1/export_contracts.py` 可刷新。此文列出当前已接通契约。尚未实现的接口是否属于 1.0，以 `SLIM_BASELINE.md` 为准，不按已取代的完整设计包回补。
 
 ## 认证与并发
 

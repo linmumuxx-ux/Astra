@@ -1,6 +1,6 @@
 # Astra 1.0 重建分支
 
-当前分支 `rewrite/astra-1.0` 使用独立新代码、schema 与 `/api/v1`。开发入口和真实验证结果见 [1.0 部署说明](docs/astra-1.0/deployment.md)、[架构现状](docs/astra-1.0/architecture.md) 与 [验证报告](docs/astra-1.0/verification.md)。完整工程、成长、迁移和公司部署门禁尚未通过，不能正式切换或标记 1.0 完成。
+当前分支 `rewrite/astra-1.0` 使用独立新代码、schema 与 `/api/v1`。1.0 产品范围见 [瘦身基线](docs/astra-1.0/SLIM_BASELINE.md)。开发入口、实现现状和验证证据见 [部署说明](docs/astra-1.0/deployment.md)、[架构现状](docs/astra-1.0/architecture.md) 与 [验证报告](docs/astra-1.0/verification.md)。垂直切片尚未作为一条真实链关闭，不能标记 1.0 完成。公司全量切换属于该基线中的 post-1.0。
 
 下文保留为原始实现的复制与迁移参考，不作为 1.0 的运行入口。
 
