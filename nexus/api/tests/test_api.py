@@ -909,6 +909,8 @@ def test_peer_toolkit_drops_team_and_task_tools_but_keeps_contact():
     toolkit = asyncio.run(module.without_team_and_task_tools(original)())
     assert "TeamCreate" in toolkit.removed
     assert "TaskGet" in toolkit.removed
+    assert "ToolStop" in toolkit.removed
+    assert "ScheduleCreate" in toolkit.removed
     assert "contact_employee" not in toolkit.removed
 
 

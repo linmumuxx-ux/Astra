@@ -80,6 +80,16 @@ def tool_names(events: list[dict]) -> list[str]:
     return names
 
 
+def tool_fragments(events: list[dict]) -> str:
+    parts: list[str] = []
+    for item in events:
+        if item.get("type") in {"TOOL_CALL_DELTA", "TOOL_RESULT_TEXT_DELTA"}:
+            delta = item.get("delta")
+            if isinstance(delta, str):
+                parts.append(delta)
+    return "".join(parts)
+
+
 def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
     suffix = uuid.uuid4().hex[:6]
     star_name = f"星{suffix}"
@@ -768,8 +778,10 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
                 json.dumps(
                     {
                         "ops_tools": tool_names(collected[ops["id"]]),
+                        "ops_fragments": tool_fragments(collected[ops["id"]])[:400],
                         "ops_deltas": deltas(collected[ops["id"]])[:180],
                         "eng_tools": tool_names(collected[eng["id"]]),
+                        "eng_fragments": tool_fragments(collected[eng["id"]])[:400],
                         "eng_deltas": deltas(collected[eng["id"]])[:180],
                         "tool_deltas": deltas(collected[tools["id"]])[:180],
                         "sessions": sorted(seen_sessions),
@@ -785,9 +797,26 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             assert not errors, errors
             assert log_seen
             assert "contact_employee" in ops_tool_list, ops_tool_list
-            for hidden in ("TeamCreate", "TeamSay", "TaskCreate", "TaskGet", "TaskList", "AgentCreate"):
+            hidden_names = (
+                "TeamCreate",
+                "TeamSay",
+                "TaskCreate",
+                "TaskGet",
+                "TaskList",
+                "AgentCreate",
+                "ToolStop",
+                "ScheduleCreate",
+            )
+            for hidden in hidden_names:
                 assert hidden not in ops_tool_list, ops_tool_list
-            assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in collected[ops["id"]])
+            delivered = "已把消息交给对方" in tool_fragments(collected[ops["id"]])
+            assert delivered, tool_fragments(collected[ops["id"]])[:500]
+            assert eng["id"] in seen_sessions
+            eng_tool_list = tool_names(collected[eng["id"]])
+            eng_spoke = bool(deltas(collected[eng["id"]])) or "contact_employee" in eng_tool_list
+            assert eng_spoke, collected[eng["id"]]
+            for hidden in hidden_names:
+                assert hidden not in eng_tool_list, eng_tool_list
             if eng["id"] in seen_sessions:
                 eng_member = next(
                     item for item in transcript["members"] if item["employee_id"] == eng["id"]

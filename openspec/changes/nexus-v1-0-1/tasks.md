@@ -63,3 +63,13 @@
 - [x] 9.2 同一频道按员工身份显示各自 Session 的发言，附件进入模型输入。同一句话和超过次数的联系会被拒绝，下一位同事仍能继续联系一位成员
   - 同一轮实跑 `1 passed in 34.51s`。`FAIL-TOKEN-55` 进入运营的 Session。频道发送者只有 `user` 和运营的员工 id。重复联系返回 409。
   - 直接投递后的频道记录同时出现两位员工的 id，文本没有对调。模型没有继续联系第三位。
+
+## 10. 验收与对等工具收口
+
+- [x] 10.1 按产品验收项记录通过和未通过，并给出当次证据
+  - 2026-10-13：部署健康检查、员工、私聊、团队实跑和 API 重启恢复见 `verification.md` 第 10 节。
+- [x] 10.2 卸下会抢走 `contact_employee` 的任务规划和 Agent Team 工具，并用实跑证明工具事件里出现 `contact_employee`
+  - 官方 `get_toolkit` 仍会组装这些工具。启动脚本在组装后调用 `Toolkit.remove_tool`，并丢掉空的非 basic 工具组。没有修改 AgentScope 安装包。
+  - 卸掉 `ToolStop` 之前，模型先连续调用 `ToolStop`，再用错误名字调用 `contact_employee`。卸掉之后的实跑里，运营调用了 `contact_employee`，工具结果是「已把消息交给对方」，自动化工程师在同一频道里用自己的员工 id 作了回复。事件里没有 `TeamCreate`、`TaskGet` 或 `ToolStop`。
+- [x] 10.3 知识库只有在依赖和嵌入模型都真实可用时才启用；否则写明阻塞
+  - 本机没有 `pymilvus`。`ollama list` 只有 `qwen2.5:3b`，没有嵌入模型。`GET /health` 的 `knowledge_base` 仍是 `disabled`。没有启用 `knowledge_base_manager`。

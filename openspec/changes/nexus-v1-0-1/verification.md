@@ -123,3 +123,43 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 两位员工的文本没有互换。同事的话来自模型，不是 Nexus 写好的回复。
 
 浏览器打开 `http://127.0.0.1:5174/team`：创建了「浏览器讨论」，6 名员工出现在勾选列表里；编辑后成员数为 4。输入框写明可以拖入或粘贴图片。拖入 `shot.png` 后能预览，移除后预览消失。未点名就发送时，页面说明没有触发任何人。页面没有员工编辑表单。
+
+# 10. 验收矩阵
+
+日期：2026-10-13。Redis、AgentScope 2.0.10、Nexus API 和 Ollama `qwen2.5:3b` 都在本机。没有第二只更大的本地模型。`ollama list` 只有 `qwen2.5:3b`。
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| Nexus 与 AgentScope 能启动 | 通过 | `GET /health` 版本 `2.0.10`，`storage` 与 `message_bus` 为 `ok`。Nexus `GET /api/v1/runtime` 为 `configured: true`、`reachable: true`。 |
+| 创建员工得到真实 Agent | 通过 | 实跑 agent `0d232beafb2f4e069623cd797d321bbc`。删除后 `deleted: true`。 |
+| 修改职责会进入之后的运行 | 通过 | 修改后的 Agent `system_prompt` 含「改过的职责说明」和「改过的工作指令」。聊天时读取的是当前 Agent 记录里的这段提示。 |
+| 禁用和删除是真的 | 通过 | 禁用私聊 HTTP 409；重新启用后接受运行；删除后 Agent 不在列表里。 |
+| 私聊多轮流式、切换历史 | 通过 | 两条 Session `d37367bc9eec4391a1d0b19ba0918ee2` 与 `ed70fce00d4f45e6a4bab77190299009`。两轮文本增量都是模型自己的「在」。 |
+| 刷新或重启后恢复，匿名隔离 | 通过 | 重启 Nexus API 后，原匿名标识仍读到「重启口令 a3d265」，Session `9d7bbdfebefb49479140632c38513fe3` 还在。另一个标识得到 404。 |
+| 附件进入模型输入 | 通过 | 团队实跑里 `FAIL-TOKEN-55` 出现在运营 Session。私聊实跑里 `LOG-TOKEN-88` 出现在 Session。单元测试记录了图片 `data`/`base64` 块。这个文本模型是否看见图，没有单独证明。 |
+| 三位员工，A 联系 B，身份正确，不无限循环 | 部分通过 | 见下面的团队实跑。A 到 B 的联系和回复是真实的。B 没有用正确名字联系到 C。重复联系返回 409。 |
+| 没有伪造的 AI 回复 | 通过 | 页面和 API 只展示 Session 里的助手文本。Agent Service 未接受运行时不写入员工回复。 |
+
+团队实跑命令：
+
+```bash
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
+  nexus/api/.venv/bin/pytest \
+  nexus/api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact \
+  nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope \
+  nexus/api/tests/test_live_agentscope.py::test_private_chat_streams_and_isolates_anonymous_owners -s
+```
+
+`3 passed in 92.51s`。团队打印：
+
+```json
+{"ops_tools": ["contact_employee", "contact_employee"], "ops_fragments": "{\"message\": \"请看自动化失败。\", \"employee_name\": \"自动f6766d\"}已把消息交给对方。对方将自行推理，这里没有代替对方写出答复。", "ops_deltas": "等待自动f6766d的回复。", "eng_tools": ["contact_employee", "contact_employee"], "eng_fragments": "{\"employee_name\": \"同自动化f6766d\", \"message\": \"请看自动化失败。\"}没有找到可联系的员工", "eng_deltas": "在当前的对话中，没有找到可以联系到的员工。请确认是否有其他同事可以协助检查自动化失败的问题。", "tool_deltas": "", "sessions": ["emp_f1fd841f6959", "emp_fca309b5b68f"], "senders": ["emp_f1fd841f6959", "emp_fca309b5b68f", "user"], "log_seen": true, "resolve_statuses": [200, 409], "stream_errors": []}
+```
+
+运营调用的是 `contact_employee`，名字是自动化工程师的真名。工具结果是投递说明，不是代写的同事结论。运营自己的文本是「等待自动f6766d的回复。」自动化工程师的文本在频道里用另一个员工 id 显示。它接着调用 `contact_employee` 时把名字写成了「同自动化f6766d」，解析返回没有找到这个员工，所以工具工程师没有被唤醒。同一句话再次解析是 409。
+
+卸工具之前的一轮里，模型先调用了八次 `ToolStop`，然后用「同僚」调用 `contact_employee`。那一轮没有形成同事回复。`ToolStop`、`Schedule*`、任务规划和 Agent Team 现在都在官方组装之后卸掉。
+
+## 知识库阻塞
+
+没有启用。`pymilvus` 未安装。本机唯一模型是聊天模型 `qwen2.5:3b`，没有嵌入模型。Agent Service 健康检查里的 `knowledge_base` 是 `disabled`。`GET /api/v1/knowledge` 为 `available: false`。手写知识库标识仍会被拒绝。

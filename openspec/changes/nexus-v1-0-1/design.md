@@ -71,7 +71,7 @@ Session 要能产生文本增量，创建时必须带 `chat_model_config`。这�
 - [自定义工具运行在 Agent Service 进程内，目录查询却在 Nexus] → 工具通过 Nexus 的解析接口拿到绑定，不复制一份员工表进 AgentScope。
 - [`X-User-ID` 不是认证] → 骨架沿用 Agent Service 的占位头，并在部署说明中标明上线前要换成调用方自己的认证。Nexus 页面用浏览器本地生成的 owner id 区分私聊，这不是账号体系。
 - [文档站与 2.0.10 源码的分页参数不一致] → 客户端使用源码中的 `before` / `limit`，不发送已被忽略的 `offset`。
-- [官方 `get_toolkit` 会挂上 Team 与 Task 工具] → Nexus 启动脚本在官方组装之后用 `Toolkit.remove_tool` 卸掉 `Task*` 与 `Team*` / `AgentCreate` / `AgentInvite`。不修改已安装的 AgentScope 包。`contact_employee` 保留。`Schedule*` 仍会挂上。
+- [官方 `get_toolkit` 会挂上 Team、Task、ToolStop 和 Schedule 工具] → Nexus 启动脚本在官方组装之后用 `Toolkit.remove_tool` 卸掉这些名字，并丢掉已经空掉的非 basic 工具组。不修改已安装的 AgentScope 包。`contact_employee` 和工作区文件工具保留。
 
 ## Migration Plan
 

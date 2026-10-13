@@ -14,11 +14,16 @@ HIDDEN_AGENT_TOOLS = (
     "TaskGet",
     "TaskList",
     "TaskUpdate",
+    "ToolStop",
     "AgentCreate",
     "AgentInvite",
     "TeamCreate",
     "TeamDelete",
     "TeamSay",
+    "ScheduleCreate",
+    "ScheduleDelete",
+    "ScheduleList",
+    "ScheduleView",
 )
 
 
@@ -26,6 +31,11 @@ def without_team_and_task_tools(get_toolkit):
     async def assembled(**kwargs):
         toolkit = await get_toolkit(**kwargs)
         await toolkit.remove_tool(list(HIDDEN_AGENT_TOOLS))
+        groups = getattr(toolkit, "tool_groups", None)
+        if groups is not None:
+            toolkit.tool_groups = [
+                group for group in groups if group.name == "basic" or group.tools
+            ]
         return toolkit
 
     return assembled

@@ -43,7 +43,7 @@ nexus/deploy/.venv-agentscope/bin/python nexus/deploy/agent_service.py
 - 用 `RedisStorage` 与 `RedisMessageBus` 调用 `agentscope.app.create_app`。
 - 把 `LocalWorkspaceManager` 的隔离设为 `IsolationPolicy.PER_SESSION`。
 - 注册 `contact_employee`，并允许它执行。工具把对方姓名和原文交给 Nexus 解析，再向目标 Session 调用 `deliver_to_inbox`，不生成对方的回复。解析返回 4xx 时，工具把说明交回模型并停止投递。
-- 不注册 Agent Team。官方 `get_toolkit` 仍会把 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`、`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInvite` 放进 basic 工具组。`agent_service.py` 在 `create_app` 之前替换聊天和实时服务使用的 `get_toolkit`：先调用官方组装，再 `Toolkit.remove_tool` 卸掉这些名字。`contact_employee` 和 Bash、Read、Write 等仍然保留。没有改 AgentScope 安装包。定时任务工具 `Schedule*` 仍由官方组装挂上。
+- 不注册 Agent Team。官方 `get_toolkit` 仍会把任务规划、`ToolStop`、定时任务和 Agent Team 放进工具组。`agent_service.py` 在 `create_app` 之前替换聊天和实时服务使用的 `get_toolkit`：先调用官方组装，再 `Toolkit.remove_tool` 卸掉 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`、`ToolStop`、`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInvite`、`ScheduleCreate`、`ScheduleDelete`、`ScheduleList`、`ScheduleView`。空的非 basic 工具组也会去掉，避免模型再去激活它们。`contact_employee` 和工作区的 Bash、Read、Write 等仍然保留。没有改 AgentScope 安装包。
 - 不传入 `knowledge_base_manager`。当前环境没有 `pymilvus`，也没有嵌入模型，所以没有启用知识库目录。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。技能库为空时也不写入示例技能。
 
 服务默认监听 `http://127.0.0.1:8000`。健康检查：
