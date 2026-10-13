@@ -1,7 +1,26 @@
 # 项目内 OpenSpec + Superpowers 集成
 
-Astra 把 OpenSpec 与 Superpowers 的开发能力直接放进仓库，**clone 后启动 OpenCode 即可使用**，
+Nexus v1.0.1 继续使用仓库里已经提交的 OpenSpec 与 Superpowers，**clone 后启动 OpenCode 即可使用**，
 不依赖任何全局安装、`~/.config`、`~/.opencode` 或 Home 目录配置。
+没有在仓库外再找一套 Superpowers，也没有补写缺失的 skill。
+
+## Nexus v1.0.1 盘点（只记录仓库里真实存在的文件）
+
+2026-10-13 在 `nexus/v1.0.1` 上核对 `.opencode/`，结果如下。
+
+Superpowers skill（15 个，均在 `.opencode/skills/<name>/SKILL.md`）：
+
+`brainstorming`、`diagnosing-superpowers`、`dispatching-parallel-agents`、`executing-plans`、`finishing-a-development-branch`、`receiving-code-review`、`requesting-code-review`、`subagent-driven-development`、`systematic-debugging`、`test-driven-development`、`using-git-worktrees`、`using-superpowers`、`verification-before-completion`、`writing-plans`、`writing-skills`。
+
+OpenSpec skill（9 个）：`openspec-apply-change`、`openspec-archive-change`、`openspec-continue-change`、`openspec-explore`、`openspec-ff-change`、`openspec-new-change`、`openspec-propose`、`openspec-sync-specs`、`openspec-verify-change`。
+
+另外还有 1 个 Astra 产品 skill：`nexus-task-experience-review`。它不是 Superpowers，Nexus 产品不使用它。
+
+命令：`/opsx-apply`、`/opsx-archive`、`/opsx-continue`、`/opsx-explore`、`/opsx-ff`、`/opsx-new`、`/opsx-propose`、`/opsx-sync`、`/opsx-verify`，以及 `/sp-brainstorm`、`/sp-debug`、`/sp-execute`、`/sp-finish`、`/sp-plan`、`/sp-review`、`/sp-verify`。
+
+Agent：`code-reviewer` 属于这套开发集成。`platform-assistant` 是 Astra Runtime 代理，不是 Nexus 产品的一部分。
+
+未找到、因此没有写入文档的内容：独立的 Superpowers 包、额外的 skill 目录，或上述名单之外的 `/sp-*` 命令。
 
 ## 目录与事实源
 
@@ -13,7 +32,7 @@ Astra/
 │   ├── commands/                         # /opsx-* 与 /sp-* 命令
 │   ├── agents/code-reviewer.md           # 只读代码评审子代理
 │   ├── agents/platform-assistant.md      # 平台助手（独立 Runtime 标记）
-│   ├── skills/                           # 24 个项目级 skill（OpenSpec 9 + Superpowers 15）
+│   ├── skills/                           # 25 个项目级 skill（OpenSpec 9 + Superpowers 15 + Astra 1）
 │   ├── plugins/superpowers.js            # skill 注册 + 可选 bootstrap 注入
 │   └── tools/openspec.mjs                # 自包含 OpenSpec CLI bundle（可提交产物）
 ├── openspec/
@@ -119,7 +138,7 @@ OpenSpec 来源优先级：`ASTRA_OPENSPEC_PACKAGE` → `frontend/node_modules` 
 以下方式可在不依赖全局安装的情况下复现：
 
 ```bash
-# 1) 屏蔽全局 Superpowers（~/.claude/skills）后，仍能列出项目内 24 个 skill
+# 1) 屏蔽全局 Superpowers（~/.claude/skills）后，仍能列出项目内 25 个 skill
 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 opencode debug skill
 
 # 2) 屏蔽全局 openspec 后，仍能用仓库内 bundle 跑完整流程

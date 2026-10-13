@@ -1,0 +1,185 @@
+<template>
+  <section>
+    <div class="title-row">
+      <h1 class="h-title">员工管理</h1>
+      <el-button type="primary" @click="openCreate">＋ 创建数字员工</el-button>
+    </div>
+    <div class="management-grid">
+      <div class="panel management-main">
+        <div class="manage-toolbar">
+          <div><b>员工列表</b> <span class="muted">{{ filtered.length }} 位员工</span></div>
+          <el-input v-model="query" placeholder="搜索员工 / 职责" style="width: 240px" clearable />
+        </div>
+        <table class="employee-table">
+          <thead>
+            <tr><th>数字员工</th><th>职责</th><th>技能</th><th>状态</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr v-if="!filtered.length"><td colspan="5"><div class="empty">没有找到符合条件的员工</div></td></tr>
+            <tr
+              v-for="employee in filtered"
+              :key="employee.id"
+              :class="{ selected: employee.id === selectedId }"
+              @click="selectedId = employee.id"
+            >
+              <td>
+                <div class="person-cell">
+                  <span class="avatar" :class="{ off: !employee.enabled }">{{ employee.avatar }}</span>
+                  <span><b>{{ employee.name }}</b><small class="mono">{{ employee.id }}</small></span>
+                </div>
+              </td>
+              <td>
+                <b>{{ employee.domain }}</b>
+                <div class="role-desc">{{ employee.description }}</div>
+              </td>
+              <td>
+                <div class="chips">
+                  <span v-for="skill in employee.skills" :key="skill" class="mini-chip">{{ skillLabel(skill) }}</span>
+                  <span v-if="!employee.skills.length" class="muted">未选择</span>
+                </div>
+              </td>
+              <td>
+                <el-switch :model-value="employee.enabled" @change="toggle(employee, Boolean($event))" @click.stop />
+              </td>
+              <td>
+                <el-button link type="primary" @click.stop="goChat(employee.id)">对话</el-button>
+                <el-button link type="primary" @click.stop="openEdit(employee)">编辑</el-button>
+                <el-button link type="danger" @click.stop="askDelete(employee)">删除</el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="panel management-side">
+        <template v-if="selected">
+          <div style="display: flex; justify-content: space-between"><b>员工档案</b><el-button size="small" @click="openEdit(selected)">编辑</el-button></div>
+          <div class="profile-hero">
+            <span class="avatar" :class="{ off: !selected.enabled }">{{ selected.avatar }}</span>
+            <h3>{{ selected.name }}</h3>
+            <p class="muted">{{ selected.domain }}</p>
+            <span class="tag" :class="{ ash: !selected.enabled }">{{ selected.enabled ? "已启用" : "已禁用" }}</span>
+          </div>
+          <div class="section-label">职责范围</div>
+          <div class="detail-excerpt">{{ selected.description }}</div>
+          <div class="section-label">知识资源</div>
+          <div class="resource-list">
+            <span v-for="item in selected.knowledge" :key="item" class="mini-chip">{{ item }}</span>
+            <span v-if="!selected.knowledge.length" class="muted">暂无配置</span>
+          </div>
+          <div class="section-label">技能与工具</div>
+          <div class="resource-list">
+            <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ skillLabel(item) }}</span>
+            <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ item }}</span>
+          </div>
+          <div class="section-label">员工 ID</div>
+          <div class="mono">{{ selected.id }}</div>
+          <el-button type="primary" style="width: 100%; margin-top: 18px" @click="goChat(selected.id)">与 {{ selected.name }} 交流</el-button>
+        </template>
+        <div v-else class="empty">创建第一个数字员工，直接定义他的职责与能力</div>
+      </aside>
+    </div>
+    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalog="catalog" @close="drawerOpen = false" @save="save" />
+    <el-dialog v-model="deleteOpen" title="删除数字员工" width="460px">
+      <p>确定删除 <b>{{ deleting?.name }}</b> 吗？删除后将不再显示该员工。</p>
+      <template #footer>
+        <el-button @click="deleteOpen = false">取消</el-button>
+        <el-button type="danger" @click="confirmDelete">确认删除</el-button>
+      </template>
+    </el-dialog>
+  </section>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
+import { ElMessage } from "element-plus";
+import EmployeeDrawer from "../components/EmployeeDrawer.vue";
+import { deleteEmployee, getSkills, listEmployees, saveEmployee } from "../api";
+import type { Employee, SkillItem } from "../types";
+
+const router = useRouter();
+const employees = ref<Employee[]>([]);
+const query = ref("");
+const selectedId = ref<string | null>(null);
+const drawerOpen = ref(false);
+const editing = ref<Employee | null>(null);
+const deleteOpen = ref(false);
+const deleting = ref<Employee | null>(null);
+const catalog = ref<{ available: boolean; items: SkillItem[] }>({ available: false, items: [] });
+
+const filtered = computed(() => {
+  const needle = query.value.trim().toLowerCase();
+  if (!needle) return employees.value;
+  return employees.value.filter((item) => `${item.name} ${item.domain} ${item.description}`.toLowerCase().includes(needle));
+});
+const selected = computed(() => employees.value.find((item) => item.id === selectedId.value) ?? null);
+
+function skillLabel(id: string) {
+  return catalog.value.items.find((item) => item.id === id)?.name ?? id;
+}
+
+async function reload() {
+  employees.value = await listEmployees();
+  if (!employees.value.some((item) => item.id === selectedId.value)) {
+    selectedId.value = employees.value[0]?.id ?? null;
+  }
+}
+
+function openCreate() {
+  editing.value = null;
+  drawerOpen.value = true;
+}
+function openEdit(employee: Employee) {
+  editing.value = employee;
+  drawerOpen.value = true;
+}
+function goChat(id: string) {
+  void router.push({ path: "/chat", query: { employee: id } });
+}
+function askDelete(employee: Employee) {
+  deleting.value = employee;
+  deleteOpen.value = true;
+}
+
+async function save(body: Omit<Employee, "id" | "agentscope_agent_id" | "mailbox_session_id">) {
+  if (!body.name || !body.domain || !body.description || !body.instructions) {
+    ElMessage.warning("请完善必填信息");
+    return;
+  }
+  try {
+    const result = await saveEmployee(body, editing.value?.id);
+    selectedId.value = result.employee.id;
+    drawerOpen.value = false;
+    await reload();
+    ElMessage.success(result.agentscope.ok ? "员工已保存，并同步到 AgentScope" : `员工已保存。${result.agentscope.detail}`);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "保存失败");
+  }
+}
+
+async function toggle(employee: Employee, enabled: boolean) {
+  try {
+    await saveEmployee({ ...employee, enabled }, employee.id);
+    await reload();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "更新失败");
+  }
+}
+
+async function confirmDelete() {
+  if (!deleting.value) return;
+  try {
+    await deleteEmployee(deleting.value.id);
+    deleteOpen.value = false;
+    await reload();
+    ElMessage.success("员工已删除");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除失败");
+  }
+}
+
+onMounted(async () => {
+  catalog.value = await getSkills();
+  await reload();
+});
+</script>

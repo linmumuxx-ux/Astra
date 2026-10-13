@@ -28,4 +28,8 @@ apps/web/node_modules/
 apps/web/dist/
 apps/web/test-results/
 apps/web/playwright-report/
+nexus/web/node_modules/
+nexus/web/dist/
+nexus/api/.venv/
+nexus/api/data/
 *.egg-info/

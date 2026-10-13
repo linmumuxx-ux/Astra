@@ -1,0 +1,856 @@
+"""Nexus HTTP API. Agent 推理只通过 AgentScope HTTP 发生。"""
+
+from __future__ import annotations
+
+import json
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
+from .agentscope import PINNED_VERSION, AgentScopeClient, AgentScopeError
+from .db import connect, employee_from_row, init_db, message_from_row, new_id, utcnow
+
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_ATTACHMENTS = 6
+
+
+class EmployeeBody(BaseModel):
+    name: str = Field(min_length=1, max_length=24)
+    domain: str = Field(min_length=1, max_length=42)
+    description: str = Field(min_length=1)
+    instructions: str = Field(min_length=1)
+    avatar: str = "🤖"
+    enabled: bool = True
+    knowledge: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+
+
+class ConversationBody(BaseModel):
+    name: str = Field(default="新对话", max_length=40)
+
+
+class MessageBody(BaseModel):
+    text: str = ""
+    attachment_ids: list[str] = Field(default_factory=list)
+
+
+class ChannelBody(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+    description: str = Field(min_length=1)
+    member_ids: list[str] = Field(min_length=1)
+
+
+def data_dir() -> Path:
+    return Path(os.environ.get("NEXUS_DATA_DIR", "nexus/api/data")).resolve()
+
+
+def db_path() -> Path:
+    return data_dir() / "nexus.sqlite3"
+
+
+def system_prompt(body: EmployeeBody | dict[str, Any]) -> str:
+    if isinstance(body, EmployeeBody):
+        name, domain, description, instructions = (
+            body.name,
+            body.domain,
+            body.description,
+            body.instructions,
+        )
+    else:
+        name = body["name"]
+        domain = body["domain"]
+        description = body["description"]
+        instructions = body["instructions"]
+    return (
+        f"你是{name}，责任领域是{domain}。\n"
+        f"职责说明：\n{description}\n"
+        f"工作指令：\n{instructions}\n"
+        "需要其他员工协助时调用 contact_employee，不要代替对方编写答复。"
+    )
+
+
+def lines(values: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        text = value.strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def require_owner(x_owner_id: str | None = Header(default=None)) -> str:
+    if not x_owner_id or not x_owner_id.strip():
+        raise HTTPException(status_code=400, detail="缺少 X-Owner-Id")
+    return x_owner_id.strip()
+
+
+def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        root = data_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "files").mkdir(parents=True, exist_ok=True)
+        init_db(db_path())
+        app.state.agentscope = AgentScopeClient(
+            os.environ.get("NEXUS_AGENTSCOPE_BASE_URL") or None,
+            os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus"),
+        )
+        yield
+        await app.state.agentscope.aclose()
+
+    app = FastAPI(title="Nexus", version="1.0.1", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def database():
+        connection = connect(db_path())
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def client_of(request: Request) -> AgentScopeClient:
+        return request.app.state.agentscope
+
+    def load_employee(connection, employee_id: str) -> dict[str, Any]:
+        row = connection.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="员工不存在")
+        return employee_from_row(row)
+
+    def find_duplicate(connection, name: str, domain: str, exclude: str | None) -> str | None:
+        rows = connection.execute("SELECT id, name, domain FROM employees").fetchall()
+        for row in rows:
+            if exclude and row["id"] == exclude:
+                continue
+            if row["name"].lower() == name.lower():
+                return "员工名称不可重复"
+            if row["domain"].lower() == domain.lower():
+                return "该职责已有员工"
+        return None
+
+    async def accepted_skills(
+        client: AgentScopeClient,
+        requested: list[str],
+        previous: list[str],
+    ) -> tuple[list[str], dict[str, Any]]:
+        requested = lines(requested)
+        catalog: list[dict[str, str]] | None = None
+        if client.configured:
+            try:
+                catalog = await client.list_skills()
+            except AgentScopeError:
+                catalog = None
+        if catalog is not None:
+            allowed = {item["id"] for item in catalog}
+            unknown = [item for item in requested if item not in allowed]
+            if unknown:
+                raise HTTPException(status_code=422, detail="技能不在 AgentScope 技能库中")
+            return requested, {"available": True, "items": catalog}
+        extras = [item for item in requested if item not in set(previous)]
+        if extras:
+            raise HTTPException(status_code=422, detail="当前无法读取技能库，不能新增技能")
+        return requested, {"available": False, "items": []}
+
+    async def sync_agent(client: AgentScopeClient, employee: dict[str, Any]) -> dict[str, Any]:
+        prompt = system_prompt(employee)
+        agent_id = employee["agentscope_agent_id"]
+        mailbox = employee["mailbox_session_id"]
+        try:
+            if agent_id:
+                await client.update_agent(agent_id, employee["name"], prompt)
+            elif client.configured:
+                agent_id = await client.create_agent(employee["name"], prompt)
+            else:
+                raise AgentScopeError("AgentScope 未连接，员工目录已保存，Agent 尚未创建")
+            if not mailbox:
+                mailbox = await client.create_session(agent_id, f"{employee['name']}的邮箱")
+            return {"ok": True, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": ""}
+        except AgentScopeError as exc:
+            return {"ok": False, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": exc.detail}
+
+    def save_agent_link(connection, employee_id: str, sync: dict[str, Any]) -> None:
+        connection.execute(
+            """
+            UPDATE employees
+            SET agentscope_agent_id = ?, mailbox_session_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (sync["agent_id"], sync["mailbox_session_id"], utcnow(), employee_id),
+        )
+        connection.commit()
+
+    def insert_employee(connection, body: EmployeeBody, skills: list[str]) -> dict[str, Any]:
+        employee_id = new_id("emp")
+        now = utcnow()
+        connection.execute(
+            """
+            INSERT INTO employees (
+                id, name, domain, description, instructions, avatar, enabled,
+                knowledge_json, skills_json, tools_json, agentscope_agent_id,
+                mailbox_session_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                employee_id,
+                body.name.strip(),
+                body.domain.strip(),
+                body.description.strip(),
+                body.instructions.strip(),
+                body.avatar,
+                int(body.enabled),
+                json.dumps(lines(body.knowledge), ensure_ascii=False),
+                json.dumps(skills, ensure_ascii=False),
+                json.dumps(lines(body.tools), ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+        return load_employee(connection, employee_id)
+
+    def list_messages(connection, *, conversation_id: str | None = None, channel_id: str | None = None):
+        if conversation_id:
+            rows = connection.execute(
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at",
+                (conversation_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM messages WHERE channel_id = ? ORDER BY created_at",
+                (channel_id,),
+            ).fetchall()
+        return [message_from_row(row) for row in rows]
+
+    def load_attachments(connection, attachment_ids: list[str]) -> list[dict[str, Any]]:
+        if len(attachment_ids) > MAX_ATTACHMENTS:
+            raise HTTPException(status_code=400, detail="每条消息最多添加 6 个附件")
+        found: list[dict[str, Any]] = []
+        for attachment_id in attachment_ids:
+            row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="附件不存在")
+            found.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "type": row["media_type"],
+                    "size": row["size"],
+                }
+            )
+        return found
+
+    def store_user_message(connection, text: str, attachments: list[dict[str, Any]], **scope: str | None):
+        if not text.strip() and not attachments:
+            raise HTTPException(status_code=400, detail="请输入消息或添加附件")
+        message_id = new_id("msg")
+        created_at = utcnow()
+        connection.execute(
+            """
+            INSERT INTO messages (
+                id, conversation_id, channel_id, sender, text, attachments_json, created_at
+            ) VALUES (?, ?, ?, 'user', ?, ?, ?)
+            """,
+            (
+                message_id,
+                scope.get("conversation_id"),
+                scope.get("channel_id"),
+                text.strip(),
+                json.dumps(attachments, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        return message_from_row(row)
+
+    async def ensure_session(
+        connection,
+        client: AgentScopeClient,
+        agent_id: str,
+        current: str | None,
+        name: str,
+    ) -> str:
+        if current:
+            return current
+        return await client.create_session(agent_id, name)
+
+    @app.get("/api/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok", "product": "nexus", "version": "1.0.1"}
+
+    @app.get("/api/v1/runtime")
+    async def runtime(request: Request) -> dict[str, Any]:
+        client = client_of(request)
+        return {
+            "agentscope_version": PINNED_VERSION,
+            "configured": client.configured,
+            "reachable": await client.probe(),
+        }
+
+    @app.get("/api/v1/skills")
+    async def skills(request: Request) -> dict[str, Any]:
+        client = client_of(request)
+        if not client.configured:
+            return {"available": False, "items": []}
+        try:
+            items = await client.list_skills()
+        except AgentScopeError:
+            return {"available": False, "items": []}
+        return {"available": True, "items": items}
+
+    @app.get("/api/v1/employees")
+    def employees(q: str = "", connection=Depends(database)) -> dict[str, Any]:
+        rows = connection.execute("SELECT * FROM employees ORDER BY created_at").fetchall()
+        items = [employee_from_row(row) for row in rows]
+        needle = q.strip().lower()
+        if needle:
+            items = [
+                item
+                for item in items
+                if needle in f"{item['name']} {item['domain']} {item['description']}".lower()
+            ]
+        return {"items": items}
+
+    @app.post("/api/v1/employees", status_code=201)
+    async def create_employee(
+        body: EmployeeBody,
+        request: Request,
+        connection=Depends(database),
+    ) -> dict[str, Any]:
+        conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), None)
+        if conflict:
+            raise HTTPException(status_code=409, detail=conflict)
+        chosen, _catalog = await accepted_skills(client_of(request), body.skills, [])
+        employee = insert_employee(connection, body, chosen)
+        sync = await sync_agent(client_of(request), employee)
+        save_agent_link(connection, employee["id"], sync)
+        employee = load_employee(connection, employee["id"])
+        return {"employee": employee, "agentscope": {"ok": sync["ok"], "detail": sync["detail"]}}
+
+    @app.patch("/api/v1/employees/{employee_id}")
+    async def update_employee(
+        employee_id: str,
+        body: EmployeeBody,
+        request: Request,
+        connection=Depends(database),
+    ) -> dict[str, Any]:
+        current = load_employee(connection, employee_id)
+        conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), employee_id)
+        if conflict:
+            raise HTTPException(status_code=409, detail=conflict)
+        chosen, _catalog = await accepted_skills(client_of(request), body.skills, current["skills"])
+        connection.execute(
+            """
+            UPDATE employees
+            SET name = ?, domain = ?, description = ?, instructions = ?, avatar = ?, enabled = ?,
+                knowledge_json = ?, skills_json = ?, tools_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                body.name.strip(),
+                body.domain.strip(),
+                body.description.strip(),
+                body.instructions.strip(),
+                body.avatar,
+                int(body.enabled),
+                json.dumps(lines(body.knowledge), ensure_ascii=False),
+                json.dumps(chosen, ensure_ascii=False),
+                json.dumps(lines(body.tools), ensure_ascii=False),
+                utcnow(),
+                employee_id,
+            ),
+        )
+        connection.commit()
+        employee = load_employee(connection, employee_id)
+        sync = await sync_agent(client_of(request), employee)
+        save_agent_link(connection, employee_id, sync)
+        return {
+            "employee": load_employee(connection, employee_id),
+            "agentscope": {"ok": sync["ok"], "detail": sync["detail"]},
+        }
+
+    @app.delete("/api/v1/employees/{employee_id}")
+    async def delete_employee(
+        employee_id: str,
+        request: Request,
+        connection=Depends(database),
+    ) -> dict[str, bool]:
+        employee = load_employee(connection, employee_id)
+        client = client_of(request)
+        if employee["agentscope_agent_id"] and client.configured:
+            try:
+                await client.delete_agent(employee["agentscope_agent_id"])
+            except AgentScopeError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        connection.execute("DELETE FROM channel_members WHERE employee_id = ?", (employee_id,))
+        connection.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
+        connection.commit()
+        return {"deleted": True}
+
+    @app.post("/api/v1/attachments", status_code=201)
+    async def upload_attachment(file: UploadFile = File(...), connection=Depends(database)) -> dict[str, Any]:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="不能添加空文件")
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=400, detail="单个附件不能超过 20 MB")
+        attachment_id = new_id("att")
+        target = data_dir() / "files" / attachment_id
+        target.write_bytes(content)
+        media_type = file.content_type or "application/octet-stream"
+        filename = file.filename or "未命名文件"
+        connection.execute(
+            """
+            INSERT INTO attachments (id, name, media_type, size, path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (attachment_id, filename, media_type, len(content), str(target), utcnow()),
+        )
+        connection.commit()
+        return {"id": attachment_id, "name": filename, "type": media_type, "size": len(content)}
+
+    @app.get("/api/v1/attachments/{attachment_id}")
+    def download_attachment(attachment_id: str, connection=Depends(database)) -> FileResponse:
+        row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        if row is None or not Path(row["path"]).is_file():
+            raise HTTPException(status_code=404, detail="附件内容不存在")
+        return FileResponse(row["path"], media_type=row["media_type"], filename=row["name"])
+
+    @app.get("/api/v1/employees/{employee_id}/conversations")
+    def list_conversations(
+        employee_id: str,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        load_employee(connection, employee_id)
+        rows = connection.execute(
+            """
+            SELECT * FROM conversations
+            WHERE employee_id = ? AND owner_id = ?
+            ORDER BY created_at
+            """,
+            (employee_id, owner_id),
+        ).fetchall()
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "employee_id": row["employee_id"],
+                    "name": row["name"],
+                    "agentscope_session_id": row["agentscope_session_id"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ]
+        }
+
+    @app.post("/api/v1/employees/{employee_id}/conversations", status_code=201)
+    def create_conversation(
+        employee_id: str,
+        body: ConversationBody,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        load_employee(connection, employee_id)
+        conversation_id = new_id("conv")
+        now = utcnow()
+        connection.execute(
+            """
+            INSERT INTO conversations (
+                id, employee_id, owner_id, name, agentscope_session_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (conversation_id, employee_id, owner_id, body.name.strip() or "新对话", now, now),
+        )
+        connection.commit()
+        return {"id": conversation_id, "name": body.name.strip() or "新对话", "agentscope_session_id": None}
+
+    def owned_conversation(connection, conversation_id: str, owner_id: str):
+        row = connection.execute(
+            "SELECT * FROM conversations WHERE id = ? AND owner_id = ?",
+            (conversation_id, owner_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="对话不存在")
+        return row
+
+    @app.get("/api/v1/conversations/{conversation_id}")
+    def get_conversation(
+        conversation_id: str,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        row = owned_conversation(connection, conversation_id, owner_id)
+        return {
+            "id": row["id"],
+            "employee_id": row["employee_id"],
+            "name": row["name"],
+            "agentscope_session_id": row["agentscope_session_id"],
+            "messages": list_messages(connection, conversation_id=conversation_id),
+        }
+
+    @app.post("/api/v1/conversations/{conversation_id}/messages")
+    async def send_private(
+        conversation_id: str,
+        body: MessageBody,
+        request: Request,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        row = owned_conversation(connection, conversation_id, owner_id)
+        employee = load_employee(connection, row["employee_id"])
+        if not employee["enabled"]:
+            raise HTTPException(status_code=409, detail="该员工已禁用")
+        attachments = load_attachments(connection, body.attachment_ids)
+        message = store_user_message(
+            connection,
+            body.text,
+            attachments,
+            conversation_id=conversation_id,
+            channel_id=None,
+        )
+        if message["text"] and row["name"] == "新对话":
+            title = message["text"] if len(message["text"]) <= 20 else message["text"][:20] + "…"
+            connection.execute(
+                "UPDATE conversations SET name = ?, updated_at = ? WHERE id = ?",
+                (title, utcnow(), conversation_id),
+            )
+            connection.commit()
+        elif attachments and row["name"] == "新对话":
+            connection.execute(
+                "UPDATE conversations SET name = ?, updated_at = ? WHERE id = ?",
+                (attachments[0]["name"], utcnow(), conversation_id),
+            )
+            connection.commit()
+        client = client_of(request)
+        outcome = {
+            "accepted": False,
+            "detail": "AgentScope 未连接，没有生成回复",
+            "session_id": row["agentscope_session_id"],
+        }
+        if not employee["agentscope_agent_id"]:
+            outcome["detail"] = "AgentScope 尚未创建该员工，没有生成回复"
+        else:
+            try:
+                session_id = await ensure_session(
+                    connection,
+                    client,
+                    employee["agentscope_agent_id"],
+                    row["agentscope_session_id"],
+                    row["name"],
+                )
+                connection.execute(
+                    "UPDATE conversations SET agentscope_session_id = ?, updated_at = ? WHERE id = ?",
+                    (session_id, utcnow(), conversation_id),
+                )
+                connection.commit()
+                text = body.text.strip() or "（附件）" + "、".join(item["name"] for item in attachments)
+                await client.trigger_chat(employee["agentscope_agent_id"], session_id, text, owner_id)
+                outcome = {"accepted": True, "detail": "", "session_id": session_id}
+            except AgentScopeError as exc:
+                outcome["detail"] = exc.detail
+        return {"message": message, "agentscope": outcome}
+
+    @app.get("/api/v1/conversations/{conversation_id}/stream")
+    async def stream_private(
+        conversation_id: str,
+        request: Request,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        row = owned_conversation(connection, conversation_id, owner_id)
+        employee = load_employee(connection, row["employee_id"])
+        if not row["agentscope_session_id"] or not employee["agentscope_agent_id"]:
+            raise HTTPException(status_code=409, detail="这条对话还没有 AgentScope Session")
+        return await proxy_stream(
+            client_of(request),
+            employee["agentscope_agent_id"],
+            row["agentscope_session_id"],
+        )
+
+    def channel_payload(connection, channel_id: str) -> dict[str, Any]:
+        row = connection.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="讨论不存在")
+        members = connection.execute(
+            "SELECT employee_id, agentscope_session_id FROM channel_members WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchall()
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "members": [
+                {"employee_id": item["employee_id"], "agentscope_session_id": item["agentscope_session_id"]}
+                for item in members
+            ],
+            "created_at": row["created_at"],
+        }
+
+    def ensure_members_exist(connection, member_ids: list[str]) -> list[str]:
+        unique: list[str] = []
+        for member_id in member_ids:
+            if member_id in unique:
+                continue
+            load_employee(connection, member_id)
+            unique.append(member_id)
+        if not unique:
+            raise HTTPException(status_code=422, detail="至少选择一名员工")
+        return unique
+
+    @app.get("/api/v1/channels")
+    def list_channels(connection=Depends(database)) -> dict[str, Any]:
+        rows = connection.execute("SELECT id FROM channels ORDER BY created_at DESC").fetchall()
+        return {"items": [channel_payload(connection, row["id"]) for row in rows]}
+
+    @app.post("/api/v1/channels", status_code=201)
+    def create_channel(body: ChannelBody, connection=Depends(database)) -> dict[str, Any]:
+        member_ids = ensure_members_exist(connection, body.member_ids)
+        channel_id = new_id("ch")
+        now = utcnow()
+        connection.execute(
+            "INSERT INTO channels (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (channel_id, body.name.strip(), body.description.strip(), now, now),
+        )
+        for member_id in member_ids:
+            connection.execute(
+                """
+                INSERT INTO channel_members (channel_id, employee_id, agentscope_session_id)
+                VALUES (?, ?, NULL)
+                """,
+                (channel_id, member_id),
+            )
+        connection.commit()
+        return channel_payload(connection, channel_id)
+
+    @app.patch("/api/v1/channels/{channel_id}")
+    def update_channel(channel_id: str, body: ChannelBody, connection=Depends(database)) -> dict[str, Any]:
+        channel_payload(connection, channel_id)
+        member_ids = ensure_members_exist(connection, body.member_ids)
+        connection.execute(
+            "UPDATE channels SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+            (body.name.strip(), body.description.strip(), utcnow(), channel_id),
+        )
+        existing = {
+            row["employee_id"]: row["agentscope_session_id"]
+            for row in connection.execute(
+                "SELECT employee_id, agentscope_session_id FROM channel_members WHERE channel_id = ?",
+                (channel_id,),
+            ).fetchall()
+        }
+        connection.execute("DELETE FROM channel_members WHERE channel_id = ?", (channel_id,))
+        for member_id in member_ids:
+            connection.execute(
+                """
+                INSERT INTO channel_members (channel_id, employee_id, agentscope_session_id)
+                VALUES (?, ?, ?)
+                """,
+                (channel_id, member_id, existing.get(member_id)),
+            )
+        connection.commit()
+        return channel_payload(connection, channel_id)
+
+    @app.get("/api/v1/channels/{channel_id}/messages")
+    def channel_messages(channel_id: str, connection=Depends(database)):
+        channel = channel_payload(connection, channel_id)
+        channel["messages"] = list_messages(connection, channel_id=channel_id)
+        return channel
+
+    def mentions(text: str, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        found: list[dict[str, Any]] = []
+        remaining = text
+        for employee in sorted(members, key=lambda item: len(item["name"]), reverse=True):
+            token = f"@{employee['name']}"
+            if token in remaining:
+                found.append(employee)
+                remaining = remaining.replace(token, "")
+        return found
+
+    @app.post("/api/v1/channels/{channel_id}/messages")
+    async def send_channel(
+        channel_id: str,
+        body: MessageBody,
+        request: Request,
+        connection=Depends(database),
+    ):
+        channel = channel_payload(connection, channel_id)
+        attachments = load_attachments(connection, body.attachment_ids)
+        message = store_user_message(
+            connection,
+            body.text,
+            attachments,
+            conversation_id=None,
+            channel_id=channel_id,
+        )
+        members = [load_employee(connection, item["employee_id"]) for item in channel["members"]]
+        named = mentions(body.text, members)
+        client = client_of(request)
+        triggered: list[dict[str, Any]] = []
+        for employee in named:
+            result = {
+                "employee_id": employee["id"],
+                "name": employee["name"],
+                "accepted": False,
+                "detail": "",
+                "session_id": None,
+            }
+            if not employee["enabled"]:
+                result["detail"] = f"{employee['name']} 已禁用，没有触发"
+                triggered.append(result)
+                continue
+            if not employee["agentscope_agent_id"]:
+                result["detail"] = "AgentScope 尚未创建该员工，没有生成回复"
+                triggered.append(result)
+                continue
+            binding = next(item for item in channel["members"] if item["employee_id"] == employee["id"])
+            try:
+                session_id = await ensure_session(
+                    connection,
+                    client,
+                    employee["agentscope_agent_id"],
+                    binding["agentscope_session_id"],
+                    channel["name"],
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_members SET agentscope_session_id = ?
+                    WHERE channel_id = ? AND employee_id = ?
+                    """,
+                    (session_id, channel_id, employee["id"]),
+                )
+                connection.commit()
+                await client.trigger_chat(
+                    employee["agentscope_agent_id"],
+                    session_id,
+                    body.text.strip() or "（附件）",
+                    "user",
+                )
+                result.update(accepted=True, session_id=session_id)
+            except AgentScopeError as exc:
+                result["detail"] = exc.detail
+                result["session_id"] = binding["agentscope_session_id"]
+            triggered.append(result)
+        employee_messages = connection.execute(
+            "SELECT COUNT(*) AS count FROM messages WHERE channel_id = ? AND sender != 'user'",
+            (channel_id,),
+        ).fetchone()
+        if employee_messages["count"]:
+            raise HTTPException(status_code=500, detail="团队消息写入了非用户发言")
+        return {"message": message, "triggered": triggered}
+
+    @app.get("/api/v1/channels/{channel_id}/members/{employee_id}/stream")
+    async def stream_member(
+        channel_id: str,
+        employee_id: str,
+        request: Request,
+        connection=Depends(database),
+    ):
+        channel = channel_payload(connection, channel_id)
+        employee = load_employee(connection, employee_id)
+        binding = next((item for item in channel["members"] if item["employee_id"] == employee_id), None)
+        if binding is None or not binding["agentscope_session_id"] or not employee["agentscope_agent_id"]:
+            raise HTTPException(status_code=409, detail="该成员还没有 AgentScope Session")
+        return await proxy_stream(
+            client_of(request),
+            employee["agentscope_agent_id"],
+            binding["agentscope_session_id"],
+        )
+
+    @app.get("/api/v1/peers/resolve")
+    def resolve_peer(session_id: str, name: str, connection=Depends(database)) -> dict[str, str]:
+        target_name = name.strip()
+        private = connection.execute(
+            "SELECT * FROM conversations WHERE agentscope_session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if private is not None:
+            sender = load_employee(connection, private["employee_id"])
+            target = employee_by_name(connection, target_name)
+            unreachable = (
+                target is None
+                or target["id"] == sender["id"]
+                or not target["agentscope_agent_id"]
+                or not target["mailbox_session_id"]
+            )
+            if unreachable:
+                raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            return {
+                "agent_id": target["agentscope_agent_id"],
+                "session_id": target["mailbox_session_id"],
+                "sender_name": sender["name"],
+            }
+        member = connection.execute(
+            "SELECT * FROM channel_members WHERE agentscope_session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if member is None:
+            raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+        sender = load_employee(connection, member["employee_id"])
+        peers = connection.execute(
+            "SELECT * FROM channel_members WHERE channel_id = ?",
+            (member["channel_id"],),
+        ).fetchall()
+        for peer in peers:
+            employee = load_employee(connection, peer["employee_id"])
+            same_channel = employee["name"] == target_name and employee["id"] != sender["id"]
+            reachable = employee["agentscope_agent_id"] and peer["agentscope_session_id"]
+            if same_channel and reachable:
+                return {
+                    "agent_id": employee["agentscope_agent_id"],
+                    "session_id": peer["agentscope_session_id"],
+                    "sender_name": sender["name"],
+                }
+        raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+
+    async def proxy_stream(client: AgentScopeClient, agent_id: str, session_id: str) -> StreamingResponse:
+        if not client.configured:
+            raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
+
+        async def generate():
+            try:
+                async with client.stream_session(agent_id, session_id) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread()).decode("utf-8", "replace")
+                        payload = json.dumps(
+                            {"type": "NEXUS_UPSTREAM_ERROR", "detail": detail},
+                            ensure_ascii=False,
+                        )
+                        yield f"data: {payload}\n\n"
+                        return
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+            except AgentScopeError as exc:
+                payload = json.dumps(
+                    {"type": "NEXUS_UPSTREAM_ERROR", "detail": exc.detail},
+                    ensure_ascii=False,
+                )
+                yield f"data: {payload}\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    return app
+
+
+def employee_by_name(connection, name: str) -> dict[str, Any] | None:
+    rows = connection.execute("SELECT * FROM employees").fetchall()
+    for row in rows:
+        employee = employee_from_row(row)
+        if employee["name"] == name:
+            return employee
+    return None
+
+
+app = create_app()
