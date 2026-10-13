@@ -85,3 +85,41 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 同一条对话的两轮共用第一条 Session，另一条对话是第二条 Session。日志正文进入了 AgentScope 保存的用户消息。另一个匿名标识不能读取。禁用后是 409。`qwen2.5:3b` 没有按提示只回复「在」。图片以 `data` 块发送；这个文本模型是否看见图，这次没有单独证明。
 
 浏览器在 `http://127.0.0.1:5174/chat` 粘贴并移除了 `shot.png`，拖入并看到了 `drop.log`，记忆页为只读，没有员工编辑表单，发送后的用户消息留在页面上。
+
+# 9. 团队讨论验证记录
+
+日期：2026-10-13。仍是本机 Redis、AgentScope 2.0.10 和 Ollama `qwen2.5:3b`。没有打开知识库，也没有写入示例技能。
+
+单元测试：
+
+```bash
+PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_api.py -q
+```
+
+`21 passed`。其中：只点名的员工会收到 `POST /chat`；日志正文进入该员工的内容块；尚未被点名的同事在 `contact_employee` 解析时得到这条讨论自己的 Session，而不是邮箱；同一句话再次解析返回 409；同一发送方第三次联系被拒绝；另一位同事仍可以再联系下一位；禁用同事返回 404。读回的助手句标的是自动化工程师的员工 id，消息表里仍然只有 `user`。
+
+实跑：
+
+```bash
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
+  nexus/api/.venv/bin/pytest \
+  nexus/api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact -s
+```
+
+`1 passed in 34.51s`。打印：
+
+```json
+{"ops_tools": ["TaskGet", "TaskGet"], "ops_deltas": "{}\n{\"name\": \"contact_employee\", \"arguments\": {\"employee_name\": \"unknown_employee\", \"message\": \"Task not found. Please provide the correct task ID and retry.\"}}", "eng_tools": [], "eng_deltas": "", "tool_deltas": "", "sessions": ["emp_7b7ae8d653df"], "senders": ["emp_7b7ae8d653df", "user"], "log_seen": true, "resolve_statuses": [200, 409], "stream_errors": []}
+```
+
+人类消息只触发了运营。日志 `FAIL-TOKEN-55` 进入了该员工的 Session。频道里的助手文本属于运营自己的员工 id。解析为自动化工程师创建了讨论 Session，重复同一句话返回 409。同一轮更早的两次实跑里，模型分别调用了 `TaskGet` 和连续多次 `TeamCreate`，都没有真正调用 `contact_employee`。`contact_employee` 出现在文本增量里，不是工具事件。因此运营 → 自动化 → 工具这一跳没有由模型自己走完。
+
+为了单独确认投递路径，又用 `contact_employee` 内部的 `deliver_to_inbox` 向已经解析出的讨论 Session 写了一条提示。这不是模型自己选的工具。对方 Session `9c0578ce0a5c49008367b297a37bd902` 与邮箱 `ffcc672dcba9494d8be1cfa2a3142c1f` 不同。频道记录里的发言人是：
+
+- `user`：人类的点名消息
+- `emp_a365d98d488a`：被点名员工自己的文本，内容是 `TaskGet`
+- `emp_3e0f6364c810`：被叫醒同事自己的文本，开头是 “None of the provided functions or methods are needed”
+
+两位员工的文本没有互换。同事的话来自模型，不是 Nexus 写好的回复。
+
+浏览器打开 `http://127.0.0.1:5174/team`：创建了「浏览器讨论」，6 名员工出现在勾选列表里；编辑后成员数为 4。输入框写明可以拖入或粘贴图片。拖入 `shot.png` 后能预览，移除后预览消失。未点名就发送时，页面说明没有触发任何人。页面没有员工编辑表单。

@@ -606,10 +606,9 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
                 ops_name,
                 f"运行{suffix}",
                 (
-                    f"用户提到自动化失败时，必须调用 contact_employee。"
-                    f"employee_name 为{eng_name}。"
-                    "message 写：请看自动化失败。"
-                    "不要代替对方写结论，也不要再次调用这个工具。"
+                    "用户要求联系同事时，必须调用 contact_employee。"
+                    "employee_name 与 message 使用用户给出的原文。"
+                    "不要代替对方写出答复。"
                 ),
             )["employee"]
             eng = _create_employee(
@@ -646,7 +645,13 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             sent = client.post(
                 f"{NEXUS}/api/v1/channels/{channel_id}/messages",
                 json={
-                    "text": f"@{ops_name} 自动化失败了，日志在附件里。",
+                    "text": (
+                        f"@{ops_name} 自动化失败了。"
+                        "请立刻调用 contact_employee。"
+                        f"employee_name 为{eng_name}。"
+                        "message 为请看自动化失败。"
+                        "不要自己写出结论。"
+                    ),
                     "attachment_ids": [uploaded.json()["id"]],
                 },
             )
