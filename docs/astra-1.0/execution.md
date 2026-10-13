@@ -38,4 +38,12 @@
 
 `employee-review-live-report.json` 另外记录 OpenCode 1.19.0 上独立员工 Persona 读取工具输入、明确退出码、原文和提交哈希，完成逐条业务验收；Persona 与工程 Session 独立。首次真实试验因模型改写原文而被严格拒绝，未放宽校验。
 
-自动返工跟踪、关联 Goal 检查、跨 Worker 续做产物、人工接管/外部副作用对账、工程 Celery 实际并发、Linux 完整业务部署和完整多员工真实协作仍未通过。单个员工真实验收不替代这些门禁，整体验收标记保持 false。
+## 返工与产物续做
+
+schema 1003 为执行保存 `artifact_commit` 与 `continued_from_execution_id`。原生树已结束后，在事务外以临时 Git index 记录 tracked/非忽略文件的不可变提交，保留删除和新增内容；不修改分支、HEAD 或原 index。归档禁用 Git 外部过滤器/hooks/签名，限制 10000 个文件和 128 MiB；执行 UUID 的产物 ref 只可首次建立，重跑须内容相同，不能覆盖。Task 自有 OpenCode 配置随产物保留，不被工程默认配置覆盖。
+
+返工必须经逐条 TaskReview；直接切换返工状态的入口已删除。redispatch 只能处理本回合原 Task 当前返工事件，复验主责、原始版本、Grant、Worker 与租约。新尝试绑定具体返工验收和上轮产物，在独立工作区/Session 续做；旧尝试 superseded_by 阻止回写。缺少产物时明确拒绝，不能退回默认基线重跑。跨主机/不同 Git 对象库的产物转移仍未接通。
+
+`rework-live-report.json` 记录真实失败测试→独立员工 REWORK→原 Task 再派工→继承产物修复→原始五项测试通过→新 Persona 独立 COMPLETED。只有一个 Task，两个工程 Session 和三个 Persona Session；原测试 SHA256 未变，第二轮基线等于第一轮产物。人工接管/Goal 跟踪和完整多员工流程仍需继续验收。
+
+关联 Goal 后续检查、跨 Worker/主机产物转移、人工接管/外部副作用对账、工程 Celery 实际并发、Linux 完整业务部署和完整多员工真实协作仍未通过。单员工返工验收不替代这些门禁，整体验收标记保持 false。

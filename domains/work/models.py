@@ -36,6 +36,8 @@ class TaskExecution(Record, Base):
     native_session_id: Mapped[str | None] = mapped_column(String(120))
     workspace_ref: Mapped[str | None] = mapped_column(Text)
     workspace_base_commit: Mapped[str | None] = mapped_column(String(64))
+    artifact_commit: Mapped[str | None] = mapped_column(String(64))
+    continued_from_execution_id: Mapped[str | None] = mapped_column(ForeignKey("task_executions.id"))
     preparation_started_at: Mapped[int | None]
     submission_started_at: Mapped[int | None]
     permission_digest: Mapped[str | None] = mapped_column(String(64))

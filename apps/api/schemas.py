@@ -317,6 +317,13 @@ class ReviewAction(PersonaAction):
     review: TaskReviewInput
 
 
+class RedispatchAction(PersonaAction):
+    type: Literal["redispatch"]
+    task_id: str
+    expected_task_revision: int = Field(ge=1)
+    worker_id: str
+
+
 class PersonaDecision(Input):
     plan: str = Field(max_length=4000)
     actions: list[
@@ -328,7 +335,8 @@ class PersonaDecision(Input):
             | FollowUpAction
             | AskHumanAction
             | HandoffAction
-            | ReviewAction,
+            | ReviewAction
+            | RedispatchAction,
             Field(discriminator="type"),
         ]
     ] = Field(min_length=1, max_length=12)

@@ -765,7 +765,7 @@ def create_app(database_url: str | None = None):
         session=Depends(session_dep),
         idempotency_key: str | None = Header(default=None),
     ):
-        if action not in {"pause", "resume", "cancel", "rework"}:
+        if action not in {"pause", "resume", "cancel"}:
             raise DomainError(404, "未知任务操作")
 
         async def handle(p):

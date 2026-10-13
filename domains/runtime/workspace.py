@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,20 +35,29 @@ class WorkspaceBinding:
     base_commit: str
 
 
-async def _git(args: list[str], *, timeout_seconds: float = 30) -> tuple[int, str, str]:
+async def _git(
+    args: list[str], *, timeout_seconds: float = 30, env=None, input_bytes=None, raw_output=False
+) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         "git",
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
+        env=env,
     )
     try:
-        out, err = await asyncio.wait_for(process.communicate(), timeout_seconds)
+        out, err = await asyncio.wait_for(process.communicate(input_bytes), timeout_seconds)
     except TimeoutError:
         process.kill()
         await process.communicate()
         raise WorkspaceUnsafe("Git 控制请求超时；请核验 worktree 注册后重试") from None
-    return process.returncode or 0, out.decode(errors="replace").strip(), err.decode(errors="replace").strip()
+    decoded = out.decode(errors="strict")
+    return (
+        process.returncode or 0,
+        decoded if raw_output else decoded.strip(),
+        err.decode(errors="replace").strip(),
+    )
 
 
 def _canonical(path: Path, *, must_exist: bool = True) -> Path:
@@ -93,9 +105,9 @@ async def _verify_worktree(project: Path, target: Path) -> None:
         raise WorkspaceUnsafe("TaskExecution 不得复用工程主工作区")
 
 
-def _inherit_config(project: Path, target: Path, *, created: bool) -> None:
+def _inherit_config(project: Path, target: Path) -> None:
     """保留任务自己的 OpenCode 配置；首次工作区复制工程提供的配置。"""
-    if not created and any((target / name).exists() for name in _CONFIG_NAMES):
+    if any((target / name).exists() for name in _CONFIG_NAMES):
         return
     for name in _CONFIG_NAMES:
         source, destination = project / name, target / name
@@ -155,7 +167,7 @@ async def prepare_task_workspace(
             raise WorkspaceUnsafe("Git worktree 创建失败；请核验注册和残留目录")
         await _verify_worktree(project, target)
     if inherit_project_config:
-        _inherit_config(project, target, created=not exists)
+        _inherit_config(project, target)
     return WorkspaceBinding(str(project), str(target), task_id, execution_id, commit)
 
 
@@ -172,3 +184,86 @@ async def verify_workspace_binding(binding: WorkspaceBinding, *, workspace_root:
     code, _, _ = await _git(["-C", str(project), "cat-file", "-e", f"{binding.base_commit}^{{commit}}"])
     if code:
         raise WorkspaceUnsafe("已绑定基线 commit 不可核验")
+
+
+async def capture_workspace_artifact(
+    binding: WorkspaceBinding,
+    *,
+    workspace_root: str,
+    captured_at: int,
+    max_bytes: int = 128 * 1024 * 1024,
+    max_files: int = 10000,
+) -> str:
+    """保存 tracked/非忽略文件的 Git 对象，不改变工程分支、HEAD 或调用者 index。
+
+    临时 index 禁用外部过滤器/签名/hooks，防止归档步骤执行未授权的项目脚本。
+    执行 UUID 对应的 ref 只能首次建立；重跑必须得到相同内容，不能覆盖旧产物。
+    """
+    await verify_workspace_binding(binding, workspace_root=workspace_root)
+    target = Path(binding.directory)
+    with tempfile.TemporaryDirectory(prefix="astra-v1-artifact-index-") as temporary:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(
+            {
+                "GIT_INDEX_FILE": str(Path(temporary) / "index"),
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_AUTHOR_NAME": "Astra Artifact",
+                "GIT_COMMITTER_NAME": "Astra Artifact",
+                "GIT_AUTHOR_EMAIL": "artifact@astra.invalid",
+                "GIT_COMMITTER_EMAIL": "artifact@astra.invalid",
+                "GIT_AUTHOR_DATE": f"@{captured_at} +0000",
+                "GIT_COMMITTER_DATE": f"@{captured_at} +0000",
+            }
+        )
+        git = ["-C", str(target), "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.devnull]
+        _, filters, _ = await _git(
+            git + ["config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process|smudge|required)$"],
+            env=env,
+        )
+        for name in filters.splitlines():
+            git += ["-c", name + ("=false" if name.endswith(".required") else "=")]
+
+        async def run(args, *, input_bytes=None, raw_output=False):
+            code, out, _ = await _git(git + args, env=env, input_bytes=input_bytes, raw_output=raw_output)
+            if code:
+                raise WorkspaceUnsafe("无法建立或核验不可变工程产物；保留原工作区等待对账")
+            return out
+
+        await run(["read-tree", "HEAD"])
+        listing = await run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], raw_output=True)
+        paths = [value for value in listing.split("\0") if value]
+        if len(paths) > max_files:
+            raise WorkspaceUnsafe("工程产物文件数量超过部署边界，需人工确认")
+        total = 0
+        for relative in paths:
+            path = target / relative
+            if path.parent.resolve() != path.parent:
+                raise WorkspaceUnsafe("产物父目录不能通过符号链接越界")
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                continue  # tracked 删除也属于明确的 Git 产物变化。
+            if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+                raise WorkspaceUnsafe("工程产物包含特殊设备或管道，不能归档")
+            total += metadata.st_size
+        if total > max_bytes:
+            raise WorkspaceUnsafe("工程产物超过部署容量边界，需人工确认")
+        await run(["add", "--all", "--", "."])
+        tree = await run(["write-tree"])
+        # 归档期间的写入或新增文件不可被静默丢失。
+        await run(["diff", "--quiet", "--no-ext-diff", "--no-textconv"])
+        if await run(["ls-files", "--others", "--exclude-standard"]):
+            raise WorkspaceUnsafe("归档期间工作区出现新文件，须先停止写入再核验")
+        commit = await run(
+            ["-c", "commit.gpgsign=false", "commit-tree", tree, "-p", binding.base_commit],
+            input_bytes=f"Astra execution artifact {binding.execution_id}\n".encode(),
+        )
+        ref = f"refs/astra/artifacts/{binding.execution_id}"
+        code, current, _ = await _git(git + ["rev-parse", "--verify", ref], env=env)
+        if code == 0:
+            if current != commit:
+                raise WorkspaceUnsafe("同一执行的已保存产物不可被修改或覆盖")
+        else:
+            await run(["update-ref", ref, commit, "0" * len(commit)])
+        return commit

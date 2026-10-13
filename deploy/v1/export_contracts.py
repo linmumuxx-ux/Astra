@@ -15,6 +15,9 @@ def write_json(name, value):
 
 async def export():
     sys.path.insert(0, str(ROOT))
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
     from agents.tools import build_tools
     from apps.api.main import create_app
     from apps.api.schemas import PersonaDecision
@@ -32,11 +35,14 @@ async def export():
         "tools.json",
         [tool.model_dump(by_alias=True, exclude_none=True) for tool in await server.list_tools()],
     )
+    migration_config = Config(str(ROOT / "migrations/schema/alembic.ini"))
+    revision = ScriptDirectory.from_config(migration_config).get_current_head()
     lines = [
         "# Astra 1.0 当前 schema 数据字典",
         "",
         "此快照由 `deploy/v1/export_contracts.py` 从新 ORM 生成；模型与静态 Alembic 迁移为实施事实源。",
-        "当前 30 张领域表，初始 revision `1000`；时间字段为 Unix 秒，原生 Session ID 为索引而非消息副本。",
+        f"当前 30 张领域表，Alembic revision `{revision}`；时间字段为 Unix 秒，"
+        "原生 Session ID 为索引而非消息副本。",
         "所有 Record 含稳定 UUID、revision 和 created_at；只有明确的一次性迁移可写只读历史记录。",
         "",
     ]

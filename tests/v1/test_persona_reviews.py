@@ -1,5 +1,6 @@
 """员工验收使用真实领域事务与明确协议模拟；不冒充真实模型验收。"""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,8 @@ from domains.identity.models import Actor, WorkspaceGrant
 from domains.organization.models import Employee, Role
 from domains.personas.models import EmployeeState, InboxAdmission
 from domains.runtime.errors import OpenCodeUnavailable
-from domains.work.models import Task, TaskReview
+from domains.runtime.service import assert_current_execution
+from domains.work.models import Task, TaskExecution, TaskReview
 
 from . import test_executions as execution_tests
 from .test_personas import DecidingRuntime, runner_for
@@ -100,6 +102,57 @@ async def test_failed_native_test_can_support_rework_but_not_completion(executio
         review = await session.scalar(select(TaskReview))
         assert task.status == "QUEUED" and review.outcome == "REWORK"
         assert review.criteria_results[0]["evidence"][0]["excerpt"] == "1 original test failed"
+
+
+async def test_employee_redispatch_continues_artifact_same_task_and_fences_old_attempt(
+    execution_env, tmp_path
+):
+    database, principal, engineering, native, first_id, _ = execution_env
+    native.artifact_text = "第一轮真实工作区的未提交产物"
+    reviewer, deciding, _ = await employee_reviewer(execution_env, tmp_path, outcome="REWORK")
+    assert (await reviewer.run("employee"))["status"] == "FINISHED"
+    async with database.sessions() as session:
+        revision = (await session.get(Task, "task-0")).revision
+        first = await session.get(TaskExecution, first_id)
+        first_artifact, first_directory, first_fence = (
+            first.artifact_commit,
+            first.workspace_ref,
+            first.lease_fence,
+        )
+    deciding.action = "redispatch"
+    deciding.extra_payload = {"task_id": "task-0", "expected_task_revision": revision, "worker_id": "worker"}
+    assert (await reviewer.run("employee"))["status"] == "FINISHED"
+    assert (await reviewer.run("employee"))["status"] == "NO_PENDING_INPUT"
+    async with database.sessions() as session:
+        task = await session.get(Task, "task-0")
+        executions = (await session.scalars(select(TaskExecution).order_by(TaskExecution.attempt_no))).all()
+        assert task.status == "DISPATCHED" and len(executions) == 2
+        second = executions[1]
+        assert second.task_id == task.id and second.continued_from_execution_id == first_id
+        assert second.grant_snapshot["continuation_commit"] == first_artifact
+        assert executions[0].superseded_by == second.id
+        with pytest.raises(DomainError):
+            await assert_current_execution(session, first_id, expected_fence=first_fence)
+        second_id = second.id
+    native.artifact_text = None
+    submitted = await engineering.run(second_id, poll_seconds=0.001)
+    assert submitted["state"] == "SUBMITTED" and submitted["workspace_ref"] != first_directory
+    assert Path(submitted["workspace_ref"], "progress.txt").read_text() == "第一轮真实工作区的未提交产物"
+    assert submitted["workspace_base_commit"] == first_artifact
+
+
+async def test_rework_without_artifact_cannot_silently_restart_default_baseline(execution_env, tmp_path):
+    database, principal, _, _, first_id, _ = execution_env
+    reviewer, _, _ = await employee_reviewer(execution_env, tmp_path, outcome="REWORK")
+    await reviewer.run("employee")
+    async with database.sessions.begin() as session:
+        execution = await session.get(TaskExecution, first_id)
+        execution.artifact_commit = None
+    with pytest.raises(DomainError, match="产物"):
+        await execution_tests.dispatch(database, principal, "task-0", key="unsafe-restart")
+    async with database.sessions() as session:
+        assert (await session.get(Task, "task-0")).status == "QUEUED"
+        assert await session.scalar(select(func.count(TaskExecution.id))) == 1
 
 
 @pytest.mark.parametrize("fault", ["other_task", "changed_native", "revoked_grant"])

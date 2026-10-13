@@ -21,7 +21,7 @@ API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`open
 | `POST /api/v1/employees/{id}/dm|pause|resume|archive` | 独立长期 DM、生命周期；未完 Goal/Task/审批/交接阻止归档 |
 | `GET /api/v1/channels/{id}/members|messages`、`POST .../messages` | 成员 ACL、持久消息、引用/@ 与因果限制；附件当前明确拒绝，不伪造上传成功 |
 | `GET /api/v1/tasks/{id}/executions|evidence|workspace|handoff-events|reviews` | 真实执行索引和交接回执；Workspace 当前 connected=false |
-| `POST /api/v1/tasks/{id}/pause|resume|cancel|rework|dispatch|handoff|review` | 业务动作、租约绑定、正式交接；dispatch 只绑定，后台工程运行器启动；review 逐条复验原生证据 |
+| `POST /api/v1/tasks/{id}/pause|resume|cancel|dispatch|handoff|review` | 业务动作、租约绑定、正式交接；dispatch 只绑定，后台工程运行器启动；review 逐条复验原生证据 |
 | `POST /api/v1/handoffs/{id}/accept|reject|request-clarification|clarify|withdraw` | 当事人/负责人授权；只有签收原子转移主责；工程范围和 Grant 当前有效 |
 | `POST /api/v1/operations/{id}/approve|reject|request-changes` | 具体审批，当前仅受控数据库动作；对外发布/生产副作用尚未接入 |
 | `POST /api/v1/routines/{id}/run-now|pause|resume`、`teams/{id}/routines/sweep` | 人工/到期投递 Inbox，不直接造 Task；系统只获 routine.signal |
@@ -39,7 +39,7 @@ API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`open
 
 具体工程配置、准备/提交意图、恢复规则及独立验收输入见 `execution.md`。
 
-Persona 有限动作现为 reply/no_action/remember/dispatch/follow_up/ask_human/handoff/review，严格机器契约见 `persona-decision.schema.json`。review 使用同一 TaskReviewInput，必须绑定本回合具体 submitted 事件；受权原生输入/退出码/输出仅即时注入，提交前重读哈希，所有业务动作与 Inbox/Turn 原子完成。无效已知决策记录拒绝并冷却，未知提交结果不重提。模型不得传入 reviewer/actor 身份。
+Persona 有限动作现为 reply/no_action/remember/dispatch/follow_up/ask_human/handoff/review/redispatch，严格机器契约见 `persona-decision.schema.json`。review 使用同一 TaskReviewInput，必须绑定本回合具体 submitted 事件；受权原生输入/退出码/输出仅即时注入，提交前重读哈希，所有业务动作与 Inbox/Turn 原子完成。无效已知决策记录拒绝并冷却，未知提交结果不重提。模型不得传入 reviewer/actor 身份。
 
 ## MCP
 

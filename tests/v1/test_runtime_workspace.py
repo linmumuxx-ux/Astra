@@ -1,12 +1,18 @@
 """在临时 Git 仓库运行真实文件/worktree 检查，不连接 OpenCode 模型。"""
 
 import asyncio
+import hashlib
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from domains.runtime.errors import WorkspaceUnsafe
-from domains.runtime.workspace import prepare_task_workspace, verify_workspace_binding
+from domains.runtime.workspace import (
+    capture_workspace_artifact,
+    prepare_task_workspace,
+    verify_workspace_binding,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -141,3 +147,45 @@ async def test_recovery_requires_original_commit_even_after_main_project_advance
     from pathlib import Path
 
     assert not Path(restored.directory, "next.txt").exists()
+
+
+async def test_immutable_artifact_preserves_changes_and_original_index_for_new_attempt(project):
+    first = await prepare(project)
+    path = Path(first.directory)
+    (path / "readme.txt").write_text("已完成但未提交的工作\n")
+    (path / " extra.txt").write_text("带空格文件名\n")
+    (path / ".gitignore").write_text("ignored.txt\n")
+    (path / "ignored.txt").write_text("不归档的缓存")
+    (path / "opencode.json").write_text('{"agent":{"task-config":{}}}')
+    index = Path(await git(path, "rev-parse", "--absolute-git-dir")) / "index"
+    digest = hashlib.sha256(index.read_bytes()).hexdigest()
+    before_head = await git(path, "rev-parse", "HEAD")
+    artifact = await capture_workspace_artifact(first, workspace_root=str(project[1]), captured_at=1700000000)
+    assert artifact == await capture_workspace_artifact(
+        first, workspace_root=str(project[1]), captured_at=1700000000
+    )
+    assert hashlib.sha256(index.read_bytes()).hexdigest() == digest
+    assert await git(path, "rev-parse", "HEAD") == before_head
+    second = await prepare(project, "execution-2", base_ref=artifact)
+    assert Path(second.directory, "readme.txt").read_text() == "已完成但未提交的工作\n"
+    assert Path(second.directory, " extra.txt").read_text() == "带空格文件名\n"
+    assert Path(second.directory, "opencode.json").read_text() == '{"agent":{"task-config":{}}}'
+    assert not Path(second.directory, "ignored.txt").exists()
+    (path / "readme.txt").write_text("试图覆盖已提交产物")
+    with pytest.raises(WorkspaceUnsafe, match="不可被修改"):
+        await capture_workspace_artifact(first, workspace_root=str(project[1]), captured_at=1700000000)
+
+
+async def test_artifact_does_not_execute_git_clean_filters_and_enforces_size(project):
+    first = await prepare(project)
+    path = Path(first.directory)
+    (path / ".gitattributes").write_text("*.txt filter=untrusted\n")
+    sentinel = project[0] / "must-not-execute"
+    await git(path, "config", "filter.untrusted.clean", f"touch {sentinel}")
+    await git(path, "config", "filter.untrusted.required", "true")
+    artifact = await capture_workspace_artifact(first, workspace_root=str(project[1]), captured_at=1700000000)
+    assert artifact and not sentinel.exists()
+    with pytest.raises(WorkspaceUnsafe, match="容量"):
+        await capture_workspace_artifact(
+            first, workspace_root=str(project[1]), captured_at=1700000000, max_bytes=1
+        )

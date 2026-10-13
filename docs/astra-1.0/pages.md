@@ -34,4 +34,4 @@
 
 工程浏览器验收另外使用真实 OpenCode 工程产物与原生工具输出：独立复验后在页面逐条选择证据、填写审核依据、提交并核验 COMPLETED；完成后再次读取原生证据。见 `execution-live-report.json`，不使用模拟响应。
 
-独立员工验收完成后的真实页面：[员工验收结果](evidence/task-employee-completed.png)。对应 OpenCode 1.19.0 的工程/Persona Session 和工具证据见 `employee-review-live-report.json`；不是模拟模型回复。
+独立员工返工后验收完成的真实页面：[员工验收结果](evidence/task-employee-completed.png)。图中保留失败返工与最终通过两次结论；对应 OpenCode 1.19.0 的两个工程/三个 Persona Session 和工具证据见 `rework-live-report.json`。

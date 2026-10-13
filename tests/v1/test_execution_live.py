@@ -30,7 +30,7 @@ from domains.identity.service import digest, issue_credential
 from domains.personas.models import EmployeeTurn, InboxAdmission
 from domains.runtime import OpenCodeClient, OpenCodeConfig, RuntimePurpose
 from domains.runtime.execution_config import ExecutionSettings
-from domains.work.models import TaskReview
+from domains.work.models import Task, TaskExecution, TaskReview
 
 from .http_server import serve_http
 from .test_domains import post
@@ -44,12 +44,15 @@ pytestmark = [
 
 
 async def test_real_business_task_runtime_submission_and_independent_review(tmp_path, monkeypatch):
+    rework_enabled = os.getenv("ASTRA_LIVE_REWORK") == "1"
     physical = Path(os.getenv("ASTRA_LIVE_EXECUTION_ROOT", str(tmp_path))).resolve() / uuid4().hex
     physical.mkdir(parents=True)
     repository, storage, directory = physical / "project", physical / "workspaces", physical / "runtime"
     for path in [repository, storage, directory]:
         path.mkdir()
     (repository / "test_arithmetic.py").write_text(_TESTS)
+    if rework_enabled:
+        (repository / "arithmetic.py").write_text("def add(a, b):\n    return a + b\n")
     original_digest = hashlib.sha256(_TESTS.encode()).hexdigest()
     for args in [
         ("init", "-q"),
@@ -150,6 +153,8 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                         "mandate": (
                             "对收到的工程提交按原始验收标准审查原生工具事实；"
                             "证据充分时独立验收，未通过时返工，证据不足时等待人类。"
+                            "测试失败时 REWORK；收到返工结论且原 Task 排队时立即 redispatch "
+                            "可用 Worker 续做原任务，不能复制目标另建 Task。"
                         ),
                         "permissions": ["task.create", "task.dispatch", "task.review"],
                     },
@@ -165,6 +170,7 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                         "name": "真实工程主责员工",
                         "permissions": role["permissions"],
                         "scope": {"projects": ["arithmetic"]},
+                        "daily_token_budget": 500000,
                     },
                 )
             ).json()
@@ -265,6 +271,14 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                     "acceptance_criteria": ["五项原始测试实际通过，原始测试文件未修改"],
                     "required_capabilities": ["python"],
                     "asset_scope": {"project_id": "arithmetic"},
+                    "constraints": (
+                        [
+                            "执行轮次 1 仅运行原始测试并提交诊断，保留失败证据，不修改实现。"
+                            "收到返工后，后续轮次必须修复实现并重新运行同一原始测试。"
+                        ]
+                        if rework_enabled
+                        else []
+                    ),
                 },
             )
             assert created.status_code == 200, created.text
@@ -275,8 +289,67 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
             runner = ExecutionRunner(
                 app.state.db, executor_token, ExecutionSettings.model_validate(settings_dict)
             )
+            persona = None
+            if os.getenv("ASTRA_LIVE_EMPLOYEE_REVIEW") == "1" or rework_enabled:
+                persona_token = secrets.token_urlsafe(48)
+                persona_service = await post(
+                    api,
+                    "system-identities/personas",
+                    {
+                        "name": "真实独立验收 Persona 服务",
+                        "team_ids": [team["id"]],
+                        "credential_digest": digest(persona_token),
+                    },
+                )
+                assert persona_service.status_code == 200, persona_service.text
+                decision_directory = physical / "persona"
+                decision_directory.mkdir()
+                persona = PersonaRunner(
+                    app.state.db,
+                    persona_token,
+                    OpenCodeClient(
+                        OpenCodeConfig(
+                            f"http://127.0.0.1:{port}",
+                            "persona-review",
+                            RuntimePurpose.PERSONA,
+                            (str(decision_directory),),
+                            model=model,
+                            password=password,
+                        )
+                    ),
+                    execution_settings=runner.settings,
+                )
             submitted = await runner.run(execution_id, timeout_seconds=180)
             assert submitted["state"] == "SUBMITTED"
+            if rework_enabled:
+                first = dict(submitted)
+                first_workspace = Path(first["workspace_ref"])
+                first_code, _, _ = await run_command(first_workspace, "python3", "-m", "unittest", "-v")
+                assert first_code != 0
+                decision = await persona.run(employee["id"], timeout_seconds=180)
+                current = (await api.get(f"/api/v1/tasks/{task['id']}")).json()
+                assert current["status"] == "QUEUED" and current["latest_result"]["outcome"] == "REWORK", (
+                    decision
+                )
+                assert (await post(api, f"workers/{worker['id']}/probe")).status_code == 200
+                decision = await persona.run(employee["id"], timeout_seconds=180)
+                attempts = (await api.get(f"/api/v1/tasks/{task['id']}/executions")).json()
+                second = next(item for item in attempts if item["attempt_no"] == 2)
+                assert second["continued_from_execution_id"] == first["id"], decision
+                assert second["grant_snapshot"]["continuation_commit"] == first["artifact_commit"]
+                execution_id = second["id"]
+                submitted = await runner.run(execution_id, timeout_seconds=180)
+                assert submitted["workspace_base_commit"] == first["artifact_commit"]
+                assert submitted["workspace_ref"] != first["workspace_ref"]
+                assert submitted["native_session_id"] != first["native_session_id"]
+                report["rework"] = {
+                    "first_execution_id": first["id"],
+                    "first_session_id": first["native_session_id"],
+                    "first_artifact_commit": first["artifact_commit"],
+                    "second_execution_id": execution_id,
+                    "original_failed_test_exit": first_code,
+                    "same_task_continued": True,
+                }
             current = (await api.get(f"/api/v1/tasks/{task['id']}")).json()
             assert current["status"] == "REVIEW" and current["completed_at"] is None
             workspace = Path(submitted["workspace_ref"])
@@ -309,41 +382,14 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                     }
                 ],
             }
-            if os.getenv("ASTRA_LIVE_EMPLOYEE_REVIEW") == "1":
-                persona_token = secrets.token_urlsafe(48)
-                persona_service = await post(
-                    api,
-                    "system-identities/personas",
-                    {
-                        "name": "真实独立验收 Persona 服务",
-                        "team_ids": [team["id"]],
-                        "credential_digest": digest(persona_token),
-                    },
-                )
-                assert persona_service.status_code == 200, persona_service.text
-                decision_directory = physical / "persona"
-                decision_directory.mkdir()
-                persona_client = OpenCodeClient(
-                    OpenCodeConfig(
-                        f"http://127.0.0.1:{port}",
-                        "persona-review",
-                        RuntimePurpose.PERSONA,
-                        (str(decision_directory),),
-                        model=model,
-                        password=password,
-                    )
-                )
-                persona = PersonaRunner(
-                    app.state.db,
-                    persona_token,
-                    persona_client,
-                    execution_settings=runner.settings,
-                )
+            if persona:
                 turn_result = await persona.run(employee["id"], timeout_seconds=180)
                 assert turn_result["status"] == "FINISHED"
                 async with app.state.db.sessions() as session:
                     review_record = await session.scalar(
-                        select(TaskReview).where(TaskReview.task_id == task["id"])
+                        select(TaskReview).where(
+                            TaskReview.task_id == task["id"], TaskReview.execution_id == execution_id
+                        )
                     )
                     assert review_record and review_record.reviewer_id == employee["id"]
                     assert review_record.outcome == "COMPLETED", turn_result
@@ -396,9 +442,13 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                 usage = (
                     await session.scalars(select(BudgetUsage).where(BudgetUsage.purpose == "TASK"))
                 ).all()
-                assert len(usage) == 1 and usage[0].tokens > 0
+                assert len(usage) == (2 if rework_enabled else 1) and all(row.tokens > 0 for row in usage)
                 admissions = await session.scalar(select(func.count(InboxAdmission.id)))
-                assert admissions == 2
+                assert admissions == (4 if rework_enabled else 2)
+                assert await session.scalar(select(func.count(Task.id))) == 1
+                if rework_enabled:
+                    old = await session.get(TaskExecution, first["id"])
+                    assert old.superseded_by == execution_id
             report.update(
                 result="PASSED",
                 task_id=task["id"],
@@ -415,8 +465,9 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                 worker_credential_resolved=True,
                 review_idempotency_verified=bool(operation_key),
                 source_event_inbox_count=admissions,
-                execution_tokens=usage[0].tokens,
-                cost_micros=usage[0].cost_micros,
+                execution_tokens=sum(row.tokens for row in usage),
+                cost_micros=sum(row.cost_micros for row in usage),
+                artifact_commit=submitted["artifact_commit"],
             )
     except Exception as exc:
         report["failure_type"] = type(exc).__name__

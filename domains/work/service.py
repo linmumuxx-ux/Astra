@@ -52,10 +52,6 @@ async def transition_task(session, principal, task, action):
         if task.status != "PAUSED":
             raise DomainError(409, "仅可恢复已暂停且无未知执行的任务")
         status = "QUEUED"
-    elif action == "rework":
-        if task.status != "REVIEW":
-            raise DomainError(409, "只有待验收任务可返工")
-        status = "QUEUED"
     else:
         raise DomainError(400, "未知任务动作")
     await cas(session, task, {"status": status})

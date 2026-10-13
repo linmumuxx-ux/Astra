@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -38,6 +39,7 @@ class NativeProtocol:
         self.create_count = self.prompt_count = self.abort_count = 0
         self.lose_prompt = self.lose_create = self.no_final = self.revoke = False
         self.tool_exit, self.tool_output = 0, "5 tests passed"
+        self.artifact_text = None
 
     async def handle(self, request):
         path, method = request.url.path, request.method
@@ -65,6 +67,8 @@ class NativeProtocol:
         if path.endswith("/prompt_async"):
             self.prompt_count += 1
             body = json.loads(request.content)
+            if self.artifact_text is not None:
+                Path(request.url.params["directory"], "progress.txt").write_text(self.artifact_text)
             info = {
                 "id": "msg_final",
                 "sessionID": session_id,

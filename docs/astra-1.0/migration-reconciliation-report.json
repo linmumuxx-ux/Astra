@@ -1,15 +1,15 @@
 {
   "kind": "isolated_fixture_formal_schema_reconciliation",
-  "schema_revision": "1002",
+  "schema_revision": "1003",
   "whole_system_acceptance": false,
   "production_source_accessed": false,
   "cutover_allowed": false,
   "source_description": "测试夹具创建的只读旧模型 SQLite，不是生产旧库",
   "result": {
-    "generated_at": "2026-10-13T01:31:50.275989+00:00",
+    "generated_at": "2026-10-13T05:33:02.565447+00:00",
     "plan_id": "21951be65db8a8e5cddf08b188e07d2a0623c76242acabf6269f6c90bc5a65be",
-    "target_hash": "34a87edbe2bafc0e0c2c6e1d2fd64b738c31dffd17181c56c8eca65e2111517f",
-    "schema_revision": "1002",
+    "target_hash": "bb18a08abab347944c85dfb8e3927ca98855eaf088c2d0b544131db44c18ac42",
+    "schema_revision": "1003",
     "passed_formal_reconciliation": true,
     "ledger_state": "COMMITTED",
     "source_archive_counts": {

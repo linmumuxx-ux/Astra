@@ -34,7 +34,7 @@ from domains.runtime.execution_config import configured_settings, runtime_client
 from domains.runtime.models import Worker
 from domains.runtime.service import dispatch_task
 from domains.runtime.sessions import permission_digest
-from domains.work.models import Task
+from domains.work.models import Task, TaskReview
 from domains.work.review import apply_review, validate_review
 from domains.work.service import create_task, propose_handoff
 
@@ -85,6 +85,10 @@ async def source_context(session, principal, admission):
             session, principal, "task.review", task.team_id, project_id=task.asset_scope.get("project_id")
         )
         result["task"] = serialize(task)
+        if task.latest_result and task.latest_result.get("review_id"):
+            result["last_review"] = serialize(
+                await get_required(session, TaskReview, task.latest_result["review_id"])
+            )
     return result
 
 
@@ -369,6 +373,19 @@ async def apply_decision(session, token, turn_id, decision, prepared_memory=None
             assert_review_source(context, action.task_id, action.review.execution_id)
             snapshot, refs = prepared_reviews[index]
             result = await apply_review(session, principal, action.task_id, action.review, snapshot, refs)
+        elif action.type == "redispatch":
+            task = await get_required(session, Task, action.task_id)
+            if (
+                event.source != "task"
+                or event.payload_ref.get("action") != "rework"
+                or event.payload_ref.get("task_id") != task.id
+                or event.payload_ref.get("execution_id") != (task.latest_result or {}).get("execution_id")
+                or task.revision != action.expected_task_revision
+                or task.owner_employee_id != employee.id
+            ):
+                raise DomainError(409, "续做必须绑定本回合当前主责任务的具体返工结论和版本")
+            dispatch = await dispatch_task(session, principal, task.id, action.worker_id)
+            result = f"task_executions/{dispatch['execution']['id']}"
         elif action.type == "follow_up":
             due = now() + action.after_seconds
             review_at = min(review_at or due, due)
@@ -546,6 +563,8 @@ class PersonaRunner:
                 "WAIT_HUMAN 或 follow_up。不得把未发生的检查写成已通过。"
                 "excerpt 必须是工具 output 中连续且逐字一致的短摘录，不得重新排版、概括或拼接；"
                 "例如原文确有 OK 时可仅引用 OK。last_decision_error 表示前次已被拒绝的原因，须纠正。"
+                "收到 rework 事件且任务仍为 QUEUED 时，用 redispatch 对原 Task 再派工；"
+                "不要新建同目标 Task。按 last_review 的未通过项修复，产物将从上轮快照续做。"
                 "如果某动作不在岗位或工程授权内，选择 no_action 或明确延后，不能自行扩权。"
                 "普通对话优先 reply，回答用户具体内容；回复不能披露其他私人对话。\n"
                 "最终只输出符合 decision_schema 的 JSON 对象，不要代码围栏或其他解释。\n"

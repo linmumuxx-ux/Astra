@@ -1,7 +1,7 @@
 # Astra 1.0 当前 schema 数据字典
 
 此快照由 `deploy/v1/export_contracts.py` 从新 ORM 生成；模型与静态 Alembic 迁移为实施事实源。
-当前 30 张领域表，初始 revision `1000`；时间字段为 Unix 秒，原生 Session ID 为索引而非消息副本。
+当前 30 张领域表，Alembic revision `1003`；时间字段为 Unix 秒，原生 Session ID 为索引而非消息副本。
 所有 Record 含稳定 UUID、revision 和 created_at；只有明确的一次性迁移可写只读历史记录。
 
 ## actors
@@ -361,6 +361,8 @@
 | native_session_id | VARCHAR(120) | 是 | — |
 | workspace_ref | TEXT | 是 | — |
 | workspace_base_commit | VARCHAR(64) | 是 | — |
+| artifact_commit | VARCHAR(64) | 是 | — |
+| continued_from_execution_id | VARCHAR(36) | 是 | FK task_executions.id |
 | preparation_started_at | INTEGER | 是 | — |
 | submission_started_at | INTEGER | 是 | — |
 | permission_digest | VARCHAR(64) | 是 | — |

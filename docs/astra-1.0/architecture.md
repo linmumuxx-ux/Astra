@@ -8,17 +8,17 @@
 | --- | --- | --- |
 | `apps/api` | 新 `/api/v1`、认证、REST/SSE、强类型写入、独立运维入口 | 原生 Workspace 受权代理、完整执行服务接线 |
 | `apps/web` | Vue3 / Element Plus 九类页面、本地 Three.js、DOM 业务操作 | 依赖后端未实现能力的正式交互 |
-| `apps/services` | 独立 Celery/Beat、Routine、短 Persona、工程运行器与独立员工验收，不使用旧队列 | 自动返工跟踪、接管及完整多员工协作闭环 |
+| `apps/services` | 独立 Celery/Beat、Routine、短 Persona、工程运行器与独立员工验收，不使用旧队列 | Goal 后续跟踪、接管及完整多员工协作闭环 |
 | `domains/identity` | Actor / Credential / WorkspaceGrant，短事务重新认证 | 人员完整权限模板与组织运维流程 |
 | `domains/organization` | Team / Role / Employee / Goal，员工生命周期、岗位权限上限 | 调岗与责任清点完整流程、目标运营指标 |
 | `domains/personas` | SourceEvent / Inbox / Routine / Turn lease/fencing，持久输入引用、观察/处理区分 | 连接器、完整预算/冲突与异常处置 |
 | `domains/messaging` | 持久 DM/Group、引用/@、成员 ACL、因果链/TTL/去重 | 附件存储、外部 Binding、同级指令冲突裁决 |
-| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行、逐条独立验收 | 返工续做与 Goal 跟踪自动闭环 |
+| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行、逐条独立验收/原 Task 产物续做 | 跨主机产物转移与 Goal 后续跟踪 |
 | `domains/runtime` | 固定 OpenCode 1.19.0、原生 Session/SSE、本地 worktree、Worker lease、SSH 传输 | 远程工作区接线、完整接管、副作用对账及公司全服务恢复验证 |
 | `domains/governance` | 幂等、审批、版本复验、审计、历史内容哈希读取 | 外部副作用执行账本、成本配额与完整运维治理 |
 | `domains/knowledge` | 资料/Skill 模型、个人 Git Memory、来源校验、CAS 版本/diff/恢复/过期 | 成熟知识实现复制整合、验证审批发布回滚全链路 |
 | `agents` | 独立 Persona 指令与十三个认证 MCP Tool | Routine、知识/Skill 等完整业务 Tool |
-| `migrations/schema` | 静态初始 1000 + Persona 1001 + 执行意图/基线 1002，拒绝旧库覆盖 | 其他新增领域迁移 |
+| `migrations/schema` | 静态初始 1000 + Persona 1001 + 执行意图/基线 1002 + 不可变产物/续做来源 1003，拒绝旧库覆盖 | 其他新增领域迁移 |
 | `migrations/from_0xx` | 离线导出、显式映射、正式导入、账本恢复与对账 | 外部资产及 Skill 正式迁移、真实旧库签收 |
 
 新 API / Tool / 领域服务不导入旧 `backend.app`、旧 `app` 或一次性迁移工具。此边界由 AST 检查验证。旧代码尚保留作选择性复制与迁移来源，当前没有执行正式切换或删除旧树。

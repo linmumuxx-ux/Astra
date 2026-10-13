@@ -52,10 +52,10 @@
 | 可信 Principal 与权限交集 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 具体审批和幂等操作 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 人工介入与资源治理 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
-| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
-| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
-| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
-| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
+| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；同 Task 不可变产物返工续做已真实通过；跨主机产物转移/Goal 跟踪/接管/公司全服务部署未覆盖 |
+| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；同 Task 不可变产物返工续做已真实通过；跨主机产物转移/Goal 跟踪/接管/公司全服务部署未覆盖 |
+| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；同 Task 不可变产物返工续做已真实通过；跨主机产物转移/Goal 跟踪/接管/公司全服务部署未覆盖 |
+| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；同 Task 不可变产物返工续做已真实通过；跨主机产物转移/Goal 跟踪/接管/公司全服务部署未覆盖 |
 
 ## WARNING 与一致性检查
 

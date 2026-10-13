@@ -89,7 +89,7 @@ backend/.venv/bin/python -m migrations.from_0xx rollback-staging \
 
 ## 正式 1.0 schema 导入与对账
 
-staging 是可选排练步骤，正式导入使用 `formal.py` 中的显式适配。先在独立空库执行 `migrations/schema/` 初始化；目标必须含当前所有新表、准确列/类型/长度/主键/FK 和 Alembic revision `1002`。存在旧领域表、缺表、额外业务表、revision 不符或已有业务事实时均拒绝首次导入。工具不会创建、升级或覆盖目标 schema。
+staging 是可选排练步骤，正式导入使用 `formal.py` 中的显式适配。先在独立空库执行 `migrations/schema/` 初始化；目标必须含当前所有新表、准确列/类型/长度/主键/FK 和 Alembic revision `1003`。存在旧领域表、缺表、额外业务表、revision 不符或已有业务事实时均拒绝首次导入。工具不会创建、升级或覆盖目标 schema。
 
 通过安全环境配置 `ASTRA_1_0_MIGRATION_TARGET_URL`，使用同步 SQLite/MySQL 驱动。正式业务库、旧库、staging 和正式导入账本必须为不同文件/schema。
 

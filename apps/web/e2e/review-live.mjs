@@ -8,7 +8,7 @@ const port = await new Promise((accept, reject) => { const socket = createServer
 const web = spawn(process.execPath, ['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port',String(port)], { cwd: resolve('.'), env: process.env, stdio: 'ignore' })
 let browser
 async function readHistory(page) {
-  await page.getByRole('button', {name:'查看原生证据', exact:true}).first().click()
+  await page.getByRole('button', {name:'查看原生证据', exact:true}).last().click()
   const dialog = page.getByRole('dialog', {name:'原生执行证据', exact:true})
   await expect(dialog.getByText('Ran 5 tests', {exact:false}).first()).toBeVisible({timeout:15000})
   await page.screenshot({path:resolve('../../docs/astra-1.0/evidence/task-native-history.png'),fullPage:true,animations:'disabled'})

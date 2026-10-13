@@ -98,7 +98,9 @@ Task 本机工程运行器、受密码保护 Worker 及浏览器独立验收已�
 
 ## Linux Runtime 实测入口
 
-当前已在既有 CentOS 7 / glibc 2.17 主机独立安装并执行 OpenCode 1.19.0；这仅验证 Runtime，不代表新 API、队列、数据库及反向代理已在该主机交付。公司发行版/版本仍待明确，不能把测试机发行版自动当成正式部署版本。
+公司 OpenCode 沿用既有 npm 安装方式，固定 `opencode-ai@1.19.0`。在独立前缀安装的命令示例为 `npm install --global --prefix /opt/astra-v1/runtime --include=optional opencode-ai@1.19.0`；确认 `opencode --version` 为 1.19.0 后再启用新服务。内网通过审核的 npm 镜像或预备的离线包安装，不漂移到 latest。
+
+当前已在既有 CentOS 7 / glibc 2.17 主机按 npm 方式独立安装并执行 1.19.0；这是 Runtime 验证，新 API、Python 依赖、队列、数据库及反向代理仍需全服务部署验收。
 
 远程验证需配置 `ASTRA_LIVE_LINUX=1`、`ASTRA_LIVE_LINUX_SSH_FILE`、`ASTRA_LIVE_LINUX_KNOWN_HOSTS`、`ASTRA_LIVE_LINUX_PROVIDER_FILE`、`ASTRA_LIVE_LINUX_BINARY`、`ASTRA_LIVE_LINUX_ROOT`、`ASTRA_LIVE_MODEL`、`ASTRA_LIVE_LINUX_REPORT`，运行 `python -m pytest -q tests/v1/test_linux_runtime_live.py`。SSH JSON 与模型 Provider JSON 必须为归属服务用户的无符号链接 0600 文件；known_hosts 必须预先固定并经运维核对，测试运行器不会自动信任新密钥。
 

@@ -4,7 +4,7 @@
 
 | 必需能力 | 当前缺口 | 验收依据 |
 | --- | --- | --- |
-| Task 原生执行及独立验收 | 真实启动、采集、人类及独立 Persona 验收已通；自动返工续做、Goal 跟踪、pause/stop/takeover 与未知副作用对账全链尚未通 | worker-task-execution；任务并行/恢复/旧 attempt 隔离 |
+| Task 原生执行及独立验收 | 真实启动、采集、人类及独立 Persona 验收已通；跨主机产物转移、Goal 跟踪、pause/stop/takeover 与未知副作用对账全链尚未通 | worker-task-execution；任务并行/恢复/旧 attempt 隔离 |
 | 完整持续履职与协作 | 全部业务 MCP Tool、外部连接器、同级冲突裁决、完整多员工修复复验流程未通 | continuous-duty、team-collaboration；真实多员工验收 |
 | 知识与成长 | 成熟 Wiki/Experience 服务提取、Skill 提案/Worker 验证/审批/发布/效果/回滚尚未通 | knowledge-growth；不能以 Memory 通过替代 |
 | 模型 API 与资源治理 | Provider/密钥/路由/硬配额/成本指标尚未通；目前预算只门禁新增 Persona 回合，Task 工程预算预留/硬限制未接 | trusted-governance；真实成本归属与预算控制 |

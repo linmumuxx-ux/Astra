@@ -14,7 +14,7 @@ from domains.identity.service import authorize, current_principal
 from domains.organization.models import Employee, Role, Team
 from domains.runtime.config import SUPPORTED_OPENCODE_VERSION
 from domains.runtime.models import AssetLock, Worker, WorkerLease
-from domains.work.models import Task, TaskExecution
+from domains.work.models import Task, TaskExecution, TaskReview
 
 _ACTIVE_EXECUTIONS = {"BOUND", "RUNNING", "RECONCILE_REQUIRED"}
 
@@ -134,6 +134,26 @@ async def dispatch_task(
     )
     if active:
         raise DomainError(409, "已有未结束执行，必须先对账，禁止重复派工")
+    previous = await session.scalar(
+        select(TaskExecution)
+        .where(TaskExecution.task_id == task.id)
+        .order_by(TaskExecution.attempt_no.desc())
+        .limit(1)
+    )
+    continuation = None
+    if previous and previous.state == "SUBMITTED":
+        review = await session.scalar(
+            select(TaskReview).where(TaskReview.id == (task.latest_result or {}).get("review_id"))
+        )
+        if (
+            not review
+            or review.task_id != task.id
+            or review.execution_id != previous.id
+            or review.outcome != "REWORK"
+            or not previous.artifact_commit
+        ):
+            raise DomainError(409, "上一提交须经过逐条返工验收并具有可信产物索引，禁止从空白重跑")
+        continuation = previous.id
     snapshot = await _grant_snapshot(session, principal, employee, task, worker)
     # CAS 将 Worker 配置、员工生命周期和 Task 主责/状态固定到短事务。
     await cas(session, worker, {})
@@ -180,8 +200,17 @@ async def dispatch_task(
         attempt_no=attempt,
         lease_id=free.id,
         lease_fence=fence,
-        grant_snapshot=snapshot,
         state="BOUND",
+        continued_from_execution_id=continuation,
+        grant_snapshot=snapshot
+        | (
+            {
+                "continuation_commit": previous.artifact_commit,
+                "continuation_review_id": review.id,
+            }
+            if continuation
+            else {}
+        ),
     )
     session.add(execution)
     await session.flush()

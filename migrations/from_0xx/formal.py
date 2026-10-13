@@ -29,7 +29,7 @@ from .etl import (
     write_json,
 )
 
-SCHEMA_REVISION = "1002"
+SCHEMA_REVISION = "1003"
 OLD_TABLES = {
     "digital_employees",
     "opencode_execution_environments",
@@ -385,6 +385,8 @@ def prepare_formal(bundle: Path, plan: dict) -> dict:
                     "workspace_ref": data.get("workspace_ref"),
                     "workspace_base_commit": None,
                     "preparation_started_at": None,
+                    "artifact_commit": None,
+                    "continued_from_execution_id": None,
                     "submission_started_at": None,
                     "permission_digest": None,
                     "stop_requested": None,
