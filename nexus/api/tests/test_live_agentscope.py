@@ -431,6 +431,135 @@ def test_employee_management_against_live_agentscope():
                 client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")
 
 
+def test_private_chat_streams_and_isolates_anonymous_owners():
+    suffix = uuid.uuid4().hex[:6]
+    name = f"聊{suffix}"
+    owner_a = {"X-Owner-Id": f"anon-{suffix}-a"}
+    owner_b = {"X-Owner-Id": f"anon-{suffix}-b"}
+    created_ids: list[str] = []
+    with httpx.Client(timeout=_timeout(30)) as client:
+        try:
+            created = _create_employee(
+                client,
+                name,
+                f"私聊{suffix}",
+                "按用户给出的附件原文回答，不要编造文件内容。",
+            )
+            employee = created["employee"]
+            created_ids.append(employee["id"])
+            assert created["agentscope"]["ok"] is True, created
+            first = client.post(
+                f"{NEXUS}/api/v1/employees/{employee['id']}/conversations",
+                headers=owner_a,
+                json={"name": "新对话"},
+            ).json()
+            second = client.post(
+                f"{NEXUS}/api/v1/employees/{employee['id']}/conversations",
+                headers=owner_a,
+                json={"name": "新对话"},
+            ).json()
+            assert first["id"] != second["id"]
+            hidden = client.get(
+                f"{NEXUS}/api/v1/employees/{employee['id']}/conversations",
+                headers=owner_b,
+            )
+            assert hidden.json()["items"] == []
+
+            sent = client.post(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
+                headers=owner_a,
+                json={"text": "请只回复一个字：在。不要调用工具。", "attachment_ids": []},
+            )
+            assert sent.status_code == 200, sent.text
+            assert sent.json()["agentscope"]["accepted"] is True, sent.text
+            first_session = sent.json()["agentscope"]["session_id"]
+            events = collect_events(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/stream",
+                owner_a,
+                None,
+                150,
+            )
+            assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in events), events
+            again = client.post(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
+                headers=owner_a,
+                json={"text": "再说一次：在。", "attachment_ids": []},
+            )
+            assert again.json()["agentscope"]["session_id"] == first_session
+            seen = {item["id"] for item in events if isinstance(item.get("id"), str)}
+            second_events = collect_events(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/stream",
+                owner_a,
+                None,
+                150,
+                seen,
+            )
+            assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in second_events), second_events
+            other = client.post(
+                f"{NEXUS}/api/v1/conversations/{second['id']}/messages",
+                headers=owner_a,
+                json={"text": "这是另一条对话。", "attachment_ids": []},
+            )
+            assert other.json()["agentscope"]["accepted"] is True
+            assert other.json()["agentscope"]["session_id"] != first_session
+
+            uploaded = client.post(
+                f"{NEXUS}/api/v1/attachments",
+                files={"file": ("run.log", b"LOG-TOKEN-88\n", "text/plain")},
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            downloaded = client.get(f"{NEXUS}/api/v1/attachments/{uploaded.json()['id']}")
+            assert downloaded.content == b"LOG-TOKEN-88\n"
+            with_file = client.post(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
+                headers=owner_a,
+                json={"text": "附件里的标记是什么？", "attachment_ids": [uploaded.json()["id"]]},
+            )
+            assert with_file.json()["agentscope"]["accepted"] is True, with_file.text
+            remote = client.get(
+                f"{AGENTSCOPE}/sessions/{first_session}/messages",
+                headers=AGENT_HEADERS,
+                params={"agent_id": employee["agentscope_agent_id"], "limit": 50},
+            )
+            assert remote.status_code == 200, remote.text
+            assert "LOG-TOKEN-88" in remote.text
+            restored = client.get(f"{NEXUS}/api/v1/conversations/{first['id']}", headers=owner_a)
+            assert restored.status_code == 200, restored.text
+            assert restored.json()["agentscope_session_id"] == first_session
+            assert any(item["text"] == "附件里的标记是什么？" for item in restored.json()["messages"])
+            blocked = client.get(f"{NEXUS}/api/v1/conversations/{first['id']}", headers=owner_b)
+            assert blocked.status_code == 404
+
+            disabled = client.patch(
+                f"{NEXUS}/api/v1/employees/{employee['id']}",
+                json=_body(name, f"私聊{suffix}", f"{name}的职责", employee["instructions"], enabled=False),
+            )
+            assert disabled.status_code == 200, disabled.text
+            refused = client.post(
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
+                headers=owner_a,
+                json={"text": "禁用后不要运行", "attachment_ids": []},
+            )
+            assert refused.status_code == 409, refused.text
+            print(
+                json.dumps(
+                    {
+                        "agent_id": employee["agentscope_agent_id"],
+                        "sessions": [first_session, other.json()["agentscope"]["session_id"]],
+                        "text_deltas": deltas(events)[:80],
+                        "second_deltas": deltas(second_events)[:80],
+                        "log_in_session": True,
+                        "other_owner": 404,
+                        "disabled_status": 409,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        finally:
+            for employee_id in created_ids:
+                client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")
+
+
 def _body(
     name: str,
     domain: str,

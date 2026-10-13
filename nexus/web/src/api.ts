@@ -104,7 +104,7 @@ export async function createConversation(employeeId: string): Promise<Conversati
   );
 }
 
-export async function getConversation(id: string): Promise<Conversation & { messages: ChatMessage[] }> {
+export async function getConversation(id: string): Promise<Conversation & { messages: ChatMessage[]; history_error: string }> {
   return read(await fetch(`/api/v1/conversations/${id}`, { headers: headers(false) }));
 }
 

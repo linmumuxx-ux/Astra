@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -19,7 +20,19 @@ from .db import connect, employee_from_row, init_db, message_from_row, new_id, u
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS = 6
+MAX_TEXT_CHARS = 64_000
 STREAM_CURSOR = re.compile(r"^\d+-\d+$")
+TEXT_SUFFIXES = {
+    ".txt", ".md", ".log", ".py", ".json", ".yaml", ".yml", ".js", ".ts", ".vue",
+    ".css", ".html", ".xml", ".csv", ".sh", ".toml", ".ini", ".cfg", ".sql",
+}
+IMAGE_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 class EmployeeBody(BaseModel):
@@ -94,6 +107,139 @@ def system_prompt(body: EmployeeBody | dict[str, Any]) -> str:
         f"工作指令：\n{instructions}\n"
         "需要其他员工协助时调用 contact_employee，不要代替对方编写答复。"
     )
+
+
+def resolved_media_type(name: str, declared: str) -> str:
+    media = (declared or "").split(";", 1)[0].strip().lower()
+    if media.startswith("image/") or media.startswith("text/") or media == "application/pdf":
+        return media
+    return IMAGE_BY_SUFFIX.get(Path(name).suffix.lower(), media or "application/octet-stream")
+
+
+def readable_text(name: str, media: str, data: bytes) -> str | None:
+    suffix = Path(name).suffix.lower()
+    if not (media.startswith("text/") or suffix in TEXT_SUFFIXES):
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def model_input_blocks(text: str, files: list[tuple[str, str, bytes]]) -> list[dict[str, Any]]:
+    """把用户输入变成 AgentScope 的 content。读不到的文件不会被说成已经分析过。"""
+    blocks: list[dict[str, Any]] = []
+    if text.strip():
+        blocks.append({"type": "text", "text": text.strip()})
+    for name, declared, data in files:
+        media = resolved_media_type(name, declared)
+        if media.startswith("image/"):
+            blocks.append({"type": "text", "text": f"附件 {name}"})
+            blocks.append(
+                {
+                    "type": "data",
+                    "name": name,
+                    "source": {
+                        "type": "base64",
+                        "media_type": media,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                }
+            )
+            continue
+        body = readable_text(name, media, data)
+        if body is not None:
+            omitted = ""
+            if len(body) > MAX_TEXT_CHARS:
+                body = body[:MAX_TEXT_CHARS]
+                omitted = "\n其余内容没有放进这次输入。"
+            blocks.append({"type": "text", "text": f"附件 {name}：\n{body}{omitted}"})
+            continue
+        if media == "application/pdf":
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f"附件 {name} 是 PDF。数据块已附上；如果当前模型不接收 PDF，不要描述文件内容。",
+                }
+            )
+            blocks.append(
+                {
+                    "type": "data",
+                    "name": name,
+                    "source": {
+                        "type": "base64",
+                        "media_type": media,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    },
+                }
+            )
+            continue
+        blocks.append(
+            {
+                "type": "text",
+                "text": f"附件 {name}（{media}）没有放进模型输入。不要描述它的内容。",
+            }
+        )
+    if not blocks:
+        blocks.append({"type": "text", "text": "（空消息）"})
+    return blocks
+
+
+def block_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(part for part in parts if part)
+
+
+def assistant_turns(messages: list[Any]) -> list[list[str]]:
+    turns: list[list[str]] = []
+    current: list[str] | None = None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "user":
+            if current is not None:
+                turns.append(current)
+            current = []
+        elif role == "assistant" and current is not None:
+            text = block_text(message.get("content"))
+            if text:
+                current.append(text)
+    if current is not None:
+        turns.append(current)
+    return turns
+
+
+def merge_transcript(
+    local: list[dict[str, Any]],
+    turns: list[list[str]],
+    employee_id: str,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index = 0
+    for item in local:
+        merged.append(item)
+        if item.get("accepted") and index < len(turns):
+            for text in turns[index]:
+                merged.append(
+                    {
+                        "id": f"agent_{item['id']}_{len(merged)}",
+                        "sender": employee_id,
+                        "text": text,
+                        "attachments": [],
+                        "accepted": True,
+                        "created_at": item["created_at"],
+                    }
+                )
+            index += 1
+    return merged
 
 
 def lines(values: list[str]) -> list[str]:
@@ -309,6 +455,7 @@ def create_app() -> FastAPI:
                     "name": row["name"],
                     "type": row["media_type"],
                     "size": row["size"],
+                    "path": row["path"],
                 }
             )
         return found
@@ -318,18 +465,22 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="请输入消息或添加附件")
         message_id = new_id("msg")
         created_at = utcnow()
+        visible = [
+            {"id": item["id"], "name": item["name"], "type": item["type"], "size": item["size"]}
+            for item in attachments
+        ]
         connection.execute(
             """
             INSERT INTO messages (
-                id, conversation_id, channel_id, sender, text, attachments_json, created_at
-            ) VALUES (?, ?, ?, 'user', ?, ?, ?)
+                id, conversation_id, channel_id, sender, text, attachments_json, accepted, created_at
+            ) VALUES (?, ?, ?, 'user', ?, ?, 0, ?)
             """,
             (
                 message_id,
                 scope.get("conversation_id"),
                 scope.get("channel_id"),
                 text.strip(),
-                json.dumps(attachments, ensure_ascii=False),
+                json.dumps(visible, ensure_ascii=False),
                 created_at,
             ),
         )
@@ -503,7 +654,13 @@ def create_app() -> FastAPI:
         row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
         if row is None or not Path(row["path"]).is_file():
             raise HTTPException(status_code=404, detail="附件内容不存在")
-        return FileResponse(row["path"], media_type=row["media_type"], filename=row["name"])
+        disposition = "inline" if str(row["media_type"]).startswith("image/") else "attachment"
+        return FileResponse(
+            row["path"],
+            media_type=row["media_type"],
+            filename=row["name"],
+            content_disposition_type=disposition,
+        )
 
     @app.get("/api/v1/employees/{employee_id}/conversations")
     def list_conversations(
@@ -565,18 +722,33 @@ def create_app() -> FastAPI:
         return row
 
     @app.get("/api/v1/conversations/{conversation_id}")
-    def get_conversation(
+    async def get_conversation(
         conversation_id: str,
+        request: Request,
         owner_id: str = Depends(require_owner),
         connection=Depends(database),
     ):
         row = owned_conversation(connection, conversation_id, owner_id)
+        employee = load_employee(connection, row["employee_id"])
+        local = list_messages(connection, conversation_id=conversation_id)
+        turns: list[list[str]] = []
+        history_error = ""
+        if row["agentscope_session_id"] and employee["agentscope_agent_id"]:
+            try:
+                remote = await client_of(request).list_session_messages(
+                    employee["agentscope_agent_id"],
+                    row["agentscope_session_id"],
+                )
+                turns = assistant_turns(remote)
+            except AgentScopeError as exc:
+                history_error = exc.detail
         return {
             "id": row["id"],
             "employee_id": row["employee_id"],
             "name": row["name"],
             "agentscope_session_id": row["agentscope_session_id"],
-            "messages": list_messages(connection, conversation_id=conversation_id),
+            "messages": merge_transcript(local, turns, employee["id"]),
+            "history_error": history_error,
         }
 
     @app.post("/api/v1/conversations/{conversation_id}/messages")
@@ -634,8 +806,20 @@ def create_app() -> FastAPI:
                     (session_id, utcnow(), conversation_id),
                 )
                 connection.commit()
-                text = body.text.strip() or "（附件）" + "、".join(item["name"] for item in attachments)
-                await client.trigger_chat(employee["agentscope_agent_id"], session_id, text, owner_id)
+                files: list[tuple[str, str, bytes]] = []
+                for item in attachments:
+                    files.append((item["name"], item["type"], Path(item["path"]).read_bytes()))
+                await client.trigger_chat(
+                    employee["agentscope_agent_id"],
+                    session_id,
+                    model_input_blocks(body.text, files),
+                    owner_id,
+                )
+                connection.execute("UPDATE messages SET accepted = 1 WHERE id = ?", (message["id"],))
+                connection.commit()
+                message = message_from_row(
+                    connection.execute("SELECT * FROM messages WHERE id = ?", (message["id"],)).fetchone()
+                )
                 outcome = {"accepted": True, "detail": "", "session_id": session_id}
             except AgentScopeError as exc:
                 outcome["detail"] = exc.detail
@@ -814,7 +998,7 @@ def create_app() -> FastAPI:
                 await client.trigger_chat(
                     employee["agentscope_agent_id"],
                     session_id,
-                    body.text.strip() or "（附件）",
+                    [{"type": "text", "text": body.text.strip() or "（附件）"}],
                     "user",
                 )
                 result.update(accepted=True, session_id=session_id)

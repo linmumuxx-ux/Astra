@@ -110,18 +110,20 @@ class AgentScopeClient:
             raise AgentScopeError("AgentScope 创建会话后没有返回 session_id")
         return str(session_id)
 
-    async def trigger_chat(self, agent_id: str, session_id: str, text: str, user_name: str) -> str:
+    async def trigger_chat(
+        self,
+        agent_id: str,
+        session_id: str,
+        content: list[dict[str, Any]],
+        user_name: str,
+    ) -> str:
         response = await self.request(
             "POST",
             "/chat/",
             json={
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "input": {
-                    "name": user_name,
-                    "role": "user",
-                    "content": [{"type": "text", "text": text}],
-                },
+                "input": {"name": user_name, "role": "user", "content": content},
             },
         )
         payload = response.json()
@@ -157,6 +159,30 @@ class AgentScopeClient:
                 break
             page += 1
         return items
+
+    async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        before: str | None = None
+        for _ in range(10):
+            params: dict[str, Any] = {"agent_id": agent_id, "limit": 200}
+            if before:
+                params["before"] = before
+            response = await self.request("GET", f"/sessions/{session_id}/messages", params=params)
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise AgentScopeError("AgentScope 会话消息返回的不是对象")
+            rows = payload.get("messages")
+            if not isinstance(rows, list):
+                raise AgentScopeError("AgentScope 会话消息返回的不是列表")
+            page = [item for item in rows if isinstance(item, dict)]
+            collected = page + collected if before else page
+            if not payload.get("has_more") or not page:
+                break
+            cursor = page[0].get("id")
+            if not isinstance(cursor, str) or cursor == before:
+                break
+            before = cursor
+        return collected
 
     async def list_launcher_tools(self) -> list[dict[str, str]]:
         if not await self.probe():

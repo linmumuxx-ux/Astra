@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sender TEXT NOT NULL,
     text TEXT NOT NULL,
     attachments_json TEXT NOT NULL,
+    accepted INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS channels (
@@ -82,6 +83,9 @@ def init_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as connection:
         connection.executescript(SCHEMA)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
+        if "accepted" not in columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0")
 
 
 def new_id(prefix: str) -> str:
@@ -118,5 +122,6 @@ def message_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "sender": row["sender"],
         "text": row["text"],
         "attachments": _loads(row["attachments_json"]),
+        "accepted": bool(row["accepted"]),
         "created_at": row["created_at"],
     }

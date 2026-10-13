@@ -40,7 +40,8 @@
               <div class="muted">{{ message.sender === "user" ? "你" : speakerName(message.sender) }}</div>
               <div v-if="message.text" class="bubble">{{ message.text }}</div>
               <div class="message-attachments">
-                <a v-for="file in message.attachments" :key="file.id" class="sent-attachment" :href="attachmentUrl(file.id)" target="_blank">
+                <a v-for="file in message.attachments" :key="file.id" class="sent-attachment" :class="{ image: isImage(file.type) }" :href="attachmentUrl(file.id)" :download="file.name" target="_blank">
+                  <img v-if="isImage(file.type)" :src="attachmentUrl(file.id)" :alt="file.name" />
                   <span><b>{{ file.name }}</b><small class="muted">{{ formatSize(file.size) }}</small></span>
                 </a>
               </div>
@@ -56,14 +57,21 @@
           </div>
           <div v-if="draftFiles.length" class="draft-attachments">
             <div v-for="file in draftFiles" :key="file.id" class="draft-file">
+              <img v-if="isImage(file.type)" :src="attachmentUrl(file.id)" :alt="file.name" />
               <div><b>{{ file.name }}</b><small class="muted">{{ formatSize(file.size) }}</small></div>
               <el-button link type="danger" @click="draftFiles = draftFiles.filter((item) => item.id !== file.id)">移除</el-button>
             </div>
           </div>
-          <div class="compose-box">
+          <div
+            class="compose-box"
+            :class="{ dropping }"
+            @dragover.prevent="dropping = canSend"
+            @dragleave="dropping = false"
+            @drop.prevent="onDrop"
+          >
             <el-button :disabled="!canSend" @click="fileInput?.click()">附件</el-button>
-            <input ref="fileInput" type="file" multiple hidden @change="addFiles" />
-            <textarea v-model="draft" :disabled="!canSend" rows="2" :placeholder="canSend ? '发送消息…' : '该员工已禁用，历史消息仍可查看'" @keydown.enter.exact.prevent="send" />
+            <input ref="fileInput" type="file" multiple hidden @change="onPick" />
+            <textarea v-model="draft" :disabled="!canSend" rows="2" :placeholder="canSend ? '发送消息，或拖入、粘贴图片…' : '该员工已禁用，历史消息仍可查看'" @paste="onPaste" @keydown.enter.exact.prevent="send" />
             <el-button type="primary" :disabled="!canSend" @click="send">发送</el-button>
           </div>
         </div>
@@ -82,15 +90,26 @@
         </div>
         <div v-else-if="tab === 'capability'" style="padding: 16px">
           <div class="section-label">知识</div>
-          <div class="resource-list"><span v-for="item in current.knowledge" :key="item" class="mini-chip">{{ item }}</span></div>
+          <div class="resource-list">
+            <span v-for="item in current.knowledge" :key="item" class="mini-chip">{{ resourceLabel(catalogs.knowledge, item) }}</span>
+            <span v-if="!current.knowledge.length" class="muted">暂无</span>
+          </div>
           <div class="section-label">Skill</div>
-          <div class="resource-list"><span v-for="item in current.skills" :key="item" class="mini-chip">{{ item }}</span></div>
+          <div class="resource-list">
+            <span v-for="item in current.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
+            <span v-if="!current.skills.length" class="muted">暂无</span>
+          </div>
           <div class="section-label">Tools</div>
-          <div class="resource-list"><span v-for="item in current.tools" :key="item" class="mini-chip">{{ item }}</span></div>
+          <div class="resource-list">
+            <span v-for="item in current.tools" :key="item" class="mini-chip">{{ resourceLabel(catalogs.tools, item) }}</span>
+            <span v-if="!current.tools.length" class="muted">暂无</span>
+          </div>
         </div>
         <div v-else style="padding: 16px">
-          <div class="detail-excerpt">长期记忆在 AgentScope Session 中。Nexus 不另存一份记忆。</div>
-          <div class="muted" style="margin-top: 8px">当前对话用户消息 {{ messages.length }} 条</div>
+          <div class="detail-excerpt">记忆保存在这条 AgentScope Session 里，这里只读，不能修改员工。</div>
+          <div class="section-label">Session</div>
+          <div class="mono">{{ activeConversation?.agentscope_session_id || "发送后才会创建" }}</div>
+          <div v-if="latestReply" class="detail-excerpt" style="margin-top: 12px">{{ latestReply }}</div>
         </div>
       </aside>
     </div>
@@ -98,20 +117,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   attachmentUrl,
   createConversation,
   getConversation,
+  getKnowledge,
+  getSkills,
+  getTools,
   listConversations,
   listEmployees,
   readEventStream,
   sendConversation,
   uploadAttachment,
 } from "../api";
-import type { Attachment, ChatMessage, Conversation, Employee } from "../types";
+import type { Attachment, ChatMessage, Conversation, Employee, ResourceCatalog } from "../types";
 
 const route = useRoute();
 const employees = ref<Employee[]>([]);
@@ -123,16 +145,37 @@ const draft = ref("");
 const draftFiles = ref<Attachment[]>([]);
 const notice = ref("");
 const liveText = ref("");
+const dropping = ref(false);
 const seenEventIds = new Map<string, Set<string>>();
 const tab = ref<"responsibility" | "capability" | "memory">("responsibility");
 const fileInput = ref<HTMLInputElement | null>(null);
+const messageBox = ref<HTMLElement | null>(null);
+const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
+const catalogs = ref({ skills: emptyCatalog(), knowledge: emptyCatalog(), tools: emptyCatalog() });
 let streamAbort: AbortController | null = null;
 
 const current = computed(() => employees.value.find((item) => item.id === currentId.value) ?? null);
+const activeConversation = computed(() => conversations.value.find((item) => item.id === conversationId.value) ?? null);
 const canSend = computed(() => Boolean(current.value?.enabled && conversationId.value));
+const latestReply = computed(() => [...messages.value].reverse().find((item) => item.sender !== "user")?.text ?? "");
 
 function speakerName(sender: string) {
   return employees.value.find((item) => item.id === sender)?.name ?? sender;
+}
+function isImage(type: string) {
+  return type.startsWith("image/");
+}
+function resourceLabel(catalog: ResourceCatalog, id: string) {
+  return catalog.items.find((item) => item.id === id)?.name ?? id;
+}
+function takeLiveReply() {
+  const text = liveText.value.trim();
+  if (!text || !current.value) return;
+  messages.value = [
+    ...messages.value,
+    { id: `live_${Date.now()}`, sender: current.value.id, text, attachments: [], created_at: new Date().toISOString() },
+  ];
+  liveText.value = "";
 }
 function formatSize(size: number) {
   if (size < 1024) return "小于 1 KB";
@@ -175,10 +218,8 @@ async function startConversation() {
   liveText.value = "";
 }
 
-async function addFiles(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = "";
+async function addFileList(files: File[]) {
+  if (!canSend.value) return;
   if (draftFiles.value.length + files.length > 6) {
     ElMessage.warning("每条消息最多添加 6 个附件");
   }
@@ -191,12 +232,37 @@ async function addFiles(event: Event) {
       ElMessage.warning("单个附件不能超过 20 MB");
       continue;
     }
+    const named = file.name ? file : new File([file], "截图.png", { type: file.type || "image/png" });
     try {
-      draftFiles.value.push(await uploadAttachment(file));
+      draftFiles.value.push(await uploadAttachment(named));
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : "附件上传失败");
     }
   }
+}
+
+function onPick(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  void addFileList(files);
+}
+
+function onDrop(event: DragEvent) {
+  dropping.value = false;
+  void addFileList(Array.from(event.dataTransfer?.files ?? []));
+}
+
+function onPaste(event: ClipboardEvent) {
+  const fromFiles = Array.from(event.clipboardData?.files ?? []);
+  const fromItems = Array.from(event.clipboardData?.items ?? [])
+    .filter((item) => item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  const files = fromFiles.length ? fromFiles : fromItems;
+  if (!files.length) return;
+  event.preventDefault();
+  void addFileList(files);
 }
 
 function stopStream() {
@@ -219,6 +285,7 @@ async function followStream(id: string) {
       if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
         liveText.value += event.delta;
       }
+      if (event.type === "REPLY_END") takeLiveReply();
       if (event.type === "NEXUS_UPSTREAM_ERROR") {
         notice.value = String(event.detail ?? "事件流中断");
       }
@@ -232,6 +299,7 @@ async function followStream(id: string) {
 
 async function send() {
   if (!conversationId.value || !canSend.value) return;
+  takeLiveReply();
   const text = draft.value.trim();
   if (!text && !draftFiles.value.length) return;
   try {
@@ -263,9 +331,17 @@ watch(conversationId, async (id) => {
   }
   const payload = await getConversation(id);
   messages.value = payload.messages;
+  if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+});
+
+watch([messages, liveText], async () => {
+  await nextTick();
+  if (messageBox.value) messageBox.value.scrollTop = messageBox.value.scrollHeight;
 });
 
 onMounted(async () => {
+  const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
+  catalogs.value = { skills, knowledge, tools };
   await loadEmployees();
   if (currentId.value) await selectEmployee(currentId.value);
 });
@@ -275,4 +351,7 @@ onBeforeUnmount(stopStream);
 <style scoped>
 .rail-item { width: 100%; border: 0; background: transparent; text-align: left; }
 .chip.sel { background: #e5f6ed; border-color: #aad8c2; color: #187956; }
+.compose-box.dropping { outline: 2px dashed #187956; }
+.sent-attachment.image, .draft-file { display: flex; gap: 8px; align-items: center; }
+.sent-attachment img, .draft-file img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
 </style>

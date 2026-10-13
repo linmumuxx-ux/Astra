@@ -44,7 +44,7 @@ nexus/deploy/.venv-agentscope/bin/python nexus/deploy/agent_service.py
 - 把 `LocalWorkspaceManager` 的隔离设为 `IsolationPolicy.PER_SESSION`。
 - 注册 `contact_employee`，并允许它执行。工具向目标 Session 调用 `deliver_to_inbox`，不生成对方的回复。
 - 不注册 Agent Team 工具。官方 `get_toolkit` 仍可能自行挂上任务和团队工具，Nexus 不修改这份行为。
-- 不传入 `knowledge_base_manager`。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。
+- 不传入 `knowledge_base_manager`。当前环境没有 `pymilvus`，也没有嵌入模型，所以没有启用知识库目录。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。技能库为空时也不写入示例技能。
 
 服务默认监听 `http://127.0.0.1:8000`。健康检查：
 

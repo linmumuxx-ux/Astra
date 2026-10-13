@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
-from nexus_api.main import create_app, load_chat_model_config, stream_cursor
+from nexus_api.main import create_app, load_chat_model_config, model_input_blocks, stream_cursor
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -167,6 +167,56 @@ def test_channel_requires_a_member_and_does_not_script_peer_replies(client):
     assert triggered[0]["accepted"] is False
     messages = client.get(f"/api/v1/channels/{channel['id']}/messages").json()["messages"]
     assert [item["sender"] for item in messages] == ["user"]
+
+
+def test_model_input_includes_text_and_does_not_invent_binary_analysis():
+    text = model_input_blocks("看日志", [("run.log", "text/plain", b"LOG-TOKEN-88")])
+    assert any("LOG-TOKEN-88" in block.get("text", "") for block in text)
+    binary = model_input_blocks("", [("数据.bin", "application/octet-stream", b"\x00\x01secret")])
+    assert "不要描述它的内容" in binary[0]["text"]
+    assert "secret" not in binary[0]["text"]
+    assert "已解析" not in binary[0]["text"]
+
+
+def test_owners_keep_separate_conversations_across_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NEXUS_AGENTSCOPE_BASE_URL", "")
+    owner_a = {"X-Owner-Id": "anon-a"}
+    owner_b = {"X-Owner-Id": "anon-b"}
+    application = create_app()
+    with TestClient(application) as test_client:
+        employee = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        first = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=owner_a,
+            json={"name": "新对话"},
+        ).json()
+        second = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=owner_a,
+            json={"name": "新对话"},
+        ).json()
+        assert first["id"] != second["id"]
+        sent = test_client.post(
+            f"/api/v1/conversations/{first['id']}/messages",
+            headers=owner_a,
+            json={"text": "只属于 a"},
+        )
+        assert sent.status_code == 200
+        hidden = test_client.get(f"/api/v1/employees/{employee['id']}/conversations", headers=owner_b)
+        assert hidden.json()["items"] == []
+        missing = test_client.get(f"/api/v1/conversations/{first['id']}", headers=owner_b)
+        assert missing.status_code == 404
+    restarted = create_app()
+    with TestClient(restarted) as again:
+        listed = again.get(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=owner_a,
+        ).json()["items"]
+        assert [item["id"] for item in listed] == [first["id"], second["id"]]
+        restored = again.get(f"/api/v1/conversations/{first['id']}", headers=owner_a).json()
+        assert [item["text"] for item in restored["messages"]] == ["只属于 a"]
+        assert restored["messages"][0]["sender"] == "user"
 
 
 def test_new_skills_are_rejected_when_catalog_is_unavailable(client):
@@ -538,6 +588,97 @@ def test_chat_model_config_is_forwarded_only_when_deploy_sets_it(monkeypatch):
     body = json.loads(seen[0].content.decode())
     assert body["chat_model_config"] == config
     assert "model" not in body
+
+
+def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    seen: list[dict] = []
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+        b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            return httpx.Response(201, json={"agent_id": "agent-1"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            return httpx.Response(201, json={"session_id": "session-chat"})
+        if request.url.path == "/chat/":
+            seen.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"status": "started", "session_id": "session-chat"})
+        if request.url.path == "/sessions/session-chat/messages":
+            return httpx.Response(
+                200,
+                json={
+                    "messages": [
+                        {"id": "u1", "role": "user", "content": [{"type": "text", "text": "看日志"}]},
+                        {
+                            "id": "a1",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "模型自己的回复"}],
+                        },
+                    ],
+                    "has_more": False,
+                    "is_running": False,
+                },
+            )
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        employee = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        headers = {"X-Owner-Id": "anon-a"}
+        conversation = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=headers,
+            json={"name": "新对话"},
+        ).json()
+        log_file = test_client.post(
+            "/api/v1/attachments",
+            files={"file": ("run.log", b"LOG-TOKEN-88", "text/plain")},
+        )
+        image = test_client.post(
+            "/api/v1/attachments",
+            files={"file": ("shot.png", png, "image/png")},
+        )
+        assert log_file.status_code == 201
+        assert image.status_code == 201
+        downloaded = test_client.get(f"/api/v1/attachments/{log_file.json()['id']}")
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"LOG-TOKEN-88"
+        sent = test_client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            headers=headers,
+            json={
+                "text": "看日志",
+                "attachment_ids": [log_file.json()["id"], image.json()["id"]],
+            },
+        )
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["agentscope"]["accepted"] is True
+        content = seen[0]["input"]["content"]
+        logged = [
+            block
+            for block in content
+            if block.get("type") == "text" and "LOG-TOKEN-88" in block.get("text", "")
+        ]
+        assert logged
+        image_block = next(block for block in content if block.get("type") == "data")
+        assert image_block["source"]["media_type"] == "image/png"
+        assert image_block["source"]["type"] == "base64"
+        restored = test_client.get(f"/api/v1/conversations/{conversation['id']}", headers=headers).json()
+        assert [item["sender"] for item in restored["messages"]] == ["user", employee["id"]]
+        assert restored["messages"][1]["text"] == "模型自己的回复"
+        assert restored["messages"][0]["attachments"][0]["name"] == "run.log"
+        assert "已解析" not in json.dumps(restored, ensure_ascii=False)
 
 
 def test_launcher_parses_and_does_not_import_agentscope():
