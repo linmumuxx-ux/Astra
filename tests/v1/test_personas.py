@@ -158,9 +158,21 @@ async def test_persona_observation_does_not_close_unauthorized_decision(api, tmp
         await runner.run(employees[0]["id"])
     async with app.state.db.sessions() as session:
         admission = await session.scalar(select(InboxAdmission))
-        assert admission.observed_at and admission.disposition is None
+        assert admission.observed_at and admission.disposition == "DEFERRED"
         assert await session.scalar(select(func.count()).select_from(Message)) == 1
     assert len((await client.get(f"/api/v1/channels/{dm['id']}/messages")).json()) == 1
+    assert (await runner.run(employees[0]["id"]))["status"] == "NO_PENDING_INPUT"
+    async with app.state.db.sessions.begin() as session:
+        state = await session.scalar(
+            select(EmployeeState).where(EmployeeState.employee_id == employees[0]["id"])
+        )
+        state.next_review = now() - 1
+        failed = await session.scalar(select(EmployeeTurn))
+        assert failed.status == "FAILED" and not failed.actions
+    native.bad_actor = False
+    assert (await runner.run(employees[0]["id"]))["status"] == "FINISHED"
+    assert native.snapshots[-1]["last_decision_error"]
+    assert len((await client.get(f"/api/v1/channels/{dm['id']}/messages")).json()) == 2
 
 
 @pytest.mark.parametrize("intervention", ["credential", "pause"])
@@ -323,7 +335,7 @@ async def test_persona_dispatch_approval_handoff_share_domain_authority(api, tmp
     ).json()
     async with app.state.db.sessions.begin() as session:
         obj = await session.get(Worker, worker["id"])
-        obj.health, obj.runtime_version, obj.last_seen_at = "HEALTHY", "1.18.35", now()
+        obj.health, obj.runtime_version, obj.last_seen_at = "HEALTHY", "1.19.0", now()
     await dm_input(client, employees[0])
     native = DecidingRuntime("dispatch")
     native.extra_payload = {

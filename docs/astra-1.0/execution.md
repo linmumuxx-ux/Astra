@@ -10,7 +10,7 @@
 4. 按 `deploy/v1/execution.example.json` 写入受控 0600 JSON 文件，由 `ASTRA_V1_EXECUTION_CONFIG` 指定。键为真实 Worker ID / project_id；工程根、worktree 根、明确基线、模型和原生权限规则全部由部署管理员确定，任务正文不能自选路径。权限以 deny-all 开始，不能追加无限制通配允许。配置哈希固定到执行绑定；变化后须先对账。
 5. 独立 Celery/Beat 扫描 BOUND/RUNNING 执行并投递 `astra.v1.executions.run`，使用 `astra-v1` 队列。本机工程运行器已真实验证；工程 Celery 扫描与多任务完整并发尚未完成真实 E2E。
 
-当前工程配置只支持 **本机** Git worktree 与 loopback OpenCode Server。公司 SSH/Windows 适配未完成，不能把远端路径当作本地目录或绕过版本检查。
+当前工程配置只支持 **本机** Git worktree 与 loopback OpenCode Server。公司 Linux/SSH 适配未完成，不能把远端路径当作本地目录或绕过版本检查。
 
 ## 执行与恢复事实
 
@@ -36,4 +36,6 @@
 
 `execution-live-report.json` 记录真实 Task API→密码保护 Worker→原生读/写/测试→REVIEW→浏览器独立验收→COMPLETED，以及完成后的原生证据读取。原始测试 SHA256 未变，平台另外执行五项测试复验；真实用量来自原生事实。协议故障注入覆盖创建/提交回执丢失、撤权 abort、idle 无最终回复、伪造证据、执行身份自审、验收中途撤权。
 
-完整 Persona 自主验收/自动返工跟踪、关联 Goal 检查、跨 Worker 续做产物、人工接管/外部副作用对账、工程 Celery 实际并发、SSH/Windows 和完整多员工真实协作仍未通过。人类浏览器审核通过不替代这些验收，整体验收标记保持 false。
+`employee-review-live-report.json` 另外记录 OpenCode 1.19.0 上独立员工 Persona 读取工具输入、明确退出码、原文和提交哈希，完成逐条业务验收；Persona 与工程 Session 独立。首次真实试验因模型改写原文而被严格拒绝，未放宽校验。
+
+自动返工跟踪、关联 Goal 检查、跨 Worker 续做产物、人工接管/外部副作用对账、工程 Celery 实际并发、Linux 完整业务部署和完整多员工真实协作仍未通过。单个员工真实验收不替代这些门禁，整体验收标记保持 false。

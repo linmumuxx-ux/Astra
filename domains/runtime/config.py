@@ -8,6 +8,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlsplit
 
+SUPPORTED_OPENCODE_VERSION = "1.19.0"
+
 
 class RuntimePurpose(StrEnum):
     PERSONA = "persona"
@@ -45,8 +47,6 @@ class OpenCodeConfig:
     runtime_id: str
     purpose: RuntimePurpose
     workspace_roots: tuple[str, ...]
-    # 精确允许版本由部署契约提供，不把“版本更大”推断成已经兼容。
-    compatible_versions: tuple[str, ...] = ("1.18.35",)
     model: str | None = None
     agent: str | None = None
     username: str = "opencode"
@@ -63,7 +63,7 @@ class OpenCodeConfig:
             raise ValueError("OpenCode base_url 必须是 HTTP(S) 服务地址")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("OpenCode URL 不得携带凭据、查询参数或 fragment")
-        if not self.runtime_id or not self.workspace_roots or not self.compatible_versions:
+        if not self.runtime_id or not self.workspace_roots:
             raise ValueError("Runtime 标识、工作区根目录和兼容版本必须显式配置")
         if self.control_timeout_seconds <= 0 or self.stream_read_timeout_seconds <= 0:
             raise ValueError("Runtime 超时必须大于 0")
@@ -76,8 +76,6 @@ class OpenCodeConfig:
             raise ValueError("Persona Runtime 必须绑定单独的决策目录")
         if any(not re.fullmatch(r"astra_[a-z0-9_]+", name) for name in self.persona_tools):
             raise ValueError("Persona 仅允许显式命名的 Astra 业务工具")
-        if any(not re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-+][\w.-]+)?", v) for v in self.compatible_versions):
-            raise ValueError("OpenCode 兼容版本必须是明确版本号")
         split_model(self.model)
 
     def require_directory(self, directory: str) -> str:

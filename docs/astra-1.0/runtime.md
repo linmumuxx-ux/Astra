@@ -10,7 +10,7 @@
 
 `OpenCodeConfig` 是独立 dataclass，不读取 0.xx `Settings`。调用者显式提供 `base_url / runtime_id / purpose / workspace_roots`，凭据从部署安全渠道注入，密码不会出现在配置 repr 或错误正文里。客户端不继承系统 HTTP proxy 环境，也不自动跟随重定向。公司代理应通过明确的受控地址部署，而不是隐式改变凭据去向。
 
-`verify_contract()` 读取实际 `/global/health` 和 `/doc`，检查精确兼容版本、Session/Message/Event/Abort/人工干预接口，以及 Session 的 metadata/permission 能力。默认验证版本为当前真实探测过的 `1.18.35`。公司固定版本须明确配置并通过同一套契约和真实工程验证；更高版本或旧业务“兼容”都不会自动放行。
+`verify_contract()` 读取实际 `/global/health` 和 `/doc`，检查 Session/Message/Event/Abort/人工干预接口，以及 metadata/permission 能力。当前部署统一 `1.19.0`，唯一版本常量为 `SUPPORTED_OPENCODE_VERSION`；客户端、Worker 派工均拒绝其他版本。1.19.0 已通过本机工程/独立 Persona 验收及既有 Linux 测试机原生工程/SSH 断线重连；公司完整业务部署仍须另验。
 
 | 方法 | 契约 |
 |---|---|
@@ -44,7 +44,9 @@ Persona 绑定独立决策目录，deny-all 后只开放明确命名的 `astra_*
 
 `prepare_task_workspace()` 从明确工程 commit 为每个 `task_id/execution_id` 创建独立 detached worktree。恢复须显式 `reuse=True, base_ref=已保存commit`，禁止跟随已经变化的主工程 HEAD；验证物理目录、所有父路径无符号链接、仓库 common-dir、worktree 注册和目录根。已丢失工作区不自动重建，普通残留目录、其他仓库 worktree、路径穿越均明确拒绝。恢复保留未提交修改与任务自己的 OpenCode 配置。
 
-运行前服务必须验证 Workspace Grant、租约、授权根目录与共享资产锁；API 主机不得用本地 `resolve()` 改写 Windows/Linux 远端 Runtime 路径。当前工作区执行器是本地 Git；远程 SSH/Tunnel 的新凭据边界与公司 Windows/Linux 实测尚需集成验证。
+运行前服务必须验证 Workspace Grant、租约、授权根目录与共享资产锁；API 主机不得用本地 `resolve()` 改写 Windows/Linux 远端 Runtime 路径。当前工作区执行器是本地 Git；远程 SSH/Tunnel 的新凭据边界与公司 Linux 实测尚需集成验证。
+
+`domains/runtime/ssh.py` 提取成熟 Paramiko 执行及双向转发，无旧领域依赖，要求显式 known_hosts，拒绝未知或变化的主机密钥；零端口反向转发保存 SSH 服务实际分配端口。既有 CentOS 7 测试机已真实运行隔离 1.19.0、模型工程、原始断言、转发重连和原生证据读取，详见 `linux-runtime-live-report.json`。这尚未将远程工作区准备接入 Task 业务运行器，也不是公司全服务部署验收。
 
 ## 已执行验证
 

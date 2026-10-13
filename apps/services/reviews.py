@@ -3,7 +3,7 @@
 from domains.core import DomainError
 from domains.governance.service import get_required, serialize
 from domains.runtime import NativeSessionBinding, RuntimePurpose
-from domains.runtime.evidence import native_tree
+from domains.runtime.evidence import native_ref, native_tree, part_digest
 from domains.runtime.execution_config import runtime_client
 from domains.runtime.models import Worker
 from domains.work.models import Task, TaskExecution
@@ -44,3 +44,32 @@ async def read_evidence(snapshot, *, client_factory=runtime_client):
         execution["permission_digest"],
     )
     return await native_tree(client, binding)
+
+
+def evidence_payload(snapshot, messages):
+    """即时呈现原生工具事实；不存消息副本，不把缺失退出码推断为成功。"""
+    execution = snapshot[1]
+    return {
+        "execution_id": execution["id"],
+        "items": [
+            {
+                "native_session_id": sid,
+                "message_id": message["info"]["id"],
+                "part_id": part["id"],
+                "tool": part.get("tool"),
+                "state": part.get("state", {}).get("status"),
+                "input": part.get("state", {}).get("input"),
+                "exit_code": part.get("state", {}).get("metadata", {}).get("exit"),
+                "output": str(part.get("state", {}).get("output", ""))[:20000],
+                "truncated": len(str(part.get("state", {}).get("output", ""))) > 20000,
+                "matches_submission": native_ref(
+                    sid, message["info"]["id"], part["id"], digest=part_digest(part)
+                )
+                in execution["evidence_refs"],
+            }
+            for sid, rows in messages.items()
+            for message in rows
+            for part in message.get("parts", [])
+            if part.get("type") == "tool"
+        ],
+    }

@@ -23,7 +23,7 @@
 - **4.3** 组织/岗位/目标/预算、图书馆/Skill/Memory、Worker/API、治理/审计全交互与页面状态验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
 - **5.1** 独立 from_0xx 冻结/导出/显式映射/幂等导入/dry-run/恢复/对账工具与失败注入测试。 位置：`migrations/from_0xx/formal.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
 - **5.2** 真实旧库和所有 Session/Workspace/知识/Skill/会话逐类对账签收，提交审计报告。 位置：`docs/astra-1.0/migration-reconciliation-report.json`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **5.3** 单运行树部署/健康检查/备份恢复，公司 Windows/Linux 内网真实部署；切换后删除旧运行实现。 位置：`docs/astra-1.0/deployment.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
+- **5.3** 单运行树部署/健康检查/备份恢复，公司 Linux 内网真实部署；切换后删除旧运行实现。 位置：`docs/astra-1.0/deployment.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
 - **6.1** 领域/集成/迁移/MySQL 并发、完整前端构建与浏览器 E2E 全通过。 位置：`tests/v1`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
 - **6.2** 真实 OpenCode：同岗多员工/同员工并行/共享 Worker/跨岗交接复验/主动职责/成长完整流程。 位置：`tests/v1/test_runtime_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
 - **6.3** 真实权限撤销/重复审批/冲突指令/人工接管/历史证据/断线重启/SSE 恢复与全部页面截图。 位置：`tests/v1/test_persona_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
@@ -52,17 +52,17 @@
 | 可信 Principal 与权限交集 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 具体审批和幂等操作 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 人工介入与资源治理 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
-| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
-| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
-| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
-| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
+| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
+| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
+| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
+| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务、人类及独立 Persona 验收、Linux 1.19.0 原生执行/SSH 重连通过；完整返工续做/接管/公司全服务部署未覆盖 |
 
 ## WARNING 与一致性检查
 
 - 工程真实业务及浏览器验收已通过；Persona 自主验收、自动返工/Goal 跟踪、多员工并行和未知副作用恢复尚未通过，不能替代完整 Scenario 门禁。
 - Skill、API 网关及 Workspace UI 仍未接通；页面禁止虚构成功或展示假业务状态。
 - 所有 REMOVED 规范对应旧实现仍作为复制来源保留，单次切换时须从正式运行仓库移除；当前不得同步/归档。
-- 内网冷构建、公司 Linux/Windows/SSH、生产全量迁移/灾备未验证；没有以本机隔离结果推断通过。
+- 内网冷构建、公司 Linux/SSH、生产全量迁移/灾备未验证；没有以本机隔离结果推断通过。
 - AST 边界检查覆盖新 API/services/agents，禁止旧 app/backend.app/from_0xx 导入；事务外 Runtime/Git I/O，TaskExecution 仅索引、不复制 Transcript。
 
 ## 结论

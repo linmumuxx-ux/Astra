@@ -2,9 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { mutate, useResource } from '../api'
+import { json } from '../format'
 import type { Detail, Task } from '../types'
 import ResourceState from './ResourceState.vue'
-interface NativeEvidence { native_session_id: string; message_id: string; part_id: string; tool: string; state: string; output: string; truncated: boolean; matches_submission: boolean }
+interface NativeEvidence { native_session_id: string; message_id: string; part_id: string; tool: string; state: string; input: unknown; exit_code: number | null; output: string; truncated: boolean; matches_submission: boolean }
 interface CriterionDraft { passed: boolean; reason: string; evidence: string; excerpt: string }
 const props = defineProps<{ task: Task; executions: Detail[] }>()
 const execution = computed(() => props.executions.find(item => item.state === 'SUBMITTED' && !item.superseded_by))
@@ -34,7 +35,7 @@ async function submit() {
   <section class="review-panel" role="region" aria-label="逐条独立验收">
     <h3>逐条独立验收</h3><p class="caption">按原始标准审查原生工具结果，再记录完成、返工或等待人类的结论。</p>
     <ResourceState :loading="evidence.loading.value" :error="evidence.error.value" :empty="!evidence.data.value.items.length" description="当前执行没有可核验工具证据，不能完成工作" @retry="evidence.load">
-      <el-collapse><el-collapse-item title="查看原生工具证据" name="evidence"><article v-for="item in evidence.data.value.items" :key="evidenceKey(item)" class="mini-card"><strong>{{ item.tool }} · {{ item.state }}</strong><p v-if="item.state === 'completed' && !item.matches_submission" class="caption">此内容未匹配原提交证据哈希，不可作为通过依据。</p><p class="caption">{{ evidenceKey(item) }}</p><pre class="code-block">{{ item.output }}</pre><p v-if="item.truncated" class="caption">长输出仅显示前 20000 字符，请按具体片段引用。</p></article></el-collapse-item></el-collapse>
+      <el-collapse><el-collapse-item title="查看原生工具证据" name="evidence"><article v-for="item in evidence.data.value.items" :key="evidenceKey(item)" class="mini-card"><strong>{{ item.tool }} · {{ item.state }}</strong><p v-if="item.tool === 'bash'" class="caption">退出码：{{ item.exit_code ?? '未提供，不得推断成功' }}</p><pre v-if="item.input" class="code-block">{{ json(item.input) }}</pre><p v-if="item.state === 'completed' && !item.matches_submission" class="caption">此内容未匹配原提交证据哈希，不可作为通过依据。</p><p class="caption">{{ evidenceKey(item) }}</p><pre class="code-block">{{ item.output }}</pre><p v-if="item.truncated" class="caption">长输出仅显示前 20000 字符，请按具体片段引用。</p></article></el-collapse-item></el-collapse>
     </ResourceState>
     <el-form label-position="top" @submit.prevent="submit">
       <article v-for="(criterion, index) in task.acceptance_criteria" :key="index" class="mini-card">

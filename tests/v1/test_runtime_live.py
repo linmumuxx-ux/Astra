@@ -91,7 +91,6 @@ async def test_real_task_native_session_tool_evidence_and_workspace_recovery(tmp
         model=model,
         username=os.getenv("ASTRA_LIVE_USERNAME", "opencode"),
         password=os.getenv("ASTRA_LIVE_PASSWORD"),
-        compatible_versions=tuple(os.getenv("ASTRA_LIVE_VERSIONS", "1.18.35").split(",")),
     )
     api = OpenCodeClient(config)
     report_path = Path(os.getenv("ASTRA_LIVE_REPORT", str(physical / "runtime-live-report.json")))

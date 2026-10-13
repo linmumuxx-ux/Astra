@@ -103,7 +103,7 @@ def evidence_index(messages, session_id):
     ]
 
 
-def verify_citation(tree, citation, session_id):
+def verify_citation(tree, citation, session_id, *, require_success=True):
     if session_id not in tree or citation.native_session_id not in tree:
         raise DomainError(409, "验收证据不能引用其他任务 Session")
     messages = tree[citation.native_session_id]
@@ -119,7 +119,7 @@ def verify_citation(tree, citation, session_id):
         raise DomainError(409, "验收摘录与原生工具输出不符")
     # 旧校验以缺省 exit=0 判成功；新协议不把缺失的退出码猜成成功。
     exit_code = state.get("metadata", {}).get("exit")
-    if part.get("tool") == "bash" and (type(exit_code) is not int or exit_code != 0):
+    if part.get("tool") == "bash" and (type(exit_code) is not int or (require_success and exit_code != 0)):
         raise DomainError(409, "命令缺少明确成功退出码，不可作为通过依据")
     return native_ref(
         citation.native_session_id, citation.message_id, citation.part_id, digest=part_digest(part)

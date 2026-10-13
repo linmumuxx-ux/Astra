@@ -72,7 +72,7 @@ async def dispatch_db(tmp_path):
                     id="worker",
                     name="本地执行资源",
                     base_url="http://runtime.invalid",
-                    runtime_version="1.18.35",
+                    runtime_version="1.19.0",
                     capabilities=["python"],
                     allowed_projects=["project"],
                     workspace_roots=["/workspaces"],

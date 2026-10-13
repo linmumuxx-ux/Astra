@@ -8,13 +8,13 @@
 | --- | --- | --- |
 | `apps/api` | 新 `/api/v1`、认证、REST/SSE、强类型写入、独立运维入口 | 原生 Workspace 受权代理、完整执行服务接线 |
 | `apps/web` | Vue3 / Element Plus 九类页面、本地 Three.js、DOM 业务操作 | 依赖后端未实现能力的正式交互 |
-| `apps/services` | 独立 Celery/Beat、Routine 投递、短 Persona 原生决策及恢复，不使用旧队列 | 完整自主验收、返工跟踪、接管及多员工协作闭环 |
+| `apps/services` | 独立 Celery/Beat、Routine、短 Persona、工程运行器与独立员工验收，不使用旧队列 | 自动返工跟踪、接管及完整多员工协作闭环 |
 | `domains/identity` | Actor / Credential / WorkspaceGrant，短事务重新认证 | 人员完整权限模板与组织运维流程 |
 | `domains/organization` | Team / Role / Employee / Goal，员工生命周期、岗位权限上限 | 调岗与责任清点完整流程、目标运营指标 |
 | `domains/personas` | SourceEvent / Inbox / Routine / Turn lease/fencing，持久输入引用、观察/处理区分 | 连接器、完整预算/冲突与异常处置 |
 | `domains/messaging` | 持久 DM/Group、引用/@、成员 ACL、因果链/TTL/去重 | 附件存储、外部 Binding、同级指令冲突裁决 |
-| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行与验收模型 | Persona 自主验收与返工/跟踪自动闭环 |
-| `domains/runtime` | OpenCode 控制/SSE/Session 树、本地安全 worktree、Worker lease/资产锁 | SSH/Windows 提取、完整接管、副作用对账及公司恢复验证 |
+| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行、逐条独立验收 | 返工续做与 Goal 跟踪自动闭环 |
+| `domains/runtime` | 固定 OpenCode 1.19.0、原生 Session/SSE、本地 worktree、Worker lease、SSH 传输 | 远程工作区接线、完整接管、副作用对账及公司全服务恢复验证 |
 | `domains/governance` | 幂等、审批、版本复验、审计、历史内容哈希读取 | 外部副作用执行账本、成本配额与完整运维治理 |
 | `domains/knowledge` | 资料/Skill 模型、个人 Git Memory、来源校验、CAS 版本/diff/恢复/过期 | 成熟知识实现复制整合、验证审批发布回滚全链路 |
 | `agents` | 独立 Persona 指令与十三个认证 MCP Tool | Routine、知识/Skill 等完整业务 Tool |

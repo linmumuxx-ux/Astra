@@ -12,6 +12,7 @@ from domains.governance.service import audit, cas, get_required, serialize
 from domains.identity.models import WorkspaceGrant
 from domains.identity.service import authorize, current_principal
 from domains.organization.models import Employee, Role, Team
+from domains.runtime.config import SUPPORTED_OPENCODE_VERSION
 from domains.runtime.models import AssetLock, Worker, WorkerLease
 from domains.work.models import Task, TaskExecution
 
@@ -102,7 +103,6 @@ async def dispatch_task(
     *,
     lease_seconds: int = 120,
     health_freshness_seconds: int = 120,
-    compatible_versions: tuple[str, ...] = ("1.18.35",),
 ):
     """只绑定执行与租约，不虚报 RUNNING；Runtime 启动在提交后单独处理。"""
     if not 10 <= lease_seconds <= 3600:
@@ -119,7 +119,7 @@ async def dispatch_task(
         or worker.last_seen_at + health_freshness_seconds <= now()
     ):
         raise DomainError(409, "Worker 未通过最近的真实健康检查")
-    if worker.runtime_version not in compatible_versions:
+    if worker.runtime_version != SUPPORTED_OPENCODE_VERSION:
         raise DomainError(409, "Worker OpenCode 版本尚未通过当前部署兼容契约")
     if project_id not in worker.allowed_projects or not worker.workspace_roots:
         raise DomainError(403, "Worker 未被授权访问该工程或未配置工作区边界")

@@ -94,9 +94,8 @@ async def finish_turn(session, turn_id, actions):
     await lock_active_employee(session, turn.employee_id)
     if turn.status != "RUNNING":
         raise DomainError(409, "员工回合已停止或失效")
-    allowed = {"reply", "no_action", "remember", "dispatch", "follow_up", "ask_human", "handoff"}
-    if any(action.get("type") not in allowed for action in actions):
-        raise DomainError(400, "未知 Persona 决策类型")
+    # 动作只由 PersonaDecision 严格校验后的业务协调器传入；此处只提交 Turn/fence，
+    # 不重复维护动作种类规则，也没有接收模型原始 JSON 的外部接口。
     changed = await session.execute(
         update(EmployeeState)
         .where(

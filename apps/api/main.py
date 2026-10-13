@@ -695,14 +695,14 @@ def create_app(database_url: str | None = None):
     async def execution_evidence(
         object_id: str, principal=Depends(principal_dep), session=Depends(session_dep)
     ):
-        from apps.services.reviews import read_evidence, review_snapshot
-        from domains.runtime.evidence import native_ref, part_digest
+        from apps.services.reviews import evidence_payload, read_evidence, review_snapshot
         from domains.runtime.execution_config import configured_settings
 
         settings = await asyncio.to_thread(configured_settings)
         snapshot = await review_snapshot(session, principal, object_id, settings, for_review=False)
         await session.rollback()
         messages = await read_evidence(snapshot)
+        payload = evidence_payload(snapshot, messages)
         # 网络读取结束后重新认证/授权和核验业务版本，再把原生内容交给当前审核人。
         current = await review_snapshot(session, principal, object_id, settings, for_review=False)
         if (current[0]["revision"], current[1]["revision"]) != (
@@ -710,28 +710,7 @@ def create_app(database_url: str | None = None):
             snapshot[1]["revision"],
         ):
             raise DomainError(409, "读取期间任务或执行已变化")
-        return {
-            "execution_id": object_id,
-            "items": [
-                {
-                    "native_session_id": sid,
-                    "message_id": message["info"]["id"],
-                    "part_id": part["id"],
-                    "tool": part.get("tool"),
-                    "state": part.get("state", {}).get("status"),
-                    "output": str(part.get("state", {}).get("output", ""))[:20000],
-                    "truncated": len(str(part.get("state", {}).get("output", ""))) > 20000,
-                    "matches_submission": native_ref(
-                        sid, message["info"]["id"], part["id"], digest=part_digest(part)
-                    )
-                    in snapshot[1]["evidence_refs"],
-                }
-                for sid, rows in messages.items()
-                for message in rows
-                for part in message.get("parts", [])
-                if part.get("type") == "tool"
-            ],
-        }
+        return payload
 
     @router.post("/tasks/{object_id}/review")
     async def review_task(

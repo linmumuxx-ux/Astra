@@ -16,9 +16,10 @@ from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 
 from apps.api.schemas import MemoryWriteInput, MessageInput, PersonaDecision
+from apps.services.reviews import evidence_payload, read_evidence, review_snapshot
 from domains.core import DomainError, now
 from domains.database import Database
-from domains.governance.models import BudgetUsage
+from domains.governance.models import AuditEvent, BudgetUsage
 from domains.governance.service import audit, cas, get_required, prepare, serialize
 from domains.identity.service import authenticate, authorize, current_principal, revalidate_principal
 from domains.knowledge.memory import GitMemory, memory_access, publish_memory, verify_sources
@@ -28,10 +29,13 @@ from domains.organization.models import Employee, Goal, Role, Team
 from domains.personas.models import EmployeeState, EmployeeTurn, InboxAdmission, Routine, SourceEvent
 from domains.personas.service import acquire_turn, finish_turn
 from domains.runtime import NativeSessionBinding, OpenCodeClient, OpenCodeConfig, RuntimePurpose
+from domains.runtime.evidence import usage_facts
+from domains.runtime.execution_config import configured_settings, runtime_client
 from domains.runtime.models import Worker
 from domains.runtime.service import dispatch_task
 from domains.runtime.sessions import permission_digest
 from domains.work.models import Task
+from domains.work.review import apply_review, validate_review
 from domains.work.service import create_task, propose_handoff
 
 
@@ -229,6 +233,23 @@ async def context_snapshot(session, token, turn_id):
                 ).all()
             )
         ]
+    rejected = await session.scalar(
+        select(EmployeeTurn)
+        .where(EmployeeTurn.employee_id == employee.id, EmployeeTurn.status == "FAILED")
+        .order_by(EmployeeTurn.fence.desc())
+        .limit(1)
+    )
+    rejection = None
+    if rejected and rejected.input_refs.get("channel_scope") == turn.input_refs["channel_scope"]:
+        rejection = await session.scalar(
+            select(AuditEvent.summary)
+            .where(
+                AuditEvent.type == "persona.decision_rejected",
+                AuditEvent.entity_ref == f"employee_turns/{rejected.id}",
+            )
+            .order_by(AuditEvent.seq.desc())
+            .limit(1)
+        )
     return {
         "employee": serialize(employee),
         "role": serialize(role),
@@ -237,6 +258,7 @@ async def context_snapshot(session, token, turn_id):
         "goals": [serialize(obj) for obj in goals],
         "tasks": [serialize(obj) for obj in tasks],
         "inbox": contexts,
+        "last_decision_error": rejection,
         "workers": [
             {
                 "id": obj.id,
@@ -250,9 +272,21 @@ async def context_snapshot(session, token, turn_id):
     }
 
 
-async def record_native_result(session, token, turn_id, messages):
-    """原生最终回复证明输入已观察；无论业务动作成功与否都单独留下观察事实。"""
-    turn, _, principal, employee = await current_turn(session, token, turn_id)
+async def reject_decision(session, token, turn_id, reason):
+    """只处理已有原生最终回复的无效决策；未知提交/网络结果仍恢复原 Session。"""
+    turn, state, principal, employee = await current_turn(session, token, turn_id)
+    await cas(session, turn, {"status": "FAILED", "finished_at": now()})
+    await cas(session, state, {"lease_until": 0, "next_review": now() + 60})
+    for object_id in turn.input_refs["admission_ids"]:
+        admission = await get_required(session, InboxAdmission, object_id)
+        if admission.disposition in {None, "DEFERRED"}:
+            await cas(session, admission, {"disposition": "DEFERRED"})
+    await audit(session, principal, employee.team_id, "persona.decision_rejected", turn, reason)
+
+
+async def record_native_usage(session, token, turn_id, messages):
+    """用量独立于来源观察与业务动作，撤销 Grant 不能抹去实际模型消耗。"""
+    turn, _, _, employee = await current_turn(session, token, turn_id)
     usage = await session.scalar(
         select(BudgetUsage).where(
             BudgetUsage.actor_id == employee.id,
@@ -261,29 +295,19 @@ async def record_native_result(session, token, turn_id, messages):
         )
     )
     if not usage:
-        assistants = [item["info"] for item in messages if item.get("info", {}).get("role") == "assistant"]
-        if any(not isinstance(item.get("tokens"), dict) or "cost" not in item for item in assistants):
-            raise DomainError(409, "原生回合缺少真实用量事实，不能用零消耗代替")
-
-        def count(info):
-            tokens = info["tokens"]
-            if tokens.get("total") is not None:
-                return int(tokens["total"])
-            return int(
-                sum(tokens.get(key, 0) for key in ["input", "output", "reasoning"])
-                + sum(tokens.get("cache", {}).values())
-            )
-
         session.add(
             BudgetUsage(
                 actor_id=employee.id,
                 purpose="PERSONA",
                 native_session_id=turn.native_session_id,
-                model=f"{assistants[-1]['providerID']}/{assistants[-1]['modelID']}",
-                tokens=sum(count(info) for info in assistants),
-                cost_micros=round(sum(info["cost"] for info in assistants) * 1000000),
+                **usage_facts(messages),
             )
         )
+
+
+async def record_native_result(session, token, turn_id):
+    """原生最终回复证明输入已观察；无论业务动作成功与否都单独留下观察事实。"""
+    turn, _, principal, employee = await current_turn(session, token, turn_id)
     changed = False
     for object_id in turn.input_refs["admission_ids"]:
         admission = await get_required(session, InboxAdmission, object_id)
@@ -295,7 +319,7 @@ async def record_native_result(session, token, turn_id, messages):
         await audit(session, principal, employee.team_id, "persona.observed", turn, "原生回合输入已观察")
 
 
-async def apply_decision(session, token, turn_id, decision, prepared_memory=None):
+async def apply_decision(session, token, turn_id, decision, prepared_memory=None, prepared_reviews=None):
     turn, state, principal, employee = await current_turn(session, token, turn_id)
     role = await get_required(session, Role, employee.role_id)
     team = await get_required(session, Team, employee.team_id)
@@ -339,6 +363,12 @@ async def apply_decision(session, token, turn_id, decision, prepared_memory=None
             result = await prepare(session, principal, action.operation)
         elif action.type == "handoff":
             result = await propose_handoff(session, principal, action.task_id, action.handoff)
+        elif action.type == "review":
+            if not prepared_reviews or index not in prepared_reviews:
+                raise DomainError(409, "验收尚未在事务外重新核验原生证据")
+            assert_review_source(context, action.task_id, action.review.execution_id)
+            snapshot, refs = prepared_reviews[index]
+            result = await apply_review(session, principal, action.task_id, action.review, snapshot, refs)
         elif action.type == "follow_up":
             due = now() + action.after_seconds
             review_at = min(review_at or due, due)
@@ -359,11 +389,86 @@ async def apply_decision(session, token, turn_id, decision, prepared_memory=None
     return serialize(turn)
 
 
+def assert_review_source(context, task_id, execution_id):
+    event = context["event"]
+    if (
+        event["source"] != "task"
+        or event["payload_ref"].get("task_id") != task_id
+        or event["payload_ref"].get("execution_id") != execution_id
+        or event["payload_ref"].get("action") != "submitted"
+    ):
+        raise DomainError(403, "验收必须绑定本回合收到的具体 Task 提交事件")
+
+
 class PersonaRunner:
-    def __init__(self, database, token, client, memory=None):
+    def __init__(
+        self,
+        database,
+        token,
+        client,
+        memory=None,
+        *,
+        execution_settings=None,
+        execution_client_factory=runtime_client,
+    ):
         if client.config.purpose is not RuntimePurpose.PERSONA or client.config.persona_tools:
             raise ValueError("有限决策运行器只接受禁用主机与写工具的 Persona Runtime")
         self.db, self.token, self.client, self.memory = database, token, client, memory
+        self.execution_settings = execution_settings
+        self.execution_client_factory = execution_client_factory
+
+    async def settings(self):
+        return self.execution_settings or await asyncio.to_thread(configured_settings)
+
+    async def add_review_context(self, turn_id, snapshot):
+        """只向业务回合注入当前提交的受权原生工具事实；网络读取不持有数据库锁。"""
+        for context in snapshot["inbox"]:
+            event = context["event"]
+            if (
+                event["source"] != "task"
+                or event["payload_ref"].get("action") != "submitted"
+                or context["task"]["status"] != "REVIEW"
+            ):
+                continue
+            settings = await self.settings()
+            async with self.db.sessions.begin() as session:
+                _, _, principal, _ = await current_turn(session, self.token, turn_id)
+                original = await review_snapshot(
+                    session, principal, event["payload_ref"]["execution_id"], settings
+                )
+            messages = await read_evidence(original, client_factory=self.execution_client_factory)
+            payload = evidence_payload(original, messages)
+            async with self.db.sessions.begin() as session:
+                _, _, principal, _ = await current_turn(session, self.token, turn_id)
+                current = await review_snapshot(
+                    session, principal, event["payload_ref"]["execution_id"], settings
+                )
+                if (current[0]["revision"], current[1]["revision"]) != (
+                    original[0]["revision"],
+                    original[1]["revision"],
+                ) or current[0]["revision"] != context["task"]["revision"]:
+                    raise DomainError(409, "员工读取证据期间任务或执行已变化")
+            context["native_evidence"] = payload
+
+    async def prepare_reviews(self, turn_id, decision):
+        prepared = {}
+        for index, action in enumerate(decision.actions):
+            if action.type != "review":
+                continue
+            settings = await self.settings()
+            async with self.db.sessions.begin() as session:
+                turn, _, principal, _ = await current_turn(session, self.token, turn_id)
+                if action.admission_id not in turn.input_refs["admission_ids"]:
+                    raise DomainError(403, "验收来源不在本回合")
+                context = await source_context(
+                    session, principal, await get_required(session, InboxAdmission, action.admission_id)
+                )
+                assert_review_source(context, action.task_id, action.review.execution_id)
+                original = await review_snapshot(session, principal, action.review.execution_id, settings)
+            messages = await read_evidence(original, client_factory=self.execution_client_factory)
+            refs = validate_review(action.review, original[0], original[1], messages)
+            prepared[index] = original, refs
+        return prepared
 
     async def run(self, employee_id, *, timeout_seconds=120):
         async with self.db.sessions.begin() as session:
@@ -400,6 +505,7 @@ class PersonaRunner:
         if not started:
             async with self.db.sessions.begin() as session:
                 snapshot = await context_snapshot(session, self.token, turn_id)
+            await self.add_review_context(turn_id, snapshot)
             memory = (
                 await asyncio.to_thread(self.memory.read, employee_id, refs["memory_head"])
                 if self.memory
@@ -434,6 +540,12 @@ class PersonaRunner:
                 "本回合只使用给定 Inbox 的 admission_id，每条都明确处理。reply 回复该事项来源 Channel；"
                 "no_action 安静记档；remember 保存完整短记忆和来源；follow_up 延后判断；dispatch 创建工程任务"
                 "及 Worker 绑定；ask_human 准备具体审批；handoff 提案等待签收。无工程需求不创建 Task。"
+                "收到 Task submitted 事件时，用 review 按原始标准独立验收。native_evidence 是重新读取的"
+                "原生工具事实；核对 input 的实际命令/文件、明确退出码和输出，不能用 Worker 自述代替。"
+                "每条通过都引用 matches_submission=true 的工具原文；未通过则 REWORK，证据不足则"
+                "WAIT_HUMAN 或 follow_up。不得把未发生的检查写成已通过。"
+                "excerpt 必须是工具 output 中连续且逐字一致的短摘录，不得重新排版、概括或拼接；"
+                "例如原文确有 OK 时可仅引用 OK。last_decision_error 表示前次已被拒绝的原因，须纠正。"
                 "如果某动作不在岗位或工程授权内，选择 no_action 或明确延后，不能自行扩权。"
                 "普通对话优先 reply，回答用户具体内容；回复不能披露其他私人对话。\n"
                 "最终只输出符合 decision_schema 的 JSON 对象，不要代码围栏或其他解释。\n"
@@ -467,8 +579,20 @@ class PersonaRunner:
             if any(item.get("info", {}).get("error") for item in messages):
                 raise DomainError(409, "原生 Persona 推理返回错误，保留回合等待核查")
             if final and (await self.client.status(binding))["type"] == "idle":
-                async with self.db.sessions.begin() as session:
-                    await record_native_result(session, self.token, turn_id, messages)
+                try:
+                    async with self.db.sessions.begin() as session:
+                        await record_native_usage(session, self.token, turn_id, messages)
+                    async with self.db.sessions.begin() as session:
+                        await record_native_result(session, self.token, turn_id)
+                except DomainError:
+                    try:
+                        async with self.db.sessions.begin() as session:
+                            await reject_decision(
+                                session, self.token, turn_id, "原生结果到达时输入授权已失效"
+                            )
+                    except DomainError:
+                        pass
+                    raise
                 text = "".join(
                     part["text"]
                     for part in final[-1].get("parts", [])
@@ -477,10 +601,22 @@ class PersonaRunner:
                 try:
                     decision = PersonaDecision.model_validate_json(text)
                 except ValidationError:
+                    async with self.db.sessions.begin() as session:
+                        await reject_decision(session, self.token, turn_id, "模型输出未通过有限决策契约校验")
                     raise DomainError(409, "模型输出未通过有限决策契约校验；原文仅保留于原生会话") from None
-                prepared = await self.prepare_memory(turn_id, decision)
-                async with self.db.sessions.begin() as session:
-                    return await apply_decision(session, self.token, turn_id, decision, prepared)
+                try:
+                    prepared = await self.prepare_memory(turn_id, decision)
+                    reviews = await self.prepare_reviews(turn_id, decision)
+                    async with self.db.sessions.begin() as session:
+                        return await apply_decision(session, self.token, turn_id, decision, prepared, reviews)
+                except DomainError as exc:
+                    # 所有动作事务已回滚；记录已知拒绝并按冷却/预算重新判断，不重放旧副作用。
+                    try:
+                        async with self.db.sessions.begin() as session:
+                            await reject_decision(session, self.token, turn_id, str(exc))
+                    except DomainError:
+                        pass  # 身份、Turn 或 fence 已失效时无权更改旧回合。
+                    raise
             await asyncio.sleep(0.5)
         raise DomainError(409, "Persona 等待超时，保留原生绑定；恢复时只查询，不重复提交")
 

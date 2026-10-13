@@ -22,7 +22,7 @@
 - **THEN** 记录未知并拒绝盲重跑及过期写入
 
 ### Requirement: 真实 Runtime 兼容
-系统 MUST 支持公司 Windows/Linux/SSH 与既定 OpenCode 版本真实契约验证。
+系统 MUST 支持公司 Linux 主机及 SSH 与固定的单一 OpenCode 版本真实契约验证。当前部署目标版本为 `1.19.0`；版本升级必须先完成真实 Session/Tool/恢复契约验证，运行时不得自动回退其他版本。
 
 #### Scenario: 真实 Runtime 兼容验收
 - **WHEN** Runtime 版本不兼容

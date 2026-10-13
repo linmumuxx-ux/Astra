@@ -1,6 +1,8 @@
 # Astra 1.0 部署与验证入口
 
-当前为重建开发分支，尚不满足生产切换条件。下列命令运行独立 1.0 schema 和新运行树；不得指向现有 0.xx 数据库，也不得以这些命令替代生产迁移签收。本机隔离 MySQL 8.4.10、Redis/Celery/Beat 已真实验证；公司 Linux/Windows、SSH、反向代理与灾备仍需实际环境验收。
+当前为重建开发分支，尚不满足生产切换条件。公司交付目标由用户收敛为 **Linux 主机**，OpenCode 统一固定 `1.19.0`，不提供运行时多版本回退。已有 Linux 员工测试机用于隔离真实验证；旧备份信息后续补充，正式迁移/灾备仍保留验收门禁。
+
+下列命令运行独立 1.0 schema 和新运行树；不得指向现有 0.xx 数据库，也不得以这些命令替代生产迁移签收。本机隔离 MySQL 8.4.10、Redis/Celery/Beat 已真实验证；公司 Linux、SSH、反向代理与灾备仍需实际环境验收。
 
 ## 独立排练
 
@@ -27,9 +29,9 @@ ASTRA_API_URL=http://127.0.0.1:8200 npm run dev
 
 ## Runtime 与 MCP
 
-Persona 与 Task 使用不同 OpenCode Server、目录、Session 用途及权限。当前实际兼容验证为 OpenCode **1.18.35**，版本之外必须重新跑真实接口/权限测试，不能仅按版本更大放行。不要把员工固定绑定 Worker，也不要给 Persona 工程目录或无限制 shell。
+Persona 与 Task 使用不同 OpenCode Server、目录、Session 用途及权限。当前统一 OpenCode **1.19.0**，版本之外必须重新跑真实接口/权限测试，不能仅按版本更大放行。不要把员工固定绑定 Worker，也不要给 Persona 工程目录或无限制 shell。
 
-Worker 在资源页注册明确 OpenCode URL、允许工程、能力和绝对工作区根，再点击“检查真实 Runtime”。本地 worktree、受保护 Worker 的 file: 凭据解析和工程运行器已真实验证，配置见 `execution.md`；远程 SSH/Windows 尚未接线。dispatch 只绑定租约，独立运行器取得原生提交事实后才标记工程任务已启动。
+Worker 在资源页注册明确 OpenCode URL、允许工程、能力和绝对工作区根，再点击“检查真实 Runtime”。本地 worktree、受保护 Worker 的 file: 凭据解析和工程运行器已真实验证，配置见 `execution.md`；远程 Linux/SSH 尚未接线。dispatch 只绑定租约，独立运行器取得原生提交事实后才标记工程任务已启动。
 
 MCP 必须显式配置 `ASTRA_V1_DATABASE_URL`、`ASTRA_V1_API_URL`、`ASTRA_V1_MCP_RESOURCE_URL`、`ASTRA_V1_MCP_PORT`，运行 `python -m agents.tools`。默认只监听 127.0.0.1，反向代理继续转发 Authorization。使用经过签发的主体凭据，不能配置默认用户或让模型传入操作身份。
 
@@ -84,7 +86,7 @@ OpenCode 1.18.35 的原生 json_schema 输出在实际验证中触发持久消�
 ASTRA_E2E_BROWSER=/absolute/path/to/chrome .venv/bin/python scripts/verify.py
 ```
 
-默认执行新树静态、领域/迁移/HTTP 集成、前端构建和独立临时库上的真实 API 浏览器测试。浏览器默认使用 Playwright 安装；已有 Chrome 可显式指定，不由脚本联网下载。临时进程使用自己的随机端口与数据库，退出后只清理自己的资源。Windows 使用 `.venv/Scripts/python.exe` 与本机浏览器路径，当前未在 Windows 运行。
+默认执行新树静态、领域/迁移/HTTP 集成、前端构建和独立临时库上的真实 API 浏览器测试。浏览器默认使用 Playwright 安装；已有 Chrome 可显式指定，不由脚本联网下载。临时进程使用自己的随机端口与数据库，退出后只清理自己的资源。公司部署统一 Linux；macOS 仅作为本机开发验证环境。
 
 隔离 MySQL 运行 `python tests/v1/run_mysql.py`，只启动自己的临时目录与端口。真实 Persona/Beat 运行 `ASTRA_LIVE_MODEL=provider/model python scripts/verify.py --live-persona`；模型测试默认跳过，避免重复消耗。
 
@@ -92,6 +94,14 @@ ASTRA_E2E_BROWSER=/absolute/path/to/chrome .venv/bin/python scripts/verify.py
 
 ## 工程运行服务
 
-Task 本机工程运行器、受密码保护 Worker 及浏览器独立验收已真实验证；完整接管/跨 Worker 恢复与公司 SSH/Windows 尚未验证。按 `execution.md` 配置独立执行 SYSTEM 身份、具体工程 Grant、受控 `ASTRA_V1_EXECUTION_CONFIG` 和 `ASTRA_V1_EXECUTOR_CREDENTIAL_FILE`；Worker 的凭据由 file: 安全部署引用解析，不能进入模型上下文。
+Task 本机工程运行器、受密码保护 Worker 及浏览器独立验收已真实验证；完整接管/跨 Worker 恢复与公司 Linux/SSH 尚未验证。按 `execution.md` 配置独立执行 SYSTEM 身份、具体工程 Grant、受控 `ASTRA_V1_EXECUTION_CONFIG` 和 `ASTRA_V1_EXECUTOR_CREDENTIAL_FILE`；Worker 的凭据由 file: 安全部署引用解析，不能进入模型上下文。
+
+## Linux Runtime 实测入口
+
+当前已在既有 CentOS 7 / glibc 2.17 主机独立安装并执行 OpenCode 1.19.0；这仅验证 Runtime，不代表新 API、队列、数据库及反向代理已在该主机交付。公司发行版/版本仍待明确，不能把测试机发行版自动当成正式部署版本。
+
+远程验证需配置 `ASTRA_LIVE_LINUX=1`、`ASTRA_LIVE_LINUX_SSH_FILE`、`ASTRA_LIVE_LINUX_KNOWN_HOSTS`、`ASTRA_LIVE_LINUX_PROVIDER_FILE`、`ASTRA_LIVE_LINUX_BINARY`、`ASTRA_LIVE_LINUX_ROOT`、`ASTRA_LIVE_MODEL`、`ASTRA_LIVE_LINUX_REPORT`，运行 `python -m pytest -q tests/v1/test_linux_runtime_live.py`。SSH JSON 与模型 Provider JSON 必须为归属服务用户的无符号链接 0600 文件；known_hosts 必须预先固定并经运维核对，测试运行器不会自动信任新密钥。
+
+测试仅在随机子目录内建立配置、数据、缓存与工程仓库；模型秘密只进入受保护部署文件。Serve 监听远端 loopback，经 SSH 转发访问；不会公开端口或替换旧可执行文件/服务。保留原生数据与证据，退出时核对 PID 的工作目录及 serve 参数后结束本次进程。已通过真实 read/edit/bash、原始五项断言、转发断开重连、同 Session 只读恢复与独立复验，见 `linux-runtime-live-report.json`。
 
 `python scripts/verify.py --live-execution` 显式运行消耗模型额度的真实工程/浏览器检查，需 `ASTRA_LIVE_MODEL` 与浏览器路径。默认验证跳过四项环境测试，不能把跳过当作公司部署通过。

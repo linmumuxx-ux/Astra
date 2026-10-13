@@ -113,6 +113,7 @@ def main():
                 "test_personas.py",
                 "test_sse.py",
                 "test_executions.py",
+                "test_persona_reviews.py",
             ]
             result = subprocess.run(
                 [

@@ -22,13 +22,15 @@ from sqlalchemy import func, select
 
 from apps.api.main import create_app
 from apps.services.executions import ExecutionRunner
+from apps.services.personas import PersonaRunner
 from domains.core import new_id, now
 from domains.governance.models import BudgetUsage
 from domains.identity.models import Actor
 from domains.identity.service import digest, issue_credential
-from domains.personas.models import InboxAdmission
+from domains.personas.models import EmployeeTurn, InboxAdmission
 from domains.runtime import OpenCodeClient, OpenCodeConfig, RuntimePurpose
 from domains.runtime.execution_config import ExecutionSettings
+from domains.work.models import TaskReview
 
 from .http_server import serve_http
 from .test_domains import post
@@ -145,6 +147,10 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                     {
                         "team_id": team["id"],
                         "name": "工程主责",
+                        "mandate": (
+                            "对收到的工程提交按原始验收标准审查原生工具事实；"
+                            "证据充分时独立验收，未通过时返工，证据不足时等待人类。"
+                        ),
                         "permissions": ["task.create", "task.dispatch", "task.review"],
                     },
                 )
@@ -303,7 +309,51 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                     }
                 ],
             }
-            if os.getenv("ASTRA_LIVE_UI") == "1":
+            if os.getenv("ASTRA_LIVE_EMPLOYEE_REVIEW") == "1":
+                persona_token = secrets.token_urlsafe(48)
+                persona_service = await post(
+                    api,
+                    "system-identities/personas",
+                    {
+                        "name": "真实独立验收 Persona 服务",
+                        "team_ids": [team["id"]],
+                        "credential_digest": digest(persona_token),
+                    },
+                )
+                assert persona_service.status_code == 200, persona_service.text
+                decision_directory = physical / "persona"
+                decision_directory.mkdir()
+                persona_client = OpenCodeClient(
+                    OpenCodeConfig(
+                        f"http://127.0.0.1:{port}",
+                        "persona-review",
+                        RuntimePurpose.PERSONA,
+                        (str(decision_directory),),
+                        model=model,
+                        password=password,
+                    )
+                )
+                persona = PersonaRunner(
+                    app.state.db,
+                    persona_token,
+                    persona_client,
+                    execution_settings=runner.settings,
+                )
+                turn_result = await persona.run(employee["id"], timeout_seconds=180)
+                assert turn_result["status"] == "FINISHED"
+                async with app.state.db.sessions() as session:
+                    review_record = await session.scalar(
+                        select(TaskReview).where(TaskReview.task_id == task["id"])
+                    )
+                    assert review_record and review_record.reviewer_id == employee["id"]
+                    assert review_record.outcome == "COMPLETED", turn_result
+                    turn_record = await session.get(EmployeeTurn, turn_result["id"])
+                    assert turn_record.native_session_id != submitted["native_session_id"]
+                    review_body = {"id": review_record.id, "reviewer_id": review_record.reviewer_id}
+                    report["decision_native_session_id"] = turn_record.native_session_id
+                operation_key = None
+                report["real_employee_review_verified"] = True
+            elif os.getenv("ASTRA_LIVE_UI") == "1":
                 token_file = physical / "browser.token"
                 token_file.write_text(token)
                 token_file.chmod(0o600)
@@ -319,6 +369,7 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                             "ASTRA_E2E_TOKEN_FILE": str(token_file),
                             "ASTRA_LIVE_TASK_ID": task["id"],
                             "ASTRA_LIVE_REVIEW_RESULT": str(ui_result),
+                            "ASTRA_LIVE_EVIDENCE_PART_ID": test_result["part_id"],
                         },
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
@@ -336,8 +387,9 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                 review = await post(api, f"tasks/{task['id']}/review", payload, key="independent-review")
                 assert review.status_code == 200, review.text
                 review_body, operation_key = review.json(), "independent-review"
-            replay = await post(api, f"tasks/{task['id']}/review", payload, key=operation_key)
-            assert replay.json()["id"] == review_body["id"]
+            if operation_key:
+                replay = await post(api, f"tasks/{task['id']}/review", payload, key=operation_key)
+                assert replay.json()["id"] == review_body["id"]
             final = (await api.get(f"/api/v1/tasks/{task['id']}")).json()
             assert final["status"] == "COMPLETED" and final["latest_result"]["review_id"] == review_body["id"]
             async with app.state.db.sessions() as session:
@@ -361,7 +413,7 @@ async def test_real_business_task_runtime_submission_and_independent_review(tmp_
                 independent_test_output=stdout + stderr,
                 original_test_sha256=original_digest,
                 worker_credential_resolved=True,
-                review_idempotency_verified=True,
+                review_idempotency_verified=bool(operation_key),
                 source_event_inbox_count=admissions,
                 execution_tokens=usage[0].tokens,
                 cost_micros=usage[0].cost_micros,

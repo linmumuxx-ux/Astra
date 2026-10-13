@@ -24,7 +24,10 @@ try {
   await page.getByRole('button',{name:'进入数字空间'}).click()
   await expect(page.getByText('实时同步', { exact:true })).toBeVisible({ timeout:15000 })
   await page.goto(`http://127.0.0.1:${port}/tasks/${process.env.ASTRA_LIVE_TASK_ID}`)
+  await expect(page.getByRole('radio', {name:'全部工作', exact:true})).toBeAttached()
   if (process.env.ASTRA_LIVE_READ_ONLY === '1') {
+    await expect(page.locator('.task-detail')).toContainText('独立验收结论')
+    await page.screenshot({path:resolve('../../docs/astra-1.0/evidence/task-employee-completed.png'),fullPage:true,animations:'disabled'})
     await readHistory(page)
     await writeFile(process.env.ASTRA_LIVE_REVIEW_RESULT, JSON.stringify({ history_verified:true }))
   } else {
@@ -35,7 +38,7 @@ try {
   await panel.getByLabel('标准 1 已通过').check()
   await panel.getByLabel('标准 1 的验收依据', {exact:true}).fill('独立复验五项原始测试退出码0，原始测试 SHA256 未变；审查真实命令输出。')
   await panel.getByLabel('标准 1 的证据', {exact:true}).click()
-  await page.getByRole('option',{name: /^bash ·/}).click()
+  await page.getByRole('option',{name: `bash · ${process.env.ASTRA_LIVE_EVIDENCE_PART_ID}`, exact:true}).click()
   await panel.getByLabel('标准 1 的原文摘录',{exact:true}).fill('Ran 5 tests')
   const evidenceDir = resolve('../../docs/astra-1.0/evidence')
   await mkdir(evidenceDir,{recursive:true})

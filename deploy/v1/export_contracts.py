@@ -17,11 +17,13 @@ async def export():
     sys.path.insert(0, str(ROOT))
     from agents.tools import build_tools
     from apps.api.main import create_app
+    from apps.api.schemas import PersonaDecision
     from domains.database import Base, Database
 
     OUT.mkdir(parents=True, exist_ok=True)
     application = create_app("sqlite+aiosqlite:///:memory:")
     write_json("openapi.json", application.openapi())
+    write_json("persona-decision.schema.json", PersonaDecision.model_json_schema())
     database = Database("sqlite+aiosqlite:///:memory:")
     server = build_tools(
         database, api_url="https://astra.example.invalid", resource_url="https://astra.example.invalid/mcp"

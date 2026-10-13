@@ -37,11 +37,12 @@ class NativeProtocol:
         self.pages = {}
         self.create_count = self.prompt_count = self.abort_count = 0
         self.lose_prompt = self.lose_create = self.no_final = self.revoke = False
+        self.tool_exit, self.tool_output = 0, "5 tests passed"
 
     async def handle(self, request):
         path, method = request.url.path, request.method
         if path == "/global/health":
-            return httpx.Response(200, json={"healthy": True, "version": "1.18.35"})
+            return httpx.Response(200, json={"healthy": True, "version": "1.19.0"})
         if path == "/doc":
             return httpx.Response(200, json=native_contract())
         if path == "/session" and method == "POST":
@@ -89,8 +90,8 @@ class NativeProtocol:
                             "tool": "bash",
                             "state": {
                                 "status": "completed",
-                                "output": "5 tests passed",
-                                "metadata": {"exit": 0},
+                                "output": self.tool_output,
+                                "metadata": {"exit": self.tool_exit},
                             },
                         }
                     ],

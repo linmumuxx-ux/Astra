@@ -1,6 +1,6 @@
 {
   "kind": "isolated_mysql_integration",
-  "started_at": 1791856287.3040059,
+  "started_at": 1791868089.265497,
   "result": "PASSED",
   "whole_system_acceptance": false,
   "existing_database_touched": false,
@@ -19,8 +19,9 @@
     "test_memory.py",
     "test_personas.py",
     "test_sse.py",
-    "test_executions.py"
+    "test_executions.py",
+    "test_persona_reviews.py"
   ],
   "test_exit_code": 0,
-  "finished_at": 1791856326.1917021
+  "finished_at": 1791868129.2711732
 }

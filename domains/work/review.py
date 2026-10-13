@@ -39,7 +39,9 @@ def validate_review(data, task, execution, messages):
         if item.passed and not item.evidence:
             raise DomainError(409, "通过的验收标准必须有可核验证据")
         for citation in item.evidence:
-            ref = verify_citation(messages, citation, execution["native_session_id"])
+            ref = verify_citation(
+                messages, citation, execution["native_session_id"], require_success=item.passed
+            )
             if ref not in execution["evidence_refs"]:
                 raise DomainError(409, "引用未出现在当前执行提交的证据索引中")
             refs.append(ref)

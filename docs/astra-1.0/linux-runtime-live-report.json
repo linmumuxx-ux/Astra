@@ -1,0 +1,33 @@
+{
+  "kind": "real_linux_ssh_native_runtime",
+  "result": "PASSED",
+  "whole_system_acceptance": false,
+  "started_at": 1791867510.3121998,
+  "remote_evidence_root": "/root/.astra-v1-test/evidence/9a97441cb57e4ad4a1703d77403bbe73",
+  "model": "deepseek/deepseek-flash",
+  "existing_service_modified": false,
+  "native_storage_isolated": true,
+  "system": "Linux 3.10.0-514.26.2.el7.x86_64 x86_64\nglibc 2.17",
+  "health": {
+    "healthy": true,
+    "version": "1.19.0",
+    "contract_verified": true
+  },
+  "native_session_id": "ses_ecc5f5e4bffeK6djj83pSg3UQN",
+  "prompt_id": "msg57e6809cc02e4b089bf4543e2d817616",
+  "independent_test_exit_code": 0,
+  "independent_test_output": "5 original assertions passed\n",
+  "original_test_sha256": "fcb3f1ff3322e066c2ca8a30aaa06ad82ee410fa641cd424dd82f148439f47a1",
+  "tunnel_reconnect_same_session": true,
+  "native_evidence_refs": [
+    "opencode://ses_ecc5f5e4bffeK6djj83pSg3UQN/msg_133a0ab1a0012iuyTxINUfclRo/prt_133a0b2a8001TRU0bArjJCyPkJ?sha256=713a9fe80d41fcdf29f2105c93da3b3a534151938520bf699b99fd2c2778fedd",
+    "opencode://ses_ecc5f5e4bffeK6djj83pSg3UQN/msg_133a0b580001BWDunojpEps4Yz/prt_133a0bba3001JxClFnfbYV0AYj?sha256=bfc2d1f12086c501758233dbac9df48bc2b442544d602b73312e9818c6d3d9d9",
+    "opencode://ses_ecc5f5e4bffeK6djj83pSg3UQN/msg_133a0bddc001d32yO1Dows0nSC/prt_133a0c095001a7pLVv10E1Vu6r?sha256=20765eca28e449a4b326f3478a020db05fe065995a8a02bfea479990c26742eb"
+  ],
+  "usage": {
+    "model": "deepseek/deepseek-flash",
+    "tokens": 23563,
+    "cost_micros": 1017
+  },
+  "finished_at": 1791867546.0477068
+}

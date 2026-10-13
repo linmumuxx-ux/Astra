@@ -10,7 +10,7 @@ test.skip(!tokenFile, '需显式指定隔离新库的 ASTRA_E2E_TOKEN_FILE')
 const apiUrl = process.env.ASTRA_E2E_API_URL || 'http://127.0.0.1:8202/api/v1'
 const evidenceDir = resolve('../../docs/astra-1.0/evidence')
 let access = '', api: APIRequestContext
-let team: { id: string }, employee: { id: string }, second: { id: string }, task: { id: string }, approvalTask: { id: string }, operation: { id: string }, role: { id: string }, readonlyToken = ''
+let team: { id: string }, employee: { id: string }, second: { id: string }, task: { id: string; title: string }, approvalTask: { id: string }, operation: { id: string }, role: { id: string }, readonlyToken = ''
 const suffix = `${Date.now()}`.slice(-7)
 async function create<T>(path: string, data: unknown): Promise<T> {
   const response = await api.post(`${apiUrl}${path}`, { data, headers: { 'Idempotency-Key': randomUUID() } })
@@ -85,6 +85,11 @@ test('长期 DM 持久化、SSE 断线恢复与后端幂等头', async ({ page, 
 test('工作暂停和正式交接由真实服务端状态驱动', async ({ page }) => {
   await login(page)
   await page.goto(`/tasks/${task.id}`)
+  await expect(page.getByRole('radio', { name: '全部工作', exact: true })).toBeAttached()
+  await page.getByText('已完成', { exact: true }).first().click()
+  await expect(page.locator('.task-list')).not.toContainText(task.title)
+  await page.getByText('全部工作', { exact: true }).click()
+  await expect(page.locator('.task-list')).toContainText(task.title)
   await page.getByRole('button', { name: '暂停', exact: true }).click()
   await expect(page.locator('.task-detail').getByText('已暂停', { exact: true })).toBeVisible()
   const response = await api.get(`${apiUrl}/tasks/${task.id}`); expect((await response.json()).status).toBe('PAUSED')

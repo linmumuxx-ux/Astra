@@ -311,6 +311,12 @@ class HandoffAction(PersonaAction):
     handoff: HandoffInput
 
 
+class ReviewAction(PersonaAction):
+    type: Literal["review"]
+    task_id: str
+    review: TaskReviewInput
+
+
 class PersonaDecision(Input):
     plan: str = Field(max_length=4000)
     actions: list[
@@ -321,7 +327,8 @@ class PersonaDecision(Input):
             | DispatchAction
             | FollowUpAction
             | AskHumanAction
-            | HandoffAction,
+            | HandoffAction
+            | ReviewAction,
             Field(discriminator="type"),
         ]
     ] = Field(min_length=1, max_length=12)

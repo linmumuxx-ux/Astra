@@ -39,6 +39,8 @@ API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`open
 
 具体工程配置、准备/提交意图、恢复规则及独立验收输入见 `execution.md`。
 
+Persona 有限动作现为 reply/no_action/remember/dispatch/follow_up/ask_human/handoff/review，严格机器契约见 `persona-decision.schema.json`。review 使用同一 TaskReviewInput，必须绑定本回合具体 submitted 事件；受权原生输入/退出码/输出仅即时注入，提交前重读哈希，所有业务动作与 Inbox/Turn 原子完成。无效已知决策记录拒绝并冷却，未知提交结果不重提。模型不得传入 reviewer/actor 身份。
+
 ## MCP
 
 `agents/tools.py` 使用 Streamable HTTP 与同一数据库凭据验证，转发当前请求的认证到新 API；Tool 不维护第二套业务授权或默认用户。写入 `operation_key` 映射到 API 幂等键。HTTP 写结果未知时不会换 key 自动重发。

@@ -10,6 +10,7 @@
 | `backend/app/runtime/session_connection.py` Git common-dir/worktree 注册核验、detach 创建、任务配置继承 | `domains/runtime/workspace.py` | 移除 Employee 目录和旧环境模型；按 TaskExecution 隔离，检查所有 symlink 父目录，恢复不重建、不覆盖未提交改动 |
 | `backend/app/runtime/opencode_server.py` 健康与版本校验思路 | `domains/runtime/config.py`、`client.py` | 保留 `/global/health` 协议；精确部署版本与实时接口契约验证，不继承“版本更大即兼容”的推断 |
 | `backend/app/assistant/review.py` 原生工具结果引用校验 | `domains/runtime/evidence.py` | 清理旧助手与旧 Task 依赖；校验原生树、非合成完成工具、原文与明确成功退出码，并绑定提交时片段 SHA256 |
+| `backend/app/runtime/ssh_client.py` Paramiko 执行、SFTP、双向转发 | `domains/runtime/ssh.py` | 无旧领域依赖，改为固定 known_hosts/RejectPolicy；正确记录零端口分配结果；本机主机密钥握手及真实 Linux 转发执行验证 |
 
 HTTP/SSE 错误不包含响应正文，防止工具输出或凭据进入日志。原生 SSE 改为完整事件块解析，支持 `data:`/`data: ` 与多行 JSON；有限内存去重只减少观察重复，不宣称端到端 exactly-once。原生 `/event` 没有业务持久化回放保证，重连后先读权威 Session；普通用户所用业务 SSE 由独立的业务事件序列负责。
 

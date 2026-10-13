@@ -8,10 +8,12 @@ INTERVAL 以正整数秒表示；CRON 为五字段，字段解析复用 Celery�
 
 人类凭 routine.manage 在团队内配置；员工还必须为计划本人、计划未锁定，若关联 Goal 则为该 Goal 当前业务主责。系统只有经过签发认证的 routine.signal 与指定团队成员关系，不能编辑计划。员工暂停/归档后不进入到期投递；恢复 Routine 重算未来时间。手动 Run Now 可形成新关注事件，不直接创建 Task。
 
-`apps/services/personas.py` 已接短原生模型 Session、严格 JSON 有限决策、观察/处理分离和 Git Memory。七种动作使用原有业务领域服务；dispatch 当前创建 Task 并绑定 Worker lease，不假报工程已启动。实际工程启动、独立验收和 Task 结果入站仍须完成。
+`apps/services/personas.py` 已接短原生模型 Session、严格 JSON 有限决策、观察/处理分离和 Git Memory。八种动作均调用新领域服务；dispatch 创建 Task 并绑定 Worker lease，工程运行器取得原生事实后启动。Task 提交产生结果 Inbox；review 只能验收该 Inbox 引用的具体提交，逐条核对原始标准、工具输入/退出码/输出及提交哈希，不凭 Worker 自述关闭工作。
 
-回合持久保存 Inbox 输入引用、身份/岗位/策略/记忆版本、原生 Session ID、提交开始标记与预算预留。重启只查询原 Session，不重发已开始提交的 prompt。动作与 disposition、计划和 Turn 完成同一事务；失败保留已观察、未处理。失效 fence、员工暂停或服务凭据撤销阻止动作。
+回合持久保存 Inbox 输入引用、身份/岗位/策略/记忆版本、原生 Session ID、提交开始标记与预算预留。重启只查询原 Session，不重发已开始提交的 prompt。动作与 disposition、计划和 Turn 完成同一事务；无效决策事务回滚并记录 FAILED 与拒绝原因，保留已观察事实，关注事项延后至少 60 秒重新判断。新回合可见同一 Channel 范围的拒绝原因，仍受预算控制；网络结果未知时保持原生绑定，不以新回合盲重发。失效 fence、员工暂停或服务凭据撤销阻止动作。
 
 新增推理前计入当日真实用量及未完成对账的回合预留；原生用量按 PERSONA 单独归属，未知不按零消耗处理。当前预留不是供应商硬 Token 上限，完整网关限流与配额仍待接线。
 
 真实 OpenCode 1.18.35 / deepseek-flash 已通过两次独立 Session 的记忆写入与回忆，以及第三次由真实 Redis/Celery/Beat 触发的 Routine 静默记档。详见 `persona-live-report.json`；它不代表多员工工程协作全量验收。
+
+当前运行版本统一 1.19.0，拒绝其他版本和自动回退。`employee-review-live-report.json` 记录 1.19.0 上工程与独立员工 Persona 两个不同原生 Session 的真实验收通过；旧 1.18.35 报告保留其原始验证版本，不改写成新版本证据。自动返工续做、完整多员工与成长链仍未验收。

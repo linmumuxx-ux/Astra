@@ -119,9 +119,9 @@ class OpenCodeClient:
         if not isinstance(payload, dict) or payload.get("healthy") is not True:
             raise OpenCodeUnavailable("OpenCode 健康检查未通过")
         version = payload.get("version")
-        if not isinstance(version, str) or version.removeprefix("v") not in {
-            value.removeprefix("v") for value in self.config.compatible_versions
-        }:
+        from domains.runtime.config import SUPPORTED_OPENCODE_VERSION
+
+        if not isinstance(version, str) or version.removeprefix("v") != SUPPORTED_OPENCODE_VERSION:
             raise OpenCodeIncompatible("OpenCode 版本未在部署契约的明确兼容版本中")
         return {"healthy": True, "version": version}
 

@@ -53,7 +53,7 @@ def native_contract():
 class NativeRuntime:
     def __init__(self):
         self.contract = native_contract()
-        self.version = "1.18.35"
+        self.version = "1.19.0"
         self.calls = []
         self.sessions = {}
         self.statuses = {}
