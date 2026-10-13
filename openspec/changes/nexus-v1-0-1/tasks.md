@@ -23,6 +23,11 @@
 - [x] 5.1 用 Vue 3 与 Element Plus 做出员工管理、数字员工、团队交流三页，并完成类型检查与生产构建
 - [x] 5.2 在根 README 给出 Nexus 的启动方式，标明旧 Astra 树不是产品入口
 
-## 6. 留待真实 Agent Service 的验证
+## 6. 真实 Agent Service
 
-- [ ] 6.1 对运行中的 AgentScope 2.0.10 与 Redis 做一次创建 Agent、创建两条 Session、SSE 文本增量和 `contact_employee` 唤醒
+- [x] 6.1 对运行中的 AgentScope 2.0.10 与 Redis 做一次创建 Agent、创建两条 Session、SSE 文本增量和 `contact_employee` 唤醒
+  - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py -s`
+  - 2026-10-13 在本机 `redis-server`（没有 Docker）和 Ollama `qwen2.5:3b` 上通过。健康检查里的 Agent Service 版本是 `2.0.10`。
+  - 当次输出：agent `a96da55d15f34da19cad4f3e87ba36da`；两条 Session `82ee037db2484d218e8d48fe4a461fe0` 与 `bcb079542345444a8759b002fe4f6838`。
+  - 私聊 SSE 收到 `TEXT_BLOCK_DELTA`。调用方事件里出现四次 `contact_employee`。对方邮箱流的文本增量是模型自己写出的 `XML_tag_here`，Nexus 保存的消息仍然只有 `user`。
+  - `qwen2.5:3b` 没有稳定按提示只回复指定数字。这是模型输出，不是 Nexus 代写的同事回复。

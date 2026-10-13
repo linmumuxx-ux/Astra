@@ -22,9 +22,11 @@ class AgentScopeClient:
         base_url: str | None,
         user_id: str,
         http: httpx.AsyncClient | None = None,
+        chat_model_config: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
         self.user_id = user_id
+        self.chat_model_config = chat_model_config
         self._http = http
         self._owns_http = http is None
 
@@ -91,10 +93,13 @@ class AgentScopeClient:
         await self.request("DELETE", f"/agent/{agent_id}")
 
     async def create_session(self, agent_id: str, name: str) -> str:
+        body: dict[str, Any] = {"agent_id": agent_id, "name": name}
+        if self.chat_model_config:
+            body["chat_model_config"] = self.chat_model_config
         response = await self.request(
             "POST",
             "/sessions/",
-            json={"agent_id": agent_id, "name": name},
+            json=body,
         )
         payload = response.json()
         session_id = payload.get("session_id")
@@ -136,12 +141,15 @@ class AgentScopeClient:
                 items.append({"id": skill_id, "name": name})
         return items
 
-    def stream_session(self, agent_id: str, session_id: str) -> Any:
+    def stream_session(self, agent_id: str, session_id: str, after: str | None = None) -> Any:
         client = self._client()
+        params = {"agent_id": agent_id}
+        if after:
+            params["after"] = after
         return client.stream(
             "GET",
             f"/sessions/{session_id}/stream",
-            params={"agent_id": agent_id},
+            params=params,
             headers=self._headers(),
             timeout=None,
         )

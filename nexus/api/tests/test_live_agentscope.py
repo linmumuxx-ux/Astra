@@ -1,0 +1,288 @@
+"""对已启动的 Redis、AgentScope 2.0.10 和 Nexus API 做任务 6.1。
+
+未设置 NEXUS_LIVE_AGENTSCOPE=1 时跳过。服务没起来时失败，而不是改成模拟回复。
+
+    NEXUS_LIVE_AGENTSCOPE=1 pytest nexus/api/tests/test_live_agentscope.py -s
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import uuid
+
+import httpx
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("NEXUS_LIVE_AGENTSCOPE") != "1",
+    reason="设置 NEXUS_LIVE_AGENTSCOPE=1，并先按 nexus/deploy/agentscope.md 启动服务",
+)
+
+NEXUS = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:8120").rstrip("/")
+AGENTSCOPE = os.environ.get("NEXUS_AGENTSCOPE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+USER_ID = os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus")
+OWNER = {"X-Owner-Id": "live-6-1"}
+AGENT_HEADERS = {"X-User-ID": USER_ID}
+
+
+def _timeout(read: float) -> httpx.Timeout:
+    return httpx.Timeout(connect=10, read=read, write=30, pool=10)
+
+
+def collect_events(
+    url: str,
+    headers: dict,
+    params: dict | None,
+    read: float,
+    ignore_ids: set[str] | None = None,
+) -> list[dict]:
+    """读到一条新的 REPLY_END。ignore_ids 用来跳过同一条流里已经看过的重放。"""
+    ignored = ignore_ids or set()
+    events: list[dict] = []
+    with httpx.Client(timeout=_timeout(read)) as client:
+        with client.stream("GET", url, headers=headers, params=params) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                payload = json.loads(line[len("data:") :].strip())
+                event_id = payload.get("id")
+                if isinstance(event_id, str) and event_id in ignored:
+                    continue
+                events.append(payload)
+                if isinstance(event_id, str):
+                    ignored.add(event_id)
+                if payload.get("type") in {"REPLY_END", "NEXUS_UPSTREAM_ERROR"}:
+                    break
+    return events
+
+
+def deltas(events: list[dict]) -> str:
+    return "".join(
+        item.get("delta", "")
+        for item in events
+        if item.get("type") == "TEXT_BLOCK_DELTA" and isinstance(item.get("delta"), str)
+    )
+
+
+def tool_names(events: list[dict]) -> list[str]:
+    names: list[str] = []
+    for item in events:
+        if item.get("type") in {"TOOL_CALL_START", "TOOL_RESULT_START"}:
+            name = item.get("tool_call_name")
+            if isinstance(name, str):
+                names.append(name)
+    return names
+
+
+def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
+    suffix = uuid.uuid4().hex[:6]
+    star_name = f"星{suffix}"
+    peer_name = f"知{suffix}"
+    with httpx.Client(timeout=_timeout(30)) as client:
+        health = client.get(f"{AGENTSCOPE}/health", headers=AGENT_HEADERS)
+        assert health.status_code == 200, health.text
+        runtime = client.get(f"{NEXUS}/api/v1/runtime")
+        assert runtime.status_code == 200, runtime.text
+        assert runtime.json()["reachable"] is True
+        assert runtime.json()["agentscope_version"] == "2.0.10"
+
+        star = _create_employee(
+            client,
+            name=star_name,
+            domain=f"产品{suffix}",
+            instructions=(
+                "用户要求联系同事时，必须调用 contact_employee。"
+                "employee_name 与 message 使用用户给出的原文。"
+                "不要代替对方写出答复。"
+            ),
+        )
+        peer = _create_employee(
+            client,
+            name=peer_name,
+            domain=f"运营{suffix}",
+            instructions="收到同事提示后，按提示原文作答，不要扩写。",
+        )
+        assert star["agentscope"]["ok"] is True, star
+        assert peer["agentscope"]["ok"] is True, peer
+        star_employee = star["employee"]
+        peer_employee = peer["employee"]
+        agents = client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS)
+        assert agents.status_code == 200, agents.text
+        agent_ids = {item["id"] for item in agents.json()["agents"]}
+        assert star_employee["agentscope_agent_id"] in agent_ids
+        assert peer_employee["agentscope_agent_id"] in agent_ids
+
+        renamed = client.patch(
+            f"{NEXUS}/api/v1/employees/{star_employee['id']}",
+            json=_body(star_name, f"产品{suffix}", "改过的职责说明", star_employee["instructions"]),
+        )
+        assert renamed.status_code == 200, renamed.text
+        agents = client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS).json()["agents"]
+        stored = next(item for item in agents if item["id"] == star_employee["agentscope_agent_id"])
+        assert "改过的职责说明" in stored["data"]["system_prompt"]
+
+        disposable = _create_employee(
+            client,
+            name=f"临{suffix}",
+            domain=f"临时{suffix}",
+            instructions="用于删除验证。",
+        )
+        disposable_agent = disposable["employee"]["agentscope_agent_id"]
+        assert disposable_agent in {
+            item["id"]
+            for item in client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS).json()["agents"]
+        }
+        deleted = client.delete(f"{NEXUS}/api/v1/employees/{disposable['employee']['id']}")
+        assert deleted.status_code == 200, deleted.text
+        remaining = {
+            item["id"]
+            for item in client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS).json()["agents"]
+        }
+        assert disposable_agent not in remaining
+
+        first = _conversation(client, star_employee["id"])
+        second = _conversation(client, star_employee["id"])
+        sent_first = _send(client, first["id"], "请只回复两个汉字：收到。不要调用任何工具。")
+        assert sent_first["agentscope"]["accepted"] is True
+        assert "assistant" not in sent_first
+        first_events = collect_events(
+            f"{NEXUS}/api/v1/conversations/{first['id']}/stream",
+            OWNER,
+            None,
+            180,
+        )
+        first_text = deltas(first_events)
+        assert first_text, first_events
+        assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in first_events)
+
+        sent_second = _send(client, second["id"], "请只回复一个词：在。不要调用任何工具。")
+        assert sent_second["agentscope"]["accepted"] is True
+        second_session = sent_second["agentscope"]["session_id"]
+        first_session = sent_first["agentscope"]["session_id"]
+        assert first_session and second_session
+        assert first_session != second_session
+        sessions = client.get(
+            f"{AGENTSCOPE}/sessions/",
+            headers=AGENT_HEADERS,
+            params={"agent_id": star_employee["agentscope_agent_id"]},
+        )
+        assert sessions.status_code == 200, sessions.text
+        session_ids = {item["session"]["id"] for item in sessions.json().get("sessions", [])}
+        assert first_session in session_ids
+        assert second_session in session_ids
+
+        stored_messages = client.get(
+            f"{NEXUS}/api/v1/conversations/{first['id']}",
+            headers=OWNER,
+        ).json()["messages"]
+        assert [item["sender"] for item in stored_messages] == ["user"]
+
+        peer_events: list[dict] = []
+        peer_error: list[BaseException] = []
+
+        def read_peer() -> None:
+            try:
+                peer_events.extend(
+                    collect_events(
+                        f"{AGENTSCOPE}/sessions/{peer_employee['mailbox_session_id']}/stream",
+                        AGENT_HEADERS,
+                        {"agent_id": peer_employee["agentscope_agent_id"]},
+                        240,
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001 - 记录真实流错误
+                peer_error.append(exc)
+
+        reader = threading.Thread(target=read_peer, daemon=True)
+        reader.start()
+        contact = _send(
+            client,
+            first["id"],
+            (
+                "请立刻调用 contact_employee。"
+                f"employee_name 为{peer_name}。"
+                "message 为请只回复数字42。"
+                "不要自己写出42。"
+            ),
+        )
+        assert contact["agentscope"]["accepted"] is True, contact
+        seen = {item["id"] for item in first_events if isinstance(item.get("id"), str)}
+        caller_events = collect_events(
+            f"{NEXUS}/api/v1/conversations/{first['id']}/stream",
+            OWNER,
+            None,
+            240,
+            seen,
+        )
+        reader.join(timeout=240)
+        assert not peer_error, peer_error
+        assert "contact_employee" in tool_names(caller_events), caller_events
+        peer_text = deltas(peer_events)
+        assert peer_text, peer_events
+        assert "已把消息交给对方" not in peer_text
+        assert "没有生成回复" not in peer_text
+        stored_after = client.get(
+            f"{NEXUS}/api/v1/conversations/{first['id']}",
+            headers=OWNER,
+        ).json()["messages"]
+        assert [item["sender"] for item in stored_after] == ["user", "user"]
+        print(
+            json.dumps(
+                {
+                    "agent_id": star_employee["agentscope_agent_id"],
+                    "sessions": [first_session, second_session],
+                    "private_deltas": first_text,
+                    "caller_tools": tool_names(caller_events),
+                    "peer_deltas": peer_text,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def _body(name: str, domain: str, description: str, instructions: str) -> dict:
+    return {
+        "name": name,
+        "domain": domain,
+        "description": description,
+        "instructions": instructions,
+        "avatar": "🌟",
+        "enabled": True,
+        "knowledge": [],
+        "skills": [],
+        "tools": [],
+    }
+
+
+def _create_employee(client: httpx.Client, name: str, domain: str, instructions: str) -> dict:
+    response = client.post(
+        f"{NEXUS}/api/v1/employees",
+        json=_body(name, domain, f"{name}的职责", instructions),
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _conversation(client: httpx.Client, employee_id: str) -> dict:
+    response = client.post(
+        f"{NEXUS}/api/v1/employees/{employee_id}/conversations",
+        headers=OWNER,
+        json={"name": "新对话"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _send(client: httpx.Client, conversation_id: str, text: str) -> dict:
+    response = client.post(
+        f"{NEXUS}/api/v1/conversations/{conversation_id}/messages",
+        headers=OWNER,
+        json={"text": text, "attachment_ids": []},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()

@@ -51,7 +51,9 @@ Agent Team（`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInv
 
 用户消息调用 `POST /chat`，请求体为 `agent_id`、`session_id` 和 `input`（一条 `role="user"` 的 `Msg`）。成功响应是 `{"status":"started","session_id":...}`，不含回复正文。同一进程里该 Session 已有运行中的 turn 时，源码返回 409。
 
-正文来自 `GET /sessions/{session_id}/stream?agent_id=...`，媒体类型 `text/event-stream`。帧格式是 `data: {AgentEvent JSON}\n\n`，空闲时每 30 秒一个 `:\\n\\n` 心跳。可展示的增量是 `TEXT_BLOCK_DELTA` 的 `delta`。身份头使用 Agent Service 当前的 `X-User-ID`。Nexus 在自己的 API 上代理这条流，浏览器不直接持有 Agent Service 地址。
+正文来自 `GET /sessions/{session_id}/stream?agent_id=...`，媒体类型 `text/event-stream`。帧格式是 `data: {AgentEvent JSON}\n\n`，空闲时每 30 秒一个 `:\\n\\n` 心跳。可展示的增量是 `TEXT_BLOCK_DELTA` 的 `delta`。身份头使用 Agent Service 当前的 `X-User-ID`。Nexus 在自己的 API 上代理这条流。`after` 只有在符合 Agent Service checkpoint 游标（`数字-数字`）时才转发；事件自己的 `id` 传进去会让 Redis 拒绝并中断连接。页面记下已经见过的事件 `id`，重放时不再把上一轮文本画出来。浏览器不直接持有 Agent Service 地址。
+
+Session 要能产生文本增量，创建时必须带 `chat_model_config`。这项来自部署环境变量 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`，内容是 Agent Service 里已登记的 credential id、provider type 和模型名。`nexus/deploy/bootstrap_chat_model.py` 调用官方 `POST /credential/` 生成它。Nexus 页面仍然没有模型或密钥字段。变量为空时，Session 不带模型，聊天不会被改成模拟回复。
 
 ### 5. 团队讨论只唤醒被 @ 的员工
 
@@ -63,7 +65,7 @@ Agent Team（`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInv
 
 ## Risks / Trade-offs
 
-- [未在本环境启动真实 Agent Service] → 部署文档和 HTTP 客户端按 tag 源码编写；连通性留到下一阶段，失败路径由测试覆盖。
+- [小模型不稳定] → 2026-10-13 的 6.1 用本机 Redis、官方 `agentscope==2.0.10` 和 Ollama `qwen2.5:3b` 跑通了创建、两条 Session、SSE 增量和 `contact_employee` 唤醒。3B 模型没有稳定按提示只回复指定数字，对方增量是它自己的文本。换更大的模型不改变这条投递路径。
 - [自定义工具运行在 Agent Service 进程内，目录查询却在 Nexus] → 工具通过 Nexus 的解析接口拿到绑定，不复制一份员工表进 AgentScope。
 - [`X-User-ID` 不是认证] → 骨架沿用 Agent Service 的占位头，并在部署说明中标明上线前要换成调用方自己的认证。Nexus 页面用浏览器本地生成的 owner id 区分私聊，这不是账号体系。
 - [文档站与 2.0.10 源码的分页参数不一致] → 客户端使用源码中的 `before` / `limit`，不发送已被忽略的 `offset`。

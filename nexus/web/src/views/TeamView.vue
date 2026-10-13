@@ -123,6 +123,7 @@ const draft = ref("");
 const draftFiles = ref<Attachment[]>([]);
 const notice = ref("");
 const liveLines = ref<Array<{ name: string; text: string }>>([]);
+const seenEventIds = new Map<string, Set<string>>();
 const dialogOpen = ref(false);
 const editingId = ref<string | null>(null);
 const mentionOpen = ref(false);
@@ -229,10 +230,16 @@ async function send() {
     liveLines.value = accepted.map((item) => ({ name: item.name, text: "" }));
     await Promise.all(
       accepted.map(async (item, index) => {
+        const seen = seenEventIds.get(item.employee_id) ?? new Set<string>();
+        seenEventIds.set(item.employee_id, seen);
         await readEventStream(
           `/api/v1/channels/${current.value?.id}/members/${item.employee_id}/stream`,
           streamAbort!.signal,
           (event) => {
+            if (typeof event.id === "string") {
+              if (seen.has(event.id)) return;
+              seen.add(event.id);
+            }
             if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
               const line = liveLines.value[index];
               if (line) line.text += event.delta;

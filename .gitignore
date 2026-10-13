@@ -32,4 +32,7 @@ nexus/web/node_modules/
 nexus/web/dist/
 nexus/api/.venv/
 nexus/api/data/
+nexus/deploy/.venv-agentscope/
+nexus/deploy/data/
+nexus/deploy/.env
 *.egg-info/

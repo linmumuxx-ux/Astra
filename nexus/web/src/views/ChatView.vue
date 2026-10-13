@@ -123,6 +123,7 @@ const draft = ref("");
 const draftFiles = ref<Attachment[]>([]);
 const notice = ref("");
 const liveText = ref("");
+const seenEventIds = new Map<string, Set<string>>();
 const tab = ref<"responsibility" | "capability" | "memory">("responsibility");
 const fileInput = ref<HTMLInputElement | null>(null);
 let streamAbort: AbortController | null = null;
@@ -207,8 +208,14 @@ async function followStream(id: string) {
   stopStream();
   streamAbort = new AbortController();
   liveText.value = "";
+  const seen = seenEventIds.get(id) ?? new Set<string>();
+  seenEventIds.set(id, seen);
   try {
     await readEventStream(`/api/v1/conversations/${id}/stream`, streamAbort.signal, (event) => {
+      if (typeof event.id === "string") {
+        if (seen.has(event.id)) return;
+        seen.add(event.id);
+      }
       if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
         liveText.value += event.delta;
       }

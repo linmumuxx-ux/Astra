@@ -1,0 +1,2 @@
+# 与 agentscope.version 同一官方发行版。extras 来自该包的 pyproject，不是分叉。
+agentscope[service,storage-redis,model-ollama]==2.0.10

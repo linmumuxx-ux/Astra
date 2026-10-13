@@ -51,6 +51,13 @@ PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests
 
 OpenSpec 的活跃变更是 `openspec/changes/nexus-v1-0-1/`。工作流仍使用仓库内的 `node .opencode/tools/openspec.mjs`。Superpowers 的实际名单见 `docs/OPENSPEC_SUPERPOWERS.md`。
 
-## 下一阶段入口
+## Agent Service
 
-OpenSpec 任务 `6.1`：对运行中的 AgentScope 2.0.10 和 Redis 验证创建 Agent、同一员工的两条 Session、SSE 文本增量，以及 `contact_employee` 的 inbox / wakeup。在此之前不要把骨架里的失败说明换成模拟回复。
+Redis、官方 AgentScope 2.0.10 和健康检查见 [nexus/deploy/agentscope.md](nexus/deploy/agentscope.md)。聊天模型由 `nexus/deploy/bootstrap_chat_model.py` 登记到 Agent Service，再通过 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG` 传给新建 Session。页面上没有这一项。
+
+真实联调：
+
+```bash
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
+  nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py -s
+```

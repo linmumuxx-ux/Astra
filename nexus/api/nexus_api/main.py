@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from .db import connect, employee_from_row, init_db, message_from_row, new_id, u
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS = 6
+STREAM_CURSOR = re.compile(r"^\d+-\d+$")
 
 
 class EmployeeBody(BaseModel):
@@ -53,6 +55,24 @@ def data_dir() -> Path:
 
 def db_path() -> Path:
     return data_dir() / "nexus.sqlite3"
+
+
+def load_chat_model_config() -> dict[str, Any] | None:
+    """部署环境里的 Agent Service 模型引用。页面不编辑这项。"""
+    raw = os.environ.get("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG 不是 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG 必须是对象")
+    required = {"type", "credential_id", "model", "parameters"}
+    missing = sorted(required - set(parsed))
+    if missing:
+        raise RuntimeError("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG 缺少 " + ", ".join(missing))
+    return parsed
 
 
 def system_prompt(body: EmployeeBody | dict[str, Any]) -> str:
@@ -101,6 +121,7 @@ def create_app() -> FastAPI:
         app.state.agentscope = AgentScopeClient(
             os.environ.get("NEXUS_AGENTSCOPE_BASE_URL") or None,
             os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus"),
+            chat_model_config=load_chat_model_config(),
         )
         yield
         await app.state.agentscope.aclose()
@@ -570,6 +591,7 @@ def create_app() -> FastAPI:
         request: Request,
         owner_id: str = Depends(require_owner),
         connection=Depends(database),
+        after: str | None = None,
     ):
         row = owned_conversation(connection, conversation_id, owner_id)
         employee = load_employee(connection, row["employee_id"])
@@ -579,6 +601,7 @@ def create_app() -> FastAPI:
             client_of(request),
             employee["agentscope_agent_id"],
             row["agentscope_session_id"],
+            stream_cursor(after),
         )
 
     def channel_payload(connection, channel_id: str) -> dict[str, Any]:
@@ -757,6 +780,7 @@ def create_app() -> FastAPI:
         employee_id: str,
         request: Request,
         connection=Depends(database),
+        after: str | None = None,
     ):
         channel = channel_payload(connection, channel_id)
         employee = load_employee(connection, employee_id)
@@ -767,6 +791,7 @@ def create_app() -> FastAPI:
             client_of(request),
             employee["agentscope_agent_id"],
             binding["agentscope_session_id"],
+            stream_cursor(after),
         )
 
     @app.get("/api/v1/peers/resolve")
@@ -815,13 +840,18 @@ def create_app() -> FastAPI:
                 }
         raise HTTPException(status_code=404, detail="没有找到可联系的员工")
 
-    async def proxy_stream(client: AgentScopeClient, agent_id: str, session_id: str) -> StreamingResponse:
+    async def proxy_stream(
+        client: AgentScopeClient,
+        agent_id: str,
+        session_id: str,
+        after: str | None = None,
+    ) -> StreamingResponse:
         if not client.configured:
             raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
 
         async def generate():
             try:
-                async with client.stream_session(agent_id, session_id) as response:
+                async with client.stream_session(agent_id, session_id, after) as response:
                     if response.status_code >= 400:
                         detail = (await response.aread()).decode("utf-8", "replace")
                         payload = json.dumps(
@@ -842,6 +872,13 @@ def create_app() -> FastAPI:
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     return app
+
+
+def stream_cursor(after: str | None) -> str | None:
+    """Agent Service 的 after 是 Redis 回放游标，不是 AgentEvent.id。"""
+    if after and STREAM_CURSOR.fullmatch(after):
+        return after
+    return None
 
 
 def employee_by_name(connection, name: str) -> dict[str, Any] | None:

@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
-from nexus_api.main import create_app
+from nexus_api.main import create_app, load_chat_model_config, stream_cursor
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -343,6 +343,45 @@ def test_peer_resolver_returns_mailbox_without_a_scripted_answer(tmp_path, monke
 
 async def _accept(*_args, **_kwargs):
     return "session-private"
+
+
+def test_stream_cursor_is_the_redis_checkpoint_not_an_event_id():
+    assert stream_cursor("1710000000000-0") == "1710000000000-0"
+    assert stream_cursor("7b674dd0149e4f19b8d5034b8437963b") is None
+    assert stream_cursor(None) is None
+
+
+def test_chat_model_config_is_forwarded_only_when_deploy_sets_it(monkeypatch):
+    monkeypatch.delenv("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", raising=False)
+    assert load_chat_model_config() is None
+    monkeypatch.setenv("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", "{")
+    with pytest.raises(RuntimeError):
+        load_chat_model_config()
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(201, json={"session_id": "session-model"})
+
+    config = {
+        "type": "ollama_credential",
+        "credential_id": "cred-1",
+        "model": "qwen2.5:3b",
+        "parameters": {},
+    }
+    import asyncio
+
+    client = AgentScopeClient(
+        "http://agentscope.test",
+        "nexus",
+        httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        chat_model_config=config,
+    )
+    assert asyncio.run(client.create_session("agent-1", "邮箱")) == "session-model"
+    body = json.loads(seen[0].content.decode())
+    assert body["chat_model_config"] == config
+    assert "model" not in body
 
 
 def test_launcher_parses_and_does_not_import_agentscope():

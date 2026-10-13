@@ -25,11 +25,13 @@ def main() -> None:
 
     host = os.environ.get("AGENTSCOPE_REDIS_HOST", "localhost")
     port = int(os.environ.get("AGENTSCOPE_REDIS_PORT", "6379"))
+    password = os.environ.get("AGENTSCOPE_REDIS_PASSWORD") or None
     nexus_api = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:8120").rstrip("/")
-    workspace_dir = os.environ.get("AGENTSCOPE_WORKSPACE_DIR", "/data/nexus-workspaces")
+    workspace_dir = os.environ.get("AGENTSCOPE_WORKSPACE_DIR", "nexus/deploy/data/workspaces")
+    os.makedirs(workspace_dir, exist_ok=True)
 
-    storage = RedisStorage(host=host, port=port)
-    message_bus = RedisMessageBus(host=host, port=port)
+    storage = RedisStorage(host=host, port=port, password=password)
+    message_bus = RedisMessageBus(host=host, port=port, password=password)
     workspace_manager = LocalWorkspaceManager(
         basedir=workspace_dir,
         isolation=IsolationPolicy.PER_SESSION,
@@ -72,7 +74,9 @@ def main() -> None:
         workspace_manager=workspace_manager,
         extra_agent_tools=extra_agent_tools,
     )
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
+    listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
+    uvicorn.run(app, host=listen_host, port=listen_port)
 
 
 async def deliver_peer_hint(
