@@ -75,6 +75,12 @@ async def source_context(session, principal, admission):
         if routine.employee_id != principal.id:
             raise DomainError(403, "持续职责不属于当前员工")
         result["routine"] = serialize(routine)
+    elif event.source == "task":
+        task = await get_required(session, Task, event.payload_ref["task_id"])
+        await authorize(
+            session, principal, "task.review", task.team_id, project_id=task.asset_scope.get("project_id")
+        )
+        result["task"] = serialize(task)
     return result
 
 

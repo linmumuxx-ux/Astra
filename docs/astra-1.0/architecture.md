@@ -8,17 +8,17 @@
 | --- | --- | --- |
 | `apps/api` | 新 `/api/v1`、认证、REST/SSE、强类型写入、独立运维入口 | 原生 Workspace 受权代理、完整执行服务接线 |
 | `apps/web` | Vue3 / Element Plus 九类页面、本地 Three.js、DOM 业务操作 | 依赖后端未实现能力的正式交互 |
-| `apps/services` | 独立 Celery/Beat、Routine 投递、短 Persona 原生决策及恢复，不使用旧队列 | 工程启动、采集、独立验收与完整协作闭环 |
+| `apps/services` | 独立 Celery/Beat、Routine 投递、短 Persona 原生决策及恢复，不使用旧队列 | 完整自主验收、返工跟踪、接管及多员工协作闭环 |
 | `domains/identity` | Actor / Credential / WorkspaceGrant，短事务重新认证 | 人员完整权限模板与组织运维流程 |
 | `domains/organization` | Team / Role / Employee / Goal，员工生命周期、岗位权限上限 | 调岗与责任清点完整流程、目标运营指标 |
-| `domains/personas` | SourceEvent / Inbox / Routine / Turn lease/fencing，持久输入引用、观察/处理区分 | Task 结果入口、连接器、完整预算/冲突与异常处置 |
+| `domains/personas` | SourceEvent / Inbox / Routine / Turn lease/fencing，持久输入引用、观察/处理区分 | 连接器、完整预算/冲突与异常处置 |
 | `domains/messaging` | 持久 DM/Group、引用/@、成员 ACL、因果链/TTL/去重 | 附件存储、外部 Binding、同级指令冲突裁决 |
-| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行与验收模型 | 独立证据审查、返工/跟踪自动闭环 |
-| `domains/runtime` | OpenCode 控制/SSE/Session 树、本地安全 worktree、Worker lease/资产锁 | SSH/Windows 提取、任务启动/采集/接管、真实集成恢复 |
+| `domains/work` | Task、交接提出/澄清/拒绝/撤回/签收、执行与验收模型 | Persona 自主验收与返工/跟踪自动闭环 |
+| `domains/runtime` | OpenCode 控制/SSE/Session 树、本地安全 worktree、Worker lease/资产锁 | SSH/Windows 提取、完整接管、副作用对账及公司恢复验证 |
 | `domains/governance` | 幂等、审批、版本复验、审计、历史内容哈希读取 | 外部副作用执行账本、成本配额与完整运维治理 |
 | `domains/knowledge` | 资料/Skill 模型、个人 Git Memory、来源校验、CAS 版本/diff/恢复/过期 | 成熟知识实现复制整合、验证审批发布回滚全链路 |
-| `agents` | 独立 Persona 指令与十一个认证 MCP Tool | 验收、Routine、知识/Skill 等完整业务 Tool |
-| `migrations/schema` | 静态初始 1000 + Persona 引用/预算唯一约束 1001，拒绝旧库覆盖 | 其他新增领域迁移 |
+| `agents` | 独立 Persona 指令与十三个认证 MCP Tool | Routine、知识/Skill 等完整业务 Tool |
+| `migrations/schema` | 静态初始 1000 + Persona 1001 + 执行意图/基线 1002，拒绝旧库覆盖 | 其他新增领域迁移 |
 | `migrations/from_0xx` | 离线导出、显式映射、正式导入、账本恢复与对账 | 外部资产及 Skill 正式迁移、真实旧库签收 |
 
 新 API / Tool / 领域服务不导入旧 `backend.app`、旧 `app` 或一次性迁移工具。此边界由 AST 检查验证。旧代码尚保留作选择性复制与迁移来源，当前没有执行正式切换或删除旧树。
@@ -41,6 +41,6 @@ Routine 到期、DM/@、外部 SourceEvent 和正式交接变化可以进入 Inb
 
 INTERVAL/CRON 的下次时间由后端计算，EVENT 不参与时间扫描；积压汇总一条并推进到未来，暂停员工不投递到期唤醒。预算在新增回合前检查真实已记录用量及未对账回合预留，不把未知用量当成零；这是停止新增推理的门禁，不代替模型网关的硬配额。
 
-Task 派工只提交 Worker 租约与 `BOUND` 执行绑定，Task 进入 `DISPATCHED`，不假报原生模型已开始。运行中暂停/取消保留 `RECONCILE_REQUIRED`，不会把未确认 abort 当成已取消。`SUBMITTED` 对账结果只进入 `REVIEW`，不能凭 Worker 自报完成。
+Task 派工提交 Worker 租约与 `BOUND` 执行绑定，Task 进入 `DISPATCHED`；独立工程运行器随后创建固定 worktree 和原生 Session，核验稳定输入后才标 RUNNING。真实原生结果进入 REVIEW，独立人类/员工验收接口逐条重新核验证据后才能完成。运行中暂停/取消保留 `RECONCILE_REQUIRED`，不会把未确认 abort 当成已取消。`SUBMITTED` 对账结果只进入 `REVIEW`，不能凭 Worker 自报完成。
 
-真实短回合/跨 Session Memory/Redis/Celery/Beat 已在隔离本机通过；工程启动与完整知识成长、模型网关、资源治理和公司环境仍有缺口，详见验证报告。页面存在不代表全部产品能力已签收。
+真实短回合/跨 Session Memory/Redis/Celery/Beat 已在隔离本机通过；完整自主返工跟踪与知识成长、模型网关、资源治理和公司环境仍有缺口，详见验证报告。页面存在不代表全部产品能力已签收。

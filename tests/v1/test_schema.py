@@ -30,7 +30,7 @@ def test_frozen_initial_schema_matches_new_models_and_repeats(tmp_path):
         assert set(actual.get_table_names()) == set(Base.metadata.tables) | {"alembic_version"}
         for name, table in Base.metadata.tables.items():
             assert {c["name"] for c in actual.get_columns(name)} == set(table.columns.keys())
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "1001"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "1002"
     assert migrate(path).returncode == 0
 
 

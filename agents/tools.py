@@ -16,7 +16,14 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from sqlalchemy import select
 
-from apps.api.schemas import HandoffInput, MemoryWriteInput, MessageInput, OperationInput, TaskInput
+from apps.api.schemas import (
+    HandoffInput,
+    MemoryWriteInput,
+    MessageInput,
+    OperationInput,
+    TaskInput,
+    TaskReviewInput,
+)
 from domains.core import DomainError
 from domains.database import Database
 from domains.identity.models import Credential
@@ -118,6 +125,28 @@ def build_tools(database: Database, *, api_url: str, resource_url: str):
             payload=payload.model_dump(),
             operation_key=operation_key,
         )
+
+    @server.tool(name="astra_task_review", structured_output=True)
+    async def task_review(
+        task_id: str, payload: TaskReviewInput, operation_key: str, ctx: Context
+    ) -> dict[str, Any]:
+        """按原始标准独立验收；必须提供后端重新核验的原生工具引用，Worker 不能自审。"""
+        from uuid import UUID
+
+        return await call(
+            ctx,
+            "POST",
+            f"/tasks/{UUID(task_id)}/review",
+            payload=payload.model_dump(),
+            operation_key=operation_key,
+        )
+
+    @server.tool(name="astra_task_evidence", structured_output=True)
+    async def task_evidence(execution_id: str, ctx: Context) -> dict[str, Any]:
+        """经当前工程 Grant 读取原生工具证据供独立验收，不从 Worker 自述推断成功。"""
+        from uuid import UUID
+
+        return await call(ctx, "GET", f"/executions/{UUID(execution_id)}/native-evidence")
 
     @server.tool(name="astra_channel_send", structured_output=True)
     async def channel_send(

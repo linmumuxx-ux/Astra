@@ -5,6 +5,8 @@ import os
 
 from celery import Celery
 
+from apps.services.executions import candidates_authenticated as execution_candidates
+from apps.services.executions import run_authenticated as execute_authenticated
 from apps.services.personas import candidates_authenticated, run_authenticated
 from apps.services.routines import sweep_authenticated
 
@@ -19,6 +21,21 @@ app.conf.update(
 )
 if os.getenv("ASTRA_V1_PERSONA_CREDENTIAL_FILE"):
     app.conf.beat_schedule["persona-input-sweep"] = {"task": "astra.v1.personas.sweep", "schedule": 10.0}
+if os.getenv("ASTRA_V1_EXECUTOR_CREDENTIAL_FILE"):
+    app.conf.beat_schedule["engineering-sweep"] = {"task": "astra.v1.executions.sweep", "schedule": 10.0}
+
+
+@app.task(name="astra.v1.executions.run", ignore_result=True)
+def run_execution(execution_id):
+    return asyncio.run(execute_authenticated(execution_id))
+
+
+@app.task(name="astra.v1.executions.sweep", ignore_result=True)
+def sweep_executions():
+    ids = asyncio.run(execution_candidates())
+    for execution_id in ids:
+        run_execution.delay(execution_id)
+    return {"queued_executions": len(ids)}
 
 
 @app.task(name="astra.v1.personas.run", ignore_result=True)

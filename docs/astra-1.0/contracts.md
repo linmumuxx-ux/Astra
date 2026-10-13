@@ -20,25 +20,29 @@ API 入口为 `apps/api/main.py`；请求模型为 `apps/api/schemas.py`。`open
 | `POST /api/v1/employees/{id}/memory`、`GET .../memory/history|diff` | 核心记忆/笔记、来源、原因、过期提醒；expected_head CAS；恢复须产生新版本 |
 | `POST /api/v1/employees/{id}/dm|pause|resume|archive` | 独立长期 DM、生命周期；未完 Goal/Task/审批/交接阻止归档 |
 | `GET /api/v1/channels/{id}/members|messages`、`POST .../messages` | 成员 ACL、持久消息、引用/@ 与因果限制；附件当前明确拒绝，不伪造上传成功 |
-| `GET /api/v1/tasks/{id}/executions|evidence|workspace|handoff-events` | 真实执行索引和交接回执；Workspace 当前 connected=false |
-| `POST /api/v1/tasks/{id}/pause|resume|cancel|rework|dispatch|handoff` | 业务动作、租约绑定、正式交接；dispatch 尚未启动原生模型 |
+| `GET /api/v1/tasks/{id}/executions|evidence|workspace|handoff-events|reviews` | 真实执行索引和交接回执；Workspace 当前 connected=false |
+| `POST /api/v1/tasks/{id}/pause|resume|cancel|rework|dispatch|handoff|review` | 业务动作、租约绑定、正式交接；dispatch 只绑定，后台工程运行器启动；review 逐条复验原生证据 |
 | `POST /api/v1/handoffs/{id}/accept|reject|request-clarification|clarify|withdraw` | 当事人/负责人授权；只有签收原子转移主责；工程范围和 Grant 当前有效 |
 | `POST /api/v1/operations/{id}/approve|reject|request-changes` | 具体审批，当前仅受控数据库动作；对外发布/生产副作用尚未接入 |
 | `POST /api/v1/routines/{id}/run-now|pause|resume`、`teams/{id}/routines/sweep` | 人工/到期投递 Inbox，不直接造 Task；系统只获 routine.signal |
 | `GET/POST /api/v1/actors`、`PATCH .../actors/{id}`、`POST .../actors/{id}/revoke|credentials` | 人员管理、版本化授权、停用、短期凭据签发；不能复用员工生命周期接口 |
-| `POST /api/v1/credentials/{id}/revoke`、`system-identities/schedulers|personas` | 凭据撤销、仅人类管理员签发指定团队 routine.signal 或 persona.run 身份 |
+| `POST /api/v1/credentials/{id}/revoke`、`system-identities/schedulers|personas|executors` | 凭据撤销、仅人类管理员签发指定团队 routine.signal 、persona.run 或 runtime.execute/task.reconcile 身份 |
 | `GET/POST /api/v1/teams/{id}/members` | 团队成员查询、人类加入团队 |
 | `POST/PATCH /api/v1/workspace-grants[/{id}]`、`POST .../{id}/revoke` | 有期限的特定工程授权、版本更新/续期与撤销 |
-| `POST /api/v1/workers/{id}/probe` | 事务外真实 OpenCode 健康/版本/接口契约验证；注册不等于健康 |
+| `POST /api/v1/workers/{id}/probe|credential` | 事务外真实 OpenCode 健康/版本/接口契约验证；受控 file: 凭据引用；注册不等于健康 |
 | `GET /api/v1/human-inbox|audit-events|events` | 待人决定、按权限审计、持久 seq SSE；SSE 每次扫描重新认证/过滤，after 重连 |
 | `GET /api/v1/governance/metrics|policies|budgets|resource-metrics` | 已保存业务指标；不伪造未采集的成本或 Runtime 用量 |
 | `GET /api/v1/knowledge/{id}/versions|skill-proposals` | 现有版本/候选索引；完整验证发布链未接通 |
 | `GET /api/v1/historical-artifacts/{id}/content` | 授权后在受控根读 artifact://SHA256.json；读前后复验且文件哈希必须一致 |
 
+| `GET /api/v1/executions/{id}/native-evidence` | 当前工程审核权限下读取原生 Session 树工具结果；完成后仍可查询，读前后复验授权 |
+
+具体工程配置、准备/提交意图、恢复规则及独立验收输入见 `execution.md`。
+
 ## MCP
 
 `agents/tools.py` 使用 Streamable HTTP 与同一数据库凭据验证，转发当前请求的认证到新 API；Tool 不维护第二套业务授权或默认用户。写入 `operation_key` 映射到 API 幂等键。HTTP 写结果未知时不会换 key 自动重发。
 
-当前十一个 Tool：`astra_context_get`、`astra_goal_list`、`astra_task_get`、`astra_task_create`、`astra_task_handoff`、`astra_channel_send`、`astra_operation_prepare`、`astra_memory_read`、`astra_memory_write`、`astra_event_read`、`astra_inbox_list`。参数和输出 schema 见 `tools.json`，Tool 参数不提供 actor/user_id。真实 HTTP 集成已验证身份转发、幂等、伪造字段拒绝和无凭据 401。
+当前十三个 Tool：`astra_context_get`、`astra_goal_list`、`astra_task_get`、`astra_task_create`、`astra_task_handoff`、`astra_channel_send`、`astra_operation_prepare`、`astra_memory_read`、`astra_memory_write`、`astra_event_read`、`astra_inbox_list`、`astra_task_review`、`astra_task_evidence`。参数和输出 schema 见 `tools.json`，Tool 参数不提供 actor/user_id。真实 HTTP 集成已验证身份转发、幂等、伪造字段拒绝和无凭据 401。
 
-`astra_inbox_decide`、`astra_task_review`、Routine/Knowledge/Skill Tool 仍待接入。当前有限决策运行器不直接开放任何主机或 MCP 写工具：模型提交符合 PersonaDecision 的提案，由可信后台调用领域服务，并与 Inbox/Turn 原子提交；不能把注册 Tool 数量当成产品完成度。
+`astra_inbox_decide`、Routine/Knowledge/Skill Tool 仍待接入。当前有限决策运行器不直接开放任何主机或 MCP 写工具：模型提交符合 PersonaDecision 的提案，由可信后台调用领域服务，并与 Inbox/Turn 原子提交；不能把注册 Tool 数量当成产品完成度。

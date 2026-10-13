@@ -112,6 +112,7 @@ def main():
                 "test_memory.py",
                 "test_personas.py",
                 "test_sse.py",
+                "test_executions.py",
             ]
             result = subprocess.run(
                 [

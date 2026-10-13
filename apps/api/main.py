@@ -32,7 +32,7 @@ from domains.personas.routines import (
 )
 from domains.personas.service import ingest
 from domains.runtime.models import Worker, WorkerLease
-from domains.work.models import Handoff, Task, TaskExecution
+from domains.work.models import Handoff, Task, TaskExecution, TaskReview
 from domains.work.service import (
     accept_handoff,
     create_task,
@@ -499,6 +499,17 @@ def create_app(database_url: str | None = None):
             return [serialize(x) for x in executions]
         if section == "evidence":
             return [{"execution_id": x.id, "refs": x.evidence_refs} for x in executions]
+        if section == "reviews":
+            return [
+                serialize(x)
+                for x in (
+                    await session.scalars(
+                        select(TaskReview)
+                        .where(TaskReview.task_id == object_id)
+                        .order_by(TaskReview.created_at)
+                    )
+                ).all()
+            ]
         if section == "workspace":
             latest = executions[-1] if executions else None
             return {
@@ -678,6 +689,93 @@ def create_app(database_url: str | None = None):
             f"tasks/{object_id}/dispatch",
             data.model_dump(),
             lambda p: dispatch_task(session, p, object_id, data.worker_id),
+        )
+
+    @router.get("/executions/{object_id}/native-evidence")
+    async def execution_evidence(
+        object_id: str, principal=Depends(principal_dep), session=Depends(session_dep)
+    ):
+        from apps.services.reviews import read_evidence, review_snapshot
+        from domains.runtime.evidence import native_ref, part_digest
+        from domains.runtime.execution_config import configured_settings
+
+        settings = await asyncio.to_thread(configured_settings)
+        snapshot = await review_snapshot(session, principal, object_id, settings, for_review=False)
+        await session.rollback()
+        messages = await read_evidence(snapshot)
+        # 网络读取结束后重新认证/授权和核验业务版本，再把原生内容交给当前审核人。
+        current = await review_snapshot(session, principal, object_id, settings, for_review=False)
+        if (current[0]["revision"], current[1]["revision"]) != (
+            snapshot[0]["revision"],
+            snapshot[1]["revision"],
+        ):
+            raise DomainError(409, "读取期间任务或执行已变化")
+        return {
+            "execution_id": object_id,
+            "items": [
+                {
+                    "native_session_id": sid,
+                    "message_id": message["info"]["id"],
+                    "part_id": part["id"],
+                    "tool": part.get("tool"),
+                    "state": part.get("state", {}).get("status"),
+                    "output": str(part.get("state", {}).get("output", ""))[:20000],
+                    "truncated": len(str(part.get("state", {}).get("output", ""))) > 20000,
+                    "matches_submission": native_ref(
+                        sid, message["info"]["id"], part["id"], digest=part_digest(part)
+                    )
+                    in snapshot[1]["evidence_refs"],
+                }
+                for sid, rows in messages.items()
+                for message in rows
+                for part in message.get("parts", [])
+                if part.get("type") == "tool"
+            ],
+        }
+
+    @router.post("/tasks/{object_id}/review")
+    async def review_task(
+        object_id: str,
+        data: s.TaskReviewInput,
+        principal=Depends(principal_dep),
+        session=Depends(session_dep),
+        idempotency_key: str | None = Header(default=None),
+    ):
+        from apps.services.reviews import read_evidence, review_snapshot
+        from domains.governance.models import Mutation
+        from domains.runtime.execution_config import configured_settings
+        from domains.work.review import apply_review, validate_review
+
+        # 成功重放无需再次连接 Runtime，但仍由 mutate 复验当前授权。
+        old = await session.scalar(
+            select(Mutation).where(
+                Mutation.actor_id == principal.id,
+                Mutation.operation_key == idempotency_key,
+            )
+        )
+        if old:
+            return await mutate(
+                session,
+                principal,
+                idempotency_key,
+                f"tasks/{object_id}/review",
+                data.model_dump(),
+                lambda _p: None,
+            )
+        settings = await asyncio.to_thread(configured_settings)
+        snapshot = await review_snapshot(session, principal, data.execution_id, settings)
+        if snapshot[0]["id"] != object_id:
+            raise DomainError(409, "执行不属于当前业务任务")
+        await session.rollback()
+        messages = await read_evidence(snapshot)
+        refs = validate_review(data, snapshot[0], snapshot[1], messages)
+        return await mutate(
+            session,
+            principal,
+            idempotency_key,
+            f"tasks/{object_id}/review",
+            data.model_dump(),
+            lambda p: apply_review(session, p, object_id, data, snapshot, refs),
         )
 
     @router.post("/tasks/{object_id}/{action}")
@@ -878,6 +976,7 @@ def create_app(database_url: str | None = None):
 
     @router.post("/system-identities/schedulers")
     @router.post("/system-identities/personas")
+    @router.post("/system-identities/executors")
     async def create_scheduler(
         data: s.SchedulerInput,
         request: Request,
@@ -890,8 +989,12 @@ def create_app(database_url: str | None = None):
                 raise DomainError(403, "只有人类管理员可以建立可信调度身份")
             for team_id in set(data.team_ids):
                 await authorize(session, p, "organization.manage", team_id, human_only=True)
-            action = "persona.run" if request.url.path.endswith("/personas") else "routine.signal"
-            actor = Actor(name=data.name, kind="SYSTEM", permissions=[action])
+            actions = {
+                "personas": ["persona.run"],
+                "schedulers": ["routine.signal"],
+                "executors": ["runtime.execute", "task.reconcile"],
+            }[request.url.path.split("/")[-1]]
+            actor = Actor(name=data.name, kind="SYSTEM", permissions=actions)
             session.add(actor)
             await session.flush()
             for team_id in set(data.team_ids):
@@ -899,7 +1002,7 @@ def create_app(database_url: str | None = None):
             session.add(
                 Credential(actor_id=actor.id, digest=data.credential_digest, expires_at=now() + 86400)
             )
-            await audit(session, p, None, "scheduler.created", actor, f"指定团队的可信 {action} 身份已建立")
+            await audit(session, p, None, "system_identity.created", actor, "指定团队的可信系统身份已建立")
             return actor
 
         return await mutate(
@@ -1028,6 +1131,28 @@ def create_app(database_url: str | None = None):
             session, principal, idempotency_key, "workspace-grants", data.model_dump(), handle
         )
 
+    @router.post("/workers/{object_id}/credential")
+    async def worker_credential(
+        object_id: str,
+        data: s.WorkerCredentialInput,
+        principal=Depends(principal_dep),
+        session=Depends(session_dep),
+        idempotency_key: str | None = Header(default=None),
+    ):
+        async def handle(p):
+            if not p.admin:
+                raise DomainError(403, "仅人类管理员可配置 Worker 部署凭据引用")
+            worker = await get_required(session, Worker, object_id)
+            if worker.revision != data.revision:
+                raise DomainError(409, "Worker 配置版本已变化")
+            await cas(session, worker, {"credential_ref": data.credential_ref, "health": "UNKNOWN"})
+            await audit(session, p, None, "worker.credential_bound", worker, "部署凭据引用已更新，未显示密钥")
+            return worker
+
+        return await mutate(
+            session, principal, idempotency_key, f"workers/{object_id}/credential", data.model_dump(), handle
+        )
+
     @router.post("/workers/{object_id}/probe")
     async def probe_worker(
         object_id: str,
@@ -1040,8 +1165,6 @@ def create_app(database_url: str | None = None):
             raise DomainError(400, "写入必须提供 Idempotency-Key")
         if not worker.workspace_roots:
             raise DomainError(409, "Worker 尚未配置工作区边界")
-        if worker.credential_ref:
-            raise DomainError(409, "尚未接入部署密钥解析，不能忽略受保护 Worker 的认证配置")
         from domains.runtime.client import OpenCodeClient
         from domains.runtime.config import OpenCodeConfig, RuntimePurpose
         from domains.runtime.errors import (
@@ -1051,14 +1174,20 @@ def create_app(database_url: str | None = None):
         )
 
         expected_revision = worker.revision
-        config = OpenCodeConfig(
-            base_url=worker.base_url,
-            runtime_id=worker.id,
-            purpose=RuntimePurpose.TASK,
-            workspace_roots=tuple(worker.workspace_roots),
-            control_timeout_seconds=3,
-        )
+        worker_data = serialize(worker)
+        credential_ref = worker.credential_ref
         await session.rollback()
+        from domains.runtime.execution_config import worker_password
+
+        password = await asyncio.to_thread(worker_password, credential_ref)
+        config = OpenCodeConfig(
+            base_url=worker_data["base_url"],
+            runtime_id=worker_data["id"],
+            purpose=RuntimePurpose.TASK,
+            workspace_roots=tuple(worker_data["workspace_roots"]),
+            control_timeout_seconds=3,
+            password=password,
+        )
         # 真实 Runtime 网络检查在事务外执行，不能持有数据库行锁。
         try:
             result = await OpenCodeClient(config).verify_contract()

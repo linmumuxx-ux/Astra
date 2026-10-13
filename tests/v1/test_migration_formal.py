@@ -74,7 +74,7 @@ def destination(tmp_path):
         connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         Base.metadata.create_all(connection)
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)"))
-        connection.execute(text("INSERT INTO alembic_version VALUES ('1001')"))
+        connection.execute(text("INSERT INTO alembic_version VALUES ('1002')"))
     engine.dispose()
     return path
 
@@ -155,7 +155,7 @@ def test_real_new_schema_import_keeps_historical_truth_and_archive_hashes(
             json.dumps(
                 {
                     "kind": "isolated_fixture_formal_schema_reconciliation",
-                    "schema_revision": "1001",
+                    "schema_revision": "1002",
                     "whole_system_acceptance": False,
                     "production_source_accessed": False,
                     "cutover_allowed": False,

@@ -1583,6 +1583,138 @@
         }
       }
     },
+    "/api/v1/executions/{object_id}/native-evidence": {
+      "get": {
+        "summary": "Execution Evidence",
+        "operationId": "execution_evidence_api_v1_executions__object_id__native_evidence_get",
+        "parameters": [
+          {
+            "name": "object_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Object Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{object_id}/review": {
+      "post": {
+        "summary": "Review Task",
+        "operationId": "review_task_api_v1_tasks__object_id__review_post",
+        "parameters": [
+          {
+            "name": "object_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Object Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskReviewInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tasks/{object_id}/{action}": {
       "post": {
         "summary": "Task Action",
@@ -2094,6 +2226,76 @@
         }
       }
     },
+    "/api/v1/system-identities/executors": {
+      "post": {
+        "summary": "Create Scheduler",
+        "operationId": "create_scheduler_api_v1_system_identities_executors_post",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulerInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system-identities/personas": {
       "post": {
         "summary": "Create Scheduler",
@@ -2556,6 +2758,85 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/GrantInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workers/{object_id}/credential": {
+      "post": {
+        "summary": "Worker Credential",
+        "operationId": "worker_credential_api_v1_workers__object_id__credential_post",
+        "parameters": [
+          {
+            "name": "object_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Object Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerCredentialInput"
               }
             }
           }
@@ -4212,6 +4493,41 @@
         ],
         "title": "CredentialInput"
       },
+      "CriterionResult": {
+        "properties": {
+          "criterion_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Criterion Index"
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/NativeCitation"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "criterion_index",
+          "passed",
+          "reason"
+        ],
+        "title": "CriterionResult"
+      },
       "DecisionNote": {
         "properties": {
           "reason": {
@@ -4995,6 +5311,40 @@
         ],
         "title": "MessageInput"
       },
+      "NativeCitation": {
+        "properties": {
+          "native_session_id": {
+            "type": "string",
+            "pattern": "^ses[a-zA-Z0-9_-]+$",
+            "title": "Native Session Id"
+          },
+          "message_id": {
+            "type": "string",
+            "pattern": "^msg[a-zA-Z0-9_-]+$",
+            "title": "Message Id"
+          },
+          "part_id": {
+            "type": "string",
+            "pattern": "^prt[a-zA-Z0-9_-]+$",
+            "title": "Part Id"
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Excerpt"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "native_session_id",
+          "message_id",
+          "part_id",
+          "excerpt"
+        ],
+        "title": "NativeCitation"
+      },
       "OperationInput": {
         "properties": {
           "team_id": {
@@ -5402,6 +5752,46 @@
         ],
         "title": "TaskInput"
       },
+      "TaskReviewInput": {
+        "properties": {
+          "execution_id": {
+            "type": "string",
+            "title": "Execution Id"
+          },
+          "expected_task_revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Task Revision"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "COMPLETED",
+              "REWORK",
+              "WAIT_HUMAN"
+            ],
+            "title": "Outcome"
+          },
+          "criteria_results": {
+            "items": {
+              "$ref": "#/components/schemas/CriterionResult"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Criteria Results"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "execution_id",
+          "expected_task_revision",
+          "outcome",
+          "criteria_results"
+        ],
+        "title": "TaskReviewInput"
+      },
       "TeamInput": {
         "properties": {
           "name": {
@@ -5457,6 +5847,28 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkerCredentialInput": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Revision"
+          },
+          "credential_ref": {
+            "type": "string",
+            "maxLength": 240,
+            "pattern": "^file:/[^\\x00]+$",
+            "title": "Credential Ref"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "revision",
+          "credential_ref"
+        ],
+        "title": "WorkerCredentialInput"
       },
       "WorkerInput": {
         "properties": {

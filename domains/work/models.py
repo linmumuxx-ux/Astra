@@ -35,6 +35,12 @@ class TaskExecution(Record, Base):
     worker_id: Mapped[str] = mapped_column(ForeignKey("workers.id"))
     native_session_id: Mapped[str | None] = mapped_column(String(120))
     workspace_ref: Mapped[str | None] = mapped_column(Text)
+    workspace_base_commit: Mapped[str | None] = mapped_column(String(64))
+    preparation_started_at: Mapped[int | None]
+    submission_started_at: Mapped[int | None]
+    permission_digest: Mapped[str | None] = mapped_column(String(64))
+    stop_requested: Mapped[str | None] = mapped_column(String(16))
+    abort_started_at: Mapped[int | None]
     attempt_no: Mapped[int]
     lease_id: Mapped[str | None] = mapped_column(ForeignKey("worker_leases.id"))
     lease_fence: Mapped[int | None]

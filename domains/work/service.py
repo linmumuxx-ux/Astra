@@ -45,6 +45,7 @@ async def transition_task(session, principal, task, action):
         if execution:
             # 原生 abort 尚未回执时，业务不能把未知副作用标成已取消。
             status = "RECONCILE_REQUIRED"
+            await cas(session, execution, {"stop_requested": action.upper()})
         else:
             status = "PAUSED" if action == "pause" else "CANCELLED"
     elif action == "resume":
@@ -172,6 +173,27 @@ async def handoff_event(session, principal, task, handoff, action, reason):
     await session.flush()
     for employee_id in {handoff.source_employee_id, handoff.target_employee_id}:
         await admit(session, event, employee_id, reason="正式交接变化")
+    from domains.personas.routines import admit_event_routines
+
+    await admit_event_routines(session, event)
+
+
+async def task_event(session, principal, task, execution, action):
+    """原生结果/业务验收变化只投递引用，不复制工程输出到长期对话。"""
+    event = SourceEvent(
+        source="task",
+        source_id=execution.id,
+        revision=execution.revision,
+        actor_id=principal.id,
+        team_id=task.team_id,
+        object_ref=f"tasks/{task.id}",
+        causal_root=task.continuity_key,
+        payload_ref={"task_id": task.id, "execution_id": execution.id, "action": action},
+        occurred_at=now(),
+    )
+    session.add(event)
+    await session.flush()
+    await admit(session, event, task.owner_employee_id, reason="任务执行或验收结果")
     from domains.personas.routines import admit_event_routines
 
     await admit_event_routines(session, event)

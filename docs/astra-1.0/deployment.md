@@ -29,7 +29,7 @@ ASTRA_API_URL=http://127.0.0.1:8200 npm run dev
 
 Persona 与 Task 使用不同 OpenCode Server、目录、Session 用途及权限。当前实际兼容验证为 OpenCode **1.18.35**，版本之外必须重新跑真实接口/权限测试，不能仅按版本更大放行。不要把员工固定绑定 Worker，也不要给 Persona 工程目录或无限制 shell。
 
-Worker 在资源页注册明确 OpenCode URL、允许工程、能力和绝对工作区根，再点击“检查真实 Runtime”。当前本地 worktree 适配已验收；远程 SSH/Windows 尚未接线。受保护 Worker 的 credential_ref 解析未实现时检查会明确拒绝，不能忽略秘密配置。任务 dispatch 当前只绑定租约，不能据此认为工程任务已启动。
+Worker 在资源页注册明确 OpenCode URL、允许工程、能力和绝对工作区根，再点击“检查真实 Runtime”。本地 worktree、受保护 Worker 的 file: 凭据解析和工程运行器已真实验证，配置见 `execution.md`；远程 SSH/Windows 尚未接线。dispatch 只绑定租约，独立运行器取得原生提交事实后才标记工程任务已启动。
 
 MCP 必须显式配置 `ASTRA_V1_DATABASE_URL`、`ASTRA_V1_API_URL`、`ASTRA_V1_MCP_RESOURCE_URL`、`ASTRA_V1_MCP_PORT`，运行 `python -m agents.tools`。默认只监听 127.0.0.1，反向代理继续转发 Authorization。使用经过签发的主体凭据，不能配置默认用户或让模型传入操作身份。
 
@@ -60,7 +60,7 @@ export ASTRA_V1_MEMORY_ROOT=/var/lib/astra-v1/memory
 
 决策目录与 Git Memory 根使用真实绝对路径，不经过符号链接。部署侧先建立只有服务账号可读写的目录，启动独立 OpenCode Server；模型密钥和 `ASTRA_V1_PERSONA_PASSWORD` 通过秘密渠道注入，不能写进项目或模型上下文。Persona Session 权限为 deny-all；有限提案由后台领域服务执行。
 
-配置 Persona 凭据后，Beat 每 10 秒扫描有效 Inbox。一个员工最多一个有效 Turn；持久记录输入引用与提交意图。进程重启只对账原生 Session，不能重新提交同一 prompt。观察与用量先保存；动作与处理结论原子提交。暂停、撤权、旧 fence 和政策/记忆版本变化均阻止动作。当前 dispatch 只创建 Task 并绑定 lease，工程启动仍待接线。
+配置 Persona 凭据后，Beat 每 10 秒扫描有效 Inbox。一个员工最多一个有效 Turn；持久记录输入引用与提交意图。进程重启只对账原生 Session，不能重新提交同一 prompt。观察与用量先保存；动作与处理结论原子提交。暂停、撤权、旧 fence 和政策/记忆版本变化均阻止动作。Persona dispatch 创建 Task 并绑定 lease，独立工程运行器负责准备工作区、原生提交和观察。
 
 Memory 在 `employees/<UUID>/.git` 的对象库内保存 IDENTITY.md、MEMORY.md、notes 与来源 manifest；数据库 head 决定可见版本，工作权限不会从 Git 文件恢复。API 支持版本编辑、diff、载入历史内容再提交新版本和过期提醒。备份必须同时包含数据库 head 和对应 Git 对象库；不能只备份某个工作目录文件。
 
@@ -89,3 +89,9 @@ ASTRA_E2E_BROWSER=/absolute/path/to/chrome .venv/bin/python scripts/verify.py
 隔离 MySQL 运行 `python tests/v1/run_mysql.py`，只启动自己的临时目录与端口。真实 Persona/Beat 运行 `ASTRA_LIVE_MODEL=provider/model python scripts/verify.py --live-persona`；模型测试默认跳过，避免重复消耗。
 
 真实 OpenCode 工程测试须显式配置 `ASTRA_LIVE_MODEL=provider/model` 并追加 `--live-runtime`，默认测试不会重复消耗模型额度。已有成功报告保存在 `runtime-live-report.json`，其中 whole_system_acceptance=false。本地入口通过仍不能替代全部多员工、成长、生产历史及公司环境验收。
+
+## 工程运行服务
+
+Task 本机工程运行器、受密码保护 Worker 及浏览器独立验收已真实验证；完整接管/跨 Worker 恢复与公司 SSH/Windows 尚未验证。按 `execution.md` 配置独立执行 SYSTEM 身份、具体工程 Grant、受控 `ASTRA_V1_EXECUTION_CONFIG` 和 `ASTRA_V1_EXECUTOR_CREDENTIAL_FILE`；Worker 的凭据由 file: 安全部署引用解析，不能进入模型上下文。
+
+`python scripts/verify.py --live-execution` 显式运行消耗模型额度的真实工程/浏览器检查，需 `ASTRA_LIVE_MODEL` 与浏览器路径。默认验证跳过四项环境测试，不能把跳过当作公司部署通过。

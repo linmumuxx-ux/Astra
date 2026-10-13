@@ -137,8 +137,17 @@ async def revalidate_replay(session, principal, route, response):
         routine = await get_required(session, Routine, response.get("routine_id") or response["id"])
         team_id = (await validate_routine_change(session, principal, routine)).team_id
     if prefix == "tasks":
-        task_id = response["execution"]["task_id"] if route.endswith("/dispatch") else response["id"]
+        if route.endswith("/dispatch"):
+            task_id = response["execution"]["task_id"]
+        elif route.endswith("/review"):
+            task_id = response["task_id"]
+        else:
+            task_id = response["id"]
         task = await get_required(session, Task, task_id)
+        if route.endswith("/review"):
+            from domains.work.review import review_authority
+
+            await review_authority(session, principal, task)
         team_id = task.team_id
         project = task.asset_scope.get("project_id")
         if "/" in route:

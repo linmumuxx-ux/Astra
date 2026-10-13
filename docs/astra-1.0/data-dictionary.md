@@ -360,6 +360,12 @@
 | worker_id | VARCHAR(36) | 否 | FK workers.id |
 | native_session_id | VARCHAR(120) | 是 | — |
 | workspace_ref | TEXT | 是 | — |
+| workspace_base_commit | VARCHAR(64) | 是 | — |
+| preparation_started_at | INTEGER | 是 | — |
+| submission_started_at | INTEGER | 是 | — |
+| permission_digest | VARCHAR(64) | 是 | — |
+| stop_requested | VARCHAR(16) | 是 | — |
+| abort_started_at | INTEGER | 是 | — |
 | attempt_no | INTEGER | 否 | — |
 | lease_id | VARCHAR(36) | 是 | FK worker_leases.id |
 | lease_fence | INTEGER | 是 | — |

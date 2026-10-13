@@ -229,6 +229,31 @@ class DispatchInput(Input):
     worker_id: str
 
 
+class WorkerCredentialInput(RevisionPatch):
+    credential_ref: str = Field(pattern=r"^file:/[^\x00]+$", max_length=240)
+
+
+class NativeCitation(Input):
+    native_session_id: str = Field(pattern=r"^ses[a-zA-Z0-9_-]+$")
+    message_id: str = Field(pattern=r"^msg[a-zA-Z0-9_-]+$")
+    part_id: str = Field(pattern=r"^prt[a-zA-Z0-9_-]+$")
+    excerpt: str = Field(min_length=1, max_length=2000)
+
+
+class CriterionResult(Input):
+    criterion_index: int = Field(ge=0)
+    passed: bool
+    reason: str = Field(min_length=1, max_length=2000)
+    evidence: list[NativeCitation] = Field(default_factory=list, max_length=10)
+
+
+class TaskReviewInput(Input):
+    execution_id: str
+    expected_task_revision: int = Field(ge=1)
+    outcome: Literal["COMPLETED", "REWORK", "WAIT_HUMAN"]
+    criteria_results: list[CriterionResult] = Field(min_length=1, max_length=100)
+
+
 MemoryNotes = dict[Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}\.md$")], str]
 
 

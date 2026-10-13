@@ -52,14 +52,14 @@
 | 可信 Principal 与权限交集 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 具体审批和幂等操作 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
 | 人工介入与资源治理 | domains/governance/service.py、domains/identity/service.py；test_review_regressions.py/test_mysql_locking.py | Principal/幂等/有限审批通过；外部执行账本/硬配额/接管未覆盖 |
-| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py；test_dispatch.py/test_runtime_live.py | 资源租约与独立适配器探针通过；业务启动/验收/接管/公司版本未覆盖 |
-| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py；test_dispatch.py/test_runtime_live.py | 资源租约与独立适配器探针通过；业务启动/验收/接管/公司版本未覆盖 |
-| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py；test_dispatch.py/test_runtime_live.py | 资源租约与独立适配器探针通过；业务启动/验收/接管/公司版本未覆盖 |
-| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py；test_dispatch.py/test_runtime_live.py | 资源租约与独立适配器探针通过；业务启动/验收/接管/公司版本未覆盖 |
+| 执行资源隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
+| 原生执行与独立验收 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
+| 恢复与旧轮次隔离 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
+| 真实 Runtime 兼容 | domains/runtime/service.py/client.py/workspace.py、apps/services/executions.py；test_dispatch.py/test_execution_live.py | 资源租约、原生工程启动、真实业务与浏览器独立验收通过；完整自主返工/接管/公司版本未覆盖 |
 
 ## WARNING 与一致性检查
 
-- 工程真实探针没有经过 Task 业务运行器，不能替代“原生执行与独立验收”。必须接通后重跑真实业务链。
+- 工程真实业务及浏览器验收已通过；Persona 自主验收、自动返工/Goal 跟踪、多员工并行和未知副作用恢复尚未通过，不能替代完整 Scenario 门禁。
 - Skill、API 网关及 Workspace UI 仍未接通；页面禁止虚构成功或展示假业务状态。
 - 所有 REMOVED 规范对应旧实现仍作为复制来源保留，单次切换时须从正式运行仓库移除；当前不得同步/归档。
 - 内网冷构建、公司 Linux/Windows/SSH、生产全量迁移/灾备未验证；没有以本机隔离结果推断通过。

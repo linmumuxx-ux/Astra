@@ -113,7 +113,7 @@ async def test_mcp_registered_tools_never_accept_actor_or_user_id():
     db = Database("sqlite+aiosqlite:///:memory:")
     server = build_tools(db, api_url="http://127.0.0.1:8200", resource_url="http://127.0.0.1:8203/mcp")
     tools = await server.list_tools()
-    assert len(tools) == 11
+    assert len(tools) == 13
     for tool in tools:
         assert tool.name.startswith("astra_")
         assert not {"actor", "actor_id", "user_id", "employee_identity"} & set(

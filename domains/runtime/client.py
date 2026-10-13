@@ -321,6 +321,39 @@ class OpenCodeClient:
             raise OpenCodeIncompatible("OpenCode 返回未知 Session 活动状态")
         return value
 
+    async def messages_in_tree(self, binding, native_session_id, *, limit=100, before=None):
+        """子代理保留原生 Session；只允许从已核验 parent 树读取，不伪造子绑定。"""
+        if native_session_id == binding.native_session_id:
+            return await self.messages(binding, limit=limit, before=before)
+        if native_session_id not in await self.session_tree(binding):
+            raise NativeSessionScopeError("证据 Session 不在当前工程原生子树内")
+        await self.native_session(binding.directory, native_session_id)
+        if not 1 <= limit <= 1000:
+            raise ValueError("原生消息分页大小无效")
+        payload, headers = await self._request(
+            "GET",
+            self._session_path(native_session_id) + "/message",
+            directory=binding.directory,
+            query={"limit": limit, **({"before": before} if before else {})},
+            headers=True,
+        )
+        if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+            raise OpenCodeIncompatible("OpenCode 子代理原生消息格式无效")
+        return {"messages": payload, "next_before": headers.get("x-next-cursor")}
+
+    async def tree_statuses(self, binding):
+        ids = await self.session_tree(binding)
+        statuses = await self._request("GET", "/session/status", directory=binding.directory)
+        if not isinstance(statuses, dict):
+            raise OpenCodeIncompatible("原生状态格式无效")
+        selected = {sid: statuses.get(sid, {"type": "idle"}) for sid in ids}
+        if any(
+            not isinstance(value, dict) or value.get("type") not in {"idle", "busy", "retry"}
+            for value in selected.values()
+        ):
+            raise OpenCodeIncompatible("原生子树活动状态未知")
+        return selected
+
     async def abort(self, binding: NativeSessionBinding) -> bool:
         await self.session(binding)
         result = await self._request(

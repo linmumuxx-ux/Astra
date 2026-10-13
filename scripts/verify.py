@@ -26,6 +26,7 @@ def main() -> int:
         "--live-persona", action="store_true", help="真实短回合、跨 Session 记忆及职责队列测试"
     )
     parser.add_argument("--mysql", action="store_true", help="启动自己的临时 MySQL 验证 schema 和并发")
+    parser.add_argument("--live-execution", action="store_true", help="真实工程 Task 与浏览器独立验收")
     args = parser.parse_args()
 
     npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm") or shutil.which("npm")
@@ -73,6 +74,12 @@ def main() -> int:
         run([sys.executable, "-m", "pytest", "tests/v1/test_persona_live.py", "-q"], ROOT, "real Persona")
     if args.mysql:
         run([sys.executable, "tests/v1/run_mysql.py"], ROOT, "isolated MySQL")
+    if args.live_execution:
+        if not os.environ.get("ASTRA_LIVE_MODEL"):
+            parser.error("真实工程检查必须显式配置 ASTRA_LIVE_MODEL")
+        os.environ["ASTRA_LIVE_EXECUTION"] = "1"
+        os.environ["ASTRA_LIVE_UI"] = "1"
+        run([sys.executable, "-m", "pytest", "tests/v1/test_execution_live.py", "-q"], ROOT, "real Task/UI")
     print("1.0 新树本地检查通过；生产迁移、公司部署和完整产品验收仍以验证报告为准。")
     return 0
 
