@@ -27,3 +27,38 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 ```
 
 同一员工的两条 Session 不同。私聊的 SSE 有文本增量。`contact_employee` 出现在调用方事件里，对方邮箱流有模型自己的增量。Nexus 的消息表只有 `user`。`qwen2.5:3b` 没有按提示只回复指定数字。
+
+# 7.1 员工管理验证记录
+
+日期：2026-10-13。沿用上面的 Redis、AgentScope 2.0.10 和 Ollama credential。Nexus API 使用更新后的目录校验。
+
+命令与直接探测：
+
+```bash
+curl -sS -H 'X-User-ID: nexus' http://127.0.0.1:8000/knowledge_bases/
+# HTTP 503
+# {"detail":"Knowledge base feature is disabled — pass a knowledge_base_manager to create_app() to enable it."}
+
+curl -sS http://127.0.0.1:8120/api/v1/knowledge
+# {"available":false,"items":[]}
+
+curl -sS http://127.0.0.1:8120/api/v1/tools
+# Bash, Edit, Glob, Grep, Read, Write, contact_employee
+
+curl -sS http://127.0.0.1:8120/api/v1/skills
+# {"available":true,"items":[]}
+
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
+  nexus/api/.venv/bin/pytest \
+  nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s
+```
+
+结果：`1 passed in 0.36s`。测试打印：
+
+```json
+{"agent_id": "48a90bf0b957493090e03d5472101217", "knowledge_available": false, "tools": ["Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee"], "disabled_status": 409, "enabled_accepted": true, "deleted": true}
+```
+
+创建和修改后的职责说明、工作指令写进了 Agent 的 `system_prompt`。同名员工被拒绝。禁用后的私聊是 409，没有开始新运行；重新启用后 Agent Service 接受了 `POST /chat`。删除后 `GET /agent/` 里没有这个 Agent。联系已禁用员工时解析接口返回 404，不交出 Session。
+
+未在这次记录里做的事：没有给 `create_app` 传入 `knowledge_base_manager`，所以没有真实知识库可供选中。技能库当时为空，也没有 SkillHub，不能把技能装进 workspace。官方 `get_toolkit` 仍会自行挂上任务和团队工具，员工档案里的工具选择不会把它们卸掉。

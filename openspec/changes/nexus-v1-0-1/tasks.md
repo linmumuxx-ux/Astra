@@ -34,5 +34,11 @@
 
 ## 7. 员工管理
 
-- [ ] 7.1 员工的创建、检索、修改、启用、禁用和删除调用正在运行的 AgentScope；知识和工具只接受目录中的标识；禁用后不能开始新的运行
+- [x] 7.1 员工的创建、检索、修改、启用、禁用和删除调用正在运行的 AgentScope；知识和工具只接受目录中的标识；禁用后不能开始新的运行
   - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s`
+  - 2026-10-13 通过，`1 passed in 0.36s`。Agent Service `GET /health` 版本 `2.0.10`，`knowledge_base` 为 `disabled`。
+  - `GET /knowledge_bases/` 返回 503：`Knowledge base feature is disabled — pass a knowledge_base_manager to create_app() to enable it.` Nexus `GET /api/v1/knowledge` 为 `{"available": false, "items": []}`。手写知识库标识被拒绝。
+  - `GET /api/v1/skills` 可读，当时技能库是空列表。虚构技能 `not-a-real-skill` 被拒绝。
+  - `GET /api/v1/tools` 为 Bash、Edit、Glob、Grep、Read、Write、`contact_employee`。`query_task` 被拒绝。
+  - 当次输出：agent `48a90bf0b957493090e03d5472101217`；禁用私聊 HTTP 409；重新启用后 `POST /chat` 被接受；删除后该 Agent 不在 `GET /agent/`。
+  - 同一轮 `pytest nexus/api/tests/test_api.py` 为 16 passed。MockTransport 记录了：目录外的知识与工具返回 422；禁用期间没有 `POST /chat`；禁用员工的 `contact_employee` 解析返回 404，正文含「禁用」。
