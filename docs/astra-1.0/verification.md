@@ -1,6 +1,6 @@
 # Astra 1.0 验证记录
 
-记录日期：2026-10-13。分支 `rewrite/astra-1.0`，基线见 `baseline.json`。**整体验收未通过，不可正式切换。** 唯一实施清单为 OpenSpec change 的 `tasks.md`；本报告只记录证据与适用边界。
+记录日期：2026-10-13。分支 `rewrite/astra-1.0`。产品范围现为 `SLIM_BASELINE.md`；`baseline.json` 只保留起点与已取代设计包的指纹。**当时的全量验收未通过。** 文档改成垂直切片之后，本报告仍然只是分项证据，不表示切片已经关闭，也不可据此正式切换。唯一实施清单为 OpenSpec change 的 `tasks.md`。
 
 ## 已实际运行
 
@@ -23,7 +23,7 @@
 
 ## 覆盖情况
 
-23 条新增 Requirement 的逐条实现/Scenario 映射及 18 项未完成实施任务，见 `../../openspec/changes/rebuild-astra-1-0/verification.md`。目前身份权限、幂等、消息隔离、正式交接、Routine、Persona fencing、Git Memory、Worker 绑定、历史读取、SSE 与页面基础操作有可复验证据。跨主机产物转移/Goal 跟踪、完整 Skill 成长、模型网关、附件/连接器、公司部署、真实全量迁移与完整多员工协作仍未通过，缺口见 `issues.md`。
+23 条新增 Requirement 的逐条实现/Scenario 映射，以及瘦身前 18 项未完成任务的记录，见 `../../openspec/changes/rebuild-astra-1-0/verification.md`。该记录不是现行清单。目前身份权限、幂等、消息隔离、正式交接、Routine、Persona fencing、Git Memory、Worker 绑定、历史读取、SSE 与页面基础操作有可复验证据。跨主机产物转移/Goal 跟踪、完整 Skill 成长、模型网关、附件/连接器、公司部署、真实全量迁移与完整多员工协作仍未通过；它们在 `issues.md` 中标为 post-1.0。垂直切片尚未作为一条链关闭。
 
 ## 检查限制
 

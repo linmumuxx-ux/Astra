@@ -2,6 +2,8 @@
 
 日期：2026-10-13。已读取 proposal/design/全部 delta specs/tasks，并运行 status/instructions apply；以既有 change 为范围。status 的规划产物完成不代表产品完成。
 
+本报告对照的是瘦身前的全量 `tasks.md`（当时 1/19 完成）。现行清单已改为垂直切片，完成定义见 `docs/astra-1.0/SLIM_BASELINE.md`。下文的旧任务编号不再是实施清单；不要把本报告读成切片已经通过或已经失败的新结论。
+
 | 维度 | 结论 |
 | --- | --- |
 | 完整性 | 1/19 实施任务完成；18 项 CRITICAL |

@@ -1,10 +1,10 @@
 ## Context
 
-起点 `05dd73142b294a9cb6b2b14a0750b707422aeec3`，fetch 后原分支与远端一致；新分支 `rewrite/astra-1.0`。用户原未跟踪设计包保持原样。唯一产品基线为同包设计全部 17 节。
+起点 `05dd73142b294a9cb6b2b14a0750b707422aeec3`，fetch 后原分支与远端一致；新分支 `rewrite/astra-1.0`。用户原未跟踪设计包保持原样。该包曾被当作全部 17 节的产品基线，现已由 `docs/astra-1.0/SLIM_BASELINE.md` 取代。差异见 `docs/astra-1.0/SCOPE_DIFF.md`。
 
 ## Goals / Non-Goals
 
-完整集成所有能力并全量验收。无需新推理引擎、第二套 Workflow/Transcript、重复 Wiki/Skill；不保持 0.xx 业务兼容。
+1.0 目标改为一条垂直切片，见瘦身基线，而不是一次集成原设计的全部能力。无需新推理引擎、第二套 Workflow/Transcript、重复 Wiki/Skill；不保持 0.xx 业务兼容。正式三维首页、企业 IM、Skill 全链路、全量治理配额和公司 ETL 切换列为 Post-1.0。
 
 ## Decisions
 
@@ -22,7 +22,7 @@
 
 - 公司环境/生产库/模型凭据未确认 → 只读探测并如实标为未验证。
 - SQLite 不证明 MySQL 并发 → 补真实 MySQL lease/锁竞争测试。
-- 删除旧树和正式切换不可提前 → 全量门禁失败拒绝切换，保留冻结备份恢复。
+- 删除旧树和公司切换属于 Post-1.0 → 垂直切片完成也不提前删除 `backend/`、`frontend/`；切换仍须真实迁移与恢复证据，并保留冻结备份。
 
 ## Migration Plan
 
