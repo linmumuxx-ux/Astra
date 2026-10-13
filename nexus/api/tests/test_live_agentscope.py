@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import uuid
 
 import httpx
@@ -495,13 +496,6 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 seen,
             )
             assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in second_events), second_events
-            other = client.post(
-                f"{NEXUS}/api/v1/conversations/{second['id']}/messages",
-                headers=owner_a,
-                json={"text": "这是另一条对话。", "attachment_ids": []},
-            )
-            assert other.json()["agentscope"]["accepted"] is True
-            assert other.json()["agentscope"]["session_id"] != first_session
 
             uploaded = client.post(
                 f"{NEXUS}/api/v1/attachments",
@@ -516,13 +510,25 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 json={"text": "附件里的标记是什么？", "attachment_ids": [uploaded.json()["id"]]},
             )
             assert with_file.json()["agentscope"]["accepted"] is True, with_file.text
-            remote = client.get(
-                f"{AGENTSCOPE}/sessions/{first_session}/messages",
-                headers=AGENT_HEADERS,
-                params={"agent_id": employee["agentscope_agent_id"], "limit": 50},
+            remote = None
+            for _ in range(30):
+                remote = client.get(
+                    f"{AGENTSCOPE}/sessions/{first_session}/messages",
+                    headers=AGENT_HEADERS,
+                    params={"agent_id": employee["agentscope_agent_id"], "limit": 50},
+                )
+                assert remote.status_code == 200, remote.text
+                if "LOG-TOKEN-88" in remote.text:
+                    break
+                time.sleep(1)
+            assert remote is not None and "LOG-TOKEN-88" in remote.text
+            other = client.post(
+                f"{NEXUS}/api/v1/conversations/{second['id']}/messages",
+                headers=owner_a,
+                json={"text": "这是另一条对话。", "attachment_ids": []},
             )
-            assert remote.status_code == 200, remote.text
-            assert "LOG-TOKEN-88" in remote.text
+            assert other.json()["agentscope"]["accepted"] is True, other.text
+            assert other.json()["agentscope"]["session_id"] != first_session
             restored = client.get(f"{NEXUS}/api/v1/conversations/{first['id']}", headers=owner_a)
             assert restored.status_code == 200, restored.text
             assert restored.json()["agentscope_session_id"] == first_session

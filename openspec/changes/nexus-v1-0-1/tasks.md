@@ -45,5 +45,11 @@
 
 ## 8. 数字员工私聊
 
-- [ ] 8.1 同一匿名标识可与一位员工进行多条私聊；刷新后恢复 Session 与用户消息；另一个匿名标识读不到这些对话
-- [ ] 8.2 文本和图片附件按 AgentScope 消息块发送；事件流文本来自 Session，不由 Nexus 代写；禁用员工不能开始新运行
+- [x] 8.1 同一匿名标识可与一位员工进行多条私聊；刷新后恢复 Session 与用户消息；另一个匿名标识读不到这些对话
+  - 2026-10-13：`pytest nexus/api/tests/test_api.py` 19 passed。其中两个匿名标识互不可见，API 用同一数据目录重新创建后仍能取回用户消息。
+  - 实跑 `test_private_chat_streams_and_isolates_anonymous_owners`：`1 passed in 25.17s`。两条 Session `dbec10b3f9094248b6cc9aee84bcfa7e` 与 `1aa0f329d80c40e1b119fb4df60fff44`。另一匿名标识读取对话得到 404。
+- [x] 8.2 文本和图片附件按 AgentScope 消息块发送；事件流文本来自 Session，不由 Nexus 代写；禁用员工不能开始新运行
+  - 同一条实跑里，两轮都收到 `TEXT_BLOCK_DELTA`。第一轮增量是模型自己的文本，不是「在」。第二轮增量是「你似乎在重复同一个指令或问题。请提供更多的信息，以便我能更好地帮助你。」
+  - 日志 `LOG-TOKEN-88` 出现在该 Session 的 `GET /sessions/{id}/messages` 里。附件下载内容与上传一致。禁用后私聊为 409。
+  - MockTransport 记录了日志正文进入文本块、图片进入 `data`/`base64` 块，Session 里的助手句「模型自己的回复」被读回，Nexus 没有写「已解析」。
+  - 浏览器打开 `/chat`：粘贴 `shot.png` 后能预览并移除；拖入 `drop.log` 后能预览；记忆页写明只读且没有员工编辑表单；发送后用户消息留在对话里。
