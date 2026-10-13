@@ -1,4 +1,10 @@
-# Astra V0.6
+# Astra 1.0 重建分支
+
+当前分支 `rewrite/astra-1.0` 使用独立新代码、schema 与 `/api/v1`。开发入口和真实验证结果见 [1.0 部署说明](docs/astra-1.0/deployment.md)、[架构现状](docs/astra-1.0/architecture.md) 与 [验证报告](docs/astra-1.0/verification.md)。完整工程、成长、迁移和公司部署门禁尚未通过，不能正式切换或标记 1.0 完成。
+
+下文保留为原始实现的复制与迁移参考，不作为 1.0 的运行入口。
+
+## 原始 Astra V0.6 参考
 
 Astra 是面向长期数字员工的任务分配、工作观察、人工介入和结果管理平台。
 

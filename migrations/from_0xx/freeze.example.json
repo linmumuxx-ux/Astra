@@ -1,0 +1,7 @@
+{
+  "frozen_at": "REPLACE_WITH_ISO8601_TIME",
+  "confirmed_by": "REPLACE_WITH_OPERATOR",
+  "legacy_writers_stopped": false,
+  "backup_ref": "backup://REPLACE_WITH_VERIFIED_BACKUP_REFERENCE",
+  "in_flight_policy": "REPLACE_WITH_DRAINED_TASKS_AND_UNCERTAIN_SIDE_EFFECT_RECONCILIATION_RECORD"
+}

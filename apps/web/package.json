@@ -1,0 +1,30 @@
+{
+  "name": "astra-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "type-check": "vue-tsc --noEmit",
+    "build": "npm run type-check && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:e2e": "playwright test",
+    "test:e2e:real": "node e2e/run-real.mjs"
+  },
+  "dependencies": {
+    "element-plus": "2.14.6",
+    "lucide-vue-next": "0.544.0",
+    "three": "0.186.1",
+    "vue": "3.5.22",
+    "vue-router": "4.6.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.1",
+    "@types/node": "24.7.2",
+    "@types/three": "0.186.0",
+    "@vitejs/plugin-vue": "6.0.1",
+    "typescript": "5.9.3",
+    "vite": "7.1.9",
+    "vue-tsc": "3.1.1"
+  }
+}

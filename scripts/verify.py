@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Run Astra's full quality gate."""
+"""运行 1.0 新树本地检查；通过不等于公司环境与产品全量验收。"""
 
 from __future__ import annotations
 
+import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BACKEND = ROOT / "backend"
-FRONTEND = ROOT / "frontend"
+WEB = ROOT / "apps" / "web"
 
 
 def run(command: list[str], cwd: Path, title: str) -> None:
@@ -19,8 +20,13 @@ def run(command: list[str], cwd: Path, title: str) -> None:
 
 
 def main() -> int:
-    sys.path.insert(0, str(BACKEND))
-    from app.executors.process import local_command
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--live-runtime", action="store_true", help="显式运行消耗模型额度的隔离 Runtime 测试")
+    parser.add_argument(
+        "--live-persona", action="store_true", help="真实短回合、跨 Session 记忆及职责队列测试"
+    )
+    parser.add_argument("--mysql", action="store_true", help="启动自己的临时 MySQL 验证 schema 和并发")
+    args = parser.parse_args()
 
     npm = shutil.which("npm.cmd" if sys.platform == "win32" else "npm") or shutil.which("npm")
     if not npm:
@@ -31,12 +37,43 @@ def main() -> int:
 
     run([node, str(ROOT / "tests" / "opencode" / "test-superpowers-bootstrap.mjs")], ROOT, "opencode plugin")
     run([node, str(ROOT / "scripts" / "check_openspec_config.mjs")], ROOT, "openspec config")
-    run([sys.executable, "-m", "ruff", "check", "app", "tests"], BACKEND, "backend lint")
-    run([sys.executable, "-m", "pytest"], BACKEND, "backend tests")
-    run(local_command(npm, ["run", "type-check"]), FRONTEND, "frontend type-check")
-    run(local_command(npm, ["run", "build"]), FRONTEND, "frontend production build")
-    run([sys.executable, str(ROOT / "scripts" / "e2e.py")], ROOT, "browser E2E")
-    print("Astra full verification passed.")
+    run([node, str(ROOT / ".opencode/tools/openspec.mjs"), "validate", "rebuild-astra-1-0"], ROOT, "1.0 spec")
+    run(
+        [
+            sys.executable,
+            "-m",
+            "ruff",
+            "check",
+            "apps/api",
+            "apps/services",
+            "agents",
+            "domains",
+            "migrations",
+            "deploy/v1",
+            "tests/v1",
+            "scripts/verify.py",
+        ],
+        ROOT,
+        "1.0 lint",
+    )
+    run([sys.executable, "-m", "pytest", "tests/v1", "-q", "--disable-warnings"], ROOT, "1.0 tests")
+    run([npm, "run", "build"], WEB, "1.0 web production build")
+    os.environ["ASTRA_PYTHON"] = sys.executable
+    run([npm, "run", "test:e2e:real"], WEB, "1.0 real API browser E2E")
+    if args.live_runtime:
+        if not os.environ.get("ASTRA_LIVE_MODEL"):
+            parser.error("真实 Runtime 检查必须显式配置 ASTRA_LIVE_MODEL")
+        os.environ["ASTRA_LIVE_OPENCODE"] = "1"
+        run([sys.executable, "-m", "pytest", "tests/v1/test_runtime_live.py", "-q"], ROOT, "real OpenCode")
+    if args.live_persona:
+        if not os.environ.get("ASTRA_LIVE_MODEL"):
+            parser.error("真实 Persona 检查必须显式配置 ASTRA_LIVE_MODEL")
+        os.environ["ASTRA_LIVE_PERSONA"] = "1"
+        os.environ["ASTRA_LIVE_CELERY"] = "1"
+        run([sys.executable, "-m", "pytest", "tests/v1/test_persona_live.py", "-q"], ROOT, "real Persona")
+    if args.mysql:
+        run([sys.executable, "tests/v1/run_mysql.py"], ROOT, "isolated MySQL")
+    print("1.0 新树本地检查通过；生产迁移、公司部署和完整产品验收仍以验证报告为准。")
     return 0
 
 

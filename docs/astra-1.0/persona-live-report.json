@@ -1,0 +1,26 @@
+{
+  "kind": "real_opencode_persona_memory",
+  "result": "PASSED",
+  "model": "deepseek/deepseek-flash",
+  "whole_system_acceptance": false,
+  "started_at": 1791852178.4418921,
+  "evidence_root": "/Users/niuniu/.astra-1.0/persona-evidence/5c80b45143a3408c84e36cb3d3d4fc60",
+  "health": {
+    "healthy": true,
+    "version": "1.18.35",
+    "contract_verified": true
+  },
+  "routine_redis_celery_beat_verified": true,
+  "native_session_ids": [
+    "ses_ecd498fbeffeG5nHR4mB06yCoQ",
+    "ses_ecd49825fffeBk46zBkkZlxqw3",
+    "ses_ecd490080ffebsPQWuRsyEZLLv"
+  ],
+  "distinct_short_sessions": true,
+  "cross_session_memory_verified": true,
+  "authenticated_employee_reply": true,
+  "no_task_created": true,
+  "decision_tokens": 16326,
+  "native_cost_micros": 1803,
+  "finished_at": 1791852219.1551092
+}

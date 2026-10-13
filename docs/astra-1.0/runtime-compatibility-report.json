@@ -1,0 +1,22 @@
+{
+  "kind": "actual_runtime_compatibility",
+  "runtime_version": "1.18.35",
+  "whole_system_acceptance": false,
+  "company_hosts_verified": false,
+  "persona_native_json_schema": {
+    "result": "REJECTED",
+    "declared_in_doc": true,
+    "prompt_async_accepted": true,
+    "message_read_http_status": 400,
+    "error_kind": "Expected OutputFormatJsonSchema",
+    "native_session_ids": [
+      "ses_ecd56fbbdffetHGb311GAba4hj"
+    ]
+  },
+  "persona_protocol_selected": "native_text_json_then_strict_backend_validation",
+  "unknown_mutation_automatically_retried": false,
+  "passed_evidence": [
+    "persona-live-report.json",
+    "runtime-live-report.json"
+  ]
+}

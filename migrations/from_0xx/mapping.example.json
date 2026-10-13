@@ -1,0 +1,22 @@
+{
+  "format_version": 1,
+  "reviewed_by": "REPLACE_WITH_REVIEWER",
+  "reviewed_at": "REPLACE_WITH_ISO8601_TIME",
+  "id_namespace": "67447fbc-9ff2-5c4f-9948-9cc52d6518c1",
+  "migration_actor": {
+    "id": "c3ef0da1-c53c-4f0f-82c5-2c6f4e12bc85",
+    "kind": "SYSTEM",
+    "name": "0.xx 历史迁移"
+  },
+  "teams": [
+    {"id": "1235896a-942d-44fc-aac9-0074b0e701ec", "name": "待审核历史归档"}
+  ],
+  "default_team_id": "1235896a-942d-44fc-aac9-0074b0e701ec",
+  "roles": [],
+  "actors": [],
+  "employees": [],
+  "workers": {},
+  "task_owners": {},
+  "task_status_map": {},
+  "human_assignments": {}
+}
