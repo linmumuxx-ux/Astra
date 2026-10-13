@@ -161,28 +161,63 @@ def create_app() -> FastAPI:
                 return "该职责已有员工"
         return None
 
-    async def accepted_skills(
+    async def accepted_from_catalog(
         client: AgentScopeClient,
         requested: list[str],
         previous: list[str],
+        *,
+        load,
+        unknown_detail: str,
+        unavailable_detail: str,
     ) -> tuple[list[str], dict[str, Any]]:
         requested = lines(requested)
         catalog: list[dict[str, str]] | None = None
         if client.configured:
             try:
-                catalog = await client.list_skills()
+                catalog = await load()
             except AgentScopeError:
                 catalog = None
         if catalog is not None:
             allowed = {item["id"] for item in catalog}
             unknown = [item for item in requested if item not in allowed]
             if unknown:
-                raise HTTPException(status_code=422, detail="技能不在 AgentScope 技能库中")
+                raise HTTPException(status_code=422, detail=unknown_detail)
             return requested, {"available": True, "items": catalog}
         extras = [item for item in requested if item not in set(previous)]
         if extras:
-            raise HTTPException(status_code=422, detail="当前无法读取技能库，不能新增技能")
+            raise HTTPException(status_code=422, detail=unavailable_detail)
         return requested, {"available": False, "items": []}
+
+    async def chosen_resources(
+        client: AgentScopeClient,
+        body: EmployeeBody,
+        previous: dict[str, list[str]],
+    ) -> tuple[list[str], list[str], list[str]]:
+        skills, _skills = await accepted_from_catalog(
+            client,
+            body.skills,
+            previous.get("skills", []),
+            load=client.list_skills,
+            unknown_detail="技能不在 AgentScope 技能库中",
+            unavailable_detail="当前无法读取技能库，不能新增技能",
+        )
+        knowledge, _knowledge = await accepted_from_catalog(
+            client,
+            body.knowledge,
+            previous.get("knowledge", []),
+            load=client.list_knowledge_bases,
+            unknown_detail="知识库不在 AgentScope 知识库中",
+            unavailable_detail="当前无法读取知识库，不能新增知识库",
+        )
+        tools, _tools = await accepted_from_catalog(
+            client,
+            body.tools,
+            previous.get("tools", []),
+            load=client.list_launcher_tools,
+            unknown_detail="工具不在 AgentScope 可关联工具中",
+            unavailable_detail="当前无法确认 AgentScope 工具，不能新增工具",
+        )
+        return skills, knowledge, tools
 
     async def sync_agent(client: AgentScopeClient, employee: dict[str, Any]) -> dict[str, Any]:
         prompt = system_prompt(employee)
@@ -212,7 +247,13 @@ def create_app() -> FastAPI:
         )
         connection.commit()
 
-    def insert_employee(connection, body: EmployeeBody, skills: list[str]) -> dict[str, Any]:
+    def insert_employee(
+        connection,
+        body: EmployeeBody,
+        skills: list[str],
+        knowledge: list[str],
+        tools: list[str],
+    ) -> dict[str, Any]:
         employee_id = new_id("emp")
         now = utcnow()
         connection.execute(
@@ -231,9 +272,9 @@ def create_app() -> FastAPI:
                 body.instructions.strip(),
                 body.avatar,
                 int(body.enabled),
-                json.dumps(lines(body.knowledge), ensure_ascii=False),
+                json.dumps(knowledge, ensure_ascii=False),
                 json.dumps(skills, ensure_ascii=False),
-                json.dumps(lines(body.tools), ensure_ascii=False),
+                json.dumps(tools, ensure_ascii=False),
                 now,
                 now,
             ),
@@ -320,16 +361,29 @@ def create_app() -> FastAPI:
             "reachable": await client.probe(),
         }
 
-    @app.get("/api/v1/skills")
-    async def skills(request: Request) -> dict[str, Any]:
-        client = client_of(request)
+    async def publish_catalog(client: AgentScopeClient, load) -> dict[str, Any]:
         if not client.configured:
             return {"available": False, "items": []}
         try:
-            items = await client.list_skills()
+            items = await load()
         except AgentScopeError:
             return {"available": False, "items": []}
         return {"available": True, "items": items}
+
+    @app.get("/api/v1/skills")
+    async def skills(request: Request) -> dict[str, Any]:
+        client = client_of(request)
+        return await publish_catalog(client, client.list_skills)
+
+    @app.get("/api/v1/knowledge")
+    async def knowledge(request: Request) -> dict[str, Any]:
+        client = client_of(request)
+        return await publish_catalog(client, client.list_knowledge_bases)
+
+    @app.get("/api/v1/tools")
+    async def tools(request: Request) -> dict[str, Any]:
+        client = client_of(request)
+        return await publish_catalog(client, client.list_launcher_tools)
 
     @app.get("/api/v1/employees")
     def employees(q: str = "", connection=Depends(database)) -> dict[str, Any]:
@@ -353,9 +407,10 @@ def create_app() -> FastAPI:
         conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), None)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)
-        chosen, _catalog = await accepted_skills(client_of(request), body.skills, [])
-        employee = insert_employee(connection, body, chosen)
-        sync = await sync_agent(client_of(request), employee)
+        client = client_of(request)
+        skills, knowledge, tools = await chosen_resources(client, body, {})
+        employee = insert_employee(connection, body, skills, knowledge, tools)
+        sync = await sync_agent(client, employee)
         save_agent_link(connection, employee["id"], sync)
         employee = load_employee(connection, employee["id"])
         return {"employee": employee, "agentscope": {"ok": sync["ok"], "detail": sync["detail"]}}
@@ -371,7 +426,8 @@ def create_app() -> FastAPI:
         conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), employee_id)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)
-        chosen, _catalog = await accepted_skills(client_of(request), body.skills, current["skills"])
+        client = client_of(request)
+        skills, knowledge, tools = await chosen_resources(client, body, current)
         connection.execute(
             """
             UPDATE employees
@@ -386,16 +442,16 @@ def create_app() -> FastAPI:
                 body.instructions.strip(),
                 body.avatar,
                 int(body.enabled),
-                json.dumps(lines(body.knowledge), ensure_ascii=False),
-                json.dumps(chosen, ensure_ascii=False),
-                json.dumps(lines(body.tools), ensure_ascii=False),
+                json.dumps(knowledge, ensure_ascii=False),
+                json.dumps(skills, ensure_ascii=False),
+                json.dumps(tools, ensure_ascii=False),
                 utcnow(),
                 employee_id,
             ),
         )
         connection.commit()
         employee = load_employee(connection, employee_id)
-        sync = await sync_agent(client_of(request), employee)
+        sync = await sync_agent(client, employee)
         save_agent_link(connection, employee_id, sync)
         return {
             "employee": load_employee(connection, employee_id),
@@ -804,6 +860,8 @@ def create_app() -> FastAPI:
         if private is not None:
             sender = load_employee(connection, private["employee_id"])
             target = employee_by_name(connection, target_name)
+            if target is not None and target["id"] != sender["id"] and not target["enabled"]:
+                raise HTTPException(status_code=404, detail="该员工已禁用，不能开始新的运行")
             unreachable = (
                 target is None
                 or target["id"] == sender["id"]
@@ -830,9 +888,11 @@ def create_app() -> FastAPI:
         ).fetchall()
         for peer in peers:
             employee = load_employee(connection, peer["employee_id"])
-            same_channel = employee["name"] == target_name and employee["id"] != sender["id"]
-            reachable = employee["agentscope_agent_id"] and peer["agentscope_session_id"]
-            if same_channel and reachable:
+            if employee["name"] != target_name or employee["id"] == sender["id"]:
+                continue
+            if not employee["enabled"]:
+                raise HTTPException(status_code=404, detail="该员工已禁用，不能开始新的运行")
+            if employee["agentscope_agent_id"] and peer["agentscope_session_id"]:
                 return {
                     "agent_id": employee["agentscope_agent_id"],
                     "session_id": peer["agentscope_session_id"],

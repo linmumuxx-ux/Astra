@@ -34,7 +34,7 @@
               </td>
               <td>
                 <div class="chips">
-                  <span v-for="skill in employee.skills" :key="skill" class="mini-chip">{{ skillLabel(skill) }}</span>
+                  <span v-for="skill in employee.skills" :key="skill" class="mini-chip">{{ resourceLabel(catalogs.skills, skill) }}</span>
                   <span v-if="!employee.skills.length" class="muted">未选择</span>
                 </div>
               </td>
@@ -63,22 +63,24 @@
           <div class="detail-excerpt">{{ selected.description }}</div>
           <div class="section-label">知识资源</div>
           <div class="resource-list">
-            <span v-for="item in selected.knowledge" :key="item" class="mini-chip">{{ item }}</span>
+            <span v-for="item in selected.knowledge" :key="item" class="mini-chip">{{ resourceLabel(catalogs.knowledge, item) }}</span>
             <span v-if="!selected.knowledge.length" class="muted">暂无配置</span>
           </div>
           <div class="section-label">技能与工具</div>
           <div class="resource-list">
-            <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ skillLabel(item) }}</span>
-            <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ item }}</span>
+            <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
+            <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ resourceLabel(catalogs.tools, item) }}</span>
           </div>
           <div class="section-label">员工 ID</div>
           <div class="mono">{{ selected.id }}</div>
+          <div class="section-label">AgentScope Agent</div>
+          <div class="mono">{{ selected.agentscope_agent_id || "尚未创建" }}</div>
           <el-button type="primary" style="width: 100%; margin-top: 18px" @click="goChat(selected.id)">与 {{ selected.name }} 交流</el-button>
         </template>
         <div v-else class="empty">创建第一个数字员工，直接定义他的职责与能力</div>
       </aside>
     </div>
-    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalog="catalog" @close="drawerOpen = false" @save="save" />
+    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalogs="catalogs" @close="drawerOpen = false" @save="save" />
     <el-dialog v-model="deleteOpen" title="删除数字员工" width="460px">
       <p>确定删除 <b>{{ deleting?.name }}</b> 吗？删除后将不再显示该员工。</p>
       <template #footer>
@@ -94,8 +96,8 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import EmployeeDrawer from "../components/EmployeeDrawer.vue";
-import { deleteEmployee, getSkills, listEmployees, saveEmployee } from "../api";
-import type { Employee, SkillItem } from "../types";
+import { deleteEmployee, getKnowledge, getSkills, getTools, listEmployees, saveEmployee } from "../api";
+import type { Employee, ResourceCatalog } from "../types";
 
 const router = useRouter();
 const employees = ref<Employee[]>([]);
@@ -105,7 +107,8 @@ const drawerOpen = ref(false);
 const editing = ref<Employee | null>(null);
 const deleteOpen = ref(false);
 const deleting = ref<Employee | null>(null);
-const catalog = ref<{ available: boolean; items: SkillItem[] }>({ available: false, items: [] });
+const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
+const catalogs = ref({ skills: emptyCatalog(), knowledge: emptyCatalog(), tools: emptyCatalog() });
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -114,8 +117,8 @@ const filtered = computed(() => {
 });
 const selected = computed(() => employees.value.find((item) => item.id === selectedId.value) ?? null);
 
-function skillLabel(id: string) {
-  return catalog.value.items.find((item) => item.id === id)?.name ?? id;
+function resourceLabel(catalog: ResourceCatalog, id: string) {
+  return catalog.items.find((item) => item.id === id)?.name ?? id;
 }
 
 async function reload() {
@@ -179,7 +182,8 @@ async function confirmDelete() {
 }
 
 onMounted(async () => {
-  catalog.value = await getSkills();
+  const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
+  catalogs.value = { skills, knowledge, tools };
   await reload();
 });
 </script>

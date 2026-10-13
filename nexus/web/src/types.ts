@@ -18,6 +18,11 @@ export interface SkillItem {
   name: string;
 }
 
+export interface ResourceCatalog {
+  available: boolean;
+  items: SkillItem[];
+}
+
 export interface Attachment {
   id: string;
   name: string;

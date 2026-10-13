@@ -24,7 +24,7 @@ Nexus v1.0.1 是这个分支上的新产品。仓库里的 Astra 实现只保留
 
 ### 1. AgentScope 是 Agent / Session / Skill / Knowledge / 记忆的唯一事实源
 
-Nexus 的 SQLite 只保存员工目录、对话与 Session 的绑定，以及 Agent Service 尚未接受的用户消息。技能目录读取 `GET /skill`。知识库使用 `/knowledge_bases`。对话事件只消费 `GET /sessions/{session_id}/stream` 的 `AgentEvent`。Nexus 不维护第二份记忆，也不根据本地消息条数推断 Agent 状态。
+Nexus 的 SQLite 只保存员工目录、对话与 Session 的绑定，以及 Agent Service 尚未接受的用户消息。技能目录读取 `GET /skill`。知识库读取 `GET /knowledge_bases/`；当前部署没有传入 `knowledge_base_manager` 时，这个接口返回 503，Nexus 不接受新的手写知识库标识。工具没有用户级 HTTP 目录，员工档案只能关联 Linux 工作区自带的 Bash、Edit、Glob、Grep、Read、Write 和部署注册的 `contact_employee`。这份关联不改写 `get_toolkit`：AgentScope 仍会自行挂上任务工具和团队工具。对话事件只消费 `GET /sessions/{session_id}/stream` 的 `AgentEvent`。Nexus 不维护第二份记忆，也不根据本地消息条数推断 Agent 状态。
 
 被放弃的做法：在 Nexus 里用提示词模板直接生成同事回复。那会变成脚本，而不是 Agent 推理。
 
@@ -69,6 +69,7 @@ Session 要能产生文本增量，创建时必须带 `chat_model_config`。这�
 - [自定义工具运行在 Agent Service 进程内，目录查询却在 Nexus] → 工具通过 Nexus 的解析接口拿到绑定，不复制一份员工表进 AgentScope。
 - [`X-User-ID` 不是认证] → 骨架沿用 Agent Service 的占位头，并在部署说明中标明上线前要换成调用方自己的认证。Nexus 页面用浏览器本地生成的 owner id 区分私聊，这不是账号体系。
 - [文档站与 2.0.10 源码的分页参数不一致] → 客户端使用源码中的 `before` / `limit`，不发送已被忽略的 `offset`。
+- [官方 `get_toolkit` 仍会挂上 Team* 工具] → Nexus 不注册、也不在员工档案里提供这些名称。禁用员工通过目录解析和发送接口拦住新的运行，不依赖从 AgentScope 里拆掉团队工具。
 
 ## Migration Plan
 
@@ -77,4 +78,4 @@ Session 要能产生文本增量，创建时必须带 `chat_model_config`。这�
 ## Open Questions
 
 - 生产环境的登录主体何时替换 `X-User-ID` 与浏览器 owner id。
-- 知识库文档上传和 Skill 安装放到员工保存流程的哪一步。本阶段只读取技能库并保存员工选中的标识。
+- 知识库文档上传和 Skill 安装放到员工保存流程的哪一步。员工保存只记录目录中选中的标识。当前启动脚本没有传入 `knowledge_base_manager`，也没有注册 SkillHub，所以知识库目录不可用，技能也不能从库安装进 workspace。

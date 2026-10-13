@@ -7,6 +7,9 @@ from typing import Any
 import httpx
 
 PINNED_VERSION = "2.0.10"
+# Linux 上 LocalWorkspace.list_tools 的名称，加上本仓库启动脚本注册的 contact_employee。
+# AgentScope 的 get_toolkit 还会自行挂上任务和团队工具，那些不在这份可选目录里。
+LAUNCHER_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee")
 
 
 class AgentScopeError(Exception):
@@ -131,15 +134,34 @@ class AgentScopeClient:
         payload = response.json()
         if not isinstance(payload, list):
             raise AgentScopeError("AgentScope 技能库返回的不是列表")
+        return _named_items(payload, "id", "skill_id", "name")
+
+    async def list_knowledge_bases(self) -> list[dict[str, str]]:
         items: list[dict[str, str]] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            skill_id = str(item.get("id") or item.get("skill_id") or item.get("name") or "")
-            name = str(item.get("name") or skill_id)
-            if skill_id:
-                items.append({"id": skill_id, "name": name})
+        page = 1
+        while page <= 20:
+            response = await self.request(
+                "GET",
+                "/knowledge_bases/",
+                params={"page": page, "page_size": 128},
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise AgentScopeError("AgentScope 知识库返回的不是对象")
+            rows = payload.get("knowledge_bases")
+            if not isinstance(rows, list):
+                raise AgentScopeError("AgentScope 知识库返回的不是列表")
+            items.extend(_named_items(rows, "id"))
+            total = payload.get("total")
+            if not isinstance(total, int) or page * 128 >= total or not rows:
+                break
+            page += 1
         return items
+
+    async def list_launcher_tools(self) -> list[dict[str, str]]:
+        if not await self.probe():
+            raise AgentScopeError("AgentScope 未连接")
+        return [{"id": name, "name": name} for name in LAUNCHER_TOOLS]
 
     def stream_session(self, agent_id: str, session_id: str, after: str | None = None) -> Any:
         client = self._client()
@@ -153,3 +175,19 @@ class AgentScopeClient:
             headers=self._headers(),
             timeout=None,
         )
+
+
+def _named_items(rows: list[Any], *keys: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        item_id = ""
+        for key in keys:
+            if item.get(key):
+                item_id = str(item[key])
+                break
+        if not item_id:
+            continue
+        items.append({"id": item_id, "name": str(item.get("name") or item_id)})
+    return items

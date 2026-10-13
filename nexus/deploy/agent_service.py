@@ -97,7 +97,14 @@ async def deliver_peer_hint(
             params={"session_id": session_id, "name": employee_name},
         )
     if response.status_code == 404:
-        return f"没有找到可联系的员工：{employee_name}"
+        detail = ""
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+            detail = payload["detail"]
+        return detail or f"没有找到可联系的员工：{employee_name}"
     response.raise_for_status()
     peer = response.json()
     hint = hint_block(hint=message, source=peer.get("sender_name") or agent_id)

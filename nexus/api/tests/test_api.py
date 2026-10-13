@@ -33,9 +33,9 @@ def employee_body(**overrides):
         "instructions": "能直接回答的问题直接回答；需要同事时联系对方。",
         "avatar": "👩🏻‍💻",
         "enabled": True,
-        "knowledge": ["自动化框架 Wiki"],
+        "knowledge": [],
         "skills": [],
-        "tools": ["contact_employee"],
+        "tools": [],
     }
     payload.update(overrides)
     return payload
@@ -172,6 +172,138 @@ def test_channel_requires_a_member_and_does_not_script_peer_replies(client):
 def test_new_skills_are_rejected_when_catalog_is_unavailable(client):
     response = client.post("/api/v1/employees", json=employee_body(skills=["not-a-real-skill"]))
     assert response.status_code == 422
+    assert "技能" in response.json()["detail"]
+
+
+def test_new_knowledge_and_tools_are_rejected_when_catalog_is_unavailable(client):
+    assert client.get("/api/v1/knowledge").json() == {"available": False, "items": []}
+    assert client.get("/api/v1/tools").json() == {"available": False, "items": []}
+    knowledge = client.post("/api/v1/employees", json=employee_body(knowledge=["自动化框架 Wiki"]))
+    assert knowledge.status_code == 422
+    assert "知识库" in knowledge.json()["detail"]
+    tools = client.post("/api/v1/employees", json=employee_body(tools=["query_task"]))
+    assert tools.status_code == 422
+    assert "工具" in tools.json()["detail"]
+    known_name = client.post("/api/v1/employees", json=employee_body(tools=["contact_employee"]))
+    assert known_name.status_code == 422
+
+
+def test_connected_catalog_accepts_only_returned_resources(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    application = create_app()
+    chat_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"version": "2.0.10"})
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.method == "PATCH" and request.url.path.startswith("/agent/"):
+            return httpx.Response(200, json={})
+        if request.method == "DELETE" and request.url.path.startswith("/agent/"):
+            return httpx.Response(204)
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['name']}"})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[{"id": "failure-analysis", "name": "失败分析"}])
+        if request.url.path == "/knowledge_bases/":
+            return httpx.Response(
+                200,
+                json={
+                    "knowledge_bases": [{"id": "kb-1", "name": "自动化框架"}],
+                    "total": 1,
+                    "page": 1,
+                    "page_size": 128,
+                },
+            )
+        if request.url.path == "/chat/":
+            body = json.loads(request.content.decode())
+            chat_calls.append(body["agent_id"])
+            return httpx.Response(200, json={"status": "started", "session_id": "session-chat"})
+        return httpx.Response(404, json={"detail": "missing"})
+
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        tools = test_client.get("/api/v1/tools").json()
+        assert tools["available"] is True
+        tool_ids = {item["id"] for item in tools["items"]}
+        assert {"Bash", "contact_employee"} <= tool_ids
+        assert "query_task" not in tool_ids
+        assert "TeamSay" not in tool_ids
+        knowledge = test_client.get("/api/v1/knowledge").json()
+        assert knowledge == {"available": True, "items": [{"id": "kb-1", "name": "自动化框架"}]}
+
+        rejected_knowledge = test_client.post(
+            "/api/v1/employees",
+            json=employee_body(knowledge=["自动化框架 Wiki"]),
+        )
+        assert rejected_knowledge.status_code == 422
+        rejected_tool = test_client.post("/api/v1/employees", json=employee_body(tools=["query_task"]))
+        assert rejected_tool.status_code == 422
+
+        created = test_client.post(
+            "/api/v1/employees",
+            json=employee_body(
+                knowledge=["kb-1"],
+                skills=["failure-analysis"],
+                tools=["contact_employee"],
+            ),
+        )
+        assert created.status_code == 201, created.text
+        employee = created.json()["employee"]
+        assert employee["knowledge"] == ["kb-1"]
+        assert employee["skills"] == ["failure-analysis"]
+        assert employee["tools"] == ["contact_employee"]
+        assert employee["agentscope_agent_id"] == "agent-星河"
+        assert created.json()["agentscope"]["ok"] is True
+
+        headers = {"X-Owner-Id": "browser-a"}
+        conversation = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=headers,
+            json={},
+        ).json()
+        disabled = test_client.patch(
+            f"/api/v1/employees/{employee['id']}",
+            json=employee_body(
+                enabled=False,
+                knowledge=["kb-1"],
+                skills=["failure-analysis"],
+                tools=["contact_employee"],
+            ),
+        )
+        assert disabled.json()["employee"]["enabled"] is False
+        refused = test_client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            headers=headers,
+            json={"text": "禁用后不要运行"},
+        )
+        assert refused.status_code == 409
+        assert chat_calls == []
+        enabled = test_client.patch(
+            f"/api/v1/employees/{employee['id']}",
+            json=employee_body(
+                enabled=True,
+                knowledge=["kb-1"],
+                skills=["failure-analysis"],
+                tools=["contact_employee"],
+            ),
+        )
+        assert enabled.json()["employee"]["enabled"] is True
+        accepted = test_client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            headers=headers,
+            json={"text": "重新启用后再运行"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["agentscope"]["accepted"] is True
+        assert chat_calls == ["agent-星河"]
 
 
 def test_live_client_posts_chat_without_writing_a_reply(tmp_path, monkeypatch):
@@ -339,6 +471,30 @@ def test_peer_resolver_returns_mailbox_without_a_scripted_answer(tmp_path, monke
         assert resolved.json()["agent_id"] == zhi["agentscope_agent_id"]
         assert resolved.json()["session_id"] == zhi["mailbox_session_id"]
         assert resolved.json()["sender_name"] == "星河"
+        disabled = test_client.patch(
+            f"/api/v1/employees/{zhi['id']}",
+            json=employee_body(name="知微", domain="防线运营人员", enabled=False),
+        )
+        assert disabled.status_code == 200
+        assert disabled.json()["employee"]["enabled"] is False
+        blocked = test_client.get(
+            "/api/v1/peers/resolve",
+            params={"session_id": "session-private", "name": "知微"},
+        )
+        assert blocked.status_code == 404
+        assert "禁用" in blocked.json()["detail"]
+        headers = {"X-Owner-Id": "browser-a"}
+        peer_conversation = test_client.post(
+            f"/api/v1/employees/{zhi['id']}/conversations",
+            headers=headers,
+            json={"name": "新对话"},
+        ).json()
+        refused = test_client.post(
+            f"/api/v1/conversations/{peer_conversation['id']}/messages",
+            headers=headers,
+            json={"text": "禁用后不应开始运行"},
+        )
+        assert refused.status_code == 409
 
 
 async def _accept(*_args, **_kwargs):

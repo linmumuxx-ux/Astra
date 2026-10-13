@@ -245,17 +245,213 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
         )
 
 
-def _body(name: str, domain: str, description: str, instructions: str) -> dict:
+def test_employee_management_against_live_agentscope():
+    """创建、修改、禁用、启用、删除都打到正在运行的 Agent Service。"""
+    suffix = uuid.uuid4().hex[:6]
+    name = f"册{suffix}"
+    domain = f"目录{suffix}"
+    created_ids: list[str] = []
+    with httpx.Client(timeout=_timeout(30)) as client:
+        try:
+            runtime = client.get(f"{NEXUS}/api/v1/runtime")
+            assert runtime.status_code == 200, runtime.text
+            assert runtime.json()["reachable"] is True
+
+            knowledge = client.get(f"{NEXUS}/api/v1/knowledge")
+            assert knowledge.status_code == 200, knowledge.text
+            knowledge_payload = knowledge.json()
+            invented_knowledge = f"不是知识库-{suffix}"
+            if knowledge_payload["available"]:
+                known_ids = {item["id"] for item in knowledge_payload["items"]}
+                assert invented_knowledge not in known_ids
+            else:
+                assert knowledge_payload["items"] == []
+            rejected_knowledge = client.post(
+                f"{NEXUS}/api/v1/employees",
+                json=_body(name, domain, "职责", "指令", knowledge=[invented_knowledge]),
+            )
+            assert rejected_knowledge.status_code == 422, rejected_knowledge.text
+
+            tools = client.get(f"{NEXUS}/api/v1/tools")
+            assert tools.status_code == 200, tools.text
+            tool_payload = tools.json()
+            assert tool_payload["available"] is True, tool_payload
+            tool_ids = {item["id"] for item in tool_payload["items"]}
+            assert "contact_employee" in tool_ids
+            assert "Bash" in tool_ids
+            assert "query_task" not in tool_ids
+            rejected_tool = client.post(
+                f"{NEXUS}/api/v1/employees",
+                json=_body(f"具{suffix}", f"工具{suffix}", "职责", "指令", tools=["query_task"]),
+            )
+            assert rejected_tool.status_code == 422, rejected_tool.text
+
+            skills = client.get(f"{NEXUS}/api/v1/skills")
+            assert skills.status_code == 200, skills.text
+            rejected_skill = client.post(
+                f"{NEXUS}/api/v1/employees",
+                json=_body(f"技{suffix}", f"技能{suffix}", "职责", "指令", skills=["not-a-real-skill"]),
+            )
+            assert rejected_skill.status_code == 422, rejected_skill.text
+
+            created = _create_employee(client, name, domain, "按档案回答，不要编造同事发言。")
+            employee = created["employee"]
+            created_ids.append(employee["id"])
+            assert created["agentscope"]["ok"] is True, created
+            agent_id = employee["agentscope_agent_id"]
+            assert agent_id
+            listed = client.get(f"{NEXUS}/api/v1/employees", params={"q": name})
+            assert listed.status_code == 200, listed.text
+            assert [item["id"] for item in listed.json()["items"]] == [employee["id"]]
+
+            agents = client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS)
+            assert agents.status_code == 200, agents.text
+            stored = next(item for item in agents.json()["agents"] if item["id"] == agent_id)
+            assert stored["data"]["name"] == name
+
+            renamed_domain = f"目录改{suffix}"
+            edited = client.patch(
+                f"{NEXUS}/api/v1/employees/{employee['id']}",
+                json=_body(
+                    name,
+                    renamed_domain,
+                    "改过的职责说明",
+                    "改过的工作指令",
+                    tools=["contact_employee"],
+                ),
+            )
+            assert edited.status_code == 200, edited.text
+            assert edited.json()["agentscope"]["ok"] is True, edited.text
+            assert edited.json()["employee"]["tools"] == ["contact_employee"]
+            agents = client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS).json()["agents"]
+            stored = next(item for item in agents if item["id"] == agent_id)
+            assert "改过的职责说明" in stored["data"]["system_prompt"]
+            assert "改过的工作指令" in stored["data"]["system_prompt"]
+
+            duplicate = client.post(
+                f"{NEXUS}/api/v1/employees",
+                json=_body(name, f"另一领域{suffix}", "职责", "指令"),
+            )
+            assert duplicate.status_code == 409, duplicate.text
+
+            disabled = client.patch(
+                f"{NEXUS}/api/v1/employees/{employee['id']}",
+                json=_body(
+                    name,
+                    renamed_domain,
+                    "改过的职责说明",
+                    "改过的工作指令",
+                    enabled=False,
+                    tools=["contact_employee"],
+                ),
+            )
+            assert disabled.status_code == 200, disabled.text
+            assert disabled.json()["employee"]["enabled"] is False
+            conversation = _conversation(client, employee["id"])
+            refused = client.post(
+                f"{NEXUS}/api/v1/conversations/{conversation['id']}/messages",
+                headers=OWNER,
+                json={"text": "禁用后不要开始运行", "attachment_ids": []},
+            )
+            assert refused.status_code == 409, refused.text
+
+            enabled = client.patch(
+                f"{NEXUS}/api/v1/employees/{employee['id']}",
+                json=_body(
+                    name,
+                    renamed_domain,
+                    "改过的职责说明",
+                    "改过的工作指令",
+                    enabled=True,
+                    tools=["contact_employee"],
+                ),
+            )
+            assert enabled.status_code == 200, enabled.text
+            assert enabled.json()["employee"]["enabled"] is True
+            accepted = client.post(
+                f"{NEXUS}/api/v1/conversations/{conversation['id']}/messages",
+                headers=OWNER,
+                json={"text": "重新启用后请只回复一个字：在。不要调用工具。", "attachment_ids": []},
+            )
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["agentscope"]["accepted"] is True, accepted.text
+
+            peer = _create_employee(client, f"伴{suffix}", f"同伴{suffix}", "不要主动发言。")
+            peer_employee = peer["employee"]
+            created_ids.append(peer_employee["id"])
+            session_id = accepted.json()["agentscope"]["session_id"]
+            reachable = client.get(
+                f"{NEXUS}/api/v1/peers/resolve",
+                params={"session_id": session_id, "name": peer_employee["name"]},
+            )
+            assert reachable.status_code == 200, reachable.text
+            assert reachable.json()["agent_id"] == peer_employee["agentscope_agent_id"]
+            client.patch(
+                f"{NEXUS}/api/v1/employees/{peer_employee['id']}",
+                json=_body(
+                    peer_employee["name"],
+                    peer_employee["domain"],
+                    peer_employee["description"],
+                    peer_employee["instructions"],
+                    enabled=False,
+                ),
+            )
+            blocked = client.get(
+                f"{NEXUS}/api/v1/peers/resolve",
+                params={"session_id": session_id, "name": peer_employee["name"]},
+            )
+            assert blocked.status_code == 404, blocked.text
+            assert "禁用" in blocked.json()["detail"]
+
+            deleted = client.delete(f"{NEXUS}/api/v1/employees/{employee['id']}")
+            assert deleted.status_code == 200, deleted.text
+            created_ids.remove(employee["id"])
+            remaining = {
+                item["id"]
+                for item in client.get(f"{AGENTSCOPE}/agent/", headers=AGENT_HEADERS).json()["agents"]
+            }
+            assert agent_id not in remaining
+            gone = client.get(f"{NEXUS}/api/v1/employees", params={"q": name}).json()["items"]
+            assert gone == []
+            print(
+                json.dumps(
+                    {
+                        "agent_id": agent_id,
+                        "knowledge_available": knowledge_payload["available"],
+                        "tools": sorted(tool_ids),
+                        "disabled_status": refused.status_code,
+                        "enabled_accepted": True,
+                        "deleted": agent_id not in remaining,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        finally:
+            for employee_id in created_ids:
+                client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")
+
+
+def _body(
+    name: str,
+    domain: str,
+    description: str,
+    instructions: str,
+    *,
+    enabled: bool = True,
+    knowledge: list[str] | None = None,
+    skills: list[str] | None = None,
+    tools: list[str] | None = None,
+) -> dict:
     return {
         "name": name,
         "domain": domain,
         "description": description,
         "instructions": instructions,
         "avatar": "🌟",
-        "enabled": True,
-        "knowledge": [],
-        "skills": [],
-        "tools": [],
+        "enabled": enabled,
+        "knowledge": knowledge or [],
+        "skills": skills or [],
+        "tools": tools or [],
     }
 
 

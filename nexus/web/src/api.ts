@@ -5,8 +5,8 @@ import type {
   ChatMessage,
   Conversation,
   Employee,
+  ResourceCatalog,
   RuntimeStatus,
-  SkillItem,
 } from "./types";
 
 const OWNER_KEY = "nexus_owner_id";
@@ -45,8 +45,16 @@ export async function getRuntime(): Promise<RuntimeStatus> {
   return read(await fetch("/api/v1/runtime"));
 }
 
-export async function getSkills(): Promise<{ available: boolean; items: SkillItem[] }> {
+export async function getSkills(): Promise<ResourceCatalog> {
   return read(await fetch("/api/v1/skills"));
+}
+
+export async function getKnowledge(): Promise<ResourceCatalog> {
+  return read(await fetch("/api/v1/knowledge"));
+}
+
+export async function getTools(): Promise<ResourceCatalog> {
+  return read(await fetch("/api/v1/tools"));
 }
 
 export async function listEmployees(query = ""): Promise<Employee[]> {

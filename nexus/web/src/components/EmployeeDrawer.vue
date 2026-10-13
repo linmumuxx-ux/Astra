@@ -22,25 +22,46 @@
         <el-input v-model="form.instructions" type="textarea" :rows="5" />
       </el-form-item>
       <div class="form-cap">知识与工具</div>
-      <el-form-item label="知识（每行一个知识库标识）">
-        <el-input v-model="knowledgeText" type="textarea" :rows="3" placeholder="自动化框架 Wiki" />
+      <el-form-item label="知识">
+        <el-select
+          v-model="form.knowledge"
+          multiple
+          filterable
+          :placeholder="catalogs.knowledge.available ? '选择知识库' : '当前无法读取知识库'"
+          style="width: 100%"
+          :disabled="!catalogs.knowledge.available"
+        >
+          <el-option v-for="item in knowledgeOptions" :key="item.id" :label="`${item.name} · ${item.id}`" :value="item.id" />
+        </el-select>
+        <div class="muted" style="margin-top: 6px">知识库来自 AgentScope。读不到目录时不能新增。</div>
       </el-form-item>
       <el-form-item label="技能">
         <el-select
           v-model="form.skills"
           multiple
           filterable
-          :placeholder="catalog.available ? '选择技能' : '当前无法读取技能'"
+          :placeholder="catalogs.skills.available ? '选择技能' : '当前无法读取技能'"
           style="width: 100%"
-          :disabled="!catalog.available"
+          :disabled="!catalogs.skills.available"
         >
           <el-option v-for="item in skillOptions" :key="item.id" :label="`${item.name} · ${item.id}`" :value="item.id" />
         </el-select>
         <div class="muted" style="margin-top: 6px">技能来自 AgentScope 技能库，这里不能编写技能正文。</div>
       </el-form-item>
-      <el-form-item label="工具（每行一个名称）">
-        <el-input v-model="toolsText" type="textarea" :rows="2" placeholder="contact_employee" />
-        <div class="muted" style="margin-top: 6px">contact_employee 由 Agent Service 注册。这些名称不会在 Nexus 里执行。</div>
+      <el-form-item label="工具">
+        <el-select
+          v-model="form.tools"
+          multiple
+          filterable
+          :placeholder="catalogs.tools.available ? '选择工具' : '当前无法确认工具'"
+          style="width: 100%"
+          :disabled="!catalogs.tools.available"
+        >
+          <el-option v-for="item in toolOptions" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
+        <div class="muted" style="margin-top: 6px">
+          可选范围是工作区自带工具和 contact_employee。不能填写目录外的名称。
+        </div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -56,13 +77,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
-import type { Employee, SkillItem } from "../types";
+import { computed, reactive, watch } from "vue";
+import type { Employee, ResourceCatalog } from "../types";
 
 const props = defineProps<{
   open: boolean;
   employee: Employee | null;
-  catalog: { available: boolean; items: SkillItem[] };
+  catalogs: {
+    skills: ResourceCatalog;
+    knowledge: ResourceCatalog;
+    tools: ResourceCatalog;
+  };
 }>();
 const emit = defineEmits<{
   close: [];
@@ -70,26 +95,22 @@ const emit = defineEmits<{
 }>();
 
 const avatars = ["👩🏻‍💻", "🧑🏻‍🔬", "👩🏽‍🚀", "🤖", "🧑🏽‍💻"];
+const defaultInstructions = "收到消息后先判断能否直接回答；信息不足时追问；需要其他员工帮助时联系相应员工。";
 const form = reactive({
   name: "",
   domain: "",
   description: "",
-  instructions: "收到消息后先判断能否直接回答；信息不足时追问；需要其他员工帮助时联系相应员工。",
+  instructions: defaultInstructions,
   avatar: "👩🏻‍💻",
   enabled: true,
   knowledge: [] as string[],
   skills: [] as string[],
-  tools: ["contact_employee"],
+  tools: [] as string[],
 });
-const knowledgeText = ref("");
-const toolsText = ref("contact_employee");
-const skillOptions = computed(() => {
-  const options = new Map(props.catalog.items.map((item) => [item.id, item]));
-  for (const id of form.skills) {
-    if (!options.has(id)) options.set(id, { id, name: id });
-  }
-  return [...options.values()];
-});
+
+const skillOptions = computed(() => optionsFor(props.catalogs.skills, form.skills));
+const knowledgeOptions = computed(() => optionsFor(props.catalogs.knowledge, form.knowledge));
+const toolOptions = computed(() => optionsFor(props.catalogs.tools, form.tools));
 
 watch(
   () => [props.open, props.employee] as const,
@@ -98,18 +119,28 @@ watch(
     form.name = employee?.name ?? "";
     form.domain = employee?.domain ?? "";
     form.description = employee?.description ?? "";
-    form.instructions = employee?.instructions ?? "收到消息后先判断能否直接回答；信息不足时追问；需要其他员工帮助时联系相应员工。";
+    form.instructions = employee?.instructions ?? defaultInstructions;
     form.avatar = employee?.avatar ?? "👩🏻‍💻";
     form.enabled = employee?.enabled ?? true;
+    form.knowledge = [...(employee?.knowledge ?? [])];
     form.skills = [...(employee?.skills ?? [])];
-    knowledgeText.value = (employee?.knowledge ?? []).join("\n");
-    toolsText.value = (employee?.tools ?? ["contact_employee"]).join("\n");
+    form.tools = [...(employee?.tools ?? defaultTools())];
   },
   { immediate: true },
 );
 
-function split(value: string): string[] {
-  return value.split(/\n|,|，/).map((item) => item.trim()).filter(Boolean);
+function optionsFor(catalog: ResourceCatalog, selected: string[]) {
+  const options = new Map(catalog.items.map((item) => [item.id, item]));
+  for (const id of selected) {
+    if (!options.has(id)) options.set(id, { id, name: id });
+  }
+  return [...options.values()];
+}
+
+function defaultTools(): string[] {
+  if (!props.catalogs.tools.available) return [];
+  const known = props.catalogs.tools.items.some((item) => item.id === "contact_employee");
+  return known ? ["contact_employee"] : [];
 }
 
 function submit() {
@@ -120,9 +151,9 @@ function submit() {
     instructions: form.instructions.trim(),
     avatar: form.avatar,
     enabled: form.enabled,
-    knowledge: split(knowledgeText.value),
+    knowledge: [...form.knowledge],
     skills: [...form.skills],
-    tools: split(toolsText.value),
+    tools: [...form.tools],
   });
 }
 </script>
