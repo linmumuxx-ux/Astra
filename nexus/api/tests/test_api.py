@@ -884,12 +884,42 @@ def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path,
         assert "已解析" not in json.dumps(restored, ensure_ascii=False)
 
 
+def test_peer_toolkit_drops_team_and_task_tools_but_keeps_contact():
+    import asyncio
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "nexus_agent_service_tools",
+        ROOT / "nexus/deploy/agent_service.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Toolkit:
+        def __init__(self) -> None:
+            self.removed: list[str] = []
+
+        async def remove_tool(self, names: list[str]) -> None:
+            self.removed = list(names)
+
+    async def original(**_kwargs):
+        return Toolkit()
+
+    toolkit = asyncio.run(module.without_team_and_task_tools(original)())
+    assert "TeamCreate" in toolkit.removed
+    assert "TaskGet" in toolkit.removed
+    assert "contact_employee" not in toolkit.removed
+
+
 def test_launcher_parses_and_does_not_import_agentscope():
     source = (ROOT / "nexus/deploy/agent_service.py").read_text(encoding="utf-8")
     ast.parse(source)
     assert "import agentscope" not in source.split("def main")[0]
     assert "deliver_to_inbox" in source
     assert "IsolationPolicy.PER_SESSION" in source
-    assert "TeamSay" not in source
+    assert "without_team_and_task_tools" in source
+    assert "TeamCreate(" not in source
+    assert "TaskGet(" not in source
     version = (ROOT / "nexus/deploy/agentscope.version").read_text(encoding="utf-8").strip()
     assert version == "agentscope==2.0.10"

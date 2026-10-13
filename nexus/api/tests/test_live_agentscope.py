@@ -781,9 +781,19 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
                     ensure_ascii=False,
                 )
             )
+            ops_tool_list = tool_names(collected[ops["id"]])
             assert not errors, errors
             assert log_seen
+            assert "contact_employee" in ops_tool_list, ops_tool_list
+            for hidden in ("TeamCreate", "TeamSay", "TaskCreate", "TaskGet", "TaskList", "AgentCreate"):
+                assert hidden not in ops_tool_list, ops_tool_list
             assert any(item.get("type") == "TEXT_BLOCK_DELTA" for item in collected[ops["id"]])
+            if eng["id"] in seen_sessions:
+                eng_member = next(
+                    item for item in transcript["members"] if item["employee_id"] == eng["id"]
+                )
+                assert eng_member["agentscope_session_id"]
+                assert eng_member["agentscope_session_id"] != eng["mailbox_session_id"]
         finally:
             for employee_id in created_ids:
                 client.delete(f"{NEXUS}/api/v1/employees/{employee_id}")

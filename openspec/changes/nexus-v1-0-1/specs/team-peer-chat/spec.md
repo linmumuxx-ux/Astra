@@ -32,7 +32,13 @@
 
 ### Requirement: Peer contact is a real tool call between equal agents
 
-员工需要联系另一位员工时，MUST 由发送方 Agent 调用 `contact_employee` 完成。该工具 SHALL 把一条提示写入对方 Session 的 inbox，并在对方当前没有运行消费该 inbox 时唤醒对方。对方的发言 MUST 来自对方自己的推理。产品 MUST NOT 使用 Leader 与 Worker 的 Agent Team 来完成这种对等联系。
+员工需要联系另一位员工时，MUST 由发送方 Agent 调用 `contact_employee` 完成。该工具 SHALL 把一条提示写入对方 Session 的 inbox，并在对方当前没有运行消费该 inbox 时唤醒对方。对方的发言 MUST 来自对方自己的推理。产品 MUST NOT 使用 Leader 与 Worker 的 Agent Team 来完成这种对等联系。Nexus 启动的 Agent Service SHALL 在官方工具组装之后卸下任务规划工具和 Agent Team 工具，并保留 `contact_employee`。
+
+#### Scenario: Team and task tools are not offered
+
+- **WHEN** 一位 Nexus 员工开始一次讨论中的运行
+- **THEN** 该运行可以调用 `contact_employee`
+- **THEN** 该运行的工具事件里不出现 `TeamCreate` 或 `TaskGet`
 
 #### Scenario: Tool delivers a hint instead of a scripted answer
 

@@ -7,12 +7,38 @@ from __future__ import annotations
 
 import os
 
+# 官方 get_toolkit 会无条件挂上任务规划和 Agent Team。Nexus 的员工是对等同事，
+# 这些工具会把小模型从 contact_employee 上带走。启动时从组装结果里卸掉，不改安装包。
+HIDDEN_AGENT_TOOLS = (
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskUpdate",
+    "AgentCreate",
+    "AgentInvite",
+    "TeamCreate",
+    "TeamDelete",
+    "TeamSay",
+)
+
+
+def without_team_and_task_tools(get_toolkit):
+    async def assembled(**kwargs):
+        toolkit = await get_toolkit(**kwargs)
+        await toolkit.remove_tool(list(HIDDEN_AGENT_TOOLS))
+        return toolkit
+
+    return assembled
+
 
 def main() -> None:
+    import agentscope.app._service._chat as chat_service
+    import agentscope.app._service._realtime as realtime_service
     import httpx
     import uvicorn
     from agentscope.app import create_app
     from agentscope.app._bus_ops import deliver_to_inbox
+    from agentscope.app._service._toolkit import get_toolkit
     from agentscope.app.message_bus import RedisMessageBus
     from agentscope.app.storage import RedisStorage
     from agentscope.app.workspace_manager import (
@@ -22,6 +48,10 @@ def main() -> None:
     from agentscope.message import HintBlock
     from agentscope.permission import PermissionBehavior, PermissionDecision
     from agentscope.tool import FunctionTool
+
+    peer_toolkit = without_team_and_task_tools(get_toolkit)
+    chat_service.get_toolkit = peer_toolkit
+    realtime_service.get_toolkit = peer_toolkit
 
     host = os.environ.get("AGENTSCOPE_REDIS_HOST", "localhost")
     port = int(os.environ.get("AGENTSCOPE_REDIS_PORT", "6379"))
