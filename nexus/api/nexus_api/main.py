@@ -691,7 +691,9 @@ def create_app() -> FastAPI:
                 mailbox = await client.create_session(agent_id, f"{employee['name']}的邮箱")
             if agent_id and mailbox:
                 await client.set_permission_mode(agent_id, mailbox, UNATTENDED_PERMISSION)
-                await attach_task_capability(client, employee, mailbox)
+                await attach_task_capability(
+                    client, {**employee, "agentscope_agent_id": agent_id}, mailbox
+                )
             return {"ok": True, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": ""}
         except AgentScopeError as exc:
             return {"ok": False, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": exc.detail}
@@ -1142,6 +1144,7 @@ def create_app() -> FastAPI:
                     employee["agentscope_agent_id"],
                     row["agentscope_session_id"],
                     row["name"],
+                    UNATTENDED_PERMISSION,
                 )
                 connection.execute(
                     "UPDATE conversations SET agentscope_session_id = ?, updated_at = ? WHERE id = ?",

@@ -1284,3 +1284,157 @@ def test_channel_timestamps_sort_by_instant_not_local_text():
         ],
     )
     assert [item["id"] for item in ordered] == ["agent", "user"]
+
+
+def load_agent_service(name: str):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, ROOT / "nexus/deploy/agent_service.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_private_chat_uses_dont_ask(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    patches: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH" and request.url.path.startswith("/sessions/"):
+            patches.append((request.url.path, json.loads(request.content.decode())))
+            return httpx.Response(200, json={})
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['name']}"})
+        if request.url.path == "/chat/" and request.method == "POST":
+            return httpx.Response(200, json={"status": "started"})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        employee = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        headers = {"X-Owner-Id": "browser-a"}
+        conversation = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=headers,
+            json={"name": "私聊"},
+        ).json()
+        sent = test_client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            headers=headers,
+            json={"text": "帮我看一下"},
+        )
+        assert sent.status_code == 200, sent.text
+
+    private = [item for item in patches if item[0] == "/sessions/session-私聊"]
+    assert private
+    assert private[0][1]["permission_mode"] == "dont_ask"
+
+
+def test_dont_ask_allows_only_nexus_task_mcp_tools():
+    import asyncio
+
+    module = load_agent_service("nexus_agent_service_task_permission")
+
+    class Behavior:
+        ALLOW = "ALLOW"
+
+    class Decision:
+        def __init__(self, behavior, message) -> None:
+            self.behavior = behavior
+            self.message = message
+
+    class Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def check_permissions(self, *_args, **_kwargs):
+            return "original"
+
+    module.allow_nexus_task_mcp(Tool, Decision, Behavior)
+    allowed = asyncio.run(Tool("mcp__nexus-task__nexus_task_get").check_permissions())
+    other = asyncio.run(Tool("mcp__other__bash").check_permissions())
+    assert allowed.behavior == Behavior.ALLOW
+    assert other == "original"
+
+
+def test_task_hint_body_accepts_json_at_module_level():
+    import __future__
+
+    module = load_agent_service("nexus_agent_service_hint_model")
+    tree = ast.parse((ROOT / "nexus/deploy/agent_service.py").read_text(encoding="utf-8"))
+    assert any(isinstance(node, ast.ClassDef) and node.name == "TaskHintBody" for node in tree.body)
+
+    from fastapi import FastAPI
+
+    probe = FastAPI()
+    code = compile(
+        "def register(app):\n"
+        "    @app.post('/nexus/task-hint')\n"
+        "    async def task_hint(body: TaskHintBody) -> dict:\n"
+        "        return {'session_id': body.session_id, 'agent_id': body.agent_id}\n",
+        "<task-hint-probe>",
+        "exec",
+        flags=__future__.annotations.compiler_flag,
+    )
+    namespace = dict(module.__dict__)
+    exec(code, namespace)
+    namespace["register"](probe)
+    with TestClient(probe) as test_client:
+        missing = test_client.post("/nexus/task-hint", json={})
+        posted = test_client.post(
+            "/nexus/task-hint",
+            json={"session_id": "ses_1", "agent_id": "agt_1", "hint": "请查询"},
+        )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["session_id"] == "ses_1"
+    locations = [tuple(item["loc"]) for item in missing.json()["detail"]]
+    assert ("query", "body") not in locations
+    assert any(item[0] == "body" for item in locations)
+
+
+def test_new_employee_attaches_task_capability_with_the_new_agent_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    attached: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['agent_id']}"})
+        if request.method == "PATCH" and request.url.path.startswith("/sessions/"):
+            return httpx.Response(200, json={})
+        if request.url.path in {"/workspace/skill/upload", "/workspace/mcp"}:
+            attached.append((request.url.path, request.url.params.get("agent_id")))
+            return httpx.Response(200, json={})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        created = test_client.post("/api/v1/employees", json=employee_body(skills=["task-management"]))
+        assert created.status_code == 201, created.text
+        employee = created.json()["employee"]
+
+    assert employee["agentscope_agent_id"] == "agent-星河"
+    assert ("/workspace/skill/upload", "agent-星河") in attached
+    assert ("/workspace/mcp", "agent-星河") in attached

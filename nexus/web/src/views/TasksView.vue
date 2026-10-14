@@ -4,6 +4,17 @@
       <h1 class="h-title">数字任务</h1>
       <el-button type="primary" @click="open = true">人工创建</el-button>
     </div>
+    <div v-if="selected" class="panel detail" style="padding: 16px; margin-bottom: 12px">
+      <div class="title-row">
+        <h2 class="h-title">{{ selected.id }}</h2>
+        <span class="tag">{{ selected.runtime_status_label || selected.status }}</span>
+      </div>
+      <p style="margin: 0 0 8px">{{ selected.title }}</p>
+      <p class="muted" style="margin: 0">
+        Worker {{ selected.worker_id || "未分配" }} · 责任员工 {{ selected.responsible_employee_id || "未指定" }}
+      </p>
+      <p style="margin: 8px 0 0">{{ selected.current_progress }}</p>
+    </div>
     <div class="panel" style="padding: 16px">
       <TaskTable :tasks="tasks" actions @action="run" />
     </div>
@@ -32,15 +43,33 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import TaskTable from "../components/TaskTable.vue";
-import { createTask, listCategories, listTasks, taskAction, type PlatformTask } from "../platform";
+import { createTask, getTask, listCategories, listTasks, taskAction, type PlatformTask } from "../platform";
 
+const route = useRoute();
 const tasks = ref<PlatformTask[]>([]);
+const selected = ref<PlatformTask | null>(null);
 const categories = ref<Array<{ id: string; name: string; enabled: boolean }>>([]);
 const open = ref(false);
 const form = reactive({ title: "", description: "", task_type: "ISSUE", category_id: "" });
+
+async function showSelected() {
+  const id = typeof route.query.id === "string" ? route.query.id : "";
+  if (!id) {
+    selected.value = null;
+    return;
+  }
+  selected.value = tasks.value.find((item) => item.id === id) ?? null;
+  if (selected.value) return;
+  try {
+    selected.value = await getTask(id);
+  } catch {
+    selected.value = null;
+  }
+}
 
 async function load() {
   try {
@@ -48,6 +77,7 @@ async function load() {
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "任务服务不可用");
   }
+  await showSelected();
 }
 
 async function run(id: string, action: "start" | "pause" | "resume" | "stop") {
@@ -83,5 +113,9 @@ onMounted(async () => {
     categories.value = [];
   }
   await load();
+});
+
+watch(() => route.query.id, () => {
+  void showSelected();
 });
 </script>

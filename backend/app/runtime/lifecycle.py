@@ -994,8 +994,10 @@ class RuntimeService:
             return task_snapshot
         binding = await self._runtime_session(task_snapshot)
         if status == "idle" and not has_pending and not task_snapshot.pending_message_id and binding and (
+            # WAITING here means a pause after the turn already finished; re-reading
+            # the history would project the old SUCCEEDED turn back to RUNNING.
             (binding.status == RuntimeSessionStatus.SUCCEEDED.value
-             and task_snapshot.status == TaskStatus.RUNNING)
+             and task_snapshot.status in {TaskStatus.RUNNING, TaskStatus.WAITING})
             or (binding.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}
                 and task_snapshot.status == TaskStatus.WAITING)
         ):

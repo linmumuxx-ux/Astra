@@ -297,12 +297,15 @@ class TaskTools:
         }
 
     async def _runtime(self, task: Task, call) -> dict[str, Any]:
+        task_id = task.id
         try:
             updated = await call()
         except (RuntimeStateError, InvalidTransition, ValueError) as exc:
             await self.session.rollback()
-            current = await self.session.get(Task, task.id)
-            return self._refuse(current or task, str(exc))
+            current = await self.session.get(Task, task_id)
+            if current is None:
+                return {"ok": False, "error": str(exc), "task_id": task_id}
+            return self._refuse(current, str(exc))
         return self._ok(updated)
 
     async def _optional(self, task_id: str) -> Task | None:

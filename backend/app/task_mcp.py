@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -60,7 +62,7 @@ def build_mcp_server() -> MCPServer:
         priority: str = "MEDIUM",
         worker_id: str | None = None,
         idempotency_key: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """创建工程任务。相同会话和相同内容不会再建第二条。"""
         return await _call(
             "create",
@@ -75,12 +77,12 @@ def build_mcp_server() -> MCPServer:
         )
 
     @server.tool(name="nexus_task_get", structured_output=True)
-    async def nexus_task_get(task_id: str) -> dict:
+    async def nexus_task_get(task_id: str) -> dict[str, Any]:
         """查询任务最新状态。收到状态提示后先调用这个工具。"""
         return await _call("get", task_id=task_id)
 
     @server.tool(name="nexus_task_list", structured_output=True)
-    async def nexus_task_list(status: str | None = None, limit: int = 20) -> dict:
+    async def nexus_task_list(status: str | None = None, limit: int = 20) -> dict[str, Any]:
         """列出当前责任员工的任务。"""
         return await _call("list", status=status, limit=limit)
 
@@ -90,7 +92,7 @@ def build_mcp_server() -> MCPServer:
         title: str | None = None,
         description: str | None = None,
         acceptance_criteria: list[str] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """修改未结束任务的标题、说明或验收标准，不改变状态。"""
         return await _call(
             "update",
@@ -101,57 +103,57 @@ def build_mcp_server() -> MCPServer:
         )
 
     @server.tool(name="nexus_task_assign", structured_output=True)
-    async def nexus_task_assign(task_id: str, worker_id: str) -> dict:
+    async def nexus_task_assign(task_id: str, worker_id: str) -> dict[str, Any]:
         """把待领取任务指定给一个 Agent Worker。"""
         return await _call("assign", task_id=task_id, worker_id=worker_id)
 
     @server.tool(name="nexus_task_start", structured_output=True)
-    async def nexus_task_start(task_id: str) -> dict:
+    async def nexus_task_start(task_id: str) -> dict[str, Any]:
         """开始待领取任务。"""
         return await _call("start", task_id=task_id)
 
     @server.tool(name="nexus_task_pause", structured_output=True)
-    async def nexus_task_pause(task_id: str) -> dict:
+    async def nexus_task_pause(task_id: str) -> dict[str, Any]:
         """暂停执行中的任务，状态变为等待。"""
         return await _call("pause", task_id=task_id)
 
     @server.tool(name="nexus_task_resume", structured_output=True)
-    async def nexus_task_resume(task_id: str) -> dict:
+    async def nexus_task_resume(task_id: str) -> dict[str, Any]:
         """从等待状态恢复任务。"""
         return await _call("resume", task_id=task_id)
 
     @server.tool(name="nexus_task_terminate", structured_output=True)
-    async def nexus_task_terminate(task_id: str) -> dict:
+    async def nexus_task_terminate(task_id: str) -> dict[str, Any]:
         """终止未结束的任务。"""
         return await _call("terminate", task_id=task_id)
 
     @server.tool(name="nexus_task_retry", structured_output=True)
-    async def nexus_task_retry(task_id: str) -> dict:
+    async def nexus_task_retry(task_id: str) -> dict[str, Any]:
         """重试失败或已终止的任务。"""
         return await _call("retry", task_id=task_id)
 
     @server.tool(name="nexus_task_logs", structured_output=True)
-    async def nexus_task_logs(task_id: str) -> dict:
+    async def nexus_task_logs(task_id: str) -> dict[str, Any]:
         """读取任务事件。"""
         return await _call("logs", task_id=task_id)
 
     @server.tool(name="nexus_task_result", structured_output=True)
-    async def nexus_task_result(task_id: str) -> dict:
+    async def nexus_task_result(task_id: str) -> dict[str, Any]:
         """读取任务结果摘要。"""
         return await _call("result", task_id=task_id)
 
     @server.tool(name="nexus_task_intervene", structured_output=True)
-    async def nexus_task_intervene(task_id: str, reason: str) -> dict:
+    async def nexus_task_intervene(task_id: str, reason: str) -> dict[str, Any]:
         """把任务转为等待人工处理，并记下原因。"""
         return await _call("intervene", task_id=task_id, reason=reason)
 
     @server.tool(name="nexus_task_confirm", structured_output=True)
-    async def nexus_task_confirm(task_id: str) -> dict:
+    async def nexus_task_confirm(task_id: str) -> dict[str, Any]:
         """确认任务完成。只对执行中或等待确认的任务有效。"""
         return await _call("confirm", task_id=task_id)
 
     @server.tool(name="nexus_task_summary", structured_output=True)
-    async def nexus_task_summary(task_id: str) -> dict:
+    async def nexus_task_summary(task_id: str) -> dict[str, Any]:
         """只读任务总结和候选经验。不要用它写入知识。"""
         return await _call("summary", task_id=task_id)
 

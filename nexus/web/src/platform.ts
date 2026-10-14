@@ -48,6 +48,10 @@ export async function listTasks(params: Record<string, string> = {}): Promise<Pl
   return read(await fetch(`/api/tasks?${query}`));
 }
 
+export async function getTask(id: string): Promise<PlatformTask> {
+  return read(await fetch(`/api/tasks/${id}`));
+}
+
 export async function createTask(body: Record<string, unknown>): Promise<PlatformTask> {
   return read(await fetch("/api/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
 }

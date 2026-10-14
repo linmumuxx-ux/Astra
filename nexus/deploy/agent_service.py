@@ -7,6 +7,32 @@ from __future__ import annotations
 
 import os
 
+from pydantic import BaseModel
+
+
+class TaskHintBody(BaseModel):
+    """模块级请求体。延迟注解下，FastAPI 解析不到 main() 里的局部类。"""
+
+    session_id: str
+    agent_id: str
+    hint: str
+    user_id: str = "nexus"
+
+
+NEXUS_TASK_MCP_PREFIX = "mcp__nexus-task__"
+
+
+def allow_nexus_task_mcp(mcp_tool_class, decision_class, behavior_class) -> None:
+    original = mcp_tool_class.check_permissions
+
+    async def check_permissions(self, *args, **kwargs):
+        if str(getattr(self, "name", "")).startswith(NEXUS_TASK_MCP_PREFIX):
+            return decision_class(behavior=behavior_class.ALLOW, message="允许数字员工使用任务工具")
+        return await original(self, *args, **kwargs)
+
+    mcp_tool_class.check_permissions = check_permissions
+
+
 # 官方 get_toolkit 会无条件挂上任务规划和 Agent Team。Nexus 的员工是对等同事，
 # 这些工具会把小模型从 contact_employee 上带走。启动时从组装结果里卸掉，不改安装包。
 HIDDEN_AGENT_TOOLS = (
@@ -57,8 +83,9 @@ def main() -> None:
     )
     from agentscope.message import HintBlock
     from agentscope.permission import PermissionBehavior, PermissionDecision
-    from agentscope.tool import FunctionTool
+    from agentscope.tool import FunctionTool, MCPTool
 
+    allow_nexus_task_mcp(MCPTool, PermissionDecision, PermissionBehavior)
     peer_toolkit = without_team_and_task_tools(get_toolkit)
     chat_service.get_toolkit = peer_toolkit
     realtime_service.get_toolkit = peer_toolkit
@@ -117,13 +144,6 @@ def main() -> None:
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
     listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
     from fastapi import HTTPException
-    from pydantic import BaseModel
-
-    class TaskHintBody(BaseModel):
-        session_id: str
-        agent_id: str
-        hint: str
-        user_id: str = "nexus"
 
     @app.post("/nexus/task-hint")
     async def task_hint(body: TaskHintBody) -> dict[str, bool]:

@@ -12,6 +12,14 @@
         <el-table-column label="模型" min-width="180">
           <template #default="{ row }">{{ row.execution_environment?.model_name || "默认 deepseek/deepseek-flash" }}</template>
         </el-table-column>
+        <el-table-column label="当前任务" min-width="200">
+          <template #default="{ row }">
+            <router-link v-if="row.task" class="task-link" :to="{ path: '/tasks', query: { id: row.task.id } }">
+              {{ row.task.id }} · {{ row.task.runtime_status_label || row.task.status }}
+            </router-link>
+            <span v-else class="muted">暂无任务</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
             <el-button link @click="run(row.id, 'deploy')">部署</el-button>
@@ -27,14 +35,29 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { listWorkers, maintainWorker, type PlatformWorker } from "../platform";
+import { listTasks, listWorkers, maintainWorker, type PlatformTask, type PlatformWorker } from "../platform";
 
-const workers = ref<PlatformWorker[]>([]);
+type WorkerRow = PlatformWorker & { task: PlatformTask | null };
+
+const workers = ref<WorkerRow[]>([]);
 const note = ref("");
+
+function currentTask(tasks: PlatformTask[]): PlatformTask | null {
+  return tasks.find((item) => item.status === "RUNNING" || item.status === "WAITING") ?? tasks[0] ?? null;
+}
 
 async function load() {
   try {
-    workers.value = await listWorkers();
+    const rows = await listWorkers();
+    workers.value = await Promise.all(
+      rows.map(async (worker) => {
+        try {
+          return { ...worker, task: currentTask(await listTasks({ employee_id: worker.id })) };
+        } catch {
+          return { ...worker, task: null };
+        }
+      }),
+    );
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "Worker 服务不可用");
   }
@@ -52,3 +75,8 @@ async function run(id: string, action: "deploy" | "restart") {
 
 onMounted(load);
 </script>
+
+<style scoped>
+.task-link { color: var(--green); text-decoration: none; }
+.task-link:hover { text-decoration: underline; }
+</style>
