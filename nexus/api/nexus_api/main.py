@@ -35,6 +35,7 @@ IMAGE_BY_SUFFIX = {
 }
 SENDER_CONTACT_LIMIT = 2
 SCOPE_CONTACT_LIMIT = 6
+UNATTENDED_PERMISSION = "dont_ask"
 
 
 class EmployeeBody(BaseModel):
@@ -64,8 +65,27 @@ class ChannelBody(BaseModel):
     member_ids: list[str] = Field(min_length=1)
 
 
+def package_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
 def data_dir() -> Path:
-    return Path(os.environ.get("NEXUS_DATA_DIR", "nexus/api/data")).resolve()
+    """数据目录不跟着启动时的工作目录走。
+
+    未设置时用 API 包旁边的 data。相对路径按仓库根目录解析，
+    这样从 nexus/api 启动也不会变成 nexus/api/nexus/api/data。
+    """
+    raw = os.environ.get("NEXUS_DATA_DIR", "").strip()
+    if not raw:
+        return package_dir() / "data"
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return (repo_root() / path).resolve()
 
 
 def db_path() -> Path:
@@ -199,6 +219,30 @@ def block_text(content: Any) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def assistant_replies_after(messages: list[Any], needle: str) -> list[str]:
+    """取邮箱里紧跟在某条提示之后的助手正文。不生成新的答复。"""
+    key = needle.strip()
+    if not key:
+        return []
+    found = False
+    replies: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if not found:
+            if key in json.dumps(message, ensure_ascii=False):
+                found = True
+            continue
+        if message.get("role") != "assistant":
+            if replies:
+                break
+            continue
+        text = block_text(message.get("content"))
+        if text:
+            replies.append(text)
+    return replies
+
+
 def assistant_turns(messages: list[Any]) -> list[list[str]]:
     turns: list[list[str]] = []
     current: list[str] | None = None
@@ -321,6 +365,93 @@ def reserve_peer_delivery(
         (new_id("peer"), scope, sender_agent_id, target_agent_id, key, utcnow()),
     )
     connection.commit()
+
+
+def inbound_private_scope(connection, agent_id: str | None) -> str | None:
+    if not agent_id:
+        return None
+    row = connection.execute(
+        """
+        SELECT scope FROM peer_deliveries
+        WHERE target_agent_id = ? AND scope LIKE 'private:%'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (agent_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["scope"])
+
+
+async def hand_off(
+    connection,
+    client: AgentScopeClient,
+    scope: str,
+    sender: dict,
+    target: dict,
+    message: str,
+    session_id: str,
+):
+    reserve_peer_delivery(
+        connection,
+        scope,
+        sender["agentscope_agent_id"],
+        target["agentscope_agent_id"],
+        message,
+    )
+    await client.set_permission_mode(
+        target["agentscope_agent_id"],
+        session_id,
+        UNATTENDED_PERMISSION,
+    )
+    return {
+        "agent_id": target["agentscope_agent_id"],
+        "session_id": session_id,
+        "sender_name": sender["name"],
+    }
+
+
+async def peer_replies_for_conversation(
+    connection,
+    client: AgentScopeClient,
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    """把同事在自己邮箱里写下的正文带回用户正在看的私聊。不由发送方代写。"""
+    rows = connection.execute(
+        "SELECT * FROM peer_deliveries WHERE scope = ? ORDER BY created_at, id",
+        (f"private:{conversation_id}",),
+    ).fetchall()
+    visible: list[dict[str, Any]] = []
+    transcripts: dict[str, list[Any]] = {}
+    for row in rows:
+        employee = connection.execute(
+            "SELECT * FROM employees WHERE agentscope_agent_id = ?",
+            (row["target_agent_id"],),
+        ).fetchone()
+        if employee is None or not employee["mailbox_session_id"]:
+            continue
+        agent_id = row["target_agent_id"]
+        if agent_id not in transcripts:
+            try:
+                transcripts[agent_id] = await client.list_session_messages(
+                    agent_id,
+                    employee["mailbox_session_id"],
+                )
+            except AgentScopeError:
+                transcripts[agent_id] = []
+        for index, text in enumerate(assistant_replies_after(transcripts[agent_id], row["message_key"])):
+            visible.append(
+                {
+                    "id": f"peer_{row['id']}_{index}",
+                    "sender": employee["id"],
+                    "text": text,
+                    "attachments": [],
+                    "accepted": True,
+                    "created_at": row["created_at"],
+                }
+            )
+    return visible
 
 
 def lines(values: list[str]) -> list[str]:
@@ -457,8 +588,10 @@ def create_app() -> FastAPI:
                 agent_id = await client.create_agent(employee["name"], prompt)
             else:
                 raise AgentScopeError("AgentScope 未连接，员工目录已保存，Agent 尚未创建")
-            if not mailbox:
+            if not mailbox and agent_id:
                 mailbox = await client.create_session(agent_id, f"{employee['name']}的邮箱")
+            if agent_id and mailbox:
+                await client.set_permission_mode(agent_id, mailbox, UNATTENDED_PERMISSION)
             return {"ok": True, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": ""}
         except AgentScopeError as exc:
             return {"ok": False, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": exc.detail}
@@ -575,10 +708,12 @@ def create_app() -> FastAPI:
         agent_id: str,
         current: str | None,
         name: str,
+        permission_mode: str | None = None,
     ) -> str:
-        if current:
-            return current
-        return await client.create_session(agent_id, name)
+        session_id = current or await client.create_session(agent_id, name)
+        if permission_mode:
+            await client.set_permission_mode(agent_id, session_id, permission_mode)
+        return session_id
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -828,7 +963,10 @@ def create_app() -> FastAPI:
             "employee_id": row["employee_id"],
             "name": row["name"],
             "agentscope_session_id": row["agentscope_session_id"],
-            "messages": merge_transcript(local, turns, employee["id"]),
+            "messages": interleave_messages(
+                merge_transcript(local, turns, employee["id"]),
+                await peer_replies_for_conversation(connection, client_of(request), conversation_id),
+            ),
             "history_error": history_error,
         }
 
@@ -1088,6 +1226,7 @@ def create_app() -> FastAPI:
                     employee["agentscope_agent_id"],
                     binding["agentscope_session_id"],
                     channel["name"],
+                    UNATTENDED_PERMISSION,
                 )
                 connection.execute(
                     """
@@ -1168,24 +1307,50 @@ def create_app() -> FastAPI:
             )
             if unreachable:
                 raise HTTPException(status_code=404, detail="没有找到可联系的员工")
-            reserve_peer_delivery(
+            return await hand_off(
                 connection,
-                f"private:{sender['id']}",
-                sender["agentscope_agent_id"],
-                target["agentscope_agent_id"],
+                client_of(request),
+                f"private:{private['id']}",
+                sender,
+                target,
                 message,
+                target["mailbox_session_id"],
             )
-            return {
-                "agent_id": target["agentscope_agent_id"],
-                "session_id": target["mailbox_session_id"],
-                "sender_name": sender["name"],
-            }
         member = connection.execute(
             "SELECT * FROM channel_members WHERE agentscope_session_id = ?",
             (session_id,),
         ).fetchone()
         if member is None:
-            raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            mailbox_owner = connection.execute(
+                "SELECT id FROM employees WHERE mailbox_session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if mailbox_owner is None:
+                raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            sender = load_employee(connection, mailbox_owner["id"])
+            target = employee_by_name(connection, target_name)
+            if target is not None and target["id"] != sender["id"] and not target["enabled"]:
+                raise HTTPException(status_code=404, detail="该员工已禁用，不能开始新的运行")
+            unreachable = (
+                target is None
+                or target["id"] == sender["id"]
+                or not target["agentscope_agent_id"]
+                or not target["mailbox_session_id"]
+            )
+            if unreachable:
+                raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            scope = inbound_private_scope(connection, sender["agentscope_agent_id"])
+            if scope is None:
+                scope = f"mailbox:{sender['id']}"
+            return await hand_off(
+                connection,
+                client_of(request),
+                scope,
+                sender,
+                target,
+                message,
+                target["mailbox_session_id"],
+            )
         sender = load_employee(connection, member["employee_id"])
         if not sender["agentscope_agent_id"]:
             raise HTTPException(status_code=404, detail="没有找到可联系的员工")
@@ -1233,18 +1398,15 @@ def create_app() -> FastAPI:
                     (member["channel_id"], employee["id"]),
                 ).fetchone()
                 peer_session = stored["agentscope_session_id"] or peer_session
-            reserve_peer_delivery(
+            return await hand_off(
                 connection,
+                client,
                 member["channel_id"],
-                sender["agentscope_agent_id"],
-                employee["agentscope_agent_id"],
+                sender,
+                employee,
                 message,
+                peer_session,
             )
-            return {
-                "agent_id": employee["agentscope_agent_id"],
-                "session_id": peer_session,
-                "sender_name": sender["name"],
-            }
         raise HTTPException(status_code=404, detail="没有找到可联系的员工")
 
     async def proxy_stream(
@@ -1257,6 +1419,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
 
         async def generate():
+            started = 0
+            pending = b""
             try:
                 async with client.stream_session(agent_id, session_id, after) as response:
                     if response.status_code >= 400:
@@ -1268,7 +1432,16 @@ def create_app() -> FastAPI:
                         yield f"data: {payload}\n\n"
                         return
                     async for chunk in response.aiter_bytes():
-                        yield chunk
+                        pending += chunk
+                        frames, pending = split_sse(pending)
+                        for frame in frames:
+                            yield frame + b"\n\n"
+                            started, terminal, close = observe_stream_event(started, sse_payload(frame))
+                            if terminal is not None:
+                                encoded = json.dumps(terminal, ensure_ascii=False)
+                                yield f"data: {encoded}\n\n".encode()
+                            if close:
+                                return
             except AgentScopeError as exc:
                 payload = json.dumps(
                     {"type": "NEXUS_UPSTREAM_ERROR", "detail": exc.detail},
@@ -1279,6 +1452,53 @@ def create_app() -> FastAPI:
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     return app
+
+
+def split_sse(buffer: bytes) -> tuple[list[bytes], bytes]:
+    parts = buffer.split(b"\n\n")
+    if buffer.endswith(b"\n\n"):
+        return parts[:-1], b""
+    return parts[:-1], parts[-1]
+
+
+def sse_payload(frame: bytes) -> dict[str, Any] | None:
+    for line in frame.decode("utf-8", "replace").split("\n"):
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def observe_stream_event(
+    started: int,
+    payload: dict[str, Any] | None,
+) -> tuple[int, dict[str, Any] | None, bool]:
+    """REPLY_END 是 AgentScope 暴露的一轮结束信号。
+
+    重放日志里可能只剩上一轮的 REPLY_END。只有本连接里见过 REPLY_START 的那一轮结束时，
+    才额外发出 NEXUS_RUN_FINISHED 并关掉这次 SSE。
+    """
+    if not payload:
+        return started, None, False
+    kind = payload.get("type")
+    if kind == "REPLY_START":
+        return started + 1, None, False
+    if kind == "REPLY_END" and started > 0:
+        started -= 1
+        terminal = {
+            "type": "NEXUS_RUN_FINISHED",
+            "reply_id": payload.get("reply_id"),
+            "finished_reason": payload.get("finished_reason"),
+        }
+        return started, terminal, started == 0
+    return started, None, False
 
 
 def stream_cursor(after: str | None) -> str | None:

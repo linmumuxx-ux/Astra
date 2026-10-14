@@ -45,13 +45,13 @@ Agent Team（`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInv
 
 ### 3. 多条对话依赖 PER_SESSION
 
-`POST /sessions` 对同一个 `(user_id, agent_id, workspace_id)` 做 upsert。`LocalWorkspaceManager` 的默认隔离是 `IsolationPolicy.PER_AGENT`，同一员工的多次创建会回到同一条 Session。Nexus 的部署把隔离设为 `IsolationPolicy.PER_SESSION`，让每条私聊、每位员工在每个团队讨论中的上下文都得到独立 Session。Nexus 只保存返回的 `session_id`。
+`POST /sessions` 对同一个 `(user_id, agent_id, workspace_id)` 做 upsert。`LocalWorkspaceManager` 的默认隔离是 `IsolationPolicy.PER_AGENT`，同一员工的多次创建会回到同一条 Session。Nexus 的部署把隔离设为 `IsolationPolicy.PER_SESSION`，让每条私聊、每位员工在每个团队讨论中的上下文都得到独立 Session。Nexus 只保存返回的 `session_id`。这个隔离只是工作目录，不是沙箱。Agent Service 进程持有模型 API 密钥。邮箱和团队 Session 设为 `dont_ask`，私聊保持默认权限。
 
 ### 4. 聊天触发与事件分开
 
 用户消息调用 `POST /chat`，请求体为 `agent_id`、`session_id` 和 `input`（一条 `role="user"` 的 `Msg`）。成功响应是 `{"status":"started","session_id":...}`，不含回复正文。同一进程里该 Session 已有运行中的 turn 时，源码返回 409。
 
-正文来自 `GET /sessions/{session_id}/stream?agent_id=...`，媒体类型 `text/event-stream`。帧格式是 `data: {AgentEvent JSON}\n\n`，空闲时每 30 秒一个 `:\\n\\n` 心跳。可展示的增量是 `TEXT_BLOCK_DELTA` 的 `delta`。身份头使用 Agent Service 当前的 `X-User-ID`。Nexus 在自己的 API 上代理这条流。`after` 只有在符合 Agent Service checkpoint 游标（`数字-数字`）时才转发；事件自己的 `id` 传进去会让 Redis 拒绝并中断连接。页面记下已经见过的事件 `id`，重放时不再把上一轮文本画出来。浏览器不直接持有 Agent Service 地址。
+正文来自 `GET /sessions/{session_id}/stream?agent_id=...`，媒体类型 `text/event-stream`。帧格式是 `data: {AgentEvent JSON}\n\n`，空闲时每 30 秒一个 `:\\n\\n` 心跳。可展示的增量是 `TEXT_BLOCK_DELTA` 的 `delta`。一轮结束的信号是 `REPLY_END`。Nexus 在本连接里见过对应的 `REPLY_START` 后，转发 `REPLY_END`，再写一条 `NEXUS_RUN_FINISHED` 并结束这次 SSE。上一轮留在重放日志里的单独 `REPLY_END` 不会提前关掉连接。身份头使用 Agent Service 当前的 `X-User-ID`。Nexus 在自己的 API 上代理这条流。`after` 只有在符合 Agent Service checkpoint 游标（`数字-数字`）时才转发；事件自己的 `id` 传进去会让 Redis 拒绝并中断连接。页面记下已经见过的事件 `id`，重放时不再把上一轮文本画出来。浏览器不直接持有 Agent Service 地址。
 
 Session 要能产生文本增量，创建时必须带 `chat_model_config`。这项来自部署环境变量 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`，内容是 Agent Service 里已登记的 credential id、provider type 和模型名。`nexus/deploy/bootstrap_chat_model.py` 调用官方 `POST /credential/` 生成它。Nexus 页面仍然没有模型或密钥字段。变量为空时，Session 不带模型，聊天不会被改成模拟回复。
 

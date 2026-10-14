@@ -110,6 +110,20 @@ class AgentScopeClient:
             raise AgentScopeError("AgentScope 创建会话后没有返回 session_id")
         return str(session_id)
 
+    async def set_permission_mode(self, agent_id: str, session_id: str, mode: str) -> None:
+        """把 Session 设成指定权限模式。运行中的 Session 会拒绝修改，调用方可以忽略。"""
+        if not self.configured or not agent_id or not session_id:
+            return
+        try:
+            await self.request(
+                "PATCH",
+                f"/sessions/{session_id}",
+                params={"agent_id": agent_id},
+                json={"permission_mode": mode},
+            )
+        except AgentScopeError:
+            return
+
     async def trigger_chat(
         self,
         agent_id: str,

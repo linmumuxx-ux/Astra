@@ -191,7 +191,9 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
             f"{NEXUS}/api/v1/conversations/{first['id']}",
             headers=OWNER,
         ).json()["messages"]
-        assert [item["sender"] for item in stored_messages] == ["user"]
+        senders = [item["sender"] for item in stored_messages]
+        assert [item for item in senders if item == "user"] == ["user"]
+        assert star_employee["id"] in senders
 
         peer_events: list[dict] = []
         peer_error: list[BaseException] = []
@@ -218,7 +220,6 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
                 "请立刻调用 contact_employee。"
                 f"employee_name 为{peer_name}。"
                 "message 为请只回复数字42。"
-                "不要自己写出42。"
             ),
         )
         assert contact["agentscope"]["accepted"] is True, contact
@@ -241,7 +242,9 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
             f"{NEXUS}/api/v1/conversations/{first['id']}",
             headers=OWNER,
         ).json()["messages"]
-        assert [item["sender"] for item in stored_after] == ["user", "user"]
+        senders_after = [item["sender"] for item in stored_after]
+        assert [item for item in senders_after if item == "user"] == ["user", "user"]
+        assert star_employee["id"] in senders_after
         print(
             json.dumps(
                 {

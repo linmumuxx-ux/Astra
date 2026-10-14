@@ -11,7 +11,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
-from nexus_api.main import create_app, load_chat_model_config, model_input_blocks, stream_cursor
+from nexus_api.main import (
+    assistant_replies_after,
+    create_app,
+    data_dir,
+    load_chat_model_config,
+    model_input_blocks,
+    observe_stream_event,
+    package_dir,
+    repo_root,
+    stream_cursor,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -695,9 +705,11 @@ def test_peer_resolver_returns_mailbox_without_a_scripted_answer(tmp_path, monke
         ).json()["employee"]
         resolved = test_client.get(
             "/api/v1/peers/resolve",
-            params={"session_id": star["mailbox_session_id"], "name": "知微"},
+            params={"session_id": star["mailbox_session_id"], "name": "知微", "message": "先从邮箱联系"},
         )
-        assert resolved.status_code == 404
+        assert resolved.status_code == 200
+        assert resolved.json()["session_id"] == zhi["mailbox_session_id"]
+        assert resolved.json()["sender_name"] == "星河"
         headers = {"X-Owner-Id": "browser-a"}
         conversation = test_client.post(
             f"/api/v1/employees/{star['id']}/conversations",
@@ -925,3 +937,146 @@ def test_launcher_parses_and_does_not_import_agentscope():
     assert "TaskGet(" not in source
     version = (ROOT / "nexus/deploy/agentscope.version").read_text(encoding="utf-8").strip()
     assert version == "agentscope==2.0.10"
+
+
+def test_data_dir_does_not_follow_the_working_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NEXUS_DATA_DIR", raising=False)
+    assert data_dir() == package_dir() / "data"
+    monkeypatch.setenv("NEXUS_DATA_DIR", "nexus/api/data")
+    assert data_dir() == (repo_root() / "nexus/api/data").resolve()
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path / "absolute"))
+    assert data_dir() == tmp_path / "absolute"
+
+
+def test_stream_closes_when_the_started_reply_ends():
+    started = 0
+    events = [
+        {"type": "REPLY_END", "reply_id": "old"},
+        {"type": "REPLY_START", "reply_id": "new"},
+        {"type": "TEXT_BLOCK_DELTA", "delta": "在"},
+        {"type": "REPLY_END", "reply_id": "new", "finished_reason": "completed"},
+        {"type": "TEXT_BLOCK_DELTA", "delta": "不应再出现"},
+    ]
+    closed_at = None
+    terminals = []
+    for index, event in enumerate(events):
+        started, terminal, close = observe_stream_event(started, event)
+        if terminal:
+            terminals.append(terminal)
+        if close:
+            closed_at = index
+            break
+    assert closed_at == 3
+    assert terminals == [
+        {
+            "type": "NEXUS_RUN_FINISHED",
+            "reply_id": "new",
+            "finished_reason": "completed",
+        }
+    ]
+
+
+def test_mailbox_hop_is_scoped_to_the_conversation_and_reply_is_visible(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    patched: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH" and request.url.path.startswith("/sessions/"):
+            patched.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json={})
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['agent_id']}"})
+        if request.url.path == "/sessions/session-agent-知微/messages":
+            return httpx.Response(
+                200,
+                json={
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "方案要点"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "阈值按账号计算"}]},
+                    ],
+                    "has_more": False,
+                },
+            )
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json={"messages": [], "has_more": False})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        star = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        zhi = test_client.post(
+            "/api/v1/employees",
+            json=employee_body(name="知微", domain="防线运营人员"),
+        ).json()["employee"]
+        wang = test_client.post(
+            "/api/v1/employees",
+            json=employee_body(name="王五", domain="测试工程师"),
+        ).json()["employee"]
+        assert patched
+        assert patched[0]["permission_mode"] == "dont_ask"
+        headers = {"X-Owner-Id": "browser-a"}
+        first = test_client.post(
+            f"/api/v1/employees/{star['id']}/conversations",
+            headers=headers,
+            json={"name": "第一条"},
+        ).json()
+        second = test_client.post(
+            f"/api/v1/employees/{star['id']}/conversations",
+            headers=headers,
+            json={"name": "第二条"},
+        ).json()
+        from nexus_api.db import connect
+
+        connection = connect(tmp_path / "nexus.sqlite3")
+        connection.execute(
+            "UPDATE conversations SET agentscope_session_id = ? WHERE id = ?",
+            ("session-private", first["id"]),
+        )
+        connection.execute(
+            "UPDATE conversations SET agentscope_session_id = ? WHERE id = ?",
+            ("session-other", second["id"]),
+        )
+        connection.commit()
+        connection.close()
+
+        def resolve(session_id: str, name: str, message: str):
+            return test_client.get(
+                "/api/v1/peers/resolve",
+                params={"session_id": session_id, "name": name, "message": message},
+            )
+
+        assert resolve("session-private", "知微", "方案要点").status_code == 200
+        assert resolve("session-private", "知微", "再补充一点").status_code == 200
+        blocked = resolve("session-private", "知微", "第三次不该成功")
+        assert blocked.status_code == 409
+        forwarded = resolve(zhi["mailbox_session_id"], "王五", "请看测试要点")
+        assert forwarded.status_code == 200
+        assert forwarded.json()["session_id"] == wang["mailbox_session_id"]
+        assert forwarded.json()["sender_name"] == "知微"
+        back = resolve(wang["mailbox_session_id"], "星河", "测试要点如下")
+        assert back.status_code == 200
+        assert back.json()["session_id"] == star["mailbox_session_id"]
+        again = resolve(star["mailbox_session_id"], "知微", "邮箱里的第三次")
+        assert again.status_code == 409
+        other = resolve("session-other", "知微", "另一条对话还可以联系")
+        assert other.status_code == 200
+
+        stored = test_client.get(f"/api/v1/conversations/{first['id']}", headers=headers).json()
+        peer_lines = [item for item in stored["messages"] if item["sender"] == zhi["id"]]
+        assert [item["text"] for item in peer_lines] == ["阈值按账号计算"]
+        assert assistant_replies_after(
+            [{"role": "user", "content": [{"type": "text", "text": "方案要点"}]}],
+            "方案要点",
+        ) == []

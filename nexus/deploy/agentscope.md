@@ -41,7 +41,8 @@ nexus/deploy/.venv-agentscope/bin/python nexus/deploy/agent_service.py
 脚本会：
 
 - 用 `RedisStorage` 与 `RedisMessageBus` 调用 `agentscope.app.create_app`。
-- 把 `LocalWorkspaceManager` 的隔离设为 `IsolationPolicy.PER_SESSION`。
+- 把 `LocalWorkspaceManager` 的隔离设为 `IsolationPolicy.PER_SESSION`。这只给每个 Session 一个独立工作目录，不是沙箱。Bash 仍可能读到该目录以外的文件。模型 API 密钥放在 Agent Service 的 credential 里，调用模型时由这个进程持有，不要在仓库或页面里再放一份。
+- 私聊 Session 保持默认权限，工作区工具仍可按 AgentScope 的规则使用。邮箱 Session 和团队讨论 Session 在创建或投递前设为 `dont_ask`：没有人能回答的权限询问会被拒绝，运行不会停在 asking。
 - 注册 `contact_employee`，并允许它执行。工具把对方姓名和原文交给 Nexus 解析，再向目标 Session 调用 `deliver_to_inbox`，不生成对方的回复。解析返回 4xx 时，工具把说明交回模型并停止投递。
 - 不注册 Agent Team。官方 `get_toolkit` 仍会把任务规划、`ToolStop`、定时任务和 Agent Team 放进工具组。`agent_service.py` 在 `create_app` 之前替换聊天和实时服务使用的 `get_toolkit`：先调用官方组装，再 `Toolkit.remove_tool` 卸掉 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`、`ToolStop`、`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInvite`、`ScheduleCreate`、`ScheduleDelete`、`ScheduleList`、`ScheduleView`。空的非 basic 工具组也会去掉，避免模型再去激活它们。`contact_employee` 和工作区的 Bash、Read、Write 等仍然保留。没有改 AgentScope 安装包。
 - 不传入 `knowledge_base_manager`。AgentScope 2.0.10 的嵌入模型只来自 OpenAI、Ollama、Gemini、DashScope 凭证，没有 sentence-transformers 适配。DeepSeek 凭证只有聊天模型，不能把 `deepseek-flash` 当成嵌入。本机 Ollama 只有聊天模型 `qwen2.5:3b`。向量库要官方 extra `vdb-milvus`（`pymilvus` / Milvus Lite），当前 Agent Service 环境没有安装。知识库目录保持关闭。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。本地嵌入只做冒烟：另建虚拟环境安装 `requirements-embedding.txt`，运行 `embedding_smoke.py`。技能库为空时也不写入示例技能。

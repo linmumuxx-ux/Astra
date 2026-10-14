@@ -147,6 +147,7 @@ const notice = ref("");
 const liveText = ref("");
 const dropping = ref(false);
 const seenEventIds = new Map<string, Set<string>>();
+let followToken = 0;
 const tab = ref<"responsibility" | "capability" | "memory">("responsibility");
 const fileInput = ref<HTMLInputElement | null>(null);
 const messageBox = ref<HTMLElement | null>(null);
@@ -270,8 +271,20 @@ function stopStream() {
   streamAbort = null;
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reloadConversation(id: string) {
+  const payload = await getConversation(id);
+  if (conversationId.value !== id) return;
+  messages.value = payload.messages;
+  if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+}
+
 async function followStream(id: string) {
   stopStream();
+  const token = ++followToken;
   streamAbort = new AbortController();
   liveText.value = "";
   const seen = seenEventIds.get(id) ?? new Set<string>();
@@ -285,7 +298,10 @@ async function followStream(id: string) {
       if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
         liveText.value += event.delta;
       }
-      if (event.type === "REPLY_END") takeLiveReply();
+      if (event.type === "REPLY_END" || event.type === "NEXUS_RUN_FINISHED") {
+        liveText.value = "";
+        void reloadConversation(id);
+      }
       if (event.type === "NEXUS_UPSTREAM_ERROR") {
         notice.value = String(event.detail ?? "事件流中断");
       }
@@ -294,6 +310,12 @@ async function followStream(id: string) {
     if (!streamAbort?.signal.aborted) {
       notice.value = error instanceof Error ? error.message : "事件流中断";
     }
+  }
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (token !== followToken || conversationId.value !== id) return;
+    await delay(2000);
+    if (token !== followToken || conversationId.value !== id) return;
+    await reloadConversation(id);
   }
 }
 

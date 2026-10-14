@@ -68,5 +68,6 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 - 本机如果只有 `qwen2.5:3b`，它可能改错同事名字，于是下一跳联系失败。这不是 Nexus 代写的回复。
 - 聊天验证目标是 DeepSeek 的 OpenAI 兼容接口：`OPENAI_BASE_URL=https://api.deepseek.com`，`OPENAI_MODEL=deepseek-flash`。密钥用 `OPENAI_API_KEY`，或在它为空时用 `DEEPSEEK_API_KEY`。没有密钥的机器仍用 Ollama。不要把密钥写进仓库。
 - 知识库没有启用。AgentScope 2.0.10 不能把 sentence-transformers 或 DeepSeek 当成嵌入模型，本机也没有 `pymilvus`。`GET /knowledge_bases/` 会是 503。本地 `all-MiniLM-L6-v2` 只通过 `nexus/deploy/embedding_smoke.py` 做冒烟。
+- `PER_SESSION` 只隔离工作目录，不是进程或文件沙箱。Agent Service 进程持有模型 API 密钥。邮箱和团队 Session 使用 `dont_ask`，避免无人确认时停住；私聊仍使用默认权限。
 - `X-User-ID` 仍是 Agent Service 的占位身份。私聊用浏览器里的匿名标识隔离，不是登录账号。
 - 图片可以放进 `data` 块。文本模型是否看见图，要换成带视觉的模型后再验证。

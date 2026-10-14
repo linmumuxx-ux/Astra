@@ -81,7 +81,7 @@ def main() -> None:
         async def contact_employee(employee_name: str, message: str) -> str:
             """把一条提示交给另一位数字员工，由对方自己推理后回复。
 
-            employee_name: 同一讨论中的员工名称。私聊时按员工目录查找对方的邮箱会话。
+            employee_name: 同事的姓名。私聊和自己的邮箱会话都按员工目录查找对方的邮箱。
             message: 需要对方看到的原话。不要代替对方编写结论。
             """
             return await deliver_peer_hint(
