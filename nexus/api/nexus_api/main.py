@@ -7,6 +7,7 @@ import json
 import os
 import re
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -219,8 +220,38 @@ def block_text(content: Any) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def content_strings(content: Any) -> list[str]:
+    """取出正文和 hint 里的原文。不经过 json.dumps，因此保留换行。"""
+    found: list[str] = []
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return found
+    for block in content:
+        if isinstance(block, str):
+            found.append(block)
+            continue
+        if not isinstance(block, dict):
+            continue
+        for field in ("text", "hint"):
+            value = block.get(field)
+            if isinstance(value, str):
+                found.append(value)
+            elif isinstance(value, list):
+                found.extend(content_strings(value))
+    return found
+
+
+def message_contains(message: dict[str, Any], key: str) -> bool:
+    return any(key in text for text in content_strings(message.get("content")))
+
+
 def assistant_replies_after(messages: list[Any], needle: str) -> list[str]:
-    """取邮箱里紧跟在某条提示之后的助手正文。不生成新的答复。"""
+    """取邮箱里紧跟在某条提示之后的助手正文。不生成新的答复。
+
+    Agent Service 把收到的 hint 和答复写在同一条 assistant 消息里。
+    下一条 assistant 是另一次唤醒，不能算进这一次。
+    """
     key = needle.strip()
     if not key:
         return []
@@ -230,17 +261,42 @@ def assistant_replies_after(messages: list[Any], needle: str) -> list[str]:
         if not isinstance(message, dict):
             continue
         if not found:
-            if key in json.dumps(message, ensure_ascii=False):
-                found = True
+            if not message_contains(message, key):
+                continue
+            found = True
+            if message.get("role") == "assistant":
+                text = block_text(message.get("content"))
+                if text:
+                    replies.append(text)
             continue
-        if message.get("role") != "assistant":
-            if replies:
-                break
-            continue
+        if message.get("role") != "assistant" or replies:
+            break
         text = block_text(message.get("content"))
         if text:
             replies.append(text)
     return replies
+
+
+def canonical_timestamp(value: str) -> str:
+    """把无时区的本地时间和带偏移的时间收成同一种 UTC 字符串。"""
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(UTC).isoformat()
+
+
+def timestamp_order(value: Any) -> float:
+    if not isinstance(value, str) or not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(canonical_timestamp(value)).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def assistant_turns(messages: list[Any]) -> list[list[str]]:
@@ -306,7 +362,7 @@ def assistant_messages(remote: list[Any], employee_id: str) -> list[dict[str, An
                 "text": text,
                 "attachments": [],
                 "accepted": True,
-                "created_at": created if isinstance(created, str) else "",
+                "created_at": canonical_timestamp(created) if isinstance(created, str) else "",
             }
         )
     return found
@@ -318,7 +374,7 @@ def interleave_messages(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
         combined.extend(group)
     combined.sort(
         key=lambda item: (
-            str(item.get("created_at") or ""),
+            timestamp_order(item.get("created_at")),
             0 if item.get("sender") == "user" else 1,
             str(item.get("id") or ""),
         )

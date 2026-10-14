@@ -12,9 +12,11 @@ from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.main import (
+    assistant_messages,
     assistant_replies_after,
     create_app,
     data_dir,
+    interleave_messages,
     load_chat_model_config,
     model_input_blocks,
     observe_stream_event,
@@ -1145,3 +1147,63 @@ def test_mailbox_hop_is_scoped_to_the_conversation_and_reply_is_visible(tmp_path
             [{"role": "user", "content": [{"type": "text", "text": "方案要点"}]}],
             "方案要点",
         ) == []
+
+
+def test_multiline_hint_inside_the_reply_is_returned_once():
+    needle = "请李四联系王五。\n给出测试要点。"
+    dumped = json.dumps({"hint": needle}, ensure_ascii=False)
+    assert needle not in dumped
+    replies = assistant_replies_after(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "hint", "hint": needle},
+                    {"type": "text", "text": "已转达王五。\n阈值按账号计算"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "hint", "hint": "另一条唤醒"},
+                    {"type": "text", "text": "下一跳的答复"},
+                ],
+            },
+        ],
+        needle,
+    )
+    assert replies == ["已转达王五。\n阈值按账号计算"]
+
+
+def test_channel_timestamps_sort_by_instant_not_local_text():
+    normalized = assistant_messages(
+        [
+            {
+                "id": "m1",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "同事先说"}],
+                "created_at": "2026-10-15T00:13:55.943",
+            }
+        ],
+        "emp_1",
+    )
+    assert normalized[0]["created_at"].endswith("+00:00")
+    ordered = interleave_messages(
+        [
+            {
+                "id": "user",
+                "sender": "user",
+                "created_at": "2026-10-14T17:00:00+00:00",
+                "text": "后说",
+            }
+        ],
+        [
+            {
+                "id": "agent",
+                "sender": "emp",
+                "created_at": "2026-10-15T00:00:00+08:00",
+                "text": "先说",
+            }
+        ],
+    )
+    assert [item["id"] for item in ordered] == ["agent", "user"]

@@ -216,3 +216,5 @@ Ollama 实跑 `test_task_6_1_agent_sessions_sse_and_peer_wakeup`：`1 passed in 
 ```
 
 同事邮箱里的回复是「42」，没有停在权限询问。没有对 `deepseek-flash` 发起聊天。
+
+2026-10-15 的 deepseek-flash 复跑里，三人续跳、`NEXUS_RUN_FINISHED`、权限询问和团队讨论都通过。私聊里看不到同事回复：`json.dumps` 把换行转成 `\\n`，而且 hint 和答复在同一条 assistant 消息里，匹配后又跳过了这条消息。现在按原文比较 hint 和正文，并读入这条答复；下一次唤醒的 assistant 不再算进来。频道里 AgentScope 的无时区本地时间会先收成 UTC，再和用户消息一起按时刻排序。单元测试 `33 passed`。
