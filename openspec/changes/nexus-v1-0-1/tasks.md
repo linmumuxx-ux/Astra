@@ -80,4 +80,4 @@
 - [x] 11.1 验证用聊天模型走 OpenAI 兼容凭证，模型 id 为 `deepseek-flash`
   - `NEXUS_CHAT_PROVIDER=openai`，`OPENAI_BASE_URL=https://api.deepseek.com`，`OPENAI_MODEL=deepseek-flash`。`OPENAI_API_KEY` 为空时读取 `DEEPSEEK_API_KEY`。打印结果不含密钥。没有密钥的环境仍用 Ollama，不调用 DeepSeek。
 - [x] 11.2 知识库保持关闭，并用本机小模型做嵌入冒烟
-  - 不安装 `pymilvus`，不把 MiniLM 装进 Agent Service。冒烟脚本编码三句中文并比较余弦。
+  - 不安装 `pymilvus`，不把 MiniLM 装进 Agent Service。冒烟脚本编码三句英文并比较余弦。`all-MiniLM-L6-v2` 是英文模型。

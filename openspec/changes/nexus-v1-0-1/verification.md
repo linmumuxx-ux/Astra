@@ -163,3 +163,40 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 ## 知识库阻塞
 
 没有启用。`pymilvus` 未安装。本机唯一模型是聊天模型 `qwen2.5:3b`，没有嵌入模型。Agent Service 健康检查里的 `knowledge_base` 是 `disabled`。`GET /api/v1/knowledge` 为 `available: false`。手写知识库标识仍会被拒绝。
+
+后续确认见第 11 节：DeepSeek 没有嵌入模型，AgentScope 2.0.10 也不能把 `all-MiniLM-L6-v2` 注册成知识库嵌入。知识库继续关闭。本地冒烟不改变这个状态。
+
+## 11. DeepSeek Flash 接线与本地嵌入
+
+日期：2026-10-14。环境里没有 `OPENAI_API_KEY`，也没有 `DEEPSEEK_API_KEY`。没有调用 `https://api.deepseek.com`，没有把密钥写进仓库。
+
+聊天引导仍走 `openai_credential`。验证机应设置：
+
+```bash
+NEXUS_CHAT_PROVIDER=openai
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-flash
+OPENAI_API_KEY=${DEEPSEEK_API_KEY}
+```
+
+`OPENAI_API_KEY` 为空时脚本读取 `DEEPSEEK_API_KEY`。没有这两个变量时，openai 模式直接退出，不会登记空凭证。实测：
+
+```text
+openai 需要 OPENAI_MODEL，以及 OPENAI_API_KEY 或 DEEPSEEK_API_KEY
+```
+
+本机实跑仍用 Ollama。Redis `PONG`。`GET /health` 为 AgentScope `2.0.10`，`knowledge_base` 为 `disabled`。`NEXUS_CHAT_PROVIDER=ollama` 的引导复用已有凭证，打印：
+
+```json
+{"type": "ollama_credential", "credential_id": "3dac2b14d6604d319e73b41190b57ff7", "model": "qwen2.5:3b", "parameters": {}}
+```
+
+打印里没有密钥。单元测试 `pytest nexus/api/tests/test_bootstrap_chat_model.py nexus/api/tests/test_api.py`：`27 passed`。
+
+嵌入冒烟单独使用 `nexus/deploy/.venv-embedding`，没有装进 Agent Service，也没有安装 `pymilvus`。`embedding_smoke.py` 的输出：
+
+```json
+{"model": "all-MiniLM-L6-v2", "dims": 384, "similar": 0.6079, "dissimilar": 0.0187}
+```
+
+维度 384。两句相近英文的余弦高于不相近的那句。这个结果没有写入知识库。

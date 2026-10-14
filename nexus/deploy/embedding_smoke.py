@@ -12,9 +12,9 @@ import math
 import sys
 
 TEXTS = (
-    "自动化测试失败",
-    "测试脚本没有通过",
-    "今天的天气很好",
+    "the automated test failed",
+    "the test script did not pass",
+    "the weather is nice today",
 )
 
 

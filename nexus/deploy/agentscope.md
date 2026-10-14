@@ -85,7 +85,7 @@ nexus/deploy/.venv-embedding/bin/pip install -r nexus/deploy/requirements-embedd
 nexus/deploy/.venv-embedding/bin/python nexus/deploy/embedding_smoke.py
 ```
 
-脚本打印维度，以及两句相近中文和一句不相近中文的余弦。相近的一对必须更高。这个结果不写入 Agent Service。
+脚本打印维度，以及两句相近英文和一句不相近英文的余弦。`all-MiniLM-L6-v2` 是英文模型。相近的一对必须更高。这个结果不写入 Agent Service。
 
 ## 任务 6.1
 
