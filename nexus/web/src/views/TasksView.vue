@@ -5,15 +5,15 @@
       <el-button type="primary" @click="open = true">人工创建</el-button>
     </div>
     <div v-if="selected" class="panel detail" style="padding: 16px; margin-bottom: 12px">
-      <div class="title-row">
-        <h2 class="h-title">{{ selected.id }}</h2>
+      <div class="title-row" style="justify-content: flex-start; gap: 12px">
+        <h2 class="h-title" style="font-size: 18px">{{ selected.id }}</h2>
         <span class="tag">{{ selected.runtime_status_label || selected.status }}</span>
       </div>
       <p style="margin: 0 0 8px">{{ selected.title }}</p>
       <p class="muted" style="margin: 0">
         Worker {{ selected.worker_id || "未分配" }} · 责任员工 {{ selected.responsible_employee_id || "未指定" }}
+        · {{ selected.current_progress }}
       </p>
-      <p style="margin: 8px 0 0">{{ selected.current_progress }}</p>
     </div>
     <div class="panel" style="padding: 16px">
       <TaskTable :tasks="tasks" actions @action="run" />
