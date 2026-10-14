@@ -1,0 +1,12 @@
+# AgentScope 2.0.10 的 RedisStorage 与 RedisMessageBus 使用 Redis。
+# 这里只启动 Redis。Agent Service 由 agent_service.py 调用官方包，不在镜像里 fork。
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

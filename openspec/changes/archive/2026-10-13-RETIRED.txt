@@ -1,0 +1,3 @@
+这些目录是从 openspec/changes/ 移出的 Astra 活跃变更，不是 Nexus v1.0.1 的需求，也没有同步进 openspec/specs/。
+
+保留它们只为了不丢掉既有 OpenSpec 产物。Nexus 的活跃变更是 openspec/changes/nexus-v1-0-1/。

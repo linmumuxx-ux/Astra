@@ -1,0 +1,4 @@
+# 与 agentscope.version 同一官方发行版。extras 来自该包的 pyproject，不是分叉。
+# 知识库保持关闭，不要把 vdb-milvus 或本地嵌入装进这个环境。
+# 嵌入冒烟见 requirements-embedding.txt。
+agentscope[service,storage-redis,model-ollama]==2.0.10

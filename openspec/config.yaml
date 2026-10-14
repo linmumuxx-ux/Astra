@@ -1,4 +1,4 @@
-# Astra 的 OpenSpec 规划约束。
+# Nexus v1.0.1 的 OpenSpec 规划约束。
 #
 # 这里是产物规则的唯一事实源，AGENTS.md 只保留项目级硬规则。
 # 内置 CLI（.opencode/tools/openspec.mjs）只解析 schema / context / rules 三个字段，
@@ -9,12 +9,13 @@ schema: spec-driven
 
 context: |
   使用简体中文编写 proposal、spec、design 和 tasks；技术标识符保留原文。
-  Astra 是任务与数字员工管理平台，不编排数字员工内部的 Agent/Skill/Tool。
-  Task 是业务闭环；OpenCode Session 是执行事实源；RuntimeSession 仅为绑定及索引，旧 Run 表已删除。
-  正式执行通过 OpenCode Server / Session / Event；需兼顾 Windows 与 Linux SSH 公司环境。
-  后端 FastAPI + SQLAlchemy async + Celery + Alembic；前端 Vue 3 + Element Plus，沿用 Astra 主题。
-  先查现有 openspec/specs、代码和测试；优先收敛现有设计，不创造并行状态或重复实现。
-  本项目只对行为契约、跨模块架构、数据模型、权限与核心 Runtime 变更使用 OpenSpec；小修复直接走代码及针对性验证。
+  本分支的产品是 Nexus v1.0.1：Vue 3 + Element Plus 前端、Python HTTP API、AgentScope 2.0.10 Agent Service。
+  Agent、Session、Skill、Knowledge 与对话记忆只存在于 AgentScope；Nexus 不平行实现，也不提供模型配置界面。
+  一位数字员工是一个独立 Agent。对话绑定 Session。对等同事联系使用自定义工具 contact_employee（inbox + wakeup + MessageBus），不使用 Agent Team（Leader→Worker），也不脚本化多 Agent 回复。
+  新代码放在 nexus/。仓库中的 Astra 业务树只作规范来源，不迁移进 Nexus。
+  openspec/specs/ 中现存 capability 是 Astra 历史契约。Nexus change 只新增自己的 capability，不修改这些历史 spec。
+  保留现有 OpenSpec 工作流与 Superpowers 集成；Superpowers 只使用仓库内已存在的 skill，不虚构缺失项。
+  本项目只对行为契约、跨模块架构、数据模型与权限变更使用 OpenSpec；小修复直接走代码及针对性验证。
 
 rules:
   proposal:
@@ -22,11 +23,11 @@ rules:
     - "只列真实新增或修改的 capability；不因代码重构虚构新的业务需求。"
   specs:
     - "只描述外部可观察的需求和可验证场景；每项 Requirement 至少一个 WHEN/THEN Scenario。"
-    - "优先修改已有 capability；状态与恢复类需求必须覆盖失败、取消、重试、人工介入及旧轮次隔离。"
+    - "优先修改已有 capability；Nexus 不修改 openspec/specs/ 中的 Astra 历史契约，新行为写成新 capability。"
     - "不写类名、函数名、工具选型或具体实施步骤；不对既有要求降级。"
   design:
     - "只记录必要的设计决策、被舍弃方案和影响；单模块变更保持极简，不重复 proposal 的动机。"
-    - "跨 Runtime、持久化、权限或迁移时，写明状态事实源、异常恢复及回滚边界。"
+    - "跨 AgentScope、持久化或权限时，写明状态事实源与 Nexus 不复制的边界。"
   tasks:
     - "与 spec 场景对应，按依赖分组；每项有明确的完成和验证标准。"
     - "只保留一个 tasks.md；不把每次工具调用、每次提交或每个文件阅读拆为任务。"
