@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     executor_type: str = "opencode_server"
     opencode_binary: str = "opencode"
     opencode_agent: str | None = None
-    opencode_model: str | None = None
+    # provider/model。模型 id 是 deepseek-flash，上游为 DeepSeek OpenAI 兼容接口
+    # https://api.deepseek.com。Worker 的 model_name 优先于这个全局后备。
+    opencode_model: str | None = "deepseek/deepseek-flash"
     opencode_timeout_seconds: int = 3600
     # Control-plane requests (status/messages/session/abort/prompt) must never
     # inherit the long execution budget; a stalled control call has to fail fast
