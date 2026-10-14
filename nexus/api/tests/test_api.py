@@ -949,6 +949,71 @@ def test_data_dir_does_not_follow_the_working_directory(monkeypatch, tmp_path):
     assert data_dir() == tmp_path / "absolute"
 
 
+def test_private_stream_skips_the_saved_cursor_and_stops(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    sse = (
+        'data: {"type":"REPLY_START","id":"s1","reply_id":"r1"}\n\n'
+        'data: {"type":"TEXT_BLOCK_DELTA","id":"d1","delta":"在"}\n\n'
+        'data: {"type":"REPLY_END","id":"e1","reply_id":"r1","finished_reason":"completed"}\n\n'
+        'data: {"type":"TEXT_BLOCK_DELTA","id":"late","delta":"不应再出现"}\n\n'
+    )
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/agent/" and request.method == "POST":
+            return httpx.Response(201, json={"agent_id": "agent-1"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            return httpx.Response(201, json={"session_id": "session-chat"})
+        if request.method == "PATCH":
+            return httpx.Response(200, json={})
+        if request.url.path == "/sessions/session-chat/messages":
+            return httpx.Response(
+                200,
+                json={"messages": [], "event_cursor": "20-1", "has_more": False},
+            )
+        if request.url.path == "/sessions/session-chat/stream":
+            return httpx.Response(200, content=sse.encode())
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        employee = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        headers = {"X-Owner-Id": "browser-a"}
+        conversation = test_client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers=headers,
+            json={"name": "新对话"},
+        ).json()
+        from nexus_api.db import connect
+
+        connection = connect(tmp_path / "nexus.sqlite3")
+        connection.execute(
+            "UPDATE conversations SET agentscope_session_id = ? WHERE id = ?",
+            ("session-chat", conversation["id"]),
+        )
+        connection.commit()
+        connection.close()
+        with test_client.stream(
+            "GET",
+            f"/api/v1/conversations/{conversation['id']}/stream",
+            headers=headers,
+        ) as response:
+            assert response.status_code == 200
+            body = response.read().decode()
+    assert "NEXUS_RUN_FINISHED" in body
+    assert "不应再出现" not in body
+    streamed = [item for item in seen if item.url.path == "/sessions/session-chat/stream"]
+    assert streamed[0].url.params["after"] == "20-1"
+
+
 def test_stream_closes_when_the_started_reply_ends():
     started = 0
     events = [

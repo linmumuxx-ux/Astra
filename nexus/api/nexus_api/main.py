@@ -1417,6 +1417,10 @@ def create_app() -> FastAPI:
     ) -> StreamingResponse:
         if not client.configured:
             raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
+        if after is None:
+            cursor = await client.latest_event_cursor(agent_id, session_id)
+            if cursor and STREAM_CURSOR.fullmatch(cursor):
+                after = cursor
 
         async def generate():
             started = 0

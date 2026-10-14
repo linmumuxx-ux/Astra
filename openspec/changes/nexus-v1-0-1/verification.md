@@ -200,3 +200,19 @@ openai 需要 OPENAI_MODEL，以及 OPENAI_API_KEY 或 DEEPSEEK_API_KEY
 ```
 
 维度 384。两句相近英文的余弦高于不相近的那句。这个结果没有写入知识库。
+
+## 12. 邮箱续跳、权限询问和回复可见
+
+日期：2026-10-14。没有 `DEEPSEEK_API_KEY`，这一节的实跑仍是 Ollama `qwen2.5:3b`。
+
+邮箱会话可以再联系下一位同事，次数算在发起那场私聊的 `private:{conversation_id}` 里，不按员工累计。同事写在自己邮箱里的正文，读私聊时带回来，发送方不代写。邮箱和团队 Session 设为 `dont_ask`。未设置 `NEXUS_DATA_DIR` 时目录在 API 包旁边；相对路径按仓库根目录解析。SSE 先从上一轮已落盘的 `event_cursor` 之后开始，本轮 `REPLY_END` 之后写 `NEXUS_RUN_FINISHED` 并结束连接。
+
+`pytest nexus/api/tests/test_api.py nexus/api/tests/test_bootstrap_chat_model.py`：`31 passed`。
+
+Ollama 实跑 `test_task_6_1_agent_sessions_sse_and_peer_wakeup`：`1 passed in 86.01s`。
+
+```json
+{"agent_id": "d9207d4002154f6692f83b222cb6633c", "sessions": ["e38ce5062042401ebe72388a1f5e4fe1", "875bbb7245ac402ea010e6bde3b2def5"], "private_deltas": "收到。", "caller_tools": ["contact_employee", "contact_employee"], "peer_deltas": "42"}
+```
+
+同事邮箱里的回复是「42」，没有停在权限询问。没有对 `deepseek-flash` 发起聊天。

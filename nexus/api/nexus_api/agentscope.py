@@ -174,6 +174,24 @@ class AgentScopeClient:
             page += 1
         return items
 
+    async def latest_event_cursor(self, agent_id: str, session_id: str) -> str | None:
+        """上一轮已经落盘的重放游标。当前运行的事件在它之后。"""
+        if not self.configured:
+            return None
+        try:
+            response = await self.request(
+                "GET",
+                f"/sessions/{session_id}/messages",
+                params={"agent_id": agent_id, "limit": 1},
+            )
+        except AgentScopeError:
+            return None
+        payload = response.json()
+        cursor = payload.get("event_cursor") if isinstance(payload, dict) else None
+        if isinstance(cursor, str) and cursor:
+            return cursor
+        return None
+
     async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
         collected: list[dict[str, Any]] = []
         before: str | None = None
