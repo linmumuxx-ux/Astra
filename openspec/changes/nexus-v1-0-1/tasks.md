@@ -73,3 +73,11 @@
   - 卸掉 `ToolStop` 之前，模型先连续调用 `ToolStop`，再用错误名字调用 `contact_employee`。卸掉之后的实跑里，运营调用了 `contact_employee`，工具结果是「已把消息交给对方」，自动化工程师在同一频道里用自己的员工 id 作了回复。事件里没有 `TeamCreate`、`TaskGet` 或 `ToolStop`。
 - [x] 10.3 知识库只有在依赖和嵌入模型都真实可用时才启用；否则写明阻塞
   - 本机没有 `pymilvus`。`ollama list` 只有 `qwen2.5:3b`，没有嵌入模型。`GET /health` 的 `knowledge_base` 仍是 `disabled`。没有启用 `knowledge_base_manager`。
+  - DeepSeek 只有聊天模型。AgentScope 2.0.10 不能把 `all-MiniLM-L6-v2` 注册成知识库嵌入。知识库继续关闭。本地嵌入冒烟见 `nexus/deploy/embedding_smoke.py`。
+
+## 11. DeepSeek Flash 与本地嵌入
+
+- [x] 11.1 验证用聊天模型走 OpenAI 兼容凭证，模型 id 为 `deepseek-flash`
+  - `NEXUS_CHAT_PROVIDER=openai`，`OPENAI_BASE_URL=https://api.deepseek.com`，`OPENAI_MODEL=deepseek-flash`。`OPENAI_API_KEY` 为空时读取 `DEEPSEEK_API_KEY`。打印结果不含密钥。没有密钥的环境仍用 Ollama，不调用 DeepSeek。
+- [x] 11.2 知识库保持关闭，并用本机小模型做嵌入冒烟
+  - 不安装 `pymilvus`，不把 MiniLM 装进 Agent Service。冒烟脚本编码三句中文并比较余弦。

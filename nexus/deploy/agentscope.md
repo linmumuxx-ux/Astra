@@ -44,7 +44,7 @@ nexus/deploy/.venv-agentscope/bin/python nexus/deploy/agent_service.py
 - 把 `LocalWorkspaceManager` 的隔离设为 `IsolationPolicy.PER_SESSION`。
 - 注册 `contact_employee`，并允许它执行。工具把对方姓名和原文交给 Nexus 解析，再向目标 Session 调用 `deliver_to_inbox`，不生成对方的回复。解析返回 4xx 时，工具把说明交回模型并停止投递。
 - 不注册 Agent Team。官方 `get_toolkit` 仍会把任务规划、`ToolStop`、定时任务和 Agent Team 放进工具组。`agent_service.py` 在 `create_app` 之前替换聊天和实时服务使用的 `get_toolkit`：先调用官方组装，再 `Toolkit.remove_tool` 卸掉 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`、`ToolStop`、`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInvite`、`ScheduleCreate`、`ScheduleDelete`、`ScheduleList`、`ScheduleView`。空的非 basic 工具组也会去掉，避免模型再去激活它们。`contact_employee` 和工作区的 Bash、Read、Write 等仍然保留。没有改 AgentScope 安装包。
-- 不传入 `knowledge_base_manager`。当前环境没有 `pymilvus`，也没有嵌入模型，所以没有启用知识库目录。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。技能库为空时也不写入示例技能。
+- 不传入 `knowledge_base_manager`。AgentScope 2.0.10 的嵌入模型只来自 OpenAI、Ollama、Gemini、DashScope 凭证，没有 sentence-transformers 适配。DeepSeek 凭证只有聊天模型，不能把 `deepseek-flash` 当成嵌入。本机 Ollama 只有聊天模型 `qwen2.5:3b`。向量库要官方 extra `vdb-milvus`（`pymilvus` / Milvus Lite），当前 Agent Service 环境没有安装。知识库目录保持关闭。`GET /knowledge_bases/` 因此不可用，员工页面不能手写新的知识库标识。本地嵌入只做冒烟：另建虚拟环境安装 `requirements-embedding.txt`，运行 `embedding_smoke.py`。技能库为空时也不写入示例技能。
 
 服务默认监听 `http://127.0.0.1:8000`。健康检查：
 
@@ -58,12 +58,34 @@ bash nexus/deploy/healthcheck.sh
 
 Nexus 页面没有模型或密钥字段。模型登记在 Agent Service：
 
+没有付费密钥时用本机 Ollama。有 DeepSeek 密钥的验证机使用 OpenAI 兼容凭证，模型 id 是 `deepseek-flash`：
+
 ```bash
-# 本机 Ollama 已提供 NEXUS_OLLAMA_MODEL，或改为 NEXUS_CHAT_PROVIDER=openai
+export NEXUS_CHAT_PROVIDER=openai
+export OPENAI_BASE_URL=https://api.deepseek.com
+export OPENAI_MODEL=deepseek-flash
+export OPENAI_API_KEY="${DEEPSEEK_API_KEY}"
+# 也可以不设 OPENAI_API_KEY，只导出 DEEPSEEK_API_KEY。脚本在前者为空时读取后者。
 nexus/deploy/.venv-agentscope/bin/python nexus/deploy/bootstrap_chat_model.py
 ```
 
+`OPENAI_BASE_URL` 写入 `openai_credential.base_url`。AgentScope 的 `OpenAIChatModel` 会把这个地址传给客户端。打印的 JSON 只有 `type`、`credential_id`、`model` 和空的 `parameters`，不含密钥。同一类型里，只有 `base_url`（Ollama 则是 `host`）一致的凭证才会复用。
+
+本机默认仍是 `NEXUS_CHAT_PROVIDER=ollama`。没有密钥时不要改成 openai，脚本会直接退出，不会登记空凭证。
+
 把打印出的 JSON 设为 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`，再启动 Nexus API。创建 Session 时会带上这份 `chat_model_config`。变量为空时，Session 没有模型，发送消息不会被改成模拟回复。
+
+## 本地嵌入冒烟
+
+知识库保持关闭。要确认 `all-MiniLM-L6-v2` 能在本机编码：
+
+```bash
+python3 -m venv nexus/deploy/.venv-embedding
+nexus/deploy/.venv-embedding/bin/pip install -r nexus/deploy/requirements-embedding.txt
+nexus/deploy/.venv-embedding/bin/python nexus/deploy/embedding_smoke.py
+```
+
+脚本打印维度，以及两句相近中文和一句不相近中文的余弦。相近的一对必须更高。这个结果不写入 Agent Service。
 
 ## 任务 6.1
 

@@ -13,6 +13,14 @@ import sys
 import httpx
 
 
+def openai_api_key() -> str:
+    """读取 OpenAI 兼容密钥。OPENAI_API_KEY 为空时才用 DEEPSEEK_API_KEY。不打印取值。"""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    return os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+
 def credential_payload() -> tuple[dict, str]:
     provider = os.environ.get("NEXUS_CHAT_PROVIDER", "ollama")
     if provider == "ollama":
@@ -20,10 +28,10 @@ def credential_payload() -> tuple[dict, str]:
         model = os.environ.get("NEXUS_OLLAMA_MODEL", "qwen2.5:3b")
         return {"type": "ollama_credential", "host": host}, model
     if provider == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        model = os.environ.get("OPENAI_MODEL", "")
+        api_key = openai_api_key()
+        model = os.environ.get("OPENAI_MODEL", "").strip()
         if not api_key or not model:
-            raise SystemExit("openai 需要 OPENAI_API_KEY 和 OPENAI_MODEL")
+            raise SystemExit("openai 需要 OPENAI_MODEL，以及 OPENAI_API_KEY 或 DEEPSEEK_API_KEY")
         data = {"type": "openai_credential", "api_key": api_key}
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
         if base_url:
@@ -32,14 +40,33 @@ def credential_payload() -> tuple[dict, str]:
     raise SystemExit(f"不支持的 NEXUS_CHAT_PROVIDER：{provider}")
 
 
-def existing_id(client: httpx.Client, credential_type: str) -> str | None:
+def same_endpoint(stored: dict, data: dict) -> bool:
+    if stored.get("type") != data.get("type"):
+        return False
+    if data.get("type") == "openai_credential":
+        return (stored.get("base_url") or "") == (data.get("base_url") or "")
+    if data.get("type") == "ollama_credential":
+        return (stored.get("host") or "") == (data.get("host") or "")
+    return True
+
+
+def existing_id(client: httpx.Client, data: dict) -> str | None:
     response = client.get("/credential/")
     response.raise_for_status()
     for item in response.json().get("credentials", []):
-        data = item.get("data") or {}
-        if data.get("type") == credential_type and item.get("id"):
+        stored = item.get("data") or {}
+        if item.get("id") and same_endpoint(stored, data):
             return str(item["id"])
     return None
+
+
+def public_chat_config(credential_type: str, credential_id: str, model: str) -> dict:
+    return {
+        "type": credential_type,
+        "credential_id": credential_id,
+        "model": model,
+        "parameters": {},
+    }
 
 
 def main() -> None:
@@ -48,17 +75,12 @@ def main() -> None:
     data, model = credential_payload()
     headers = {"X-User-ID": user_id}
     with httpx.Client(base_url=base, headers=headers, timeout=30) as client:
-        credential_id = existing_id(client, data["type"])
+        credential_id = existing_id(client, data)
         if credential_id is None:
             created = client.post("/credential/", json={"data": data})
             created.raise_for_status()
             credential_id = str(created.json()["credential_id"])
-    config = {
-        "type": data["type"],
-        "credential_id": credential_id,
-        "model": model,
-        "parameters": {},
-    }
+    config = public_chat_config(data["type"], credential_id, model)
     json.dump(config, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
 
