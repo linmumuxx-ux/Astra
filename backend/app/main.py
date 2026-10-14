@@ -10,6 +10,7 @@ from app.api.gateway_routes import router as gateway_router
 from app.api.library_routes import library_error_handler
 from app.api.library_routes import router as library_router
 from app.api.routes import router
+from app.api.worker_routes import router as worker_router
 from app.api.workspace_routes import router as workspace_router
 from app.assistant.api import router as assistant_router
 from app.assistant.orchestrator import AssistantOrchestrator, get_orchestrator, set_orchestrator
@@ -75,6 +76,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(worker_router)
 app.include_router(environment_router)
 app.include_router(workspace_router)
 app.include_router(library_router)

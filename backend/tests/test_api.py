@@ -47,7 +47,9 @@ def test_task_api_uses_session_business_contract():
         stopped = client.post(f"/api/tasks/{task['id']}/stop")
         assert stopped.status_code == 200
         assert stopped.json()["status"] == "CANCELED"
-        assert client.post(f"/api/tasks/{task['id']}/resume", json={}).status_code == 404
+        resumed = client.post(f"/api/tasks/{task['id']}/resume")
+        assert resumed.status_code == 409
+        assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "CANCELED"
 
 
 def test_task_delete_only_allows_pending_or_terminal_states():

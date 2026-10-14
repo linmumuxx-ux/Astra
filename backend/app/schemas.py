@@ -217,6 +217,11 @@ class TaskCreate(BaseModel):
     acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     employee_id: str | None = None
+    responsible_employee_id: str | None = None
+    source_session_id: str | None = None
+    source_conversation_id: str | None = None
+    source_channel_id: str | None = None
+    idempotency_key: str | None = None
     priority: Priority = Priority.MEDIUM
     # Kept in the API for stored tasks; all new tasks close explicitly.
     completion_policy: CompletionPolicy = CompletionPolicy.MANUAL_CONFIRM
@@ -236,6 +241,12 @@ class TaskRead(RuntimeRead):
     completion_policy: str
     status: str
     employee_id: str | None
+    worker_id: str | None = None
+    responsible_employee_id: str | None = None
+    source_session_id: str | None = None
+    source_conversation_id: str | None = None
+    source_channel_id: str | None = None
+    idempotency_key: str | None = None
     current_session_id: str | None
     workspace: str | None
     runtime_connection: str

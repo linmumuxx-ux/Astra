@@ -101,7 +101,9 @@ button, input, textarea { font: inherit; }
   background: #fafffbea; border: 1px solid #d5e9dc; border-radius: 19px;
   box-shadow: 0 13px 42px #26714a25; display: flex; gap: 5px; padding: 7px;
 }
-.dock a { text-decoration: none; color: #7a9b89; border-radius: 13px; padding: 9px 17px; min-width: 89px; display: flex; flex-direction: column; align-items: center; font-size: 10px; }
+.dock a { text-decoration: none; color: #7a9b89; border-radius: 13px; padding: 8px 12px; min-width: 72px; display: flex; flex-direction: column; align-items: center; font-size: 10px; }
+.dock { flex-wrap: wrap; max-width: min(980px, calc(100vw - 24px)); justify-content: center; }
+.data-page { display: flex; flex-direction: column; gap: 12px; }
 .dock a.active { background: #dff3e7; color: #147d59; font-weight: 750; }
 .member { display: flex; align-items: center; gap: 9px; padding: 9px 0; }
 .right-tabs { display: flex; gap: 6px; padding: 14px 16px 0; border-bottom: 1px solid #edf2ee; }
@@ -110,5 +112,4 @@ button, input, textarea { font: inherit; }
 @media (max-width: 1000px) {
   .management-grid, .workspace { grid-template-columns: 1fr; }
   .workspace { height: auto; }
-  .aside { display: none; }
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -215,6 +217,45 @@ class AgentScopeClient:
                 break
             before = cursor
         return collected
+
+    async def upload_workspace_skill(self, agent_id: str, session_id: str, directory: Path) -> None:
+        skill = directory / "SKILL.md"
+        data = skill.read_bytes()
+        manifest = json.dumps(
+            {"entries": [{"path": f"{directory.name}/SKILL.md", "size": len(data)}]},
+            ensure_ascii=False,
+        )
+        await self.request(
+            "POST",
+            "/workspace/skill/upload",
+            params={"agent_id": agent_id, "session_id": session_id},
+            data={"manifest": manifest},
+            files={"files": ("SKILL.md", data, "text/markdown")},
+        )
+
+    async def add_workspace_mcp(
+        self,
+        agent_id: str,
+        session_id: str,
+        *,
+        url: str,
+        headers: dict[str, str],
+    ) -> None:
+        try:
+            await self.request(
+                "POST",
+                "/workspace/mcp",
+                params={"agent_id": agent_id, "session_id": session_id},
+                json={
+                    "name": "nexus-task",
+                    "is_stateful": False,
+                    "mcp_config": {"type": "http_mcp", "url": url, "headers": headers, "timeout": 30},
+                },
+            )
+        except AgentScopeError as exc:
+            if exc.status_code == 409:
+                return
+            raise
 
     async def list_launcher_tools(self) -> list[dict[str, str]]:
         if not await self.probe():

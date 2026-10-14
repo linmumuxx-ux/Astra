@@ -2,7 +2,7 @@
 
 只放所有代码任务都要遵守的规则。OpenSpec 产物规则在 `openspec/config.yaml`，工具与集成细节见 `docs/OPENSPEC_SUPERPOWERS.md`；按需查阅，不要每轮加载整套教程。
 
-本分支的产品是 **Nexus v1.0.1**。仓库里原有的 Astra 业务树（OpenCode Task / Worker、3D 数字办公、WeTalks、`backend/`、`frontend/`、`workspace-ui/`）只作为规范来源，不是本产品的运行入口，也不要迁进 Nexus。
+本分支的产品是 **Nexus v1.0.1**。数字员工、私聊、团队和 `contact_employee` 在 `nexus/`。任务、Worker、OpenCode、网关和图书馆复用 `backend/app`，由 Nexus 页面经 `/api` 调用。3D 数字办公、WeTalks、`domains/` 和平台助手抽屉不进入产品路径。
 
 ## 工作原则
 
@@ -20,8 +20,8 @@
 
 ## 产品边界
 
-- 新功能只写在 `nexus/`。不要把 Astra 的 Task、Run、Worker、OpenCode Session 或控制台页面接回产品路径。
-- 前端是 `nexus/web`：Vue 3 + Element Plus。后端是 `nexus/api`：Python HTTP 服务，只通过 HTTP 调用 AgentScope，不内嵌、不 fork AgentScope。
+- 对话、员工目录和 Agent 绑定写在 `nexus/`。任务、Worker、网关和图书馆沿用 `backend/app` 的现有服务，不另写一套状态机。
+- 前端是 `nexus/web`：Vue 3 + Element Plus。员工目录是 `nexus/api`：Python HTTP 服务，只通过 HTTP 调用 AgentScope，不内嵌、不 fork AgentScope。任务 API 仍是 `backend/app`。
 - **AgentScope 2.0.10 Agent Service 是 Agent、Session、Skill、Knowledge 与对话记忆的唯一事实源。** Nexus 只保存员工目录、会话绑定和尚未被 Agent Service 接受的用户消息。不要在 Nexus 再实现一套 Agent、Session 或 Memory。
 - Nexus 不提供模型、凭证或供应商配置界面。模型配置留在 AgentScope。
 - 一位数字员工对应一个独立 Agent。一条私聊或一位员工在某个团队讨论中的上下文对应一条 Session。
@@ -32,7 +32,7 @@
 
 - AgentScope 版本以 `nexus/deploy/agentscope.version` 为准，当前为 PyPI / GitHub tag `2.0.10`。接口说明以该 tag 的源码为准，见 `nexus/docs/agentscope-2.0.10.md`。
 - 正式部署是独立的 AgentScope Agent Service + Redis。`create_app` 的 workspace 隔离使用 `IsolationPolicy.PER_SESSION`，这样同一员工的多条对话不会被 `(user, agent, workspace)` 折成一条 Session。
-- 历史 Astra 数据不迁移。不要为了旧表、旧状态或旧前端保留双写和猜测式 fallback。
+- 不把历史 Astra 行复制进 Nexus SQLite。任务库仍是 `backend` 的 SQLAlchemy 库，新字段用 Alembic 增加。不要为了旧状态长期保留双写和猜测式 fallback。
 
 ## 验证
 

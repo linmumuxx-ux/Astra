@@ -2,7 +2,7 @@
 
 Nexus 是数字员工的目录和交流产品。推理、会话、技能、知识和记忆由 **AgentScope 2.0.10 Agent Service** 承担。Nexus 只通过 HTTP 调用它。
 
-本分支上的 `backend/`、`frontend/`、`workspace-ui/` 以及 OpenCode Task / Worker 是原 Astra 树，只作为规范来源，不是 Nexus 的运行入口。
+数字员工、私聊和团队在 `nexus/`。任务、Agent Worker、API 网关和数字图书馆复用 `backend/app`，Nexus 页面通过 `/api` 调用。3D 办公和 `domains/` 不是这条产品路径。
 
 ## 页面
 
@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5174`。开发服务器把 `/api` 代理到 `8120`。
+打开 `http://127.0.0.1:5174`。开发服务器把 `/api/v1` 代理到 `8120`，其余 `/api` 代理到任务服务 `8100`。
 
 未设置 `NEXUS_AGENTSCOPE_BASE_URL` 时，员工目录仍可保存。发送消息会留下用户内容，并说明 AgentScope 未连接、没有生成回复。
 
@@ -40,6 +40,28 @@ export NEXUS_AGENTSCOPE_USER_ID=nexus
 ```
 
 Agent Service 与 Redis 的安装见 [nexus/deploy/agentscope.md](nexus/deploy/agentscope.md)。版本钉在 [nexus/deploy/agentscope.version](nexus/deploy/agentscope.version)。接口记录在 [nexus/docs/agentscope-2.0.10.md](nexus/docs/agentscope-2.0.10.md)。
+
+## 任务、Worker 与 OpenCode
+
+任务服务、Celery、网关和图书馆仍从仓库根目录启动。Nexus 页面不另写一套任务状态。
+
+```bash
+# Redis
+redis-server --port 6379
+
+# 任务 API、Celery beat 与 control worker、按配置启用的 OpenCode
+backend/.venv/bin/python scripts/astra_service.py dev
+
+# Task MCP
+ASTRA_TASK_MCP_PORT=8202 backend/.venv/bin/astra-task-mcp
+
+# Agent Service
+NEXUS_API_BASE=http://127.0.0.1:8120 python nexus/deploy/agent_service.py
+
+# Nexus API 与页面见上面的「本地启动」
+```
+
+任务唤醒使用 `ASTRA_NEXUS_API_BASE`、`ASTRA_AGENTSCOPE_BASE_URL` 和 `ASTRA_AGENTSCOPE_USER_ID`。员工会话上的 MCP 地址是 `NEXUS_TASK_MCP_URL`，默认 `http://127.0.0.1:8202/mcp`。OpenCode 直连模型是 `ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash`；远程 Worker 经网关写成 `astra-gateway/deepseek-flash`。聊天模型仍是 `OPENAI_MODEL=deepseek-flash`，基址 `https://api.deepseek.com`。不要把密钥写进仓库。
 
 ## 检查
 

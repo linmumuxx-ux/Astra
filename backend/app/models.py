@@ -131,6 +131,11 @@ class Task(RuntimeProjection, Base):
     completion_policy: Mapped[str] = mapped_column(String(32), default="MANUAL_CONFIRM")
     status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("digital_employees.id"), nullable=True)
+    responsible_employee_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    source_conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
     workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     turn_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -163,6 +168,10 @@ class Task(RuntimeProjection, Base):
 
     employee: Mapped[DigitalEmployee | None] = relationship(back_populates="tasks")
     events: Mapped[list["Event"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+
+    @property
+    def worker_id(self) -> str | None:
+        return self.employee_id
     summary: Mapped["TaskSummary | None"] = relationship(
         back_populates="task", uselist=False, cascade="all, delete-orphan"
     )
@@ -224,6 +233,25 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
     task: Mapped[Task | None] = relationship(back_populates="events")
+
+
+class TaskWakeOutbox(Base):
+    """同一事务里记下的唤醒。投递失败可重试，被新状态盖过的行不再发送。"""
+
+    __tablename__ = "task_wake_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True)
+    task_id: Mapped[str] = mapped_column(String(64), index=True)
+    responsible_employee_id: Mapped[str] = mapped_column(String(64))
+    source_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    hint: Mapped[str] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class TaskSummary(Base):

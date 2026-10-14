@@ -30,6 +30,7 @@ from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
 from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment, RuntimeSession, Task
 from app.runtime.environment import ExecutionEnvironmentRuntime
+from app.runtime.opencode_model import route_model_id
 
 PROVIDER_ID = "astra-gateway"
 
@@ -269,7 +270,7 @@ class RemoteProvisioner:
             )
         if not self.settings.gateway_enabled or not models:
             raise RuntimeError("请先在 API 中转配置至少一个启用的模型路由")
-        selected = (self.environment.model_name or "").removeprefix(f"{PROVIDER_ID}/") or models[0]
+        selected = route_model_id(self.environment.model_name) if self.environment.model_name else models[0]
         if selected not in models:
             raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
         paths = (

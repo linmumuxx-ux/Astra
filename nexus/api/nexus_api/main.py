@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .agentscope import PINNED_VERSION, AgentScopeClient, AgentScopeError
 from .db import connect, employee_from_row, init_db, message_from_row, new_id, utcnow
+from .task_skill import TASK_SKILL_ID, attach_task_capability, with_builtin_skill
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS = 6
@@ -124,12 +125,20 @@ def system_prompt(body: EmployeeBody | dict[str, Any]) -> str:
         domain = body["domain"]
         description = body["description"]
         instructions = body["instructions"]
-    return (
+    text = (
         f"你是{name}，责任领域是{domain}。\n"
         f"职责说明：\n{description}\n"
         f"工作指令：\n{instructions}\n"
         "需要其他员工协助时调用 contact_employee，不要代替对方编写答复。"
     )
+    skills = body.skills if isinstance(body, EmployeeBody) else list(body.get("skills") or [])
+    employee_id = None if isinstance(body, EmployeeBody) else body.get("id")
+    if TASK_SKILL_ID in skills and employee_id:
+        text += (
+            f"\n你的员工编号是 {employee_id}。"
+            "需要工程执行时使用任务工具；收到任务状态提示后先查询该任务，再决定下一步。"
+        )
+    return text
 
 
 def resolved_media_type(name: str, declared: str) -> str:
@@ -510,6 +519,28 @@ async def peer_replies_for_conversation(
     return visible
 
 
+def session_owned_by(connection, employee_id: str, session_id: str, mailbox_session_id: str | None) -> bool:
+    if mailbox_session_id and session_id == mailbox_session_id:
+        return True
+    conversation = connection.execute(
+        """
+        SELECT 1 FROM conversations
+        WHERE employee_id = ? AND agentscope_session_id = ?
+        """,
+        (employee_id, session_id),
+    ).fetchone()
+    if conversation is not None:
+        return True
+    member = connection.execute(
+        """
+        SELECT 1 FROM channel_members
+        WHERE employee_id = ? AND agentscope_session_id = ?
+        """,
+        (employee_id, session_id),
+    ).fetchone()
+    return member is not None
+
+
 def lines(values: list[str]) -> list[str]:
     cleaned: list[str] = []
     for value in values:
@@ -602,19 +633,31 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=unavailable_detail)
         return requested, {"available": False, "items": []}
 
+    async def accepted_skills(client: AgentScopeClient, requested: list[str], previous: list[str]) -> list[str]:
+        requested = lines(requested)
+        catalog: list[dict[str, str]] | None = None
+        if client.configured:
+            try:
+                catalog = await client.list_skills()
+            except AgentScopeError:
+                catalog = None
+        if catalog is not None:
+            allowed = {item["id"] for item in catalog} | {TASK_SKILL_ID}
+            unknown = [item for item in requested if item not in allowed]
+            if unknown:
+                raise HTTPException(status_code=422, detail="技能不在 AgentScope 技能库中")
+            return requested
+        extras = [item for item in requested if item not in set(previous) and item != TASK_SKILL_ID]
+        if extras:
+            raise HTTPException(status_code=422, detail="当前无法读取技能库，不能新增技能")
+        return requested
+
     async def chosen_resources(
         client: AgentScopeClient,
         body: EmployeeBody,
         previous: dict[str, list[str]],
     ) -> tuple[list[str], list[str], list[str]]:
-        skills, _skills = await accepted_from_catalog(
-            client,
-            body.skills,
-            previous.get("skills", []),
-            load=client.list_skills,
-            unknown_detail="技能不在 AgentScope 技能库中",
-            unavailable_detail="当前无法读取技能库，不能新增技能",
-        )
+        skills = await accepted_skills(client, body.skills, previous.get("skills", []))
         knowledge, _knowledge = await accepted_from_catalog(
             client,
             body.knowledge,
@@ -648,6 +691,7 @@ def create_app() -> FastAPI:
                 mailbox = await client.create_session(agent_id, f"{employee['name']}的邮箱")
             if agent_id and mailbox:
                 await client.set_permission_mode(agent_id, mailbox, UNATTENDED_PERMISSION)
+                await attach_task_capability(client, employee, mailbox)
             return {"ok": True, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": ""}
         except AgentScopeError as exc:
             return {"ok": False, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": exc.detail}
@@ -796,7 +840,30 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/skills")
     async def skills(request: Request) -> dict[str, Any]:
         client = client_of(request)
-        return await publish_catalog(client, client.list_skills)
+        payload = await publish_catalog(client, client.list_skills)
+        payload["items"] = with_builtin_skill(payload["items"])
+        return payload
+
+    @app.get("/api/v1/internal/wake-target")
+    def wake_target(
+        employee_id: str,
+        session_id: str = "",
+        connection=Depends(database),
+    ) -> dict[str, str]:
+        employee = load_employee(connection, employee_id)
+        agent_id = employee["agentscope_agent_id"]
+        if not agent_id:
+            raise HTTPException(status_code=404, detail="员工还没有 Agent")
+        requested = session_id.strip()
+        if requested:
+            if not session_owned_by(connection, employee_id, requested, employee["mailbox_session_id"]):
+                raise HTTPException(status_code=404, detail="会话不属于该员工")
+            target = requested
+        else:
+            target = employee["mailbox_session_id"]
+            if not target:
+                raise HTTPException(status_code=404, detail="员工还没有邮箱")
+        return {"agent_id": agent_id, "session_id": target}
 
     @app.get("/api/v1/knowledge")
     async def knowledge(request: Request) -> dict[str, Any]:
@@ -1081,6 +1148,12 @@ def create_app() -> FastAPI:
                     (session_id, utcnow(), conversation_id),
                 )
                 connection.commit()
+                await attach_task_capability(
+                    client,
+                    employee,
+                    session_id,
+                    conversation_id=conversation_id,
+                )
                 files: list[tuple[str, str, bytes]] = []
                 for item in attachments:
                     files.append((item["name"], item["type"], Path(item["path"]).read_bytes()))
@@ -1292,6 +1365,7 @@ def create_app() -> FastAPI:
                     (session_id, channel_id, employee["id"]),
                 )
                 connection.commit()
+                await attach_task_capability(client, employee, session_id, channel_id=channel_id)
                 await client.trigger_chat(
                     employee["agentscope_agent_id"],
                     session_id,
@@ -1454,6 +1528,12 @@ def create_app() -> FastAPI:
                     (member["channel_id"], employee["id"]),
                 ).fetchone()
                 peer_session = stored["agentscope_session_id"] or peer_session
+            await attach_task_capability(
+                client,
+                employee,
+                peer_session,
+                channel_id=member["channel_id"],
+            )
             return await hand_off(
                 connection,
                 client,

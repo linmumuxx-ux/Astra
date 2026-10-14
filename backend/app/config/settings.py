@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # provider/model。模型 id 是 deepseek-flash，上游为 DeepSeek OpenAI 兼容接口
     # https://api.deepseek.com。Worker 的 model_name 优先于这个全局后备。
     opencode_model: str | None = "deepseek/deepseek-flash"
+    nexus_api_base: str = "http://127.0.0.1:8120"
+    agentscope_base_url: str = "http://127.0.0.1:8000"
+    agentscope_user_id: str = "nexus"
+    task_mcp_host: str = "127.0.0.1"
+    task_mcp_port: int = Field(default=8202, ge=1, le=65535)
     opencode_timeout_seconds: int = 3600
     # Control-plane requests (status/messages/session/abort/prompt) must never
     # inherit the long execution budget; a stalled control call has to fail fast

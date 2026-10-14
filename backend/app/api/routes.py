@@ -37,6 +37,7 @@ from app.models import (
     TaskCategory,
     TaskReview,
     TaskSummary,
+    TaskWakeOutbox,
 )
 from app.runtime.environment import (
     CheckItem,
@@ -481,6 +482,9 @@ async def list_tasks(
     task_status: str | None = Query(default=None, alias="status"),
     priority: str | None = None,
     employee_id: str | None = None,
+    worker_id: str | None = None,
+    responsible_employee_id: str | None = None,
+    source_channel_id: str | None = None,
     created_from: datetime | None = None,
     created_to: datetime | None = None,
     limit: int = Query(default=100, ge=1, le=500),
@@ -499,8 +503,14 @@ async def list_tasks(
         query = query.where(Task.status == task_status)
     if priority:
         query = query.where(Task.priority == priority)
-    if employee_id:
+    if worker_id:
+        query = query.where(Task.employee_id == worker_id)
+    elif employee_id:
         query = query.where(Task.employee_id == employee_id)
+    if responsible_employee_id:
+        query = query.where(Task.responsible_employee_id == responsible_employee_id)
+    if source_channel_id:
+        query = query.where(Task.source_channel_id == source_channel_id)
     if created_from:
         query = query.where(Task.created_at >= created_from)
     if created_to:
@@ -600,6 +610,7 @@ async def delete_task(task_id: str, session: AsyncSession = Depends(get_session)
         .where(ExperienceEvidence.task_id == task_id)
         .values(task_id=None, source_session_id=None)
     )
+    await session.execute(delete(TaskWakeOutbox).where(TaskWakeOutbox.task_id == task_id))
     await session.execute(delete(TaskReview).where(TaskReview.task_id == task_id))
     await session.execute(delete(TaskSummary).where(TaskSummary.task_id == task_id))
     await session.execute(delete(RuntimeSession).where(RuntimeSession.task_id == task_id))

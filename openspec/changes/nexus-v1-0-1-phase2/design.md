@@ -222,6 +222,10 @@ export ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash
 
 `astra_service.py dev` 启动 API `8100`、管理台 `5173`、Celery 与按配置启用的 OpenCode。Nexus API 仍是 `8120`，页面 `5174`。挂接完成后的单一启动命令在实现变更里写，不在本轮发明一套还不存在的脚本。
 
+## 已确认
+
+用户已确认 D1–D10 全部按方案执行：代码来源是 `backend/app` 与 `frontend/`；员工库与任务库分开；Celery 与单槽 Worker；暂停为 `WAITING`；员工 MCP 直连任务服务；唤醒来源会话或邮箱；未投递状态合并；总结只读；只有勾选任务技能的会话挂工具；不迁移三维办公、助手抽屉、`NrTestSystemSource` 和内置团队工具。
+
 ## Open Questions
 
 D1. 执行、网关、图书馆以 `backend/app` 与 `frontend/` 为代码来源。`domains/` 只说明员工和 Worker 应该分开，不迁它的服务。是否同意？

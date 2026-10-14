@@ -10,6 +10,7 @@ from app.config.settings import get_settings
 from app.domain import PRIORITY_WEIGHT, EmployeeStatus, TaskStatus
 from app.event_bus import event_bus
 from app.models import DigitalEmployee, Event, Task
+from app.runtime.wake_outbox import record_wake
 from app.schemas import TaskCreate
 from app.state_machine import TaskStateMachine
 from app.usage import (
@@ -32,6 +33,12 @@ class TaskService:
         self.session = session
 
     async def create(self, payload: TaskCreate) -> Task:
+        if payload.idempotency_key:
+            existing = await self.session.scalar(
+                select(Task).where(Task.idempotency_key == payload.idempotency_key)
+            )
+            if existing:
+                return existing
         criteria = [
             {
                 "id": criterion.id or f"AC-{index:02d}",
@@ -53,6 +60,11 @@ class TaskService:
             priority_weight=PRIORITY_WEIGHT[payload.priority],
             completion_policy=payload.completion_policy.value,
             employee_id=payload.employee_id,
+            responsible_employee_id=payload.responsible_employee_id,
+            source_session_id=payload.source_session_id,
+            source_conversation_id=payload.source_conversation_id,
+            source_channel_id=payload.source_channel_id,
+            idempotency_key=payload.idempotency_key,
             status=TaskStatus.PENDING,
             current_progress="等待领取",
             last_activity_at=datetime.now(UTC),
@@ -74,6 +86,12 @@ class TaskService:
             await self.session.commit()
         except IntegrityError:
             await self.session.rollback()
+            if payload.idempotency_key:
+                existing = await self.session.scalar(
+                    select(Task).where(Task.idempotency_key == payload.idempotency_key)
+                )
+                if existing:
+                    return existing
             raise
         await self.session.refresh(task)
         await event_bus.publish({"type": "TASK_CREATED", "task_id": task.id})
@@ -126,13 +144,14 @@ class TaskService:
         if target in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
             task.finished_at = now
         event_type = STATUS_EVENT[target]
-        await self._record(
+        event = await self._record(
             task,
             event_type,
             "work",
             message or f"任务状态从 {previous.value} 变更为 {target.value}",
             {"from": previous.value, "to": target.value, **(detail or {})},
         )
+        await record_wake(self.session, task, event, previous, target)
         if commit:
             await self.session.commit()
             await self.session.refresh(task)

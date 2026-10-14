@@ -63,7 +63,7 @@ def test_health_and_runtime_report_pinned_version(client):
 
 def test_skill_catalog_is_empty_when_service_is_down(client):
     payload = client.get("/api/v1/skills").json()
-    assert payload == {"available": False, "items": []}
+    assert payload == {"available": False, "items": [{"id": "task-management", "name": "任务管理"}]}
 
 
 def test_employee_crud_rejects_duplicates_and_model_is_absent(client):
@@ -235,6 +235,43 @@ def test_new_skills_are_rejected_when_catalog_is_unavailable(client):
     response = client.post("/api/v1/employees", json=employee_body(skills=["not-a-real-skill"]))
     assert response.status_code == 422
     assert "技能" in response.json()["detail"]
+
+
+def test_builtin_task_skill_can_be_saved_when_catalog_is_down(client):
+    response = client.post("/api/v1/employees", json=employee_body(skills=["task-management"]))
+    assert response.status_code == 201
+    assert response.json()["employee"]["skills"] == ["task-management"]
+
+
+def test_wake_target_uses_mailbox_and_rejects_foreign_session(client):
+    from nexus_api.db import connect
+    from nexus_api.main import db_path
+
+    employee = client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+    other = client.post(
+        "/api/v1/employees",
+        json=employee_body(name="知微", domain="防线运营人员"),
+    ).json()["employee"]
+    connection = connect(db_path())
+    connection.execute(
+        "UPDATE employees SET agentscope_agent_id = ?, mailbox_session_id = ? WHERE id = ?",
+        ("agt_1", "ses_mail", employee["id"]),
+    )
+    connection.execute(
+        "UPDATE employees SET agentscope_agent_id = ?, mailbox_session_id = ? WHERE id = ?",
+        ("agt_2", "ses_other", other["id"]),
+    )
+    connection.commit()
+    connection.close()
+
+    mailbox = client.get("/api/v1/internal/wake-target", params={"employee_id": employee["id"]})
+    assert mailbox.status_code == 200
+    assert mailbox.json() == {"agent_id": "agt_1", "session_id": "ses_mail"}
+    foreign = client.get(
+        "/api/v1/internal/wake-target",
+        params={"employee_id": employee["id"], "session_id": "ses_other"},
+    )
+    assert foreign.status_code == 404
 
 
 def test_new_knowledge_and_tools_are_rejected_when_catalog_is_unavailable(client):
@@ -677,6 +714,46 @@ def test_peer_hint_returns_limit_text_without_delivering():
     assert result == "已经把同样的话交给对方，不要再联系。"
     assert seen["message"] == "自动化失败了"
     assert seen["name"] == "自动化"
+
+
+def test_task_hint_uses_nexus_task_source():
+    import asyncio
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "nexus_agent_service_task_hint",
+        ROOT / "nexus/deploy/agent_service.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seen: dict[str, object] = {}
+
+    class Block:
+        def __init__(self, hint: str, source: str) -> None:
+            self.payload = {"type": "hint", "hint": hint, "source": source}
+
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            assert mode == "json"
+            return self.payload
+
+    async def deliver(_bus, **kwargs):
+        seen.update(kwargs)
+
+    asyncio.run(
+        module.deliver_task_hint(
+            deliver,
+            Block,
+            None,
+            "nexus",
+            "agt_1",
+            "ses_1",
+            "请先查询任务",
+        )
+    )
+    assert seen["session_id"] == "ses_1"
+    assert seen["agent_id"] == "agt_1"
+    assert seen["payload"]["source"] == "nexus-task"
 
 
 def test_peer_resolver_returns_mailbox_without_a_scripted_answer(tmp_path, monkeypatch):

@@ -41,6 +41,7 @@ from app.executors.usage import (
 )
 from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
+from app.runtime.opencode_model import direct_model, gateway_model
 from app.runtime.runtime_context import (
     build_runtime_context_part,
     generate_runtime_context,
@@ -444,7 +445,11 @@ class RuntimeService:
                     health.get("version") or settings.opencode_workspace_ui_default_version
                 ).strip().removeprefix("v")
                 new_snapshot["opencode_version"] = server_version
-                effective_model = environment.model_name or settings.opencode_model
+                raw_model = environment.model_name or settings.opencode_model
+                if environment.mode == ExecutionMode.LINUX_REMOTE.value:
+                    effective_model = gateway_model(raw_model)
+                else:
+                    effective_model = direct_model(environment.model_name, settings.opencode_model)
                 created = await client.create_session(
                     Path(new_workspace),
                     title=task.title,

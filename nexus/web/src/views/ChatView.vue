@@ -81,6 +81,7 @@
           <button class="chip" :class="{ sel: tab === 'responsibility' }" type="button" @click="tab = 'responsibility'">职责</button>
           <button class="chip" :class="{ sel: tab === 'capability' }" type="button" @click="tab = 'capability'">能力</button>
           <button class="chip" :class="{ sel: tab === 'memory' }" type="button" @click="tab = 'memory'">记忆</button>
+          <button class="chip" :class="{ sel: tab === 'tasks' }" type="button" @click="tab = 'tasks'">任务</button>
         </div>
         <div v-if="tab === 'responsibility'" style="padding: 16px">
           <div class="section-label">职责范围</div>
@@ -105,11 +106,14 @@
             <span v-if="!current.tools.length" class="muted">暂无</span>
           </div>
         </div>
-        <div v-else style="padding: 16px">
+        <div v-else-if="tab === 'memory'" style="padding: 16px">
           <div class="detail-excerpt">记忆保存在这条 AgentScope Session 里，这里只读，不能修改员工。</div>
           <div class="section-label">Session</div>
           <div class="mono">{{ activeConversation?.agentscope_session_id || "发送后才会创建" }}</div>
           <div v-if="latestReply" class="detail-excerpt" style="margin-top: 12px">{{ latestReply }}</div>
+        </div>
+        <div v-else style="padding: 16px">
+          <TaskTable :tasks="tasks" />
         </div>
       </aside>
     </div>
@@ -133,6 +137,8 @@ import {
   sendConversation,
   uploadAttachment,
 } from "../api";
+import TaskTable from "../components/TaskTable.vue";
+import { listTasks, type PlatformTask } from "../platform";
 import type { Attachment, ChatMessage, Conversation, Employee, ResourceCatalog } from "../types";
 
 const route = useRoute();
@@ -148,7 +154,8 @@ const liveText = ref("");
 const dropping = ref(false);
 const seenEventIds = new Map<string, Set<string>>();
 let followToken = 0;
-const tab = ref<"responsibility" | "capability" | "memory">("responsibility");
+const tab = ref<"responsibility" | "capability" | "memory" | "tasks">("responsibility");
+const tasks = ref<PlatformTask[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const messageBox = ref<HTMLElement | null>(null);
 const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
@@ -356,18 +363,36 @@ watch(conversationId, async (id) => {
   if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
 });
 
+async function refreshTasks() {
+  if (!currentId.value || tab.value !== "tasks") return;
+  try {
+    tasks.value = await listTasks({ responsible_employee_id: currentId.value });
+  } catch {
+    tasks.value = [];
+  }
+}
+
+watch([tab, currentId], () => {
+  void refreshTasks();
+});
+
 watch([messages, liveText], async () => {
   await nextTick();
   if (messageBox.value) messageBox.value.scrollTop = messageBox.value.scrollHeight;
 });
 
+let taskTimer = 0;
 onMounted(async () => {
   const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
   catalogs.value = { skills, knowledge, tools };
   await loadEmployees();
   if (currentId.value) await selectEmployee(currentId.value);
+  taskTimer = window.setInterval(() => void refreshTasks(), 8000);
 });
-onBeforeUnmount(stopStream);
+onBeforeUnmount(() => {
+  stopStream();
+  window.clearInterval(taskTimer);
+});
 </script>
 
 <style scoped>

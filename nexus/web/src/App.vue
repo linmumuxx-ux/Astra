@@ -17,6 +17,11 @@
       <router-link to="/employees">员工管理</router-link>
       <router-link to="/chat">数字员工</router-link>
       <router-link to="/team">团队交流</router-link>
+      <router-link to="/tasks">数字任务</router-link>
+      <router-link to="/workers">Agent Worker</router-link>
+      <router-link to="/gateway">API 网关</router-link>
+      <router-link to="/library">数字图书馆</router-link>
+      <router-link to="/interventions">待处理</router-link>
     </nav>
   </div>
 </template>

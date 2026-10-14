@@ -9,6 +9,7 @@ from app.runtime.dispatcher import Dispatcher
 from app.runtime.heartbeat import heartbeat_active_employees, mark_stale_employees_offline
 from app.runtime.lifecycle import RuntimeService
 from app.runtime.scout import TaskScout
+from app.runtime.task_wakeup import HttpWakeSender, deliver_pending
 from app.sources.nr_test_system import NrTestSystemSource
 
 settings = get_settings()
@@ -25,9 +26,11 @@ celery.conf.update(
         "astra.heartbeat-check": {"queue": "control"},
         "astra.employee-heartbeat": {"queue": "control"},
         "astra.task-review": {"queue": "control"},
+        "astra.task-wake": {"queue": "control"},
     },
     beat_schedule={
         "astra-task-review": {"task": "astra.task-review", "schedule": 30.0},
+        "astra-task-wake": {"task": "astra.task-wake", "schedule": float(settings.outbox_interval)},
         "astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval},
         "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
         "astra-heartbeat-check": {
@@ -57,6 +60,15 @@ def run_async(coro):
         _loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_loop)
     return _loop.run_until_complete(coro)
+
+
+@celery.task(name="astra.task-wake")
+def task_wake() -> int:
+    async def execute():
+        async with worker_session() as session:
+            return await deliver_pending(session, HttpWakeSender())
+
+    return run_async(execute())
 
 
 @celery.task(name="astra.task-review")

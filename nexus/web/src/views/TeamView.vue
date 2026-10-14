@@ -78,6 +78,14 @@
         </div>
       </article>
       <aside class="panel aside" v-if="current">
+        <div class="right-tabs">
+          <button class="chip" :class="{ sel: sideTab === 'members' }" type="button" @click="sideTab = 'members'">成员</button>
+          <button class="chip" :class="{ sel: sideTab === 'tasks' }" type="button" @click="sideTab = 'tasks'">任务</button>
+        </div>
+        <div v-if="sideTab === 'tasks'" style="padding: 16px">
+          <TaskTable :tasks="tasks" />
+        </div>
+        <div v-else style="padding: 0 16px 16px">
         <div style="display: flex; justify-content: space-between; align-items: center">
           <b>讨论参与者</b>
           <el-button size="small" @click="openDialog(current)">＋ 调整成员</el-button>
@@ -88,6 +96,7 @@
           <div><b>{{ employee.name }}</b><small class="muted">{{ employee.domain }} · {{ employee.enabled ? "启用" : "禁用" }}</small></div>
         </div>
         <p class="muted">员工之间的后续联系由 contact_employee 投递。Nexus 不代写同事回复。</p>
+        </div>
       </aside>
     </div>
     <el-dialog v-model="dialogOpen" :title="editingId ? '编辑讨论' : '创建团队讨论'" width="520px">
@@ -123,6 +132,8 @@ import {
   sendChannel,
   uploadAttachment,
 } from "../api";
+import TaskTable from "../components/TaskTable.vue";
+import { listTasks, type PlatformTask } from "../platform";
 import type { Attachment, Channel, ChatMessage, Employee } from "../types";
 
 const employees = ref<Employee[]>([]);
@@ -141,6 +152,8 @@ const editingId = ref<string | null>(null);
 const mentionOpen = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const form = reactive({ name: "", description: "", memberIds: [] as string[] });
+const sideTab = ref<"members" | "tasks">("members");
+const tasks = ref<PlatformTask[]>([]);
 let streamAbort: AbortController | null = null;
 
 const current = computed(() => channels.value.find((item) => item.id === currentId.value) ?? null);
@@ -379,6 +392,27 @@ async function send() {
   }
 }
 
+async function refreshTasks() {
+  if (!current.value || sideTab.value !== "tasks") return;
+  const collected = new Map<string, PlatformTask>();
+  try {
+    for (const item of await listTasks({ source_channel_id: current.value.id })) collected.set(item.id, item);
+    for (const member of current.value.members) {
+      for (const item of await listTasks({ responsible_employee_id: member.employee_id })) {
+        collected.set(item.id, item);
+      }
+    }
+  } catch {
+    tasks.value = [];
+    return;
+  }
+  tasks.value = [...collected.values()];
+}
+
+watch([sideTab, currentId], () => {
+  void refreshTasks();
+});
+
 watch(currentId, async (id) => {
   stopStream();
   liveLines.value = [];
@@ -397,12 +431,20 @@ watch([messages, liveLines], async () => {
   if (messageBox.value) messageBox.value.scrollTop = messageBox.value.scrollHeight;
 });
 
-onMounted(reload);
-onBeforeUnmount(stopStream);
+let taskTimer = 0;
+onMounted(() => {
+  void reload();
+  taskTimer = window.setInterval(() => void refreshTasks(), 8000);
+});
+onBeforeUnmount(() => {
+  stopStream();
+  window.clearInterval(taskTimer);
+});
 </script>
 
 <style scoped>
 .rail-item { width: 100%; border: 0; background: transparent; text-align: left; }
+.chip.sel { background: #e5f6ed; border-color: #aad8c2; color: #187956; }
 .mention-box { margin-top: 8px; background: white; border: 1px solid #dbece0; border-radius: 12px; padding: 6px; }
 .mention-box button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px; cursor: pointer; }
 .compose-box.dropping { outline: 2px dashed #187956; }

@@ -116,6 +116,30 @@ def main() -> None:
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
     listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
+    from fastapi import HTTPException
+    from pydantic import BaseModel
+
+    class TaskHintBody(BaseModel):
+        session_id: str
+        agent_id: str
+        hint: str
+        user_id: str = "nexus"
+
+    @app.post("/nexus/task-hint")
+    async def task_hint(body: TaskHintBody) -> dict[str, bool]:
+        if not body.session_id.strip() or not body.agent_id.strip() or not body.hint.strip():
+            raise HTTPException(status_code=422, detail="缺少会话、员工或提示")
+        await deliver_task_hint(
+            deliver_to_inbox,
+            HintBlock,
+            message_bus,
+            body.user_id,
+            body.agent_id,
+            body.session_id,
+            body.hint,
+        )
+        return {"ok": True}
+
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 
@@ -163,6 +187,25 @@ async def deliver_peer_hint(
         payload=hint.model_dump(mode="json"),
     )
     return "已把消息交给对方。对方将自行推理，这里没有代替对方写出答复。"
+
+
+async def deliver_task_hint(
+    deliver_to_inbox,
+    hint_block,
+    message_bus,
+    user_id: str,
+    agent_id: str,
+    session_id: str,
+    hint: str,
+) -> None:
+    block = hint_block(hint=hint, source="nexus-task")
+    await deliver_to_inbox(
+        message_bus,
+        user_id=user_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        payload=block.model_dump(mode="json"),
+    )
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from app.api.routes import require_task
 from app.config.settings import get_settings
 from app.database import get_session
-from app.domain import ExecutionMode
+from app.domain import ExecutionMode, TaskStatus
 from app.executors.errors import OpenCodeSessionNotFound
 from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
@@ -117,6 +117,28 @@ async def restart_task(task_id: str, session=Depends(get_session)):
     await require_task(task_id, session)
     try:
         return await RuntimeService(session).start(task_id, restart=True)
+    except Exception as exc:
+        raise error_response(exc) from exc
+
+
+@router.post("/pause", response_model=TaskRead)
+async def pause_task(task_id: str, session=Depends(get_session)):
+    task = await require_task(task_id, session)
+    if task.status != TaskStatus.RUNNING.value:
+        raise HTTPException(409, "只有执行中的任务可以暂停")
+    try:
+        return await RuntimeService(session).stop(task_id, cancel_task=False)
+    except Exception as exc:
+        raise error_response(exc) from exc
+
+
+@router.post("/resume", response_model=TaskRead)
+async def resume_task(task_id: str, session=Depends(get_session)):
+    task = await require_task(task_id, session)
+    if task.status != TaskStatus.WAITING.value:
+        raise HTTPException(409, "只有等待中的任务可以恢复")
+    try:
+        return await RuntimeService(session).start(task_id, restart=bool(task.current_session_id))
     except Exception as exc:
         raise error_response(exc) from exc
 

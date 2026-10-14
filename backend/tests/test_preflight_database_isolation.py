@@ -18,7 +18,6 @@ GATEWAY_TABLES = {
     "gateway_nodes",
     "gateway_routes",
     "gateway_keys",
-    "gateway_config_versions",
     "gateway_health_checks",
     "gateway_requests",
     "gateway_audit_events",

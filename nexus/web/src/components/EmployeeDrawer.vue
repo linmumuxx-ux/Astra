@@ -40,13 +40,13 @@
           v-model="form.skills"
           multiple
           filterable
-          :placeholder="catalogs.skills.available ? '选择技能' : '当前无法读取技能'"
+          :placeholder="skillOptions.length ? '选择技能' : '当前没有可选技能'"
           style="width: 100%"
-          :disabled="!catalogs.skills.available"
+          :disabled="!skillOptions.length"
         >
           <el-option v-for="item in skillOptions" :key="item.id" :label="`${item.name} · ${item.id}`" :value="item.id" />
         </el-select>
-        <div class="muted" style="margin-top: 6px">技能来自 AgentScope 技能库，这里不能编写技能正文。</div>
+        <div class="muted" style="margin-top: 6px">任务管理是内置技能。其余技能仍来自 AgentScope，这里不能编写技能正文。</div>
       </el-form-item>
       <el-form-item label="工具">
         <el-select
