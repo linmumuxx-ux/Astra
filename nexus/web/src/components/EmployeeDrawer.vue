@@ -1,5 +1,5 @@
 <template>
-  <el-drawer :model-value="open" :title="employee ? '编辑数字员工' : '创建数字员工'" size="610px" @close="emit('close')">
+  <el-drawer v-model="visible" append-to-body :title="employee ? '编辑数字员工' : '创建数字员工'" size="610px" :close-on-click-modal="false" @close="onClose">
     <el-form label-position="top" @submit.prevent="submit">
       <div class="form-cap">身份与职责</div>
       <div class="pair">
@@ -77,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from "vue";
+import { computed, nextTick, reactive, ref, watch } from "vue";
 import type { Employee, ResourceCatalog } from "../types";
 
 const props = defineProps<{
@@ -107,6 +107,29 @@ const form = reactive({
   skills: [] as string[],
   tools: [] as string[],
 });
+
+const visible = ref(false);
+let openedAt = 0;
+watch(
+  () => props.open,
+  async (open) => {
+    if (!open) {
+      visible.value = false;
+      return;
+    }
+    await nextTick();
+    openedAt = Date.now();
+    visible.value = true;
+  },
+  { immediate: true },
+);
+function onClose() {
+  if (props.open && Date.now() - openedAt < 400) {
+    visible.value = true;
+    return;
+  }
+  if (props.open) emit("close");
+}
 
 const skillOptions = computed(() => optionsFor(props.catalogs.skills, form.skills));
 const knowledgeOptions = computed(() => optionsFor(props.catalogs.knowledge, form.knowledge));

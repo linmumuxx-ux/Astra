@@ -22,14 +22,20 @@
       <router-link to="/gateway">API 网关</router-link>
       <router-link to="/library">数字图书馆</router-link>
       <router-link to="/interventions">待处理</router-link>
+      <router-link to="/settings">分类设置</router-link>
     </nav>
+    <AstraConfirmHost />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import AstraConfirmHost from "@/components/astra/AstraConfirmHost.vue";
+import { useAstraStore } from "@/stores/astra";
 import { getRuntime } from "./api";
 import type { RuntimeStatus } from "./types";
+
+const store = useAstraStore();
 
 const runtime = ref<RuntimeStatus | null>(null);
 const banner = computed(() => {
@@ -40,6 +46,7 @@ const banner = computed(() => {
 });
 
 onMounted(async () => {
+  if (!store.lastUpdated) void store.refresh();
   try {
     runtime.value = await getRuntime();
   } catch {

@@ -52,7 +52,7 @@
       </div>
       <aside class="panel management-side">
         <template v-if="selected">
-          <div style="display: flex; justify-content: space-between"><b>员工档案</b><el-button size="small" @click="openEdit(selected)">编辑</el-button></div>
+          <div style="display: flex; justify-content: space-between"><b>员工档案</b><el-button size="small" @click.stop="openEdit(selected)">编辑</el-button></div>
           <div class="profile-hero">
             <span class="avatar" :class="{ off: !selected.enabled }">{{ selected.avatar }}</span>
             <h3>{{ selected.name }}</h3>

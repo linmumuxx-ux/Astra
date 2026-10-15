@@ -52,6 +52,31 @@ def test_task_api_uses_session_business_contract():
         assert client.get(f"/api/tasks/{task['id']}").json()["status"] == "CANCELED"
 
 
+def test_task_patch_updates_open_task_and_refuses_concluded():
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json=task_payload(title="可编辑任务")).json()
+        updated = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={
+                "title": "已改标题",
+                "description": "已改描述",
+                "acceptance_criteria": [{"content": "新的验收标准"}],
+                "responsible_employee_id": "emp-owner",
+            },
+        )
+        assert updated.status_code == 200
+        body = updated.json()
+        assert body["title"] == "已改标题"
+        assert body["description"] == "已改描述"
+        assert body["acceptance_criteria"][0]["content"] == "新的验收标准"
+        assert body["responsible_employee_id"] == "emp-owner"
+
+        stopped = client.post(f"/api/tasks/{created['id']}/stop")
+        assert stopped.status_code == 200
+        refused = client.patch(f"/api/tasks/{created['id']}", json={"title": "不能再改"})
+        assert refused.status_code == 409
+
+
 def test_task_delete_only_allows_pending_or_terminal_states():
     def set_status(task_id: str, status: TaskStatus) -> None:
         async def _update() -> None:

@@ -11,7 +11,7 @@ from app.domain import PRIORITY_WEIGHT, EmployeeStatus, TaskStatus
 from app.event_bus import event_bus
 from app.models import DigitalEmployee, Event, Task
 from app.runtime.wake_outbox import record_wake
-from app.schemas import TaskCreate
+from app.schemas import TaskCreate, TaskUpdate
 from app.state_machine import TaskStateMachine
 from app.usage import (
     count_completed_tasks,
@@ -95,6 +95,32 @@ class TaskService:
             raise
         await self.session.refresh(task)
         await event_bus.publish({"type": "TASK_CREATED", "task_id": task.id})
+        return task
+
+    async def update(self, task: Task, payload: TaskUpdate) -> Task:
+        if TaskStatus(task.status) in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
+            raise ValueError("已结束的任务不能修改")
+        fields = payload.model_fields_set
+        if "title" in fields and payload.title is not None:
+            task.title = payload.title
+        if "description" in fields and payload.description is not None:
+            task.description = payload.description
+        if "priority" in fields and payload.priority is not None:
+            task.priority = payload.priority.value
+            task.priority_weight = PRIORITY_WEIGHT[payload.priority]
+        if "acceptance_criteria" in fields and payload.acceptance_criteria is not None:
+            task.acceptance_criteria = [
+                {"id": criterion.id or f"AC-{index:02d}", "content": criterion.content}
+                for index, criterion in enumerate(payload.acceptance_criteria, start=1)
+            ]
+        if "employee_id" in fields:
+            if TaskStatus(task.status) != TaskStatus.PENDING:
+                raise ValueError("只有待领取任务可以调整 Worker")
+            task.employee_id = payload.employee_id or None
+        if "responsible_employee_id" in fields:
+            task.responsible_employee_id = payload.responsible_employee_id or None
+        await self.add_event(task, "TASK_UPDATED", "work", "任务信息已更新", {"fields": sorted(fields)})
+        await self.session.refresh(task)
         return task
 
     async def transition(

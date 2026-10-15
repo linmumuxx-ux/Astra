@@ -1,0 +1,126 @@
+/* Element Plus 全局尺寸主题层：全站唯一一处覆盖，import 在 element-plus/dist/index.css 之后。
+   App.vue 用 <ElConfigProvider size="small"> 把所有控件放进 small 档，
+   而 Element Plus 2.14 把 small 档的尺寸编译进了组件样式
+   （$common-component-size.small=24px、$input-font-size.small=12px、$tag-height.small=20px…），
+   只改 --el-component-size-small 只能影响真正读 CSS 变量的 ElInput / ElInputNumber / ElDateEditor。
+   下面把 Astra 用到的、仍写死 small 的规则统一回 --astra-control-height (32px) 基准，
+   取值与 Element Plus 自己的 default 档一致；业务页面不再各自压控件内部高度。 */
+
+/* 输入框：高度读 --el-component-size-small 已经跟着 32px 走了，
+   但 small 档的字号和左右内边距仍是 24px 档的字面量。 */
+.el-input--small { font-size: var(--el-font-size-base); }
+
+.el-input--small .el-input__wrapper { padding: 1px 11px; }
+
+/* 按钮：small 档把高度写进 --el-button-size 并写死 12px 字号。 */
+.el-button--small {
+  --el-button-size: var(--astra-control-height);
+  padding: 0 15px;
+  font-size: var(--el-font-size-base);
+  border-radius: var(--el-border-radius-base);
+}
+
+.el-button--small [class*='el-icon'] + span { margin-left: 6px; }
+
+/* 选择器：small 档的 min-height / padding / 字号 / 行高全是字面量。 */
+.el-select--small .el-select__wrapper {
+  min-height: var(--astra-control-height);
+  padding: 4px 12px;
+  font-size: var(--el-font-size-base);
+  line-height: 24px;
+}
+
+.el-select--small .el-select__input { height: 24px; }
+
+/* 数字输入框：small 档的宽度 / 行高 / 步进按钮尺寸 / 内边距都是 24px 档的字面量。 */
+.el-input-number--small { width: 150px; line-height: 30px; }
+
+.el-input-number--small .el-input-number__increase,
+.el-input-number--small .el-input-number__decrease {
+  width: var(--astra-control-height);
+  font-size: var(--el-font-size-base);
+}
+
+.el-input-number--small .el-input--small .el-input__wrapper { padding-right: 42px; padding-left: 42px; }
+
+.el-input-number--small.is-controls-right .el-input--small .el-input__wrapper { padding-right: 42px; }
+
+/* controls-right 模式 Element Plus 自己就把 --el-input-number-controls-height 设为 15px，
+   这里只保留取消 .is-controls-right 的图标缩放，控件高度不再重复声明。 */
+.el-input-number--small .el-input-number__increase [class*='el-icon'],
+.el-input-number--small .el-input-number__decrease [class*='el-icon'] { transform: none; }
+
+/* 表单项：small 档 label / content 行高锁 24px、字号 12px，表单会与 32px 控件错位。 */
+.el-form-item--small {
+  --font-size: var(--el-font-size-base);
+  --el-form-label-font-size: var(--font-size);
+}
+
+.el-form-item--small .el-form-item__label { height: var(--astra-control-height); line-height: var(--astra-control-height); }
+
+.el-form-item--small .el-form-item__content { line-height: var(--astra-control-height); }
+
+/* 开关 / 勾选 / 单选：small 档整体高度锁 24px、字号 12px。 */
+.el-switch--small { height: var(--astra-control-height); font-size: var(--el-font-size-base); line-height: 24px; }
+
+.el-switch--small .el-switch__label,
+.el-switch--small .el-switch__label * { font-size: var(--el-font-size-base); }
+
+.el-switch--small .el-switch__core { min-width: 40px; height: 20px; border-radius: 10px; }
+
+.el-switch--small .el-switch__core .el-switch__inner { height: 16px; padding: 0 2px 0 20px; }
+
+.el-switch--small .el-switch__core .el-switch__action { width: 16px; height: 16px; }
+
+.el-switch--small.is-checked .el-switch__core .el-switch__inner { padding: 0 20px 0 2px; }
+
+.el-checkbox.el-checkbox--small,
+.el-radio.el-radio--small { height: var(--astra-control-height); }
+
+.el-checkbox.el-checkbox--small .el-checkbox__label,
+.el-radio.el-radio--small .el-radio__label { font-size: var(--el-font-size-base); }
+
+.el-checkbox.el-checkbox--small .el-checkbox__inner,
+.el-radio.el-radio--small .el-radio__inner { width: 14px; height: 14px; }
+
+.el-checkbox.el-checkbox--small .el-checkbox__inner::after { width: 3px; height: 7px; }
+
+/* 单选/多选按钮组：small 档 padding 5px 11px / 12px 字号；内容里的 15px 图标会把行盒
+   撑到 34px，这里连同内边距一起锁回控件基准。 */
+.el-checkbox-button--small .el-checkbox-button__inner,
+.el-radio-button--small .el-radio-button__inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--astra-control-height);
+  padding: 8px 15px;
+  font-size: var(--el-font-size-base);
+}
+
+/* 分页：small 档按钮 24px / 12px。 */
+.el-pagination--small {
+  --el-pagination-button-width-small: var(--astra-control-height);
+  --el-pagination-button-height-small: var(--astra-control-height);
+  --el-pagination-font-size-small: var(--el-font-size-base);
+}
+
+/* 标签：small 档 20px，压在 32px 控件旁边偏小；字号变量默认 12px 也不到 base 档。 */
+.el-tag--small {
+  --el-icon-size: 14px;
+  --el-tag-font-size: var(--el-font-size-base);
+  height: 24px;
+  padding: 0 9px;
+}
+
+/* 描述列表：small 档单元格字号 12px。 */
+.el-descriptions--small .el-descriptions__body .el-descriptions__table .el-descriptions__cell { font-size: var(--el-font-size-base); }
+
+/* 表格：保留 small 档的紧凑行距，只把字号提到 base 档。 */
+.el-table--small { font-size: var(--el-font-size-base); }
+
+/* 文本：small 档字号取 --el-font-size-extra-small，现在与 --el-font-size-small 同为
+   13px，落在表格正文的 14px 之下。跟表格一样统一回 base 档，页面不再逐个传 size。 */
+.el-text--small { font-size: var(--el-font-size-base); }
+
+/* 按钮组统一走 ElSpace 的 gap，主题里的相邻按钮外边距会让间距翻倍，这里只清掉重复的那一份。 */
+.el-space .el-button + .el-button { margin-left: 0; }

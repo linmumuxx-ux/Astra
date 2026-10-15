@@ -227,6 +227,15 @@ class TaskCreate(BaseModel):
     completion_policy: CompletionPolicy = CompletionPolicy.MANUAL_CONFIRM
 
 
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=240)
+    description: str | None = Field(default=None, min_length=1)
+    priority: Priority | None = None
+    acceptance_criteria: list[AcceptanceCriterion] | None = None
+    employee_id: str | None = None
+    responsible_employee_id: str | None = None
+
+
 class TaskRead(RuntimeRead):
     id: str
     source: str

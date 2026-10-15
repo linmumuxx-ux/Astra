@@ -57,6 +57,7 @@ from app.schemas import (
     TaskCategoryRead,
     TaskCreate,
     TaskRead,
+    TaskUpdate,
 )
 from app.services import (
     EmployeeService,
@@ -540,6 +541,23 @@ async def create_task(payload: TaskCreate, session: AsyncSession = Depends(get_s
 @router.get("/tasks/{task_id}", response_model=TaskRead)
 async def get_task(task_id: str, session: AsyncSession = Depends(get_session)):
     return await require_task(task_id, session)
+
+
+@router.patch("/tasks/{task_id}", response_model=TaskRead)
+async def patch_task(task_id: str, payload: TaskUpdate, session: AsyncSession = Depends(get_session)):
+    task = await require_task(task_id, session)
+    if "employee_id" in payload.model_fields_set and payload.employee_id:
+        employee = await require_employee(payload.employee_id, session)
+        if not employee.enabled:
+            raise HTTPException(status_code=409, detail="指定员工未启用")
+        if task.task_type not in employee.task_types:
+            raise HTTPException(status_code=409, detail="指定员工不支持该任务类型")
+        if (task.category_id or "") not in employee.category_ids:
+            raise HTTPException(status_code=409, detail="指定员工不支持该任务分类")
+    try:
+        return await TaskService(session).update(task, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}/review")

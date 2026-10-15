@@ -105,6 +105,12 @@ button, input, textarea { font: inherit; }
 .dock { flex-wrap: wrap; max-width: min(980px, calc(100vw - 24px)); justify-content: center; }
 .data-page { display: flex; flex-direction: column; gap: 12px; }
 .dock a.active { background: #dff3e7; color: #147d59; font-weight: 750; }
+.page > .astra-page,
+.page > .task-detail {
+  height: calc(100vh - 260px);
+  min-height: 520px;
+}
+.page > .astra-page { padding-left: 0; padding-right: 0; }
 .member { display: flex; align-items: center; gap: 9px; padding: 9px 0; }
 .right-tabs { display: flex; gap: 6px; padding: 14px 16px 0; border-bottom: 1px solid #edf2ee; }
 .skill-tag { font-size: 11px; color: #286a4b; background: #edf8f2; border: 1px solid #d5eade; padding: 4px 9px; border-radius: 7px; }
