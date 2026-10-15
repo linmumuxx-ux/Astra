@@ -499,6 +499,43 @@ def test_probe_service_model_and_stream_use_node_configuration():
     assert by_type["STREAM"].detail["done"] is True
 
 
+def test_stream_probe_stops_when_upstream_keeps_sending_keepalive():
+    class KeepAlive(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                yield b": keep-alive\n\n"
+                await asyncio.sleep(0.01)
+
+        async def aclose(self) -> None:
+            return None
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=KeepAlive(),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    node = SimpleNamespace(
+        base_url="https://proxy.example.com",
+        models=["gpt-test"],
+        auth_type="NONE",
+        auth_header="Authorization",
+        health_path="/health",
+        connect_timeout_seconds=None,
+        request_timeout_seconds=None,
+    )
+    client = HttpGatewayProbeClient(0.2, transport=httpx.MockTransport(handler))
+
+    async def scenario():
+        return await asyncio.wait_for(client.probe(node, ["STREAM"], None), timeout=2)
+
+    outcome = asyncio.run(scenario())[0]
+    assert outcome.success is False
+    assert outcome.error == "探测超时"
+    assert outcome.latency_ms < 2000
+
+
 def test_probe_service_falls_back_to_configured_default_health_path():
     seen: list[str] = []
 

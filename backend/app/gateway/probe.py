@@ -97,7 +97,10 @@ class HttpGatewayProbeClient:
         headers = build_node_headers(node, api_key)
         outcomes: list[ProbeOutcome] = []
         if PROBE_NETWORK in probe_types:
-            outcomes.append(await self._probe_network(node.base_url))
+            start = time.perf_counter()
+            outcomes.append(
+                await self._bounded(node, PROBE_NETWORK, start, self._probe_network(node.base_url))
+            )
         http_types = [item for item in probe_types if item != PROBE_NETWORK]
         if not http_types:
             return outcomes
@@ -108,13 +111,13 @@ class HttpGatewayProbeClient:
                 start = time.perf_counter()
                 try:
                     if probe_type == PROBE_STREAM:
-                        outcomes.append(await self._probe_stream(client, base, headers, node, start))
+                        call = self._probe_stream(client, base, headers, node, start)
                     elif probe_type == PROBE_MODEL:
-                        outcomes.append(await self._probe_model(client, base, headers, node, start))
+                        call = self._probe_model(client, base, headers, node, start)
                     else:
-                        outcomes.append(
-                            await self._probe_service(client, base, headers, node, start)
-                        )
+                        call = self._probe_service(client, base, headers, node, start)
+                    # 读超时会在每个 keep-alive 分块后重置，所以上限必须是这一次探测的墙钟时间。
+                    outcomes.append(await self._bounded(node, probe_type, start, call))
                 except httpx.ConnectError as exc:
                     outcomes.append(self._failed(probe_type, start, f"连接失败: {exc}"))
                 except httpx.TimeoutException:
@@ -122,6 +125,16 @@ class HttpGatewayProbeClient:
                 except httpx.HTTPError as exc:
                     outcomes.append(self._failed(probe_type, start, f"请求失败: {exc}"))
         return outcomes
+
+    def _deadline(self, node: Any) -> float:
+        request = getattr(node, "request_timeout_seconds", None) or self._timeout
+        return float(request)
+
+    async def _bounded(self, node: Any, probe_type: str, start: float, call):
+        try:
+            return await asyncio.wait_for(call, timeout=self._deadline(node))
+        except TimeoutError:
+            return self._failed(probe_type, start, "探测超时")
 
     def _timeouts(self, node: Any) -> httpx.Timeout:
         request = getattr(node, "request_timeout_seconds", None) or self._timeout

@@ -95,12 +95,14 @@ MODELS_PATH = "/v1/models"
 MAX_REQUEST_BODY_BYTES = 20 * 1024 * 1024  # 20 MiB
 
 # 明确不转发的响应头：由本进程重新计算长度与连接语义。
+# content-encoding 一并去掉：httpx 读到的 body 已经解压，再透传 gzip 会让客户端二次解压失败。
 _STRIPPED_RESPONSE_HEADERS = {
     "content-length",
     "transfer-encoding",
     "connection",
     "keep-alive",
     "trailers",
+    "content-encoding",
 }
 
 @dataclass

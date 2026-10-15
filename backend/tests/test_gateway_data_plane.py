@@ -95,6 +95,8 @@ class MockUpstream:
             "completion_tokens": 2,
             "total_tokens": 7,
         }
+        # 模拟 httpx 已解压、但响应头仍写着 gzip 的上游。
+        self.decoded_gzip = False
 
     def stream_bytes(self) -> list[bytes]:
         chunks = list(self.stream_chunks)
@@ -123,6 +125,23 @@ class MockUpstream:
         body: dict[str, Any] = {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
         if self.include_usage:
             body["usage"] = self.usage
+        if self.decoded_gzip:
+            import gzip
+
+            raw = gzip.compress(json.dumps(body).encode())
+
+            class GzipStream(httpx.AsyncByteStream):
+                async def __aiter__(self):
+                    yield raw
+
+                async def aclose(self) -> None:
+                    return None
+
+            return httpx.Response(
+                self.response_status,
+                stream=GzipStream(),
+                headers={"content-type": "application/json", "content-encoding": "gzip"},
+            )
         return httpx.Response(self.response_status, json=body)
 
     async def _sse(self):
@@ -635,6 +654,20 @@ def test_request_within_limit_is_read_and_forwarded(cipher, upstream):
         )
     assert response.status_code == 200, response.text
     assert json.loads(upstream.requests[-1].content)["model"] == MODEL
+
+
+def test_decoded_gzip_body_is_forwarded_without_content_encoding(cipher, upstream):
+    upstream.decoded_gzip = True
+    kv = build_plane(upstream, config=build_config(cipher), cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": MODEL, "messages": []},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["choices"][0]["message"]["content"] == "hi"
+    assert "content-encoding" not in {key.lower() for key in response.headers}
 
 
 def test_non_streaming_is_transparent_and_records_usage(runtime_app):
