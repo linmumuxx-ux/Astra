@@ -643,6 +643,51 @@ def test_actual_body_over_limit_is_rejected_while_streaming(cipher, upstream):
     assert upstream.requests == []
 
 
+def test_authenticated_request_updates_key_last_used(cipher, upstream):
+    key_id = f"gk_{uuid4().hex[:8]}"
+    raw = "agw_" + uuid4().hex
+    digest = gateway_key_digest(raw)
+    config = build_config(
+        cipher,
+        keys=[key_dict(id=key_id, key_prefix=raw[:12], key_digest=digest)],
+    )
+
+    async def seed():
+        async with SessionLocal() as session:
+            session.add(
+                GatewayKey(
+                    id=key_id,
+                    name="p2-remote",
+                    key_prefix=raw[:12],
+                    key_digest=digest,
+                    enabled=True,
+                    last_used_at=None,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+    before = utcnow()
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": MODEL, "messages": []},
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+    assert response.status_code == 200, response.text
+
+    async def read():
+        async with SessionLocal() as session:
+            stored = await session.get(GatewayKey, key_id)
+            assert stored is not None and stored.last_used_at is not None
+            return stored.last_used_at
+
+    assert asyncio.run(read()) >= before
+    logs = asyncio.run(_fetch_logs(5))
+    assert any(row.key_id == key_id for row in logs)
+
+
 def test_request_within_limit_is_read_and_forwarded(cipher, upstream):
     kv = build_plane(upstream, config=build_config(cipher), cipher=cipher)
     body = json.dumps({"model": MODEL, "messages": []}).encode()

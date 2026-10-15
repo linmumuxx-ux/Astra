@@ -20,6 +20,15 @@ DEFAULT_KNOWLEDGE_SPACES = (
     ("SPACE_TOOLS", "工具与脚本", "可复用工具、脚本与使用指南", 50),
 )
 
+# 任务复盘产出的候选经验归入与任务分类对应的知识空间。
+# 测试与质量治理进测试领域，工程实现进开发领域；未列出的分类进公共知识库。
+CATEGORY_KNOWLEDGE_SPACE = {
+    "testing-platform": "SPACE_TESTING",
+    "automation-engineering": "SPACE_DEVELOPMENT",
+    "quality-defense": "SPACE_TESTING",
+}
+DEFAULT_EXPERIENCE_SPACE = "SPACE_PUBLIC"
+
 
 async def bootstrap_categories(session: AsyncSession) -> None:
     changed = False

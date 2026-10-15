@@ -126,6 +126,7 @@ import type { Employee as NexusEmployee } from '../../types'
 import { confirmDialog } from '@/composables/useConfirm'
 import { useAstraStore } from '@/stores/astra'
 import { employeeDisplayName, priorityLabel, safeUUID } from '@/utils/format'
+import { applyDefaultCategory, taskDraftSnapshot, type TaskDraftSnapshot } from '@/components/task/taskDraft'
 
 const props = defineProps<{ open: boolean; task?: Task | null }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'created', id: string): void; (e: 'saved', id: string): void }>()
@@ -153,7 +154,31 @@ const form = reactive({
   employee_id: props.task?.worker_id || props.task?.employee_id || '',
   responsible_employee_id: props.task?.responsible_employee_id || '',
 })
-const openedSnapshot = JSON.stringify({ ...form, files: 0 })
+const openedSnapshot = ref('')
+
+function currentDraft(): TaskDraftSnapshot {
+  return {
+    title: form.title,
+    task_type: form.task_type,
+    category_id: form.category_id,
+    priority: form.priority,
+    description: form.description,
+    criteria: form.criteria.map((item) => item.content),
+    employee_id: form.employee_id || '',
+    responsible_employee_id: form.responsible_employee_id || '',
+    files: fileList.value.length,
+  }
+}
+
+function syncBaseline() {
+  const applied = applyDefaultCategory(
+    currentDraft(),
+    store.categories.map((item) => item.id),
+    openedSnapshot.value,
+  )
+  if (applied.draft.category_id !== form.category_id) form.category_id = applied.draft.category_id
+  openedSnapshot.value = applied.baseline
+}
 
 const formRules: FormRules = {
   title: [{ required: true, message: '请输入任务标题', trigger: 'blur' }],
@@ -161,16 +186,20 @@ const formRules: FormRules = {
   description: [{ required: true, message: '请输入任务描述', trigger: 'blur' }],
 }
 
-// 分类默认选中第一项沿用旧表单逻辑；列表数据晚于抽屉打开时补齐。
-watch(() => store.categories.length, () => { if (!form.category_id) form.category_id = store.categories[0]?.id ?? '' })
-onMounted(async () => { owners.value = await listEmployees().catch(() => []) })
+// 分类默认选中第一项沿用旧表单逻辑；列表数据晚于抽屉打开时补齐，并同步基线。
+watch(() => store.categories.map((item) => item.id).join('\0'), () => syncBaseline())
+onMounted(async () => {
+  await nextTick()
+  syncBaseline()
+  owners.value = await listEmployees().catch(() => [])
+})
 
 const compatibleEmployees = computed(() => store.employees.filter((item) => item.enabled && item.task_types.includes(form.task_type) && item.category_ids.includes(form.category_id)))
 watch(() => [form.task_type, form.category_id], () => {
   if (form.employee_id && !compatibleEmployees.value.some((item) => item.id === form.employee_id)) form.employee_id = ''
 })
 
-const createDirty = computed(() => JSON.stringify({ ...form, files: fileList.value.length }) !== openedSnapshot)
+const createDirty = computed(() => openedSnapshot.value !== '' && taskDraftSnapshot(currentDraft()) !== openedSnapshot.value)
 
 // 创建表单是草稿：遮罩点击与 ESC 不关闭，只走显式取消/关闭，且有未保存内容时先二次确认。
 // before-close 不调用 done()，关闭始终由父级把 open 置为 false 驱动。

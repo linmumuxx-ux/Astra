@@ -263,7 +263,7 @@ const metrics = computed(() => {
     { label: '今日完成', value: employee.value?.today_completed ?? '—', unit: '项', hint: '员工已提交结果' },
     { label: '处理中', value: statusCount('RUNNING'), unit: '项', hint: '当前工作' },
     { label: '等待人工', value: statusCount('WAITING'), unit: '项', hint: '需要补充信息' },
-    { label: '今日工作时长', value: formatDurationSeconds(today?.duration_seconds), unit: '', hint: '按运行记录汇总' },
+    { label: '今日工作时长', value: formatDurationSeconds(today?.duration_seconds), unit: '', hint: '按任务开始到结束计算' },
   ]
 })
 const averageTaskTokens = computed(() => {

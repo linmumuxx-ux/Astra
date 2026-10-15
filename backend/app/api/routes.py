@@ -104,7 +104,7 @@ async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> Emp
     )
     today = datetime.now(ZoneInfo(get_settings().timezone)).date()
     day_sessions = [item for item in sessions if session_local_date(item) == today]
-    usage = await summarize_sessions(session, day_sessions)
+    usage = await summarize_sessions(session, day_sessions, window=(start, end))
     apply_day_tokens(usage, aggregate_usage_by_day(sessions).get(today.isoformat()))
     completed = await count_completed_tasks(
         session, employee_id=employee.id, start=start, end=end

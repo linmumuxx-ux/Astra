@@ -10,8 +10,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.library_schemas import LibrarySubmitExperienceInput
-from app.library_service import KnowledgeService
-from app.models import Base, DigitalEmployee, ExperienceEvidence, KnowledgeItem, RuntimeSession, Task
+from app.library_service import KnowledgeService, LibraryPrincipal
+from app.models import (
+    Base,
+    DigitalEmployee,
+    ExperienceEvidence,
+    KnowledgeItem,
+    KnowledgeSpace,
+    RuntimeSession,
+    Task,
+)
 
 
 @asynccontextmanager
@@ -48,6 +56,34 @@ async def test_exact_experience_is_reused_across_tasks_and_titles():
         assert await session.scalar(select(func.count()).select_from(KnowledgeItem)) == 1
         assert await session.scalar(select(func.count()).select_from(ExperienceEvidence)) == 2
         assert item.verification_status == "unverified"
+
+
+async def test_task_experience_is_filed_under_its_category_space():
+    async with experience_session() as (session, _):
+        session.add(KnowledgeSpace(id="SPACE_TESTING", name="测试领域知识", status="active"))
+        session.add(KnowledgeSpace(id="SPACE_PUBLIC", name="公共知识库", status="active"))
+        task = await session.get(Task, "T1")
+        task.category_id = "testing-platform"
+        await session.commit()
+        service = KnowledgeService(session)
+        item = await service.mcp_submit_experience(
+            LibrarySubmitExperienceInput(
+                title="登录重试",
+                content_md="接口超时后先查网关再重试",
+                evidence=[{"evidence_type": "message", "message_id": "msg_space"}],
+            ),
+            review_session=await session.get(RuntimeSession, "ses_1"),
+            review_key="space",
+        )
+        assert item.source_type == "task"
+        assert item.source_task_id == "T1"
+        assert item.space_id == "SPACE_TESTING"
+        assert item.space_name == "测试领域知识"
+        spaces = await service.list_spaces(LibraryPrincipal())
+        testing = next(space for space in spaces if space.id == "SPACE_TESTING")
+        public = next(space for space in spaces if space.id == "SPACE_PUBLIC")
+        assert testing.knowledge_count == 1
+        assert public.knowledge_count == 0
 
 
 async def test_manual_experience_is_unverified_and_deduped():

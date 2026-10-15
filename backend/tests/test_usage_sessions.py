@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.config.settings import get_settings
 from app.models import Base, DigitalEmployee, RuntimeSession, Task
 from app.services import dashboard_metrics
-from app.usage import employee_usage, task_usage
+from app.usage import day_bounds, employee_usage, task_usage
 
 
 @pytest.fixture
@@ -122,6 +122,52 @@ async def usage_session():
         )
         await session.commit()
         yield session
+    await engine.dispose()
+
+
+async def test_today_work_duration_follows_task_span_not_short_session():
+    """A 15-minute task must not shrink to the 2-minute RuntimeSession row."""
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    start, _end = day_bounds(1)
+    task_started = start + timedelta(hours=1)
+    task_finished = task_started + timedelta(minutes=15)
+    today = task_finished.astimezone(ZoneInfo(get_settings().timezone)).date().isoformat()
+    async with factory() as session:
+        session.add(DigitalEmployee(id="E1", name="Engineer", role="build", status="IDLE"))
+        session.add(
+            Task(
+                id="T1",
+                title="远程执行",
+                task_type="ISSUE",
+                status="SUCCEEDED",
+                employee_id="E1",
+                started_at=task_started,
+                finished_at=task_finished,
+                completed_at=task_finished,
+            )
+        )
+        session.add(
+            RuntimeSession(
+                id="ses_short",
+                task_id="T1",
+                employee_id="E1",
+                workspace="/tmp/ws",
+                environment={},
+                status="SUCCEEDED",
+                started_at=task_finished - timedelta(minutes=2),
+                finished_at=task_finished,
+                execution_seconds=120,
+                usage_by_day=[{"date": today, "total_tokens": 10}],
+            )
+        )
+        await session.commit()
+        result = await employee_usage(session, "E1", 1)
+        assert result["summary"]["duration_seconds"] == 15 * 60
+        assert result["trend"][-1]["duration_seconds"] == 15 * 60
     await engine.dispose()
 
 

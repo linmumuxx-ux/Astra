@@ -265,6 +265,9 @@ class GatewayObservabilityService:
             GatewayRequest.started_at >= start,
             GatewayRequest.started_at <= end,
         ]
+        # 概览统计窗口内全部已落库调用。节点只统计实际调度到该节点的调用
+        # （node_id 等于该节点）。鉴权失败、尚未选中节点，或由其他节点处理的请求
+        # 会计入概览，不会出现在某一个节点的窗口请求里。两者不相等是预期口径。
         if scope == SCOPE_NODE:
             filters.append(GatewayRequest.node_id == scope_id)
         elif scope == SCOPE_KEY:

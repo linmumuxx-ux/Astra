@@ -151,7 +151,43 @@ async def count_completed_tasks(
     return int(await session.scalar(query) or 0)
 
 
-async def summarize_sessions(session: AsyncSession, sessions: list[RuntimeSession]) -> dict:
+async def _task_occupancy_seconds(
+    session: AsyncSession,
+    task_ids: set[str],
+    now: datetime,
+    window: tuple[datetime, datetime] | None,
+) -> int:
+    """Wall clock from Task.started_at to Task.finished_at.
+
+    A RuntimeSession row can be shorter than the task: the session is created
+    after the worker is already RUNNING, and finished_at may follow the native
+    message clock. Work duration follows the task interval, clipped to the
+    reporting window when one is given.
+    """
+
+    if not task_ids:
+        return 0
+    tasks = (await session.scalars(select(Task).where(Task.id.in_(task_ids)))).all()
+    total = 0
+    for task in tasks:
+        if not task.started_at:
+            continue
+        start = _aware(task.started_at)
+        end = _aware(task.finished_at) if task.finished_at else now
+        if window is not None:
+            window_start, window_end = window
+            start = max(start, _aware(window_start))
+            end = min(end, _aware(window_end))
+        total += max(0, int((end - start).total_seconds()))
+    return total
+
+
+async def summarize_sessions(
+    session: AsyncSession,
+    sessions: list[RuntimeSession],
+    *,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict:
     summary = {field: _sum_field(sessions, field) for field in TOKEN_FIELDS}
 
     duration_seconds = 0
@@ -161,6 +197,11 @@ async def summarize_sessions(session: AsyncSession, sessions: list[RuntimeSessio
             continue
         end = _aware(item.finished_at) if item.finished_at else now
         duration_seconds += max(0, int((end - _aware(item.started_at)).total_seconds()))
+    task_ids = {item.task_id for item in sessions if item.task_id}
+    duration_seconds = max(
+        duration_seconds,
+        await _task_occupancy_seconds(session, task_ids, now, window),
+    )
 
     tool_success = 0
     tool_failure = 0
@@ -272,16 +313,17 @@ async def employee_usage(session: AsyncSession, employee_id: str, days: int) -> 
     sessions = await load_sessions(
         session, employee_id=employee_id, start=start, end=end, overlap=True
     )
-    summary = await summarize_sessions(session, sessions)
+    summary = await summarize_sessions(session, sessions, window=(start, end))
     tools = await tool_breakdown(session, sessions)
     timezone = ZoneInfo(get_settings().timezone)
     by_day = aggregate_usage_by_day(sessions)
     trend: list[dict] = []
     for offset in range(days):
         day_start = start + timedelta(days=offset)
+        day_end = day_start + timedelta(days=1)
         day = day_start.astimezone(timezone).date()
         day_sessions = [item for item in sessions if session_local_date(item) == day]
-        point = await summarize_sessions(session, day_sessions)
+        point = await summarize_sessions(session, day_sessions, window=(day_start, day_end))
         apply_day_tokens(point, by_day.get(day.isoformat()))
         # Business completion belongs to the immutable completed_at day.
         point["completed_tasks"] = await count_completed_tasks(

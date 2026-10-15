@@ -982,7 +982,17 @@ class GatewayDataPlane:
     async def _persist(self, record: RequestRecord) -> None:
         try:
             async with self._session_factory() as session:
-                session.add(record.to_row())
+                row = record.to_row()
+                session.add(row)
+                # 调用日志能看到 Key，但密钥页的「最近使用」只读 gateway_keys.last_used_at。
+                # 鉴权通过后的请求（含失败）都算使用；未识别的 Key 不写。
+                if record.key_id:
+                    key = await session.get(GatewayKey, record.key_id)
+                    used_at = row.finished_at
+                    if key is not None and used_at is not None and (
+                        key.last_used_at is None or key.last_used_at < used_at
+                    ):
+                        key.last_used_at = used_at
                 await session.commit()
         except Exception:  # noqa: BLE001 - 日志失败不影响已发送的响应
             pass

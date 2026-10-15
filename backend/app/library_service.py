@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.bootstrap import CATEGORY_KNOWLEDGE_SPACE, DEFAULT_EXPERIENCE_SPACE
 from app.config.settings import get_settings
 from app.library_schemas import (
     KnowledgeCreate,
@@ -1249,6 +1250,18 @@ class KnowledgeService:
             raise LibraryValidationError("Task 与 Employee 不匹配")
         return employee, task
 
+    async def _experience_space_id(self, task: Task | None) -> str | None:
+        """Map a task category onto an existing knowledge space."""
+
+        if task is None:
+            return None
+        preferred = CATEGORY_KNOWLEDGE_SPACE.get(task.category_id or "", DEFAULT_EXPERIENCE_SPACE)
+        for space_id in dict.fromkeys((preferred, DEFAULT_EXPERIENCE_SPACE)):
+            space = await self.session.get(KnowledgeSpace, space_id)
+            if space is not None and space.status == "active":
+                return space.id
+        return None
+
     async def mcp_search(
         self,
         payload: LibrarySearchInput,
@@ -1367,11 +1380,14 @@ class KnowledgeService:
                 raise LibraryConflict("合并目标必须是候选或已发布经验")
         created = item is None
         if created:
+            # 界面只认识 task / manual / import / system。复盘产物用 task，
+            # 这样列表来源是「任务沉淀」并带上来源任务编号。
             item = KnowledgeItem(
                 id=_new_id("KNOW"), title=payload.title, type="experience",
                 summary=payload.summary, content_md=payload.content_md,
                 status="candidate", verification_status="unverified", tags=payload.tags,
-                source_type="agent_experience" if review_session else "manual",
+                space_id=await self._experience_space_id(task) if review_session else None,
+                source_type="task" if review_session else "manual",
                 source_ref=payload.source_task_id, source_employee_id=payload.source_employee_id,
                 source_task_id=payload.source_task_id, source_session_id=source_session_id,
                 origin="assistant" if review_session else "manual",
