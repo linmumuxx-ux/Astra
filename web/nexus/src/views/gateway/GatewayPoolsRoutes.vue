@@ -265,6 +265,23 @@
         </div>
       </template>
     </ElDrawer>
+
+    <ElCard shadow="never" data-testid="gateway-model-distribution">
+      <template #header>
+        <div class="gateway-pools-routes__card-title">
+          <h4>声明模型分布</h4>
+          <ElText>按上游节点声明支持的模型计数，不是调用量。</ElText>
+        </div>
+      </template>
+      <ul v-if="modelRows.length" class="gateway-model-dist">
+        <li v-for="item in modelRows" :key="item.label">
+          <span :title="item.label">{{ item.label }}</span>
+          <div><i :style="{ width: `${item.width}%` }" /></div>
+          <b>{{ item.value }}</b>
+        </li>
+      </ul>
+      <ElEmpty v-else :image-size="52" description="暂无节点配置支持模型" />
+    </ElCard>
   </section>
 </template>
 
@@ -295,6 +312,7 @@ import {
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   gatewayApi,
+  type GatewayNode,
   type GatewayPool,
   type GatewayRoute,
 } from '@/api/gateway'
@@ -306,6 +324,18 @@ import { errorMessage } from '@/utils/gateway'
 
 const pools = ref<GatewayPool[]>([])
 const routes = ref<GatewayRoute[]>([])
+const nodes = ref<GatewayNode[]>([])
+const modelRows = computed(() => {
+  const counter = new Map<string, number>()
+  for (const node of nodes.value) {
+    for (const model of node.models ?? []) counter.set(model, (counter.get(model) ?? 0) + 1)
+  }
+  const rows = [...counter.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((left, right) => right.value - left.value)
+  const max = Math.max(1, ...rows.map((item) => item.value))
+  return rows.map((item) => ({ ...item, width: item.value ? Math.max(8, Math.round((item.value / max) * 100)) : 0 }))
+})
 const loading = ref(false)
 const error = ref('')
 const saving = ref(false)
@@ -391,9 +421,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [poolList, routeList] = await Promise.all([gatewayApi.pools(), gatewayApi.routes()])
+    const [poolList, routeList, nodeList] = await Promise.all([
+      gatewayApi.pools(), gatewayApi.routes(), gatewayApi.nodes(),
+    ])
     pools.value = poolList
     routes.value = routeList
+    nodes.value = nodeList
   } catch (reason) {
     error.value = errorMessage(reason, '资源池 / 路由加载失败')
   } finally {
@@ -597,6 +630,12 @@ onMounted(load)
 
 <style scoped>
 .gateway-pools-routes { display: grid; gap: 12px; }
+.gateway-model-dist { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.gateway-model-dist li { display: grid; grid-template-columns: minmax(80px, 180px) minmax(60px, 1fr) 32px; align-items: center; gap: 10px; }
+.gateway-model-dist span { overflow: hidden; color: var(--astra-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.gateway-model-dist div { height: 8px; overflow: hidden; border-radius: 999px; background: var(--astra-bg-elevated); }
+.gateway-model-dist i { display: block; height: 100%; border-radius: 999px; background: #0d9e61; }
+.gateway-model-dist b { color: var(--astra-text-primary); text-align: right; }
 .gateway-pools-routes__card-head { display: flex; align-items: center; gap: 12px; }
 .gateway-pools-routes__card-title { display: grid; gap: 2px; margin-right: auto; }
 .gateway-pools-routes__card-title h4 { margin: 0; color: var(--astra-text-primary); }

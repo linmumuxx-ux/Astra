@@ -19,7 +19,7 @@
       <router-link to="/team">团队交流</router-link>
       <router-link to="/tasks">任务管理</router-link>
       <router-link to="/workers">Agent Worker</router-link>
-      <router-link to="/gateway">API 网关</router-link>
+      <router-link to="/gateway">API 中转</router-link>
       <router-link to="/library">数字图书馆</router-link>
       <router-link to="/interventions">待处理</router-link>
       <router-link to="/settings">分类设置</router-link>

@@ -17,6 +17,7 @@ from app.gateway.health import (
     probe_complete,
     probe_detail,
     probe_success,
+    record_health_transition,
 )
 from app.gateway.models import (
     AUTH_NONE,
@@ -394,8 +395,10 @@ class GatewayControlService:
         for check in checks:
             self._session.add(check)
         success = probe_success(outcomes)
+        previous_health = node.health_state
         if probe_complete(outcomes):
             apply_probe_outcome(node, success=success)
+            record_health_transition(self._session, node, previous_health)
             node.health_detail = probe_detail(node, outcomes)
             await self._record_runtime_probe(node, success, node.health_detail)
         else:

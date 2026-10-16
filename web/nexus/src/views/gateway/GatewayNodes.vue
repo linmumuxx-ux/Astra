@@ -70,6 +70,42 @@
       />
     </footer>
 
+    <ElCard shadow="never" data-testid="gateway-node-instances">
+      <template #header>
+        <div class="gateway-nodes__card-head">
+          <h4>Gateway 实例</h4>
+          <ElText>心跳过期即标记不可用。实例状态不反推节点健康。</ElText>
+        </div>
+      </template>
+      <ElTable :data="instances" empty-text="暂无实例心跳。">
+        <ElTableColumn label="实例" prop="instance_id" min-width="150" />
+        <ElTableColumn label="状态" width="90">
+          <template #default="{ row }"><ElTag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template>
+        </ElTableColumn>
+        <ElTableColumn label="应用版本" min-width="110">
+          <template #default="{ row }">{{ row.app_version ?? '—' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="运行时长" width="100">
+          <template #default="{ row }">{{ formatSeconds(row.uptime_seconds) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="活跃" width="72">
+          <template #default="{ row }">{{ row.active ?? '—' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="请求 / 错误" width="120">
+          <template #default="{ row }">{{ row.requests ?? '—' }} / {{ row.errors ?? '—' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="CPU" width="80">
+          <template #default="{ row }">{{ row.cpu_percent !== null && row.cpu_percent !== undefined ? `${row.cpu_percent.toFixed(1)}%` : '—' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="内存" width="90">
+          <template #default="{ row }">{{ formatBytes(row.memory_bytes) }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="心跳" width="120">
+          <template #default="{ row }">{{ formatRelativeTime(row.updated_at) }}</template>
+        </ElTableColumn>
+      </ElTable>
+    </ElCard>
+
     <GatewayNodeDrawer :open="drawerOpen" :node="drawerNode" :pools="pools" @close="drawerOpen = false" @saved="load" />
   </section>
 </template>
@@ -78,17 +114,18 @@
 import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElAlert, ElButton, ElInput, ElOption, ElPagination, ElSelect, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElInput, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import {
   gatewayApi,
+  type GatewayInstance,
   type GatewayNode,
   type GatewayPool,
   type GatewayProbeType,
 } from '@/api/gateway'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
-import { errorMessage, healthStateLabel, schedulingStateLabel } from '@/utils/gateway'
+import { errorMessage, formatBytes, formatRelativeTime, formatSeconds, healthStateLabel, schedulingStateLabel } from '@/utils/gateway'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import GatewayNodeDrawer from '@/views/gateway/GatewayNodeDrawer.vue'
 import GatewayNodeTable from '@/views/gateway/GatewayNodeTable.vue'
@@ -96,6 +133,7 @@ import GatewayNodeTable from '@/views/gateway/GatewayNodeTable.vue'
 const router = useRouter()
 const nodes = ref<GatewayNode[]>([])
 const pools = ref<GatewayPool[]>([])
+const instances = ref<GatewayInstance[]>([])
 const loading = ref(false)
 const error = ref('')
 const busyId = ref('')
@@ -149,9 +187,12 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [nodeList, poolList] = await Promise.all([gatewayApi.nodes(), gatewayApi.pools()])
+    const [nodeList, poolList, instanceList] = await Promise.all([
+      gatewayApi.nodes(), gatewayApi.pools(), gatewayApi.instances(),
+    ])
     nodes.value = nodeList
     pools.value = poolList
+    instances.value = instanceList
   } catch (reason) {
     error.value = errorMessage(reason, '节点列表加载失败')
   } finally {
@@ -249,4 +290,6 @@ onMounted(load)
 
 <style scoped>
 .gateway-nodes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.gateway-nodes__card-head { display: grid; gap: 2px; }
+.gateway-nodes__card-head h4 { margin: 0; color: var(--astra-text-primary); }
 </style>

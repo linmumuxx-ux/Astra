@@ -16,6 +16,7 @@ import GatewayNodes from "./views/gateway/GatewayNodes.vue";
 import GatewayPoolsRoutes from "./views/gateway/GatewayPoolsRoutes.vue";
 import GatewayKeys from "./views/gateway/GatewayKeys.vue";
 import GatewayRequests from "./views/gateway/GatewayRequests.vue";
+import GatewayAudits from "./views/gateway/GatewayAudits.vue";
 
 const gatewayTabSegments: Record<string, string> = {
   overview: "overview",
@@ -56,9 +57,10 @@ export const router = createRouter({
         { path: "routes", name: "gateway-routes", component: GatewayPoolsRoutes },
         { path: "keys", name: "gateway-keys", component: GatewayKeys },
         { path: "logs", name: "gateway-logs", component: GatewayRequests },
+        { path: "audits", name: "gateway-audits", component: GatewayAudits },
+        { path: "nodes/:id", name: "gateway-node-detail", component: GatewayNodeDetailView },
         { path: ":removed(versions|self)", redirect: "/gateway/overview" },
       ],
     },
-    { path: "/gateway/nodes/:id", name: "gateway-node-detail", component: GatewayNodeDetailView },
   ],
 });

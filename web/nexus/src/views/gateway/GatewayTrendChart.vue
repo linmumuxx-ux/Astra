@@ -13,22 +13,32 @@ import type { GatewayStatBucket } from '@/api/gateway'
 import { chartTypography, loadChartFonts } from '@/utils/typography'
 
 const props = withDefaults(
-  defineProps<{ buckets: GatewayStatBucket[]; mode?: 'tokens' | 'requests'; tall?: boolean }>(),
-  { mode: 'tokens', tall: false },
+  defineProps<{
+    buckets?: GatewayStatBucket[]
+    points?: Array<{ bucket_start: string; value: number | null }>
+    mode?: 'tokens' | 'requests' | 'value'
+    valueName?: string
+    tall?: boolean
+  }>(),
+  { buckets: () => [], points: () => [], mode: 'tokens', valueName: 'TTFT P95', tall: false },
 )
 
 const chartRef = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
-const ariaLabel = computed(() => (props.mode === 'tokens' ? 'API 中转 Token 使用趋势图' : 'API 中转请求量趋势图'))
+const ariaLabel = computed(() => {
+  if (props.mode === 'tokens') return 'API 中转 Token 使用趋势图'
+  if (props.mode === 'value') return `API 中转 ${props.valueName} 趋势图`
+  return 'API 中转请求量趋势图'
+})
 
 function parseTime(value: string) {
   return new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
 }
 
 function axisLabels() {
-  const points = props.buckets
+  const points = props.mode === 'value' ? props.points : props.buckets
   if (points.length < 2) {
     return points.map((point) => parseTime(point.bucket_start).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }))
   }
@@ -48,28 +58,31 @@ function render() {
         { name: '输入 Token', data: props.buckets.map((item) => item.input_tokens), color: '#3d8ff0' },
         { name: '输出 Token', data: props.buckets.map((item) => item.output_tokens), color: '#159d65' },
       ]
-    : [
-        { name: '请求数', data: props.buckets.map((item) => item.requests), color: '#159d65' },
-        { name: '成功', data: props.buckets.map((item) => item.success), color: '#3d8ff0' },
-        { name: '失败', data: props.buckets.map((item) => item.errors), color: '#e45d6a' },
-      ]
+    : props.mode === 'value'
+      ? [{ name: props.valueName, data: props.points.map((item) => item.value), color: '#0f6e4c' }]
+      : [
+          { name: '请求数', data: props.buckets.map((item) => item.requests), color: '#159d65' },
+          { name: '成功', data: props.buckets.map((item) => item.success), color: '#3d8ff0' },
+          { name: '失败', data: props.buckets.map((item) => item.errors), color: '#e45d6a' },
+        ]
   chart.setOption({
     textStyle: typography,
     backgroundColor: 'transparent',
     grid: { top: 34, right: 14, bottom: 26, left: 52 },
-    legend: { top: 0, right: 0, textStyle: { ...typography, color: '#617771' } },
+    legend: { top: 0, right: 0, textStyle: { ...typography, color: '#3a524c' } },
     tooltip: { trigger: 'axis', backgroundColor: '#102522', borderColor: '#102522', textStyle: { ...typography, color: '#eaf6f1' } },
     xAxis: {
       type: 'category',
       boundaryGap: false,
       data: axisLabels(),
       axisLine: { lineStyle: { color: '#d7e1dd' } },
-      axisLabel: { ...typography, color: '#617771' },
+      axisLabel: { ...typography, color: '#3a524c' },
     },
     yAxis: {
       type: 'value',
       splitNumber: 4,
-      axisLabel: { ...typography, color: '#617771' },
+      min: (extent: { min: number; max: number }) => (extent.max <= 0 && extent.min >= 0 ? 0 : extent.min),
+      axisLabel: { ...typography, color: '#3a524c' },
       splitLine: { lineStyle: { color: '#e7eeeb' } },
     },
     series: series.map((item, index) => ({
@@ -91,7 +104,7 @@ onMounted(async () => {
     render()
   }
 })
-watch(() => [props.buckets, props.mode], render, { deep: true })
+watch(() => [props.buckets, props.points, props.mode, props.valueName], render, { deep: true })
 useResizeObserver(chartRef, () => chart?.resize())
 onBeforeUnmount(() => chart?.dispose())
 </script>

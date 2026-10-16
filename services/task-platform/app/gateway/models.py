@@ -185,6 +185,25 @@ class GatewayRequest(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
 
+class GatewayRuntimeEvent(Base):
+    """运行态变迁。配置审计仍在 gateway_audit_events，这里只记健康态等运行变化。"""
+
+    __tablename__ = "gateway_runtime_events"
+    __table_args__ = (Index("ix_gateway_runtime_node_time", "node_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), default="runtime", index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    pool_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    summary: Mapped[str] = mapped_column(String(300), default="")
+    previous: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    current: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+
 class GatewayAuditEvent(Base):
     __tablename__ = "gateway_audit_events"
     __table_args__ = (Index("ix_gateway_audit_resource", "resource_type", "resource_id"),)

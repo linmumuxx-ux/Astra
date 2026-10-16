@@ -29,7 +29,7 @@ export const authTypeLabel = (value: string) =>
 export type GatewayAuthenticationResult = 'PASS' | 'FAIL' | null
 
 // 认证结果从真实模型调用（MODEL 探测）推断，不新增独立探测或持久字段：
-// 模型调用成功即认证 PASS；被下游以 401/403 拒绝即 FAIL；未探测或其它失败为未知。
+// 模型调用成功即认证 PASS；被上游以 401/403 拒绝即 FAIL；未探测或其它失败为未知。
 export function authenticationResult(
   checks: Array<{ probe_type: string; success: boolean; status_code: number | null }>,
 ): GatewayAuthenticationResult {

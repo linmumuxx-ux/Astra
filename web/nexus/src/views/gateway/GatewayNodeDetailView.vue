@@ -114,7 +114,7 @@
                     </div>
                   </template>
                   <ElDescriptions :column="2">
-                    <ElDescriptionsItem label="下游地址">{{ node.base_url }}</ElDescriptionsItem>
+                    <ElDescriptionsItem label="上游地址">{{ node.base_url }}</ElDescriptionsItem>
                     <ElDescriptionsItem label="资源池">{{ poolName(node.pool_id) }}</ElDescriptionsItem>
                     <ElDescriptionsItem label="认证方式">{{ authTypeLabel(node.auth_type) }} · {{ node.auth_header }}</ElDescriptionsItem>
                     <ElDescriptionsItem label="凭据">{{ node.has_api_key ? '已配置（不回显）' : '未配置' }}</ElDescriptionsItem>
@@ -592,8 +592,8 @@ const metricCards = computed<Array<{ id: string; label: string; value: number | 
 const tokenCards = computed<Array<{ id: string; label: string; value: number | string; hint: string }>>(() => {
   const current = stats.value
   return [
-    { id: 'input', label: '输入 Token', value: current ? formatTokens(current.input_tokens) : '—', hint: '下游 usage 累计' },
-    { id: 'output', label: '输出 Token', value: current ? formatTokens(current.output_tokens) : '—', hint: '下游 usage 累计' },
+    { id: 'input', label: '输入 Token', value: current ? formatTokens(current.input_tokens) : '—', hint: '上游 usage 累计' },
+    { id: 'output', label: '输出 Token', value: current ? formatTokens(current.output_tokens) : '—', hint: '上游 usage 累计' },
     { id: 'total', label: '总 Token', value: current ? formatTokens(current.total_tokens) : '—', hint: '输入 + 输出' },
   ]
 })
@@ -836,7 +836,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.gateway-node-page { height: calc(100vh - 260px); padding: 0 0 18px; overflow: hidden; background: var(--astra-bg-base); }
+.gateway-node-page { height: calc(100vh - 360px); min-height: 480px; padding: 0; overflow: hidden; background: transparent; }
 /* 标题区由 AstraPageHeader 渲染，页面上边距统一由 .gateway-node-page 提供。 */
 .gateway-node-header { --el-header-height: auto; --el-header-padding: 0; flex: none; }
 .gateway-node-back { display: inline-flex; align-items: center; gap: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }

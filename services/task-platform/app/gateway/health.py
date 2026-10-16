@@ -22,6 +22,7 @@ from app.gateway.models import (
     PROBE_TYPES,
     GatewayHealthCheck,
     GatewayNode,
+    GatewayRuntimeEvent,
 )
 from app.gateway.probe import ProbeOutcome
 from app.gateway.runtime import (
@@ -79,6 +80,28 @@ def apply_probe_outcome(node: GatewayNode, *, success: bool) -> None:
     node.last_checked_at = utcnow()
 
 
+def record_health_transition(session: AsyncSession, node: GatewayNode, previous: str) -> None:
+    """健康态真正变化时写一条运行事件。连击未达阈值时不记。"""
+
+    if node.health_state == previous:
+        return
+    session.add(
+        GatewayRuntimeEvent(
+            source="runtime",
+            kind="health",
+            node_id=node.id,
+            pool_id=node.pool_id,
+            summary=f"{node.name} 健康态 {previous} → {node.health_state}",
+            previous=previous,
+            current=node.health_state,
+            detail={
+                "success_streak": node.success_streak,
+                "failure_streak": node.failure_streak,
+            },
+        )
+    )
+
+
 def probe_detail(node: GatewayNode, outcomes: list[ProbeOutcome]) -> dict[str, Any]:
     return {
         "checked": len(outcomes),
@@ -116,6 +139,8 @@ async def record_background_probe(
         if expected_scope is not None and node_runtime_scope(node) != expected_scope:
             await session.commit()
             return
+        previous_health = node.health_state
         apply_probe_outcome(node, success=success)
+        record_health_transition(session, node, previous_health)
         node.health_detail = probe_detail(node, outcomes)
         await session.commit()

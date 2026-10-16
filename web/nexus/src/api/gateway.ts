@@ -266,10 +266,121 @@ export interface GatewayRequestQuery {
   node_id?: string
   model?: string
   key_id?: string
+  pool_id?: string
   status_code?: number
   error_code?: string
+  from?: string
+  to?: string
   page?: number
   page_size?: number
+}
+
+export type GatewayHealthStatus = 'normal' | 'degraded' | 'down' | 'unknown'
+
+export interface GatewayOverviewMetrics {
+  qps: number | null
+  qps_requests: number
+  error_rate: number | null
+  error_samples: number
+  error_failures: number
+  error_rate_applies: boolean
+  retry_rate: number | null
+  upstream_429_rate: number | null
+  stream_interrupt_rate: number | null
+  ttft_p95_ms: number | null
+  output_tps_p95: number | null
+  connect_p95_ms: number | null
+  ttfb_p95_ms: number | null
+  duration_p95_ms: number | null
+  unknown_usage_share: number | null
+  token_throughput: number | null
+  known_total_tokens: number | null
+  active: number | null
+  capacity_limit: number | null
+  capacity_occupancy: number | null
+  peak_concurrency: number | null
+  queue: number | null
+}
+
+export interface GatewayHealthImpact {
+  pool_id: string
+  pool_name: string
+  model: string
+  state: string
+  text: string
+}
+
+export interface GatewayHealthSummary {
+  status: GatewayHealthStatus
+  stale: boolean
+  reasons: string[]
+  impact: GatewayHealthImpact[]
+  impact_summary: string
+  window: { qps_seconds: number; error_seconds: number; start: string; end: string }
+  generated_at: string
+  metrics: GatewayOverviewMetrics
+  ignored_pools: Array<{ pool_id: string; pool_name: string; reason: string }>
+}
+
+export interface GatewayNodeMetric {
+  node_id: string
+  name: string
+  pool_id: string | null
+  pool_name: string | null
+  health: 'healthy' | 'unhealthy' | 'unknown'
+  health_label: string
+  scheduling: 'available' | 'circuit' | 'limited' | 'disabled'
+  scheduling_label: string
+  active: number | null
+  capacity_limit: number | null
+  occupancy: number | null
+  queue: number | null
+  qps: number | null
+  error_rate: number | null
+  error_samples: number
+  ttft_p95_ms: number | null
+  retry_rate: number | null
+  abnormal: boolean
+}
+
+export interface GatewayTrendPoint {
+  bucket_start: string
+  requests: number
+  errors: number
+  error_rate: number | null
+  ttft_p95_ms: number | null
+  output_tps_p95: number | null
+  total_tokens: number
+}
+
+export interface GatewayTrendSeries {
+  key: string
+  label: string
+  points: GatewayTrendPoint[]
+}
+
+export interface GatewayTrend {
+  window: '1h' | '15m'
+  group_by: 'none' | 'model' | 'node'
+  window_start: string
+  window_end: string
+  bucket_seconds: number
+  series: GatewayTrendSeries[]
+  ttft_p95_ms: number | null
+  output_tps_p95: number | null
+}
+
+export interface GatewayOpsEvent {
+  id: string
+  source: 'config' | 'runtime' | string
+  kind: string
+  summary: string
+  resource_type: string | null
+  resource_id: string | null
+  node_id: string | null
+  model: string | null
+  pool_id: string | null
+  created_at: string
 }
 
 export class GatewayApiError extends Error {
@@ -382,4 +493,10 @@ export const gatewayApi = {
     gatewayRequest<GatewayHealthCheck[]>(
       `/api/gateway/nodes/${nodeId}/health-checks${queryString({ limit })}`,
     ),
+  healthSummary: () => gatewayRequest<GatewayHealthSummary>('/api/gateway/health-summary'),
+  nodeMetrics: () => gatewayRequest<GatewayNodeMetric[]>('/api/gateway/node-metrics'),
+  trends: (window: '1h' | '15m' = '1h', groupBy: 'none' | 'model' | 'node' = 'none') =>
+    gatewayRequest<GatewayTrend>(`/api/gateway/trends${queryString({ window, group_by: groupBy })}`),
+  opsEvents: (limit = 50) =>
+    gatewayRequest<GatewayOpsEvent[]>(`/api/gateway/ops-events${queryString({ limit })}`),
 }

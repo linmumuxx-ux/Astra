@@ -18,6 +18,18 @@
       <ElSelect v-model="filters.key_id" class="astra-filter__select" data-testid="log-filter-key" aria-label="Key 筛选" placeholder="Key：全部" clearable>
         <ElOption v-for="key in keys" :key="key.id" :value="key.id" :label="key.name" />
       </ElSelect>
+      <ElSelect v-model="filters.pool_id" class="astra-filter__select" data-testid="log-filter-pool" aria-label="资源池筛选" placeholder="资源池：全部" clearable>
+        <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
+      </ElSelect>
+      <ElDatePicker
+        v-model="timeRange"
+        class="log-filter__range"
+        type="datetimerange"
+        data-testid="log-filter-range"
+        aria-label="时间范围"
+        start-placeholder="开始时间"
+        end-placeholder="结束时间"
+      />
       <ElInput v-model="filters.status_code" class="log-filter__status" data-testid="log-filter-status-code" aria-label="状态码筛选" placeholder="状态码" type="number" />
       <ElInput
         v-model="filters.error_code"
@@ -121,10 +133,12 @@
 
 <script setup lang="ts">
 import { Filter, RefreshCw } from 'lucide-vue-next'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   ElAlert,
   ElButton,
+  ElDatePicker,
   ElEmpty,
   ElInput,
   ElOption,
@@ -141,6 +155,7 @@ import {
   gatewayApi,
   type GatewayKey,
   type GatewayNode,
+  type GatewayPool,
   type GatewayRequestLog,
   type GatewayRequestPage,
   type GatewayRequestQuery,
@@ -149,18 +164,30 @@ import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { errorMessage, formatDateTime } from '@/utils/gateway'
 
+const route = useRoute()
 const page = ref<GatewayRequestPage>({ items: [], total: 0, page: 1, page_size: 50 })
 const nodes = ref<GatewayNode[]>([])
 const keys = ref<GatewayKey[]>([])
+const pools = ref<GatewayPool[]>([])
 const models = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
 const pageSizeOptions = [50, 100, 200]
 const pageSize = ref(50)
-const filters = reactive({ request_id: '', model: '', node_id: '', key_id: '', status_code: '', error_code: '' })
+const filters = reactive({ request_id: '', model: '', node_id: '', key_id: '', pool_id: '', status_code: '', error_code: '' })
+const timeRange = ref<[Date, Date] | null>(null)
 
 const hasFilters = computed(() =>
-  Boolean(filters.request_id.trim() || filters.model || filters.node_id || filters.key_id || filters.status_code.trim() || filters.error_code.trim()),
+  Boolean(
+    filters.request_id.trim()
+    || filters.model
+    || filters.node_id
+    || filters.key_id
+    || filters.pool_id
+    || filters.status_code.trim()
+    || filters.error_code.trim()
+    || timeRange.value,
+  ),
 )
 const emptyText = computed(() => (hasFilters.value
   ? '没有匹配的调用记录，调整筛选条件后重试。'
@@ -193,6 +220,9 @@ function buildQuery(target: number): GatewayRequestQuery {
     model: filters.model || undefined,
     node_id: filters.node_id || undefined,
     key_id: filters.key_id || undefined,
+    pool_id: filters.pool_id || undefined,
+    from: timeRange.value ? timeRange.value[0].toISOString() : undefined,
+    to: timeRange.value ? timeRange.value[1].toISOString() : undefined,
     status_code: Number.isFinite(Number(filters.status_code)) && filters.status_code.trim() ? Number(filters.status_code) : undefined,
     error_code: filters.error_code.trim() || undefined,
   }
@@ -214,28 +244,51 @@ function load() { void loadPage(page.value.page) }
 function apply() { void loadPage(1) }
 function go(target: number) { void loadPage(target) }
 function reset() {
-  Object.assign(filters, { request_id: '', model: '', node_id: '', key_id: '', status_code: '', error_code: '' })
+  Object.assign(filters, { request_id: '', model: '', node_id: '', key_id: '', pool_id: '', status_code: '', error_code: '' })
+  timeRange.value = null
   void loadPage(1)
+}
+
+function readQuery() {
+  const text = (key: string) => (typeof route.query[key] === 'string' ? String(route.query[key]) : '')
+  filters.node_id = text('node_id')
+  filters.model = text('model')
+  filters.pool_id = text('pool_id')
+  filters.key_id = text('key_id')
+  const from = text('from')
+  const to = text('to')
+  const start = from ? new Date(from) : null
+  const end = to ? new Date(to) : null
+  timeRange.value = start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) ? [start, end] : null
 }
 
 async function loadFilterOptions() {
   try {
-    const [nodeList, keyList, routeList] = await Promise.all([gatewayApi.nodes(), gatewayApi.keys(), gatewayApi.routes()])
+    const [nodeList, keyList, routeList, poolList] = await Promise.all([
+      gatewayApi.nodes(), gatewayApi.keys(), gatewayApi.routes(), gatewayApi.pools(),
+    ])
     nodes.value = nodeList
     keys.value = keyList
-    models.value = routeList.map((route) => route.model)
+    pools.value = poolList
+    models.value = routeList.map((item) => item.model)
   } catch {
     /* 过滤选项加载失败不影响日志本身 */
   }
 }
 
+watch(() => route.query, () => {
+  readQuery()
+  void loadPage(1)
+})
 onMounted(() => {
+  readQuery()
   void loadPage(1)
   void loadFilterOptions()
 })
 </script>
 
 <style scoped>
+.log-filter__range { flex: none; width: 360px; }
 .log-filter__status { flex: none; width: 104px; }
 .log-filter__error { flex: none; width: 220px; }
 .log-filter__size { flex: none; width: 116px; }

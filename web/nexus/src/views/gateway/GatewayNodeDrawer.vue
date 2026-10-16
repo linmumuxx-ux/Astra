@@ -26,7 +26,7 @@
       <ElFormItem label="节点名称" prop="name">
         <ElInput v-model="form.name" placeholder="例如 主 Proxy 节点" />
       </ElFormItem>
-      <ElFormItem label="下游 Base URL（节点根地址）" prop="baseUrl">
+      <ElFormItem label="上游 Base URL（节点根地址）" prop="baseUrl">
         <ElInput v-model="form.baseUrl" placeholder="https://proxy.example.com" />
       </ElFormItem>
       <p class="node-form__note"><Info :size="13" />填节点根地址，不要带 /v1；Gateway 会自动追加 /v1/chat/completions。</p>
@@ -40,13 +40,13 @@
       <ElFormItem label="认证 Header">
         <ElInput v-model="form.authHeader" :disabled="busy || form.authType === 'NONE'" placeholder="Authorization" />
       </ElFormItem>
-      <ElFormItem v-if="form.authType !== 'NONE'" label="下游凭据">
+      <ElFormItem v-if="form.authType !== 'NONE'" label="上游凭据">
         <ElInput
           v-model="form.apiKey"
           type="password"
           autocomplete="new-password"
           data-testid="gateway-node-api-key"
-          :placeholder="node?.has_api_key ? '已配置，留空保持不变' : '下游 Proxy 的 Token / 凭据值'"
+          :placeholder="node?.has_api_key ? '已配置，留空保持不变' : '上游 Proxy 的 Token / 凭据值'"
         />
       </ElFormItem>
       <p class="node-form__note"><ShieldCheck :size="13" />凭据加密入库，任何响应与日志都不会回显明文；保存后输入框自动清空。</p>

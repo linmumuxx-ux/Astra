@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
 from app.database import get_session
+from app.gateway.health_summary import GatewayOpsService
 from app.gateway.models import SCHEDULING_ACTIVE, SCHEDULING_DRAINING
 from app.gateway.observability import GatewayObservabilityService
 from app.gateway.probe import GatewayProbeClient, HttpGatewayProbeClient
@@ -27,10 +29,13 @@ from app.gateway.schemas import (
     GatewayKeyPatch,
     GatewayKeyRead,
     HealthCheckRead,
+    HealthSummary,
     NodeCreate,
     NodePatch,
     NodeProbeResult,
     NodeRead,
+    NodeWindowMetric,
+    OpsEventRead,
     PoolCreate,
     PoolPatch,
     PoolRead,
@@ -40,6 +45,7 @@ from app.gateway.schemas import (
     RoutePatch,
     RouteRead,
     ScopeStats,
+    TrendRead,
 )
 from app.gateway.security import (
     CredentialCipher,
@@ -87,6 +93,13 @@ def gateway_service(
     return GatewayControlService(
         session, cipher=cipher, probe_client=probe_client, runtime=runtime
     )
+
+
+def gateway_ops(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    runtime: Annotated[RuntimeStore, Depends(gateway_runtime)],
+) -> GatewayOpsService:
+    return GatewayOpsService(session, runtime=runtime)
 
 
 def gateway_observability(
@@ -349,6 +362,9 @@ async def list_gateway_requests(
     key_id: str | None = None,
     status_code: int | None = None,
     error_code: str | None = None,
+    pool_id: str | None = None,
+    started_from: Annotated[datetime | None, Query(alias="from")] = None,
+    started_to: Annotated[datetime | None, Query(alias="to")] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
     service: GatewayObservabilityService = Depends(gateway_observability),
@@ -360,8 +376,11 @@ async def list_gateway_requests(
         node_id=node_id,
         model=model,
         key_id=key_id,
+        pool_id=pool_id,
         status_code=status_code,
         error_code=error_code,
+        started_from=started_from,
+        started_to=started_to,
     )
 
 
@@ -382,6 +401,37 @@ async def list_gateway_instances(
     service: GatewayObservabilityService = Depends(gateway_observability),
 ):
     return await service.list_instances()
+
+
+@router.get("/health-summary", response_model=HealthSummary)
+async def get_gateway_health_summary(
+    service: GatewayOpsService = Depends(gateway_ops),
+):
+    return await service.health_summary()
+
+
+@router.get("/node-metrics", response_model=list[NodeWindowMetric])
+async def get_gateway_node_metrics(
+    service: GatewayOpsService = Depends(gateway_ops),
+):
+    return await service.node_metrics()
+
+
+@router.get("/trends", response_model=TrendRead)
+async def get_gateway_trends(
+    window: Literal["1h", "15m"] = "1h",
+    group_by: Literal["none", "model", "node"] = "none",
+    service: GatewayOpsService = Depends(gateway_ops),
+):
+    return await service.trends(window=window, group_by=group_by)
+
+
+@router.get("/ops-events", response_model=list[OpsEventRead])
+async def list_gateway_ops_events(
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    service: GatewayOpsService = Depends(gateway_ops),
+):
+    return await service.ops_events(limit=limit)
 
 
 @router.get("/nodes/{node_id}/health-checks", response_model=list[HealthCheckRead])

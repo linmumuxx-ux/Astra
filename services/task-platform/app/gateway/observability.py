@@ -171,6 +171,9 @@ class GatewayObservabilityService:
         key_id: str | None = None,
         status_code: int | None = None,
         error_code: str | None = None,
+        pool_id: str | None = None,
+        started_from: datetime | None = None,
+        started_to: datetime | None = None,
     ) -> RequestLogPage:
         filters = []
         if request_id:
@@ -181,10 +184,16 @@ class GatewayObservabilityService:
             filters.append(GatewayRequest.model == model)
         if key_id:
             filters.append(GatewayRequest.key_id == key_id)
+        if pool_id:
+            filters.append(GatewayRequest.pool_id == pool_id)
         if status_code is not None:
             filters.append(GatewayRequest.status_code == status_code)
         if error_code:
             filters.append(GatewayRequest.error_code == error_code)
+        if started_from is not None:
+            filters.append(GatewayRequest.started_at >= started_from)
+        if started_to is not None:
+            filters.append(GatewayRequest.started_at <= started_to)
 
         total = await self._session.scalar(
             select(func.count()).select_from(GatewayRequest).where(*filters)

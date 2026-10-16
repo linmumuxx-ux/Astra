@@ -306,6 +306,127 @@ class ScopeStats(BaseModel):
     trend: list[StatBucket]
 
 
+class OverviewMetrics(BaseModel):
+    """运行总览卡片与健康判断共用的窗口指标。缺失为 null，不用均值冒充 P95。"""
+
+    qps: float | None = None
+    qps_requests: int = 0
+    error_rate: float | None = None
+    error_samples: int = 0
+    error_failures: int = 0
+    error_rate_applies: bool = False
+    retry_rate: float | None = None
+    upstream_429_rate: float | None = None
+    stream_interrupt_rate: float | None = None
+    ttft_p95_ms: float | None = None
+    output_tps_p95: float | None = None
+    connect_p95_ms: float | None = None
+    ttfb_p95_ms: float | None = None
+    duration_p95_ms: float | None = None
+    unknown_usage_share: float | None = None
+    token_throughput: float | None = None
+    known_total_tokens: int | None = None
+    active: int | None = None
+    capacity_limit: int | None = None
+    capacity_occupancy: float | None = None
+    peak_concurrency: int | None = None
+    queue: int | None = None
+
+
+class HealthWindow(BaseModel):
+    qps_seconds: int
+    error_seconds: int
+    start: datetime
+    end: datetime
+
+
+class HealthImpact(BaseModel):
+    pool_id: str
+    pool_name: str
+    model: str
+    state: str
+    text: str
+
+
+class IgnoredPool(BaseModel):
+    pool_id: str
+    pool_name: str
+    reason: str
+
+
+class HealthSummary(BaseModel):
+    status: str
+    stale: bool
+    reasons: list[str]
+    impact: list[HealthImpact]
+    impact_summary: str
+    window: HealthWindow
+    generated_at: datetime
+    metrics: OverviewMetrics
+    ignored_pools: list[IgnoredPool] = Field(default_factory=list)
+
+
+class NodeWindowMetric(BaseModel):
+    node_id: str
+    name: str
+    pool_id: str | None
+    pool_name: str | None
+    health: str
+    health_label: str
+    scheduling: str
+    scheduling_label: str
+    active: int | None
+    capacity_limit: int | None
+    occupancy: float | None
+    queue: int | None = None
+    qps: float | None
+    error_rate: float | None
+    error_samples: int
+    ttft_p95_ms: float | None
+    retry_rate: float | None
+    abnormal: bool
+
+
+class TrendPoint(BaseModel):
+    bucket_start: datetime
+    requests: int
+    errors: int
+    error_rate: float | None
+    ttft_p95_ms: float | None
+    output_tps_p95: float | None
+    total_tokens: int
+
+
+class TrendSeries(BaseModel):
+    key: str
+    label: str
+    points: list[TrendPoint]
+
+
+class TrendRead(BaseModel):
+    window: str
+    group_by: str
+    window_start: datetime
+    window_end: datetime
+    bucket_seconds: int
+    series: list[TrendSeries]
+    ttft_p95_ms: float | None
+    output_tps_p95: float | None
+
+
+class OpsEventRead(BaseModel):
+    id: str
+    source: str
+    kind: str
+    summary: str
+    resource_type: str | None = None
+    resource_id: str | None = None
+    node_id: str | None = None
+    model: str | None = None
+    pool_id: str | None = None
+    created_at: datetime
+
+
 class GatewayInstanceRead(BaseModel):
     instance_id: str
     status: str

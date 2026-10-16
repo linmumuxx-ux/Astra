@@ -1,126 +1,155 @@
 <template>
-  <section class="gateway-overview" data-testid="gateway-overview">
+  <section ref="root" class="gateway-overview" data-testid="gateway-overview">
     <GatewayHeaderActions>
-      <ElRadioGroup v-model="statsWindow" data-testid="gateway-window-switch">
-        <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
+      <ElRadioGroup v-model="trendWindow" data-testid="gateway-window-switch">
+        <ElRadioButton value="1h">近 1 小时</ElRadioButton>
+        <ElRadioButton value="15m">近 15 分钟</ElRadioButton>
       </ElRadioGroup>
-      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-overview-refresh" @click="load">刷新</ElButton>
+      <ElButton :loading="loading" :icon="RefreshCw" data-testid="gateway-overview-refresh" @click="load(false)">刷新</ElButton>
     </GatewayHeaderActions>
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" :title="error" data-testid="gateway-overview-error">
-      <ElButton type="primary" data-testid="gateway-overview-retry" @click="load">重试</ElButton>
+      <ElButton type="primary" data-testid="gateway-overview-retry" @click="load(false)">重试</ElButton>
     </ElAlert>
 
+    <section
+      class="gateway-overview__verdict"
+      :data-status="summary?.status ?? 'unknown'"
+      data-testid="gateway-health-bar"
+    >
+      <div>
+        <p class="gateway-overview__eyebrow">服务健康</p>
+        <h3 data-testid="gateway-health-status">{{ statusLabel }}</h3>
+        <p class="gateway-overview__impact" data-testid="gateway-health-impact">{{ impactText }}</p>
+        <p v-if="reasonText" class="gateway-overview__reasons">{{ reasonText }}</p>
+      </div>
+      <ElButton type="primary" plain data-testid="gateway-show-abnormal" @click="showAbnormal">查看异常</ElButton>
+    </section>
+
     <section class="gateway-overview__metrics" aria-label="核心指标">
-      <ElCard v-for="metric in metricCards" :key="metric.id" shadow="never" :data-testid="`gateway-metric-${metric.id}`">
-        <ElStatistic :title="metric.label" :value="metric.value as number" />
+      <ElCard v-for="metric in primaryCards" :key="metric.id" shadow="never" :data-testid="`gateway-metric-${metric.id}`">
+        <p class="gateway-overview__metric-label">{{ metric.label }}</p>
+        <p class="gateway-overview__metric-value">{{ metric.value }}</p>
         <p class="gateway-overview__metric-hint">{{ metric.hint }}</p>
       </ElCard>
     </section>
 
-    <div class="gateway-overview__grid">
-      <ElCard shadow="never" class="gateway-overview__trend-card" data-testid="gateway-overview-trend">
+    <section class="gateway-overview__metrics gateway-overview__metrics--secondary" aria-label="辅助指标">
+      <ElCard v-for="metric in secondaryCards" :key="metric.id" shadow="never" :data-testid="`gateway-metric-${metric.id}`">
+        <p class="gateway-overview__metric-label">{{ metric.label }}</p>
+        <p class="gateway-overview__metric-value gateway-overview__metric-value--secondary">{{ metric.value }}</p>
+        <p class="gateway-overview__metric-hint">{{ metric.hint }}</p>
+      </ElCard>
+    </section>
+
+    <div class="gateway-overview__main">
+      <ElCard shadow="never" data-testid="gateway-overview-nodes">
         <template #header>
           <div class="gateway-overview__card-header">
-            <div><h4>Token 趋势</h4><ElText type="info">{{ windowLabel }}</ElText></div>
-            <span class="gateway-overview__legend"><i />输入<i class="gateway-overview__legend--output" />输出</span>
+            <div>
+              <h4>节点与资源池</h4>
+              <ElText>异常在前。健康节点默认收起。指标与上方卡片同一窗口。</ElText>
+            </div>
+            <ElCheckbox v-model="abnormalOnly" data-testid="gateway-abnormal-only">只看异常</ElCheckbox>
           </div>
         </template>
-        <GatewayTrendChart v-if="stats" :buckets="stats.trend" mode="tokens" />
-        <ElEmpty v-else :image-size="52" :description="loading ? '加载中…' : '暂无数据'" />
-      </ElCard>
-
-      <ElCard shadow="never">
-        <template #header>
-          <div class="gateway-overview__card-header"><div><h4>QPS 与延迟</h4><ElText type="info">窗口内平均 / p50 / p95</ElText></div></div>
-        </template>
-        <ElDescriptions :column="1">
-          <ElDescriptionsItem v-for="row in latencyRows" :key="row.label" :label="row.label">{{ row.value }}</ElDescriptionsItem>
-        </ElDescriptions>
-        <div class="gateway-overview__peak">
-          <span>峰值并发 <b>{{ stats?.peak_concurrency ?? '—' }}</b></span>
-          <span>窗口请求 <b>{{ stats?.requests ?? '—' }}</b></span>
-          <span>失败 <b class="gateway-overview__peak--bad">{{ stats?.errors ?? '—' }}</b></span>
+        <ElTable :data="visibleRows" row-key="node_id" :empty-text="tableEmpty">
+          <ElTableColumn label="节点" min-width="140">
+            <template #default="{ row }">
+              <RouterLink class="gateway-overview__node" :to="`/gateway/nodes/${row.node_id}`">{{ row.name }}</RouterLink>
+              <span class="gateway-overview__sub">{{ row.pool_name ?? '未分配' }}</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="健康" width="88">
+            <template #default="{ row }"><ElTag :type="healthTag(row.health)">{{ row.health_label }}</ElTag></template>
+          </ElTableColumn>
+          <ElTableColumn label="调度" width="100">
+            <template #default="{ row }"><ElTag :type="schedulingTag(row.scheduling)">{{ row.scheduling_label }}</ElTag></template>
+          </ElTableColumn>
+          <ElTableColumn label="负载" min-width="130">
+            <template #default="{ row }">{{ loadText(row as GatewayNodeMetric) }}</template>
+          </ElTableColumn>
+          <ElTableColumn label="QPS" width="88">
+            <template #default="{ row }">{{ numberText(row.qps, 2) }}</template>
+          </ElTableColumn>
+          <ElTableColumn label="错误率" width="96">
+            <template #default="{ row }">{{ percentText(row.error_rate) }}</template>
+          </ElTableColumn>
+          <ElTableColumn label="TTFT P95" width="110">
+            <template #default="{ row }">{{ row.ttft_p95_ms === null ? '暂无数据' : `${Math.round(row.ttft_p95_ms)} ms` }}</template>
+          </ElTableColumn>
+          <ElTableColumn label="日志" width="72">
+            <template #default="{ row }">
+              <ElButton link type="primary" @click="openNodeLogs(row as GatewayNodeMetric)">查看</ElButton>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+        <div v-if="!abnormalOnly && healthyRows.length" class="gateway-overview__collapse">
+          <ElButton text type="primary" data-testid="gateway-toggle-healthy" @click="showHealthy = !showHealthy">
+            {{ showHealthy ? '收起' : '展开' }}健康节点 {{ healthyRows.length }}
+          </ElButton>
         </div>
       </ElCard>
 
-      <ElCard shadow="never" data-testid="gateway-overview-health">
+      <ElCard shadow="never" class="gateway-overview__events" data-testid="gateway-overview-events">
         <template #header>
-          <div class="gateway-overview__card-header"><div><h4>节点健康分布</h4><ElText type="info">健康态与调度态相互独立</ElText></div></div>
+          <div class="gateway-overview__card-header">
+            <div><h4>最近事件</h4><ElText>运行态与配置审计。点击按对象和时间打开调用日志。</ElText></div>
+          </div>
         </template>
-        <ul class="gateway-overview__dist">
-          <li v-for="item in healthRows" :key="item.label">
-            <ElTag :type="item.tag">{{ item.label }}</ElTag>
-            <div class="gateway-overview__dist-bar"><i :style="{ width: `${barWidth(item.value, healthMax)}%` }" /></div>
-            <b>{{ item.value }}</b>
+        <ul v-if="events.length" class="gateway-overview__event-list">
+          <li v-for="event in events" :key="event.id">
+            <button type="button" @click="openEventLogs(event)">
+              <ElTag size="small" :type="event.source === 'config' ? 'info' : 'warning'">{{ event.source === 'config' ? '配置' : '运行' }}</ElTag>
+              <span>{{ event.summary }}</span>
+              <time>{{ formatDateTime(event.created_at) }}</time>
+            </button>
           </li>
         </ul>
-        <ElText class="gateway-overview__note">{{ schedulingSummary }}</ElText>
-      </ElCard>
-
-      <ElCard shadow="never">
-        <template #header>
-          <div class="gateway-overview__card-header"><div><h4>模型分布</h4><ElText type="info">按节点支持模型统计</ElText></div></div>
-        </template>
-        <ul v-if="modelRows.length" class="gateway-overview__dist">
-          <li v-for="item in modelRows" :key="item.label">
-            <span class="gateway-overview__dist-label" :title="item.label">{{ item.label }}</span>
-            <div class="gateway-overview__dist-bar"><i :style="{ width: `${barWidth(item.value, modelMax)}%` }" /></div>
-            <b>{{ item.value }}</b>
-          </li>
-        </ul>
-        <ElEmpty v-else :image-size="52" description="暂无节点配置支持模型" />
+        <ElEmpty v-else :image-size="52" description="暂无事件" />
       </ElCard>
     </div>
 
-    <ElCard shadow="never" data-testid="gateway-overview-nodes-entry">
+    <ElCard shadow="never" data-testid="gateway-overview-trend">
       <template #header>
         <div class="gateway-overview__card-header">
-          <div><h4>节点</h4><ElText type="info">节点的增删改与健康操作在「下游节点」页完成</ElText></div>
-          <RouterLink class="gateway-overview__entry" to="/gateway/nodes" data-testid="gateway-nodes-entry">进入节点列表 <ArrowUpRight :size="13" /></RouterLink>
+          <div>
+            <h4>TTFT P95 趋势</h4>
+            <ElText>分桶内单独计算 P95。整段标题值是窗口内全部样本的 P95。</ElText>
+          </div>
+          <div class="gateway-overview__trend-tools">
+            <ElSelect v-model="groupBy" class="gateway-overview__group" aria-label="趋势分组">
+              <ElOption value="none" label="全部" />
+              <ElOption value="model" label="按模型" />
+              <ElOption value="node" label="按节点" />
+            </ElSelect>
+            <ElSelect v-if="seriesOptions.length > 1" v-model="seriesKey" class="gateway-overview__group" aria-label="趋势序列">
+              <ElOption v-for="item in seriesOptions" :key="item.key" :value="item.key" :label="item.label" />
+            </ElSelect>
+          </div>
         </div>
       </template>
-      <ElDescriptions :column="4">
-        <ElDescriptionsItem label="节点总数">{{ nodes.length }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="健康">{{ healthyCount }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="调度中">{{ schedulingCounts.ACTIVE }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="已阻止">{{ schedulingCounts.BLOCKED }}</ElDescriptionsItem>
-      </ElDescriptions>
-    </ElCard>
-
-    <ElCard shadow="never" data-testid="gateway-overview-instances">
-      <template #header>
-        <div class="gateway-overview__card-header"><div><h4>Gateway 实例</h4><ElText type="info">心跳过期即标记不可用，不从实例反推节点健康</ElText></div></div>
-      </template>
-      <ElTable :data="instances" empty-text="暂无实例心跳。">
-        <ElTableColumn label="实例" prop="instance_id" min-width="150"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.instance_id }}</span></template></ElTableColumn>
-        <ElTableColumn label="状态" width="86"><template #default="{ row }"><ElTag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template></ElTableColumn>
-        <ElTableColumn label="应用版本" min-width="100"><template #default="{ row }"><span class="gateway-overview__mono">{{ row.app_version ?? '—' }}</span></template></ElTableColumn>
-        <ElTableColumn label="运行时长" width="90"><template #default="{ row }">{{ formatSeconds(row.uptime_seconds) }}</template></ElTableColumn>
-        <ElTableColumn label="活跃" width="64"><template #default="{ row }">{{ row.active ?? '—' }}</template></ElTableColumn>
-        <ElTableColumn label="请求 / 错误" width="100"><template #default="{ row }">{{ row.requests ?? '—' }} / {{ row.errors ?? '—' }}</template></ElTableColumn>
-        <ElTableColumn label="CPU" width="76"><template #default="{ row }">{{ row.cpu_percent !== null && row.cpu_percent !== undefined ? `${row.cpu_percent.toFixed(1)}%` : '—' }}</template></ElTableColumn>
-        <ElTableColumn label="内存" width="86"><template #default="{ row }">{{ formatBytes(row.memory_bytes) }}</template></ElTableColumn>
-        <ElTableColumn label="心跳" width="110"><template #default="{ row }">{{ formatRelativeTime(row.updated_at) }}</template></ElTableColumn>
-      </ElTable>
+      <p class="gateway-overview__trend-headline">窗口 TTFT P95：{{ headlineTtft }} · 输出 TPS P95：{{ headlineTps }}</p>
+      <GatewayTrendChart v-if="trendPoints" :points="trendPoints" mode="value" value-name="TTFT P95" />
+      <ElEmpty v-else :image-size="52" description="暂无数据" />
     </ElCard>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ArrowUpRight, RefreshCw } from 'lucide-vue-next'
-import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RefreshCw } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import {
   ElAlert,
   ElButton,
   ElCard,
-  ElDescriptions,
-  ElDescriptionsItem,
+  ElCheckbox,
   ElEmpty,
-  ElRadioGroup,
+  ElOption,
   ElRadioButton,
-  ElStatistic,
+  ElRadioGroup,
+  ElSelect,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -128,148 +157,248 @@ import {
 } from 'element-plus'
 import {
   gatewayApi,
-  type GatewayInstance,
-  type GatewayNode,
-  type GatewayScopeStats,
-  type GatewayStatsWindow,
+  type GatewayHealthSummary,
+  type GatewayNodeMetric,
+  type GatewayOpsEvent,
+  type GatewayTrend,
 } from '@/api/gateway'
-import { errorMessage, formatBytes, formatPercent, formatRelativeTime, formatSeconds } from '@/utils/gateway'
-import { formatTokens } from '@/utils/format'
-import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
+import { errorMessage, formatDateTime } from '@/utils/gateway'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
+import GatewayTrendChart from '@/views/gateway/GatewayTrendChart.vue'
 
-const windows: Array<{ id: GatewayStatsWindow; label: string }> = [
-  { id: 'hour', label: '本小时' },
-  { id: 'today', label: '今日' },
-  { id: '7d', label: '近 7 天' },
-  { id: '30d', label: '近 30 天' },
-]
-const statsWindow = ref<GatewayStatsWindow>('today')
-const stats = ref<GatewayScopeStats | null>(null)
-const nodes = ref<GatewayNode[]>([])
-const instances = ref<GatewayInstance[]>([])
+const router = useRouter()
+const root = ref<HTMLElement | null>(null)
+const summary = ref<GatewayHealthSummary | null>(null)
+const rows = ref<GatewayNodeMetric[]>([])
+const events = ref<GatewayOpsEvent[]>([])
+const trend = ref<GatewayTrend | null>(null)
 const loading = ref(false)
 const error = ref('')
+const abnormalOnly = ref(false)
+const showHealthy = ref(false)
+const trendWindow = ref<'1h' | '15m'>('1h')
+const groupBy = ref<'none' | 'model' | 'node'>('none')
+const seriesKey = ref('all')
+let timer = 0
 
-const windowLabel = computed(() => windows.find((item) => item.id === statsWindow.value)?.label ?? '')
+const statusLabel = computed(() => {
+  const status = summary.value?.status
+  if (status === 'normal') return '正常'
+  if (status === 'degraded') return '降级'
+  if (status === 'down') return '不可用'
+  return '未知'
+})
+const impactText = computed(() => summary.value?.impact_summary || '暂无影响范围')
+const reasonText = computed(() => (summary.value?.reasons ?? []).join('；'))
+const metrics = computed(() => summary.value?.metrics ?? null)
+const abnormalRows = computed(() => rows.value.filter((row) => row.abnormal))
+const healthyRows = computed(() => rows.value.filter((row) => !row.abnormal))
+const tableEmpty = computed(() => {
+  if (!rows.value.length) return '暂无节点。'
+  if (abnormalOnly.value) return '没有异常节点。'
+  return '没有异常节点，健康节点已收起。'
+})
+const visibleRows = computed(() => {
+  if (abnormalOnly.value) return abnormalRows.value
+  return showHealthy.value ? [...abnormalRows.value, ...healthyRows.value] : abnormalRows.value
+})
+const seriesOptions = computed(() => trend.value?.series ?? [])
+const activeSeries = computed(() => seriesOptions.value.find((item) => item.key === seriesKey.value) ?? seriesOptions.value[0])
+const trendPoints = computed(() => {
+  const points = activeSeries.value?.points ?? []
+  if (!points.some((point) => point.ttft_p95_ms !== null || point.requests > 0)) return null
+  return points.map((point) => ({ bucket_start: point.bucket_start, value: point.ttft_p95_ms }))
+})
+const headlineTtft = computed(() => (trend.value?.ttft_p95_ms == null ? '暂无数据' : `${Math.round(trend.value.ttft_p95_ms)} ms`))
+const headlineTps = computed(() => (trend.value?.output_tps_p95 == null ? '暂无数据' : trend.value.output_tps_p95.toFixed(1)))
 
-const metricCards = computed(() => {
-  const current = stats.value
+const primaryCards = computed(() => {
+  const current = metrics.value
   return [
-    { id: 'requests', label: '请求数', value: current?.requests ?? '—', hint: '窗口内完成的调用总量' },
-    { id: 'success-rate', label: '成功率', value: formatPercent(current?.success_rate), hint: '2xx/3xx 且未被中断' },
-    { id: 'qps', label: 'QPS', value: current ? current.qps.toFixed(2) : '—', hint: '窗口平均每秒请求数' },
-    { id: 'active', label: '当前并发', value: current?.active ?? '—', hint: '来自数据面运行态租约' },
-    { id: 'tokens', label: '总 Token', value: current ? formatTokens(current.total_tokens) : '—', hint: '输入 + 输出，未知不估算' },
-    { id: 'unknown', label: '未知用量', value: current?.unknown_usage_requests ?? '—', hint: '下游未返回 usage 的请求数' },
+    { id: 'qps', label: '当前 QPS', value: numberText(current?.qps ?? null, 2), hint: '滚动 1 分钟开始的请求 / 60 秒' },
+    {
+      id: 'error-rate',
+      label: '错误率',
+      value: percentText(current?.error_rate ?? null),
+      hint: current?.error_rate_applies
+        ? `近 5 分钟最终失败 / 已完成 · 样本 ${current.error_samples}`
+        : `近 5 分钟样本 ${current?.error_samples ?? 0}，未达到健康判断样本`,
+    },
+    {
+      id: 'ttft',
+      label: 'TTFT P95',
+      value: current?.ttft_p95_ms == null ? '暂无数据' : `${Math.round(current.ttft_p95_ms)} ms`,
+      hint: current?.output_tps_p95 == null ? '输出 TPS P95 暂无数据' : `输出 TPS P95 ${current.output_tps_p95.toFixed(1)}`,
+    },
+    { id: 'capacity', label: '容量占用', value: capacityText(current), hint: capacityHint(current) },
+  ]
+})
+const secondaryCards = computed(() => {
+  const current = metrics.value
+  return [
+    { id: 'tokens', label: 'Token 吞吐', value: current?.token_throughput == null ? '暂无数据' : `${current.token_throughput.toFixed(2)} /s`, hint: '近 5 分钟已知 total token / 300 秒' },
+    { id: 'retry', label: '重试率', value: percentText(current?.retry_rate ?? null), hint: '最终成功前发生过重试的请求占比' },
+    { id: '429', label: '上游 429', value: percentText(current?.upstream_429_rate ?? null), hint: '最终响应为 429 的占比' },
+    { id: 'stream', label: '流中断率', value: percentText(current?.stream_interrupt_rate ?? null), hint: '流式请求中的中断占比' },
+    { id: 'usage', label: '未知用量', value: percentText(current?.unknown_usage_share ?? null), hint: '未返回 usage 的已完成请求占比' },
+    {
+      id: 'latency',
+      label: '连接 / 首字节 P95',
+      value: current?.connect_p95_ms == null && current?.ttfb_p95_ms == null
+        ? '暂无数据'
+        : `${ms(current?.connect_p95_ms)} / ${ms(current?.ttfb_p95_ms)}`,
+      hint: current?.duration_p95_ms == null ? '总时长 P95 暂无数据' : `总时长 P95 ${Math.round(current.duration_p95_ms)} ms`,
+    },
   ]
 })
 
-const latencyRows = computed(() => {
-  const current = stats.value
-  if (!current) return [] as Array<{ label: string; value: string }>
-  const line = (label: string, value: { avg: number | null; p50: number | null; p95: number | null }, unit = 'ms') =>
-    ({ label, value: value.avg === null ? '—' : `${value.avg.toFixed(0)} / ${value.p50?.toFixed(0) ?? '—'} / ${value.p95?.toFixed(0) ?? '—'} ${unit}` })
-  return [
-    line('连接', current.connect_ms),
-    line('首字节 (TTFB)', current.ttfb_ms),
-    line('首 Token (TTFT)', current.ttft_ms),
-    line('总时长', current.duration_ms),
-    line('输出 TPS', current.output_tps, 'tok/s'),
-  ]
-})
-
-type TagType = 'success' | 'warning' | 'danger' | 'info' | 'primary'
-const healthStates: Array<{ state: string; label: string; tag: TagType }> = [
-  { state: 'HEALTHY', label: '健康', tag: 'success' },
-  { state: 'DEGRADED', label: '降级', tag: 'warning' },
-  { state: 'CHECKING', label: '探测中', tag: 'info' },
-  { state: 'UNHEALTHY', label: '异常', tag: 'danger' },
-  { state: 'UNKNOWN', label: '未探测', tag: 'primary' },
-]
-const healthRows = computed(() =>
-  healthStates.map((item) => ({
-    ...item,
-    value: nodes.value.filter((node) => node.health_state === item.state).length,
-  })),
-)
-const healthyCount = computed(() => nodes.value.filter((node) => node.health_state === 'HEALTHY').length)
-const healthMax = computed(() => Math.max(1, ...healthRows.value.map((item) => item.value)))
-const schedulingCounts = computed(() => {
-  const counts = { ACTIVE: 0, DRAINING: 0, BLOCKED: 0 }
-  for (const node of nodes.value) {
-    if (node.scheduling_state in counts) counts[node.scheduling_state as keyof typeof counts] += 1
+function numberText(value: number | null | undefined, digits: number): string {
+  if (value === null || value === undefined) return '暂无数据'
+  return value.toFixed(digits)
+}
+function percentText(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '暂无数据'
+  return `${(value * 100).toFixed(2)}%`
+}
+function ms(value: number | null | undefined): string {
+  return value == null ? '—' : `${Math.round(value)} ms`
+}
+function capacityText(current: GatewayHealthSummary['metrics'] | null): string {
+  if (!current || current.capacity_occupancy === null) {
+    if (current && current.active !== null && current.capacity_limit === null) return '不限'
+    return '暂无数据'
   }
-  return counts
-})
-const schedulingSummary = computed(() =>
-  `调度：调度中 ${schedulingCounts.value.ACTIVE} · 安全下线 ${schedulingCounts.value.DRAINING} · 已阻止 ${schedulingCounts.value.BLOCKED}`,
-)
-
-const modelRows = computed(() => {
-  const counter = new Map<string, number>()
-  for (const node of nodes.value) {
-    for (const model of node.models ?? []) counter.set(model, (counter.get(model) ?? 0) + 1)
-  }
-  return [...counter.entries()]
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 6)
-})
-const modelMax = computed(() => Math.max(1, ...modelRows.value.map((item) => item.value)))
-
-function barWidth(value: number, max: number): number {
-  return value ? Math.max(8, Math.round((value / max) * 100)) : 0
+  return percentText(current.capacity_occupancy)
+}
+function capacityHint(current: GatewayHealthSummary['metrics'] | null): string {
+  if (!current || current.active === null) return '并发采集失败'
+  const limit = current.capacity_limit === null ? '不限' : String(current.capacity_limit)
+  const queue = current.queue === null ? '无队列' : `排队 ${current.queue}`
+  const peak = current.peak_concurrency === null ? '' : ` · 5 分钟峰值 ${current.peak_concurrency}`
+  return `并发 ${current.active} / ${limit} · ${queue}${peak}`
+}
+function loadText(row: GatewayNodeMetric): string {
+  if (row.active === null) return '暂无数据'
+  const share = row.occupancy === null ? '不限' : percentText(row.occupancy)
+  const queue = row.queue === null ? '无队列' : `排队 ${row.queue}`
+  return `${share} · ${row.active}${row.capacity_limit ? `/${row.capacity_limit}` : ''} · ${queue}`
+}
+function healthTag(value: string): 'success' | 'danger' | 'info' {
+  if (value === 'healthy') return 'success'
+  if (value === 'unhealthy') return 'danger'
+  return 'info'
+}
+function schedulingTag(value: string): 'success' | 'danger' | 'warning' | 'info' {
+  if (value === 'available') return 'success'
+  if (value === 'circuit') return 'danger'
+  if (value === 'limited') return 'warning'
+  return 'info'
+}
+function showAbnormal() {
+  abnormalOnly.value = true
+  showHealthy.value = false
+}
+function openNodeLogs(row: GatewayNodeMetric) {
+  const end = new Date()
+  const start = new Date(end.getTime() - 5 * 60 * 1000)
+  void router.push({
+    path: '/gateway/logs',
+    query: { node_id: row.node_id, from: start.toISOString(), to: end.toISOString() },
+  })
+}
+function openEventLogs(event: GatewayOpsEvent) {
+  const at = new Date(event.created_at).getTime()
+  const start = new Date(at - 5 * 60 * 1000)
+  const end = new Date(at + 5 * 60 * 1000)
+  void router.push({
+    path: '/gateway/logs',
+    query: {
+      node_id: event.node_id ?? undefined,
+      model: event.model ?? undefined,
+      pool_id: event.pool_id ?? undefined,
+      from: start.toISOString(),
+      to: end.toISOString(),
+    },
+  })
 }
 
-async function load() {
-  loading.value = true
+async function load(silent: boolean) {
+  const scroll = window.scrollY
+  if (!silent) loading.value = true
   error.value = ''
   try {
-    const [statsValue, nodeList, instanceList] = await Promise.all([
-      gatewayApi.stats('overview', statsWindow.value),
-      gatewayApi.nodes(),
-      gatewayApi.instances(),
+    const [health, nodeRows, eventRows, trendValue] = await Promise.all([
+      gatewayApi.healthSummary(),
+      gatewayApi.nodeMetrics(),
+      gatewayApi.opsEvents(40),
+      gatewayApi.trends(trendWindow.value, groupBy.value),
     ])
-    stats.value = statsValue
-    nodes.value = nodeList
-    instances.value = instanceList
+    summary.value = health
+    rows.value = nodeRows
+    events.value = eventRows
+    trend.value = trendValue
+    if (!trendValue.series.some((item) => item.key === seriesKey.value)) seriesKey.value = 'all'
   } catch (reason) {
     error.value = errorMessage(reason, '总览加载失败')
   } finally {
     loading.value = false
+    if (silent) {
+      requestAnimationFrame(() => window.scrollTo({ top: scroll }))
+    }
   }
 }
 
-watch(statsWindow, load)
-onMounted(() => { void load() })
+watch([trendWindow, groupBy], () => { void load(true) })
+onMounted(() => {
+  void load(false)
+  timer = window.setInterval(() => { void load(true) }, 30_000)
+})
+onBeforeUnmount(() => window.clearInterval(timer))
 </script>
 
 <style scoped>
 .gateway-overview { display: grid; gap: 12px; }
-.gateway-overview__metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
-.gateway-overview__metrics :deep(.el-statistic__head) { color: var(--astra-text-muted); font-size: var(--astra-font-control); }
-.gateway-overview__metrics :deep(.el-statistic__content) { color: var(--astra-text-primary); font-size: var(--astra-font-subtitle); font-weight: var(--astra-weight-bold); }
-.gateway-overview__metric-hint { margin: 4px 0 0; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.gateway-overview__grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); gap: 12px; }
+.gateway-overview__verdict {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 16px; border: 1px solid var(--astra-border); border-radius: 12px; background: var(--astra-bg-panel);
+}
+.gateway-overview__verdict[data-status='normal'] { border-color: #8fceb0; background: #f3fbf6; }
+.gateway-overview__verdict[data-status='degraded'] { border-color: #e2c27a; background: #fff8ea; }
+.gateway-overview__verdict[data-status='down'] { border-color: #e7a8ae; background: #fff5f6; }
+.gateway-overview__verdict[data-status='unknown'] { border-color: #c5d4ce; background: #f6f8f7; }
+.gateway-overview__eyebrow { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
+.gateway-overview__verdict h3 { margin: 2px 0; color: var(--astra-text-primary); font-size: 22px; }
+.gateway-overview__impact, .gateway-overview__reasons { margin: 0; color: var(--astra-text-secondary); }
+.gateway-overview__reasons { margin-top: 4px; }
+.gateway-overview__metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.gateway-overview__metrics--secondary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.gateway-overview__metric-label { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
+.gateway-overview__metric-value { margin: 6px 0 0; color: var(--astra-text-primary); font-size: var(--astra-font-subtitle); font-weight: var(--astra-weight-bold); font-variant-numeric: tabular-nums; }
+.gateway-overview__metric-value--secondary { font-size: var(--astra-font-control); }
+.gateway-overview__metric-hint { margin: 4px 0 0; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
+.gateway-overview__main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr); gap: 12px; align-items: start; }
 .gateway-overview__card-header { display: flex; align-items: flex-start; gap: 12px; }
 .gateway-overview__card-header > div { margin-right: auto; }
 .gateway-overview__card-header h4 { margin: 0; color: var(--astra-text-primary); font-size: var(--astra-font-control); }
-.gateway-overview__legend { display: inline-flex; align-items: center; gap: 5px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.gateway-overview__legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: #3d8ff0; }
-.gateway-overview__legend .gateway-overview__legend--output { background: #159d65; }
-.gateway-overview__peak { display: flex; gap: 16px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--astra-border); color: var(--astra-text-muted); font-size: var(--astra-font-helper); }
-.gateway-overview__peak b { color: var(--astra-text-primary); font-variant-numeric: tabular-nums; }
-.gateway-overview__peak--bad { color: var(--astra-danger); }
-.gateway-overview__dist { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
-.gateway-overview__dist li { display: grid; grid-template-columns: minmax(64px, auto) minmax(60px, 1fr) 30px; align-items: center; gap: 10px; font-size: var(--astra-font-helper); }
-.gateway-overview__dist-label { overflow: hidden; color: var(--astra-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.gateway-overview__dist-bar { height: 8px; overflow: hidden; border-radius: 999px; background: var(--astra-bg-elevated); }
-.gateway-overview__dist-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #24c47d, #0d9e61); }
-.gateway-overview__dist b { color: var(--astra-text-primary); text-align: right; font-variant-numeric: tabular-nums; }
-.gateway-overview__note { display: block; margin-top: 10px; color: var(--astra-text-muted); }
-.gateway-overview__entry { display: inline-flex; align-items: center; gap: 3px; color: var(--astra-primary-bright); font-size: var(--astra-font-helper); text-decoration: none; }
-.gateway-overview__mono { font-family: var(--astra-font-family); font-size: var(--astra-font-helper); }
-@media (max-width: 1280px) { .gateway-overview__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .gateway-overview__grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .gateway-overview__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.gateway-overview__node { color: var(--astra-primary-bright); font-weight: var(--astra-weight-bold); text-decoration: none; }
+.gateway-overview__sub { display: block; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
+.gateway-overview__collapse { padding-top: 8px; }
+.gateway-overview__event-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.gateway-overview__event-list button {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 8px; width: 100%;
+  padding: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--astra-text-primary); text-align: left; cursor: pointer;
+}
+.gateway-overview__event-list button:hover { background: var(--astra-bg-elevated); }
+.gateway-overview__event-list time { grid-column: 2; color: var(--astra-text-secondary); font-size: var(--astra-font-helper); }
+.gateway-overview__trend-tools { display: flex; gap: 8px; }
+.gateway-overview__group { width: 120px; }
+.gateway-overview__trend-headline { margin: 0 0 8px; color: var(--astra-text-secondary); }
+@media (max-width: 1280px) {
+  .gateway-overview__metrics, .gateway-overview__metrics--secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gateway-overview__main { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .gateway-overview__verdict, .gateway-overview__metrics, .gateway-overview__metrics--secondary { grid-template-columns: 1fr; }
+  .gateway-overview__verdict { align-items: flex-start; flex-direction: column; }
+}
 </style>
