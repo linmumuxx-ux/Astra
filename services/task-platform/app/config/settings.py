@@ -64,9 +64,9 @@ class Settings(BaseSettings):
     executor_type: str = "opencode_server"
     opencode_binary: str = "opencode"
     opencode_agent: str | None = None
-    # provider/model。模型 id 是 deepseek-flash，上游为 DeepSeek OpenAI 兼容接口
-    # https://api.deepseek.com。Worker 的 model_name 优先于这个全局后备。
-    opencode_model: str | None = "deepseek/deepseek-flash"
+    # provider/model。Worker 的 model_name 优先于这个全局后备。
+    # 对话模型仍是 OPENAI_MODEL=deepseek-flash，不使用这个字段。
+    opencode_model: str | None = "opencode/cat-jam-free"
     nexus_api_base: str = "http://127.0.0.1:8120"
     agentscope_base_url: str = "http://127.0.0.1:8000"
     agentscope_user_id: str = "nexus"

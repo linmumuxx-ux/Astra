@@ -3,7 +3,7 @@
 Runs only when explicitly enabled because it starts a real OpenCode Server,
 calls a real model, and writes to a temporary workspace:
 
-    ASTRA_REAL_OPENCODE=1 ASTRA_REAL_OPENCODE_MODEL=deepseek/deepseek-flash \
+    ASTRA_REAL_OPENCODE=1 ASTRA_REAL_OPENCODE_MODEL=opencode/cat-jam-free \
         pytest tests/test_real_opencode_phase1a.py
 """
 
@@ -23,7 +23,7 @@ SCRIPT = REPOSITORY_ROOT / "tools" / "e2e" / "phase1a_real_opencode.py"
     reason="real OpenCode verification is opt-in (set ASTRA_REAL_OPENCODE=1)",
 )
 def test_phase1a_real_opencode_key_paths():
-    model = os.environ.get("ASTRA_REAL_OPENCODE_MODEL", "deepseek/deepseek-flash")
+    model = os.environ.get("ASTRA_REAL_OPENCODE_MODEL", "opencode/cat-jam-free")
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--model", model],
         cwd=REPOSITORY_ROOT,

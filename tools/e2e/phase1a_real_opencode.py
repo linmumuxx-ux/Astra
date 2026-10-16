@@ -274,7 +274,7 @@ async def run(model: str, binary: str, keep: bool) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=os.environ.get("PHASE1A_MODEL", "opencode/deepseek-v4-flash"))
+    parser.add_argument("--model", default=os.environ.get("PHASE1A_MODEL", "opencode/cat-jam-free"))
     parser.add_argument("--opencode", default=os.environ.get("PHASE1A_OPENCODE", "opencode"))
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()

@@ -69,6 +69,6 @@ root 的真实 Chrome 验收为主要浏览器证据。
 
 ## 未执行
 
-- `scripts/verify.py` 全量门禁：其中 `e2e.py` 需要完整浏览器套件与默认 Chromium 环境，
+- 全量门禁中的浏览器套件需要完整浏览器与默认 Chromium 环境，
   且 `ruff` 阶段不含 `scripts/`；本轮已按上表分项覆盖同等内容。
 - 公司环境（Windows / Linux SSH）任何实测。

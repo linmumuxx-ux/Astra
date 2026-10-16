@@ -31,6 +31,7 @@ FRONTEND_PORT = int(os.getenv("ASTRA_SERVICE_FRONTEND_PORT", "5174"))
 # 由同机 nginx 反代 /v1；模型长连接绝不进入主 Backend。
 GATEWAY_HOST = os.getenv("ASTRA_SERVICE_GATEWAY_HOST", "127.0.0.1")
 GATEWAY_PORT = int(os.getenv("ASTRA_SERVICE_GATEWAY_PORT", "8110"))
+TASK_MCP_PORT = int(os.getenv("ASTRA_TASK_MCP_PORT", "8202"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -288,18 +289,28 @@ def prepare(mode: str, settings: Any, npm: str, local_command: Any) -> None:
             raise RuntimeError("web/nexus/dist/index.html not found after build")
 
 
-def http_ready(url: str) -> bool:
+def http_ready(url: str, *, accept_http_error: bool = False) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
             return response.status < 500
+    except urllib.error.HTTPError as exc:
+        # Task MCP GET /mcp answers 406 unless the client accepts SSE.
+        # That response still means the process is listening.
+        return accept_http_error and exc.code < 500
     except (urllib.error.URLError, OSError, TimeoutError):
         return False
 
 
-def wait_http(name: str, url: str, timeout: int = 45) -> None:
+def wait_http(
+    name: str,
+    url: str,
+    timeout: int = 45,
+    *,
+    accept_http_error: bool = False,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if http_ready(url):
+        if http_ready(url, accept_http_error=accept_http_error):
             print(f"[READY] {name}: {url}")
             return
         time.sleep(0.25)
@@ -425,13 +436,24 @@ def frontend_command(mode: str, npm: str, local_command: Any) -> list[str]:
     )
 
 
+def task_mcp_command() -> list[str]:
+    """Task MCP 入口。优先用服务虚拟环境里的 astra-task-mcp。"""
+
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    name = "astra-task-mcp.exe" if os.name == "nt" else "astra-task-mcp"
+    binary = BACKEND / ".venv" / scripts / name
+    if binary.is_file():
+        return [str(binary)]
+    return [sys.executable, "-c", "from app.task_mcp import main; main()"]
+
+
 def core_services(
     mode: str,
     settings: Any,
     npm: str,
     local_command: Any,
 ) -> list[tuple[str, list[str], Path, dict[str, str] | None]]:
-    """核心受管服务清单：Backend、Celery、可选 MCP/Gateway、Frontend。
+    """核心受管服务清单：Backend、Celery、Task MCP、可选 Library MCP/Gateway、Frontend。
 
     只组装命令，不做启动与就绪等待，便于脚本级校验。Gateway 仅在
     ``ASTRA_GATEWAY_ENABLED=true`` 时作为独立进程加入；长连接不进入 Backend。
@@ -471,6 +493,8 @@ def core_services(
         ),
     ]
 
+    services.append(("task-mcp", task_mcp_command(), BACKEND, None))
+
     if settings.mcp_transport == "streamable-http":
         services.append(("library-mcp", [sys.executable, "-m", "app.mcp_server"], BACKEND, None))
 
@@ -506,6 +530,12 @@ def start_core(
     wait_worker("runtime-agent", processes["runtime-agent"])
     if "gateway" in processes:
         wait_http("gateway", f"http://127.0.0.1:{GATEWAY_PORT}/healthz")
+    if "task-mcp" in processes:
+        wait_http(
+            "task-mcp",
+            f"http://127.0.0.1:{TASK_MCP_PORT}/mcp",
+            accept_http_error=True,
+        )
     wait_http("frontend", f"http://127.0.0.1:{FRONTEND_PORT}")
 
 
@@ -584,6 +614,7 @@ def start(
     print(f"Docs    : http://localhost:{BACKEND_PORT}/docs")
     if settings.gateway_enabled:
         print(f"Gateway : http://localhost:{GATEWAY_PORT}/v1/models")
+    print(f"Task MCP: http://127.0.0.1:{TASK_MCP_PORT}/mcp")
     print(f"Logs    : {settings.resolved_log_dir}")
     print("=" * 64)
     return status(settings)

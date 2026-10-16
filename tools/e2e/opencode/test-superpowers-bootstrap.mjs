@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SuperpowersPlugin } from '../../.opencode/plugins/superpowers.js';
+import { SuperpowersPlugin } from '../../../.opencode/plugins/superpowers.js';
 
-const ASTRA_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const ASTRA_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const makeOutput = () => ({
   messages: [

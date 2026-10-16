@@ -158,8 +158,11 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
 
     async def _execute(self, task: Task, workspace: Path, *, session_id: str | None = None) -> ExecutorResult:
         command = self._command(task, workspace, session_id)
+        # opencode run reads stdin until EOF when it is not a TTY, so a pipe
+        # here hangs the CLI fallback. Discard stdin instead of leaving it open.
         process = await asyncio.create_subprocess_exec(
             *local_command(command[0], command[1:]),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=16 * 1024 * 1024,

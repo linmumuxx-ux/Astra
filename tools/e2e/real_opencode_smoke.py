@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
-        default="opencode/glm-5.1",
+        default="opencode/cat-jam-free",
         help="OpenCode provider/model identifier",
     )
     parser.add_argument(

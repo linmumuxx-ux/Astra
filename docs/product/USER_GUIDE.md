@@ -266,19 +266,10 @@ ops/dev/astra_service.py
 
 ## 13. 质量验证
 
-完整验证：
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\verify.py
+```bash
+cd services/task-platform && .venv/bin/ruff check app tests && .venv/bin/pytest
+cd web/nexus && npm run type-check && npm run build
 ```
-
-单独 E2E：
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\e2e.py
-```
-
-质量门禁包含后端检查、后端测试、前端类型检查、生产构建和 Chromium E2E。
 
 ## 14. 常见问题
 

@@ -540,7 +540,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", help="reuse an already running opencode serve instance")
     parser.add_argument("--opencode-binary", default="opencode")
-    parser.add_argument("--model", default="opencode/glm-5.1")
+    parser.add_argument("--model", default="opencode/cat-jam-free")
     parser.add_argument("--workspace", type=Path, help="POC workspace; defaults to a temp directory")
     parser.add_argument("--timeout", type=float, default=180)
     return parser.parse_args()

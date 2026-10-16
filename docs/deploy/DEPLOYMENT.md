@@ -389,27 +389,10 @@ systemd 部署使用 `deploy/systemd/astra-gateway.service`；数据面默认监
 
 ## 12. 质量验证
 
-完整验证：
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\verify.py
+```bash
+cd services/task-platform && .venv/bin/ruff check app tests && .venv/bin/pytest
+cd web/nexus && npm run type-check && npm run build
 ```
-
-包含：
-
-1. Ruff
-2. Backend pytest
-3. Frontend type-check
-4. Frontend production build
-5. Chromium E2E
-
-单独运行 E2E：
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\e2e.py
-```
-
-CI 同样调用 `python scripts/verify.py`，不依赖 Bash。
 
 ## 13. 升级
 

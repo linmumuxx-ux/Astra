@@ -1,6 +1,6 @@
 """OpenCode 模型字符串。直连用 provider/model，远程经网关用 astra-gateway/<路由 id>。"""
 
-DEFAULT_MODEL_ID = "deepseek-flash"
+DEFAULT_MODEL_ID = "opencode/cat-jam-free"
 DIRECT_PROVIDER = "deepseek"
 GATEWAY_PROVIDER = "astra-gateway"
 
@@ -8,14 +8,12 @@ GATEWAY_PROVIDER = "astra-gateway"
 def route_model_id(value: str | None) -> str:
     """网关路由表里的模型 id。带 provider 前缀时只保留最后一段。"""
 
-    raw = (value or "").strip()
-    if not raw:
-        return DEFAULT_MODEL_ID
+    raw = (value or "").strip() or DEFAULT_MODEL_ID
     if raw.startswith(f"{GATEWAY_PROVIDER}/"):
         raw = raw.split("/", 1)[1]
     elif "/" in raw:
         raw = raw.rsplit("/", 1)[1]
-    return raw or DEFAULT_MODEL_ID
+    return raw or DEFAULT_MODEL_ID.rsplit("/", 1)[-1]
 
 
 def gateway_model(value: str | None) -> str:

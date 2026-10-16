@@ -757,7 +757,7 @@ Task 1 → 验证 → Task 2 → 验证 → ...
 - 真实 OpenCode：`test_real_opencode_phase1a.py` → 1 passed；`test_real_opencode_phase1b.py` → 1 passed（模型 deepseek/deepseek-v4-flash）
 - 前端：`npm run type-check` → passed；`npm run build` → passed（含 workspace-ui 构建）
 - Workspace UI：`bun run type-check` → passed；`bun run build` → passed；`bun test`（capabilities）→ 2 passed
-- 隔离 E2E（`tools/e2e/e2e.py`，全新 seed）：35 passed, 1 failed, 10 skipped。唯一失败为 `数字图书馆兼容平铺空间响应…`，错误 `apiResponse.json: Response has been disposed`，发生在测试自身 route handler 内、与本次改动无关（live 与 isolate 两处均同样失败，接口 `GET /api/library/spaces` 返回 200 正常）
+- 隔离浏览器验收（全新 seed）：35 passed, 1 failed, 10 skipped。唯一失败为 `数字图书馆兼容平铺空间响应…`，错误 `apiResponse.json: Response has been disposed`，发生在测试自身 route handler 内、与本次改动无关（live 与 isolate 两处均同样失败，接口 `GET /api/library/spaces` 返回 200 正常）
 - live E2E（对用户运行中的开发库）：29 passed, 7 failed, 10 skipped。7 个失败全部是 seed 数据漂移（数据库中不存在期望的种子任务/员工工作空间，如 `排查任务列表时间筛选异常`、`新增回调场景自动化覆盖` 计数为 0），非本次代码回归；隔离 E2E 已证明同一套用例在 seed 数据完整时通过
 
 真实 OpenCode 验证：

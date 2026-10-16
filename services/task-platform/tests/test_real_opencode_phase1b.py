@@ -1,6 +1,6 @@
 """Opt-in real assistant + MCP acceptance over execution-session fixtures.
 
-    ASTRA_REAL_OPENCODE=1 ASTRA_REAL_OPENCODE_MODEL=deepseek/deepseek-flash \
+    ASTRA_REAL_OPENCODE=1 ASTRA_REAL_OPENCODE_MODEL=opencode/cat-jam-free \
         pytest tests/test_real_opencode_phase1b.py
 """
 

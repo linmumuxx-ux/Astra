@@ -79,12 +79,17 @@ def test_start_core_waits_for_gateway_health(monkeypatch):
     monkeypatch.setattr(service, "spawn", fake_spawn)
     monkeypatch.setattr(service, "wait_process", lambda name, info: None)
     monkeypatch.setattr(service, "wait_worker", lambda name, info: None)
-    monkeypatch.setattr(service, "wait_http", lambda name, url, timeout=45: ready_urls.append(url))
+    def record_ready(name, url, timeout=45, **kwargs):
+        ready_urls.append(url)
+
+    monkeypatch.setattr(service, "wait_http", record_ready)
 
     service.start_core("dev", _settings(gateway_enabled=True), "npm", _local_command, processes)
 
     assert "gateway" in processes
+    assert "task-mcp" in processes
     assert f"http://127.0.0.1:{service.GATEWAY_PORT}/healthz" in ready_urls
+    assert f"http://127.0.0.1:{service.TASK_MCP_PORT}/mcp" in ready_urls
 
 
 def test_gateway_startup_has_no_publication_workflow():
