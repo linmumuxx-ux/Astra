@@ -60,7 +60,7 @@ export const formatTokens = (value: number | null | undefined) => {
 }
 
 export const employeeDisplayName = (value: string | null | undefined) =>
-  String(value ?? 'Worker').replace(/^Astra-(\d+)$/i, 'Worker-$1')
+  String(value ?? 'Worker').replace(/^(?:Astra|员工)-(\d+)$/i, 'Worker-$1')
 
 export const workerFacingMessage = (value: string) =>
   value.replaceAll('数字员工', 'Worker').replaceAll('员工', 'Worker')

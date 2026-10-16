@@ -101,6 +101,32 @@ async def test_nr_test_system_adapter_maps_v03_task_and_backfills():
     assert json.loads(requests[1].content) == {"status": "COMPLETED"}
 
 
+async def test_nr_test_system_skips_http_without_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected HTTP {request.method} {request.url}")
+
+    settings = Settings(
+        nr_test_system_endpoint="http://127.0.0.1:8000",
+        nr_test_system_token="  ",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=settings.nr_test_system_endpoint
+    ) as client:
+        source = NrTestSystemSource(settings, client)
+        assert await source.discover_tasks() == []
+        await source.update_task("EXT-1", {"status": "COMPLETED"})
+        assert await source.heartbeat() is False
+        with pytest.raises(RuntimeError, match="token is not configured"):
+            await source.get_task("EXT-1")
+
+
+def test_scout_returns_empty_without_token(monkeypatch):
+    from app.runtime import celery_app
+
+    monkeypatch.setattr(celery_app.settings, "nr_test_system_token", None)
+    assert celery_app.scout() == []
+
+
 def test_mysql_settings_build_encoded_async_url_without_exposing_password():
     settings = Settings(
         database_url=None,

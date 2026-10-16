@@ -28,7 +28,7 @@
 
       <ElFormItem label="排序" prop="sort_order">
         <ElInputNumber v-model="form.sort_order" class="category-editor-form__sort" :min="0" :step="10" :precision="0" controls-position="right" />
-        <ElText class="category-editor-form__hint" type="info">数字越小越靠前，任务与员工配置按此顺序展示。</ElText>
+        <ElText class="category-editor-form__hint" type="info">数字越小越靠前，任务与 Worker 配置按此顺序展示。</ElText>
       </ElFormItem>
 
       <ElFormItem label="启用" prop="enabled">
@@ -43,7 +43,7 @@
           :rows="8"
           resize="vertical"
           aria-label="任务 Prompt"
-          placeholder="任务开始时给数字员工的提示词，可用 {{input}} 等占位符"
+          placeholder="任务开始时给 Worker 的提示词，可用 {{input}} 等占位符"
         />
       </ElFormItem>
 
@@ -55,7 +55,7 @@
           :rows="8"
           resize="vertical"
           aria-label="问题 Prompt"
-          placeholder="任务为「问题」类型时给数字员工的提示词"
+          placeholder="任务为「问题」类型时给 Worker 的提示词"
         />
       </ElFormItem>
 

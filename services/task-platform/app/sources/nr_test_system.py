@@ -13,10 +13,18 @@ class NrTestSystemSource(TaskSource):
         self.settings = settings or get_settings()
         self._client = client
 
+    @staticmethod
+    def enabled(settings: Settings) -> bool:
+        return bool((settings.nr_test_system_token or "").strip())
+
+    def _configured(self) -> bool:
+        return self.enabled(self.settings)
+
     def _headers(self) -> dict[str, str]:
-        if not self.settings.nr_test_system_token:
+        token = (self.settings.nr_test_system_token or "").strip()
+        if not token:
             return {}
-        return {"Authorization": f"Bearer {self.settings.nr_test_system_token}"}
+        return {"Authorization": f"Bearer {token}"}
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         if self._client:
@@ -55,6 +63,8 @@ class NrTestSystemSource(TaskSource):
         )
 
     async def discover_tasks(self) -> list[ExternalTask]:
+        if not self._configured():
+            return []
         response = await self._request(
             "GET", self.settings.nr_test_system_discover_path, params={"status": "READY"}
         )
@@ -63,16 +73,22 @@ class NrTestSystemSource(TaskSource):
         return [self._map(item) for item in items]
 
     async def get_task(self, external_task_id: str) -> ExternalTask:
+        if not self._configured():
+            raise RuntimeError("nr_test_system token is not configured")
         response = await self._request(
             "GET", f"{self.settings.nr_test_system_discover_path.rstrip('/')}/{external_task_id}"
         )
         return self._map(response.json())
 
     async def update_task(self, external_task_id: str, result: dict[str, Any]) -> None:
+        if not self._configured():
+            return
         path = self.settings.nr_test_system_result_path.format(external_task_id=external_task_id)
         await self._request("POST", path, json=result)
 
     async def heartbeat(self) -> bool:
+        if not self._configured():
+            return False
         try:
             response = await self._request("GET", "/api/health")
             return response.status_code == 200

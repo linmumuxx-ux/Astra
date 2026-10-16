@@ -1,6 +1,6 @@
 <template>
   <div class="astra-page" data-testid="intervention-page">
-    <AstraPageHeader title="待处理" description="处理需要人工介入或继续执行的任务。" testid="intervention-header">
+    <AstraPageHeader title="待处理" description="处理需要人工介入、长时间无活动或继续执行的任务。" testid="intervention-header">
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="intervention-refresh" @click="store.refresh()">刷新</ElButton>
       </template>
@@ -26,8 +26,13 @@
             </div>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="状态" width="140">
-          <template #default="{ row }"><RuntimeStatusBadge :projection="row as Task" :show-detail="false" /></template>
+        <ElTableColumn label="状态" width="220">
+          <template #default="{ row }">
+            <ElSpace :size="6" wrap>
+              <RuntimeStatusBadge :projection="row as Task" :show-detail="false" />
+              <ElTag v-if="row.inactivity_alert" type="warning" size="small">长时间无活动</ElTag>
+            </ElSpace>
+          </template>
         </ElTableColumn>
         <ElTableColumn label="操作" width="240" fixed="right">
           <template #default="{ row }">
@@ -51,7 +56,7 @@
 import { ExternalLink, RefreshCw } from 'lucide-vue-next'
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { ElButton, ElEmpty, ElSpace, ElTable, ElTableColumn, ElText, vLoading } from 'element-plus'
+import { ElButton, ElEmpty, ElSpace, ElTable, ElTableColumn, ElTag, ElText, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Task } from '@/api/types'
 import { notify } from '@/composables/useToast'
@@ -65,7 +70,7 @@ const store = useAstraStore()
 const router = useRouter()
 const states = ['WAITING', 'FAILED'] as const
 const selected = ref<string>('WAITING')
-const tasks = computed(() => store.tasks.filter((task) => task.status === selected.value))
+const tasks = computed(() => store.tasks.filter((task) => task.status === selected.value || task.inactivity_alert))
 const countOf = (state: string) => store.tasks.filter((task) => task.status === state).length
 const openTask = (task: Task) => router.push(`/tasks/${task.id}`)
 async function run(task: Task, action: string) {

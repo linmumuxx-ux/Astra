@@ -31,7 +31,11 @@ celery.conf.update(
     beat_schedule={
         "astra-task-review": {"task": "astra.task-review", "schedule": 30.0},
         "astra-task-wake": {"task": "astra.task-wake", "schedule": float(settings.outbox_interval)},
-        "astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval},
+        **(
+            {"astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval}}
+            if NrTestSystemSource.enabled(settings)
+            else {}
+        ),
         "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
         "astra-heartbeat-check": {
             "task": "astra.heartbeat-check",
@@ -78,6 +82,9 @@ def task_review() -> list[str]:
 
 @celery.task(name="astra.scout")
 def scout() -> list[str]:
+    if not NrTestSystemSource.enabled(settings):
+        return []
+
     async def execute():
         await init_database()
         async with worker_session() as session:
