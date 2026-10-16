@@ -12,7 +12,7 @@
 - 将 `nexus-assistant` MCP 与助手相关权限收敛到项目级 `Astra/opencode.json`；助手启动直接使用项目配置，不再生成/复制/动态拼装任何临时 `opencode.json`，也不通过 `OPENCODE_CONFIG` 指向独立目录。
 - 保留数字助手独立 Runtime（独立 OpenCode Server 端口/凭据）与独立 Session，与数字员工 Task Runtime / Session 隔离。
 - 明确助手权限边界：以 Astra 项目为加载上下文不等于允许修改 Astra 源码；`edit` / `write` / `bash` / `webfetch` 默认拒绝，平台操作统一走 `nexus-assistant` MCP。
-- 清理 Workspace 相关引用：`scripts/preflight.py` 的助手运行区检查、`scripts/astra_service.py`、`deploy/systemd/astra-assistant-opencode.service`、三份 env 示例、部署文档与根 `AGENTS.md`。
+- 清理 Workspace 相关引用：`ops/dev/preflight.py` 的助手运行区检查、`ops/dev/astra_service.py`、`deploy/systemd/astra-assistant-opencode.service`、三份 env 示例、部署文档与根 `AGENTS.md`。
 - 更新 `superpowers.js` 插件中对 `nexus-assistant` 的隔离判断，确保不再为已删除目录保留特殊分支，同时不影响其他嵌套工作区。
 - 更新测试与真实 OpenCode 脚本中硬编码的 `nexus-assistant/.opencode/...` 路径。
 
@@ -30,11 +30,11 @@
 
 ## Impact
 
-- **后端配置**：`backend/app/config/settings.py`（删除 `assistant_workspace_dir`、`resolved_assistant_workspace`、相关校验/注释）；`backend/app/assistant/server.py`（工作目录改为项目根）；`backend/app/assistant/client.py`。
-- **后端启动/运维**：`backend/app/main.py`（编排器仍保留）、`scripts/astra_service.py`、`scripts/preflight.py`、`deploy/systemd/astra-assistant-opencode.service`。
+- **后端配置**：`services/task-platform/app/config/settings.py`（删除 `assistant_workspace_dir`、`resolved_assistant_workspace`、相关校验/注释）；`services/task-platform/app/assistant/server.py`（工作目录改为项目根）；`services/task-platform/app/assistant/client.py`。
+- **后端启动/运维**：`services/task-platform/app/main.py`（编排器仍保留）、`ops/dev/astra_service.py`、`ops/dev/preflight.py`、`deploy/systemd/astra-assistant-opencode.service`。
 - **项目配置**：根 `opencode.json`（新增助手 MCP）；`.opencode/agents/`、`.opencode/skills/`（迁入助手 Agent 与 Skill）；`.opencode/plugins/superpowers.js`。
 - **能力资产**：删除 `nexus-assistant/`（`opencode.json`、`AGENTS.md`、`.opencode/agents/platform-assistant.md`、`.opencode/skills/nexus-task-experience-review/`、`assistant-context/`）。
-- **配置样例/文档**：`.env.example`、`deploy/astra.env.example`、`deploy/astra.env.windows.example`、`docs/DEPLOYMENT.md`、`docs/design/PLATFORM_ASSISTANT.md`、`docs/OPENSPEC_SUPERPOWERS.md`、根 `AGENTS.md`。
-- **测试**：`backend/tests/test_assistant.py`、`test_assistant_session_tools.py`、`test_recovery_summary.py`、`test_recovery_supervisor.py`、`test_employee_serve.py`、`test_real_opencode_phase1b.py`、`conftest.py`、`scripts/phase1b_real_experience.py`。
+- **配置样例/文档**：`.env.example`、`deploy/astra.env.example`、`deploy/astra.env.windows.example`、`docs/deploy/DEPLOYMENT.md`、`docs/product/design/PLATFORM_ASSISTANT.md`、`docs/architecture/OPENSPEC_SUPERPOWERS.md`、根 `AGENTS.md`。
+- **测试**：`services/task-platform/tests/test_assistant.py`、`test_assistant_session_tools.py`、`test_recovery_summary.py`、`test_recovery_supervisor.py`、`test_employee_serve.py`、`test_real_opencode_phase1b.py`、`conftest.py`、`tools/e2e/phase1b_real_experience.py`。
 - **接口/前端**：`/api/assistant/*` 与 `frontend/src/features/assistant/*` 行为不变；`frontend/src/views/settings/SystemSettings.vue` 的助手状态卡保持不变（当前无 Workspace 字段，需验证无回归）。
 - **数据模型**：无 Workspace 字段需迁移；`assistant_*` 表与 `task_reviews` 保持不变。

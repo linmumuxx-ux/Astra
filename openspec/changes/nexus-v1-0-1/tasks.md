@@ -26,7 +26,7 @@
 ## 6. 真实 Agent Service
 
 - [x] 6.1 对运行中的 AgentScope 2.0.10 与 Redis 做一次创建 Agent、创建两条 Session、SSE 文本增量和 `contact_employee` 唤醒
-  - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py -s`
+  - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api services/nexus-api/.venv/bin/pytest services/nexus-api/tests/test_live_agentscope.py -s`
   - 2026-10-13 在本机 `redis-server`（没有 Docker）和 Ollama `qwen2.5:3b` 上通过。健康检查里的 Agent Service 版本是 `2.0.10`。
   - 当次输出：agent `a96da55d15f34da19cad4f3e87ba36da`；两条 Session `82ee037db2484d218e8d48fe4a461fe0` 与 `bcb079542345444a8759b002fe4f6838`。
   - 私聊 SSE 收到 `TEXT_BLOCK_DELTA`。调用方事件里出现四次 `contact_employee`。对方邮箱流的文本增量是模型自己写出的 `XML_tag_here`，Nexus 保存的消息仍然只有 `user`。
@@ -35,18 +35,18 @@
 ## 7. 员工管理
 
 - [x] 7.1 员工的创建、检索、修改、启用、禁用和删除调用正在运行的 AgentScope；知识和工具只接受目录中的标识；禁用后不能开始新的运行
-  - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s`
+  - 验证命令：`NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api services/nexus-api/.venv/bin/pytest services/nexus-api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s`
   - 2026-10-13 通过，`1 passed in 0.36s`。Agent Service `GET /health` 版本 `2.0.10`，`knowledge_base` 为 `disabled`。
   - `GET /knowledge_bases/` 返回 503：`Knowledge base feature is disabled — pass a knowledge_base_manager to create_app() to enable it.` Nexus `GET /api/v1/knowledge` 为 `{"available": false, "items": []}`。手写知识库标识被拒绝。
   - `GET /api/v1/skills` 可读，当时技能库是空列表。虚构技能 `not-a-real-skill` 被拒绝。
   - `GET /api/v1/tools` 为 Bash、Edit、Glob、Grep、Read、Write、`contact_employee`。`query_task` 被拒绝。
   - 当次输出：agent `48a90bf0b957493090e03d5472101217`；禁用私聊 HTTP 409；重新启用后 `POST /chat` 被接受；删除后该 Agent 不在 `GET /agent/`。
-  - 同一轮 `pytest nexus/api/tests/test_api.py` 为 16 passed。MockTransport 记录了：目录外的知识与工具返回 422；禁用期间没有 `POST /chat`；禁用员工的 `contact_employee` 解析返回 404，正文含「禁用」。
+  - 同一轮 `pytest services/nexus-api/tests/test_api.py` 为 16 passed。MockTransport 记录了：目录外的知识与工具返回 422；禁用期间没有 `POST /chat`；禁用员工的 `contact_employee` 解析返回 404，正文含「禁用」。
 
 ## 8. 数字员工私聊
 
 - [x] 8.1 同一匿名标识可与一位员工进行多条私聊；刷新后恢复 Session 与用户消息；另一个匿名标识读不到这些对话
-  - 2026-10-13：`pytest nexus/api/tests/test_api.py` 19 passed。其中两个匿名标识互不可见，API 用同一数据目录重新创建后仍能取回用户消息。
+  - 2026-10-13：`pytest services/nexus-api/tests/test_api.py` 19 passed。其中两个匿名标识互不可见，API 用同一数据目录重新创建后仍能取回用户消息。
   - 实跑 `test_private_chat_streams_and_isolates_anonymous_owners`：`1 passed in 25.17s`。两条 Session `dbec10b3f9094248b6cc9aee84bcfa7e` 与 `1aa0f329d80c40e1b119fb4df60fff44`。另一匿名标识读取对话得到 404。
 - [x] 8.2 文本和图片附件按 AgentScope 消息块发送；事件流文本来自 Session，不由 Nexus 代写；禁用员工不能开始新运行
   - 同一条实跑里，两轮都收到 `TEXT_BLOCK_DELTA`。第一轮增量是模型自己的文本，不是「在」。第二轮增量是「你似乎在重复同一个指令或问题。请提供更多的信息，以便我能更好地帮助你。」
@@ -57,7 +57,7 @@
 ## 9. 团队对等交流
 
 - [x] 9.1 讨论可增删成员。`@` 只触发被点名员工。`contact_employee` 会为同一讨论里尚未被点名的同事创建 Session 并投递，不代写回复
-  - 2026-10-13：`pytest nexus/api/tests/test_api.py` 21 passed。解析会创建讨论 Session，不额外调用 `/chat`。
+  - 2026-10-13：`pytest services/nexus-api/tests/test_api.py` 21 passed。解析会创建讨论 Session，不额外调用 `/chat`。
   - 浏览器创建「浏览器讨论」后再编辑，成员数变为 4。未点名发送时没有触发员工。
   - 实跑里 `qwen2.5:3b` 没有自己调用 `contact_employee`，而是调用了 `TaskGet` 或 `TeamCreate`。用工具内部的 `deliver_to_inbox` 向讨论 Session 投递后，同事被唤醒，回复标的是同事自己的员工 id。
 - [x] 9.2 同一频道按员工身份显示各自 Session 的发言，附件进入模型输入。同一句话和超过次数的联系会被拒绝，下一位同事仍能继续联系一位成员
@@ -73,7 +73,7 @@
   - 卸掉 `ToolStop` 之前，模型先连续调用 `ToolStop`，再用错误名字调用 `contact_employee`。卸掉之后的实跑里，运营调用了 `contact_employee`，工具结果是「已把消息交给对方」，自动化工程师在同一频道里用自己的员工 id 作了回复。事件里没有 `TeamCreate`、`TaskGet` 或 `ToolStop`。
 - [x] 10.3 知识库只有在依赖和嵌入模型都真实可用时才启用；否则写明阻塞
   - 本机没有 `pymilvus`。`ollama list` 只有 `qwen2.5:3b`，没有嵌入模型。`GET /health` 的 `knowledge_base` 仍是 `disabled`。没有启用 `knowledge_base_manager`。
-  - DeepSeek 只有聊天模型。AgentScope 2.0.10 不能把 `all-MiniLM-L6-v2` 注册成知识库嵌入。知识库继续关闭。本地嵌入冒烟见 `nexus/deploy/embedding_smoke.py`。
+  - DeepSeek 只有聊天模型。AgentScope 2.0.10 不能把 `all-MiniLM-L6-v2` 注册成知识库嵌入。知识库继续关闭。本地嵌入冒烟见 `services/agent-service/embedding_smoke.py`。
 
 ## 11. DeepSeek Flash 与本地嵌入
 

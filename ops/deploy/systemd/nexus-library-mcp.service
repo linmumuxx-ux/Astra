@@ -1,0 +1,19 @@
+[Unit]
+Description=Nexus digital library MCP
+After=network-online.target nexus-task-api.service
+Wants=network-online.target
+Requires=nexus-task-api.service
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus/services/task-platform
+EnvironmentFile=/var/lib/nexus/nexus.env
+ExecStart=/opt/nexus/services/task-platform/.venv/bin/python -m app.mcp_server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

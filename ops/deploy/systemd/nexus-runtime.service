@@ -1,0 +1,20 @@
+[Unit]
+Description=Nexus Celery control worker
+After=network-online.target nexus-task-api.service nexus-opencode.service
+Wants=network-online.target
+Requires=nexus-task-api.service nexus-opencode.service
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus/services/task-platform
+EnvironmentFile=/var/lib/nexus/nexus.env
+StateDirectory=nexus
+ExecStart=/opt/nexus/services/task-platform/.venv/bin/celery -A app.runtime.celery_app:celery worker --loglevel=INFO --pool=solo --queues=control --hostname=nexus-control@%H
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

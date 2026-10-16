@@ -2,7 +2,7 @@
 
 Nexus v1.0.1 是这个分支上的新产品。仓库里的 Astra 实现只保留为规范来源。数字员工的推理、会话、技能、知识和记忆由 AgentScope Agent Service 承担。Nexus 提供员工目录和两个聊天界面，并通过 HTTP 调用已经发布的 Agent Service。
 
-版本钉在 **AgentScope 2.0.10**。依据是 2026-10-13 的 PyPI `agentscope` 最新正式版，以及 GitHub tag [`v2.0.10`](https://github.com/agentscope-ai/agentscope/releases/tag/v2.0.10)（2026-10-12）。Python 要求 `>=3.11`。文档站的 `2.0.10` 版本页当时返回 404；`2.0.7` / `2.0.8` 架构页仍把消息分页写成 `offset` + `limit`。tag `v2.0.10` 的源码里 `offset` 已废弃并被忽略，分页参数是 `before` 与 `limit`。接口以该 tag 源码为准，细节见 `nexus/docs/agentscope-2.0.10.md`。
+版本钉在 **AgentScope 2.0.10**。依据是 2026-10-13 的 PyPI `agentscope` 最新正式版，以及 GitHub tag [`v2.0.10`](https://github.com/agentscope-ai/agentscope/releases/tag/v2.0.10)（2026-10-12）。Python 要求 `>=3.11`。文档站的 `2.0.10` 版本页当时返回 404；`2.0.7` / `2.0.8` 架构页仍把消息分页写成 `offset` + `limit`。tag `v2.0.10` 的源码里 `offset` 已废弃并被忽略，分页参数是 `before` 与 `limit`。接口以该 tag 源码为准，细节见 `docs/architecture/agentscope-2.0.10.md`。
 
 ## Goals / Non-Goals
 
@@ -53,7 +53,7 @@ Agent Team（`TeamCreate`、`AgentCreate`、`TeamSay`、`TeamDelete`、`AgentInv
 
 正文来自 `GET /sessions/{session_id}/stream?agent_id=...`，媒体类型 `text/event-stream`。帧格式是 `data: {AgentEvent JSON}\n\n`，空闲时每 30 秒一个 `:\\n\\n` 心跳。可展示的增量是 `TEXT_BLOCK_DELTA` 的 `delta`。一轮结束的信号是 `REPLY_END`。Nexus 在本连接里见过对应的 `REPLY_START` 后，转发 `REPLY_END`，再写一条 `NEXUS_RUN_FINISHED` 并结束这次 SSE。上一轮留在重放日志里的单独 `REPLY_END` 不会提前关掉连接。身份头使用 Agent Service 当前的 `X-User-ID`。Nexus 在自己的 API 上代理这条流。`after` 只有在符合 Agent Service checkpoint 游标（`数字-数字`）时才转发；事件自己的 `id` 传进去会让 Redis 拒绝并中断连接。页面记下已经见过的事件 `id`，重放时不再把上一轮文本画出来。浏览器不直接持有 Agent Service 地址。
 
-Session 要能产生文本增量，创建时必须带 `chat_model_config`。这项来自部署环境变量 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`，内容是 Agent Service 里已登记的 credential id、provider type 和模型名。`nexus/deploy/bootstrap_chat_model.py` 调用官方 `POST /credential/` 生成它。Nexus 页面仍然没有模型或密钥字段。变量为空时，Session 不带模型，聊天不会被改成模拟回复。
+Session 要能产生文本增量，创建时必须带 `chat_model_config`。这项来自部署环境变量 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`，内容是 Agent Service 里已登记的 credential id、provider type 和模型名。`services/agent-service/bootstrap_chat_model.py` 调用官方 `POST /credential/` 生成它。Nexus 页面仍然没有模型或密钥字段。变量为空时，Session 不带模型，聊天不会被改成模拟回复。
 
 ### 5. 团队讨论只唤醒被 @ 的员工
 
@@ -63,7 +63,7 @@ Session 要能产生文本增量，创建时必须带 `chat_model_config`。这�
 
 ### 6. 产品代码与旧树隔离
 
-新的页面、API 和部署说明都在 `nexus/`。根 `README.md` 指向这里。旧的 `backend/` 与 `frontend/` 不改业务行为。
+新的页面、API 和部署说明都在 `nexus/`。根 `README.md` 指向这里。旧的 `services/task-platform/` 与 `frontend/` 不改业务行为。
 
 ## Risks / Trade-offs
 
@@ -75,7 +75,7 @@ Session 要能产生文本增量，创建时必须带 `chat_model_config`。这�
 
 ## Migration Plan
 
-没有旧业务数据要搬。回滚就是停掉 `nexus/web` 与 `nexus/api`，不改动 AgentScope 以外的旧服务。Agent Service 本身的安装与卸载见 `nexus/deploy/agentscope.md`。
+没有旧业务数据要搬。回滚就是停掉 `web/nexus` 与 `services/nexus-api`，不改动 AgentScope 以外的旧服务。Agent Service 本身的安装与卸载见 `services/agent-service/agentscope.md`。
 
 ## Open Questions
 

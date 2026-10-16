@@ -14,7 +14,7 @@ fixes / limits-and-risks / checks）。
 
 ## 实际执行
 
-- 在 `backend/` 执行 `../.venv/bin/python -m ruff check app tests`：通过。
+- 在 `services/task-platform/` 执行 `../.venv/bin/python -m ruff check app tests`：通过。
 - 后端全量 `PYTHONDONTWRITEBYTECODE=1 pytest -q --tb=short`：397 passed、4 skipped（70.06s）；
   4 项均为 opt-in 外部依赖（2 项需真实 Redis，2 项需 `ASTRA_REAL_OPENCODE=1`），
   已由独立执行在真实环境单独跑通并记入 `evidence/real-verify-20260930/opt-in-summary.md`。
@@ -28,7 +28,7 @@ fixes / limits-and-risks / checks）。
   `ASTRA_DIFF_RACE_TASK=<真实任务> npx playwright test e2e/task-diff-race.spec.ts --project=chromium`
   → 5 passed；移除身份守卫后首项明确失败，恢复后全通过。
 - `npm run build` 会先重建未改动的 `workspace-ui` 1.18.31 产物，已仅回滚该批构建结果，
-  未提交产物、未触碰 1.2.27、未修改 `workspace-ui/` 源码。
+  未提交产物、未触碰 1.2.27、未修改 `web/workspace-ui/` 源码。
 
 ## 本轮修复（真实浏览器暴露）
 

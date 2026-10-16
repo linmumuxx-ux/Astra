@@ -1,0 +1,18 @@
+[Unit]
+Description=Nexus API gateway data plane
+After=network-online.target nexus-task-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus/services/task-platform
+EnvironmentFile=/var/lib/nexus/nexus.env
+ExecStart=/opt/nexus/services/task-platform/.venv/bin/uvicorn app.gateway.server:app --host 127.0.0.1 --port 8110
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

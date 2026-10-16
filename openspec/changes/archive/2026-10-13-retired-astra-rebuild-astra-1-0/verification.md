@@ -10,24 +10,24 @@
 
 ## CRITICAL：未完成实施任务
 
-- **1.2** 完成全部领域规范、架构/数据字典/API/Tool 契约和复用审计，OpenSpec validate 通过。 位置：`docs/astra-1.0/contracts.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **2.1** 新 schema、认证 Principal、权限交集、组织/岗位/员工/Goal/生命周期；越权/归档/撤权测试。 位置：`domains/organization/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **2.2** SourceEvent/Inbox/Persona fencing/Routine/记忆/预算与外部 connectors，重复事件/恢复/锁定测试。 位置：`apps/services/personas.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **2.3** 长期 DM/Group/附件/引用/@、正式交接、冲突/防循环、持久 SSE；隔离/并发/重连测试。 位置：`domains/messaging/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **2.4** 具体操作准备/审批/执行、权限版本/失效/重复审批、审计、pause/stop/takeover 测试。 位置：`domains/governance/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **3.1** 复制成熟 OpenCode/Workspace/SSH，Worker 池/lease/资产隔离/旧尝试 fencing；版本契约测试。 位置：`domains/runtime/workspace.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **3.2** 任务委派、原生执行、证据独立验收、返工/跟踪；断线/超时/取消/重启/未知副作用对账测试。 位置：`domains/runtime/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **3.3** 原始知识/Wiki/经验/Skill 验证审批发布回滚、个人 Git Memory、API 网关/资源指标；证据及权限测试。 位置：`domains/knowledge/memory.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **4.1** 动态 3D 数字空间、真实状态、DOM 交互、2D 降级/减少动态效果/离线资源构建验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **4.2** 员工长期 DM、团队 Channel、工作列表详情/Workspace、Human Inbox 全交互真实 API 验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **4.3** 组织/岗位/目标/预算、图书馆/Skill/Memory、Worker/API、治理/审计全交互与页面状态验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **5.1** 独立 from_0xx 冻结/导出/显式映射/幂等导入/dry-run/恢复/对账工具与失败注入测试。 位置：`migrations/from_0xx/formal.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **5.2** 真实旧库和所有 Session/Workspace/知识/Skill/会话逐类对账签收，提交审计报告。 位置：`docs/astra-1.0/migration-reconciliation-report.json`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **5.3** 单运行树部署/健康检查/备份恢复，公司 Linux 内网真实部署；切换后删除旧运行实现。 位置：`docs/astra-1.0/deployment.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **6.1** 领域/集成/迁移/MySQL 并发、完整前端构建与浏览器 E2E 全通过。 位置：`tests/v1`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **6.2** 真实 OpenCode：同岗多员工/同员工并行/共享 Worker/跨岗交接复验/主动职责/成长完整流程。 位置：`tests/v1/test_runtime_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **6.3** 真实权限撤销/重复审批/冲突指令/人工接管/历史证据/断线重启/SSE 恢复与全部页面截图。 位置：`tests/v1/test_persona_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
-- **6.4** 执行 opsx-verify，全部门禁完成后同步归档；提交架构/契约/部署/测试/问题清单，才可标记 1.0 完成。 位置：`docs/astra-1.0/verification.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/astra-1.0/issues.md`。
+- **1.2** 完成全部领域规范、架构/数据字典/API/Tool 契约和复用审计，OpenSpec validate 通过。 位置：`docs/architecture/astra-1.0/contracts.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **2.1** 新 schema、认证 Principal、权限交集、组织/岗位/员工/Goal/生命周期；越权/归档/撤权测试。 位置：`domains/organization/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **2.2** SourceEvent/Inbox/Persona fencing/Routine/记忆/预算与外部 connectors，重复事件/恢复/锁定测试。 位置：`apps/services/personas.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **2.3** 长期 DM/Group/附件/引用/@、正式交接、冲突/防循环、持久 SSE；隔离/并发/重连测试。 位置：`domains/messaging/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **2.4** 具体操作准备/审批/执行、权限版本/失效/重复审批、审计、pause/stop/takeover 测试。 位置：`domains/governance/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **3.1** 复制成熟 OpenCode/Workspace/SSH，Worker 池/lease/资产隔离/旧尝试 fencing；版本契约测试。 位置：`domains/runtime/workspace.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **3.2** 任务委派、原生执行、证据独立验收、返工/跟踪；断线/超时/取消/重启/未知副作用对账测试。 位置：`domains/runtime/service.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **3.3** 原始知识/Wiki/经验/Skill 验证审批发布回滚、个人 Git Memory、API 网关/资源指标；证据及权限测试。 位置：`domains/knowledge/memory.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **4.1** 动态 3D 数字空间、真实状态、DOM 交互、2D 降级/减少动态效果/离线资源构建验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **4.2** 员工长期 DM、团队 Channel、工作列表详情/Workspace、Human Inbox 全交互真实 API 验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **4.3** 组织/岗位/目标/预算、图书馆/Skill/Memory、Worker/API、治理/审计全交互与页面状态验证。 位置：`apps/web/src`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **5.1** 独立 from_0xx 冻结/导出/显式映射/幂等导入/dry-run/恢复/对账工具与失败注入测试。 位置：`migrations/from_0xx/formal.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **5.2** 真实旧库和所有 Session/Workspace/知识/Skill/会话逐类对账签收，提交审计报告。 位置：`docs/architecture/astra-1.0/migration-reconciliation-report.json`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **5.3** 单运行树部署/健康检查/备份恢复，公司 Linux 内网真实部署；切换后删除旧运行实现。 位置：`docs/architecture/astra-1.0/deployment.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **6.1** 领域/集成/迁移/MySQL 并发、完整前端构建与浏览器 E2E 全通过。 位置：`tests/v1`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **6.2** 真实 OpenCode：同岗多员工/同员工并行/共享 Worker/跨岗交接复验/主动职责/成长完整流程。 位置：`tests/v1/test_runtime_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **6.3** 真实权限撤销/重复审批/冲突指令/人工接管/历史证据/断线重启/SSE 恢复与全部页面截图。 位置：`tests/v1/test_persona_live.py`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
+- **6.4** 执行 opsx-verify，全部门禁完成后同步归档；提交架构/契约/部署/测试/问题清单，才可标记 1.0 完成。 位置：`docs/architecture/astra-1.0/verification.md`。建议：完成该任务全部内容及 Scenario 验证后再勾选；具体缺口见 `docs/architecture/astra-1.0/issues.md`。
 
 ## Requirement 与 Scenario 对照
 
@@ -67,4 +67,4 @@
 
 ## 结论
 
-18 项 CRITICAL 尚未关闭，禁止归档或标记 Astra 1.0 完成。没有跳过规划产物；公司及生产验证因尚无安全环境配置/资产清单未执行。实际检查命令、结果和证据见 `docs/astra-1.0/verification.md`。
+18 项 CRITICAL 尚未关闭，禁止归档或标记 Astra 1.0 完成。没有跳过规划产物；公司及生产验证因尚无安全环境配置/资产清单未执行。实际检查命令、结果和证据见 `docs/architecture/astra-1.0/verification.md`。

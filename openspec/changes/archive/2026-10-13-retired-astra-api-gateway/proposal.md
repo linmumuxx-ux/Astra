@@ -25,4 +25,4 @@
 
 ## Impact
 
-涉及 `backend/app/gateway/`、`backend/app/api/`、`backend/alembic/versions/`、`frontend/src/`、`scripts/astra_service.py` 和 `deploy/`。需要 MySQL 与 Redis；Gateway 独立进程运行，控制面仍由 Astra Backend 提供。
+涉及 `services/task-platform/app/gateway/`、`services/task-platform/app/api/`、`services/task-platform/alembic/versions/`、`frontend/src/`、`ops/dev/astra_service.py` 和 `deploy/`。需要 MySQL 与 Redis；Gateway 独立进程运行，控制面仍由 Astra Backend 提供。

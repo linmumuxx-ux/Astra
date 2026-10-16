@@ -6,7 +6,7 @@
 
 | Scenario | 验证证据 |
 | --- | --- |
-| 新建员工并选择形象 | `backend/tests/test_employee_character.py` 验证默认值及持久化；`frontend/e2e/employee-character.spec.ts` 验证九种图片可加载、选择、创建、重载、列表、详情、首页与重开配置；`frontend/e2e/astra.spec.ts` 使用隔离后端创建员工并确认形象保存与回显 |
+| 新建员工并选择形象 | `services/task-platform/tests/test_employee_character.py` 验证默认值及持久化；`frontend/e2e/employee-character.spec.ts` 验证九种图片可加载、选择、创建、重载、列表、详情、首页与重开配置；`frontend/e2e/astra.spec.ts` 使用隔离后端创建员工并确认形象保存与回显 |
 | 编辑已有员工形象 | API 用例遍历 0–8，GET/列表/首页均返回所选编号，状态不变；浏览器用例验证详情页编辑及首页展示；同形象员工不相互影响 |
 | 放弃或保存失败 | 浏览器验证放弃不写入，重开恢复原选择，503 保留草稿，再次保存成功；只改形象不调用环境检测 |
 | 非法形象输入与局部更新 | 创建和 PATCH 拒绝 -1、9、null、小数、字符串及布尔值；创建省略默认 0，PATCH 省略保留已有选择 |
@@ -25,7 +25,7 @@
 
 ## 验证边界与风险
 
-未对真实 MySQL、生产服务或真实 OpenCode 员工执行验证。数据库迁移在临时 SQLite 数据库完成，完整 E2E 使用隔离服务和执行器；未修改现有业务数据库。部署前需在 `backend/` 执行 `alembic upgrade head`，回滚删除形象列会丢失用户选择，应预先备份。
+未对真实 MySQL、生产服务或真实 OpenCode 员工执行验证。数据库迁移在临时 SQLite 数据库完成，完整 E2E 使用隔离服务和执行器；未修改现有业务数据库。部署前需在 `services/task-platform/` 执行 `alembic upgrade head`，回滚删除形象列会丢失用户选择，应预先备份。
 
 已同步 `digital-office-home` 主规范及使用指南，保留同工作区其他变更的规范内容。全量回归失败必须单独记录，不将它们报告为通过。
 

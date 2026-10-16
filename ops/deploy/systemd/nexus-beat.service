@@ -1,0 +1,20 @@
+[Unit]
+Description=Nexus Celery beat
+After=network-online.target nexus-runtime.service
+Wants=network-online.target
+Requires=nexus-runtime.service
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus/services/task-platform
+EnvironmentFile=/var/lib/nexus/nexus.env
+StateDirectory=nexus
+ExecStart=/opt/nexus/services/task-platform/.venv/bin/celery -A app.runtime.celery_app:celery beat --loglevel=INFO --schedule=/var/lib/nexus/celerybeat-schedule
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 
 - [x] 1.1 对照 Phase 1 与 `origin/codex/astra-updates-20261010`（`05dd7314`），把简报第二节的九块能力写入 `design.md` 的复用清单
   - 完成标准：每一块都有直接复用、小范围适配、需要重新实现、不再需要，并写明历史文件路径
-  - 验证：本文件与 `design.md` 一致；未改 `backend/`、`frontend/`、`nexus/` 业务代码
+  - 验证：本文件与 `design.md` 一致；未改 `services/task-platform/`、`frontend/`、`nexus/` 业务代码
 
 ## 2. 数据关系与迁移方案
 
@@ -16,7 +16,7 @@
 
 - [x] 3.1 在 `design.md` 的待确认项得到用户答复之前，不开始迁移代码
   - 完成标准：用户对 D1–D10 的答复已记入本 change；未答复的项没有对应的业务代码
-  - 验证：`git diff` 相对本方案提交，在答复前不含 `backend/` 或 `nexus/` 的功能改动
+  - 验证：`git diff` 相对本方案提交，在答复前不含 `services/task-platform/` 或 `nexus/` 的功能改动
 
 ## 4. 后续实现（本轮不执行）
 

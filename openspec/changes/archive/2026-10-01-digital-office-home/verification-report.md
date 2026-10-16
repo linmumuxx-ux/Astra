@@ -14,7 +14,7 @@
 
 | Requirement / Scenario | 实现 | 验证 |
 | --- | --- | --- |
-| 数字员工办公室 / 观察真实执行 | backend/app/dashboard.py 当前绑定/工位状态；officePresentation.ts；OfficeWorkstation.vue live门控 | test_dashboard_office.py 的当前轮用例；digital-office.spec.ts Session状态用例；真实工作截图和原生执行 |
+| 数字员工办公室 / 观察真实执行 | services/task-platform/app/dashboard.py 当前绑定/工位状态；officePresentation.ts；OfficeWorkstation.vue live门控 | test_dashboard_office.py 的当前轮用例；digital-office.spec.ts Session状态用例；真实工作截图和原生执行 |
 | 当前轮结束与旧轮隔离 | current_session_id + Task/员工匹配 + superseded_by为空；原Task闭环与Session终态分别展示 | backend当前轮/旧轮/取消/终态/新PENDING用例；真实Task RUNNING而Session SUCCEEDED工位静止 |
 | 多员工与搜索 | OfficeScene.vue 稳定后端顺序、3列、团队/状态/全局搜索；提示限定工位边界并随隐藏参考关闭 | E2E团队搜索、60位长文案/1440/1920；真实48位员工；真实分行提示和滚动隐藏 |
 | 人工处理直达 / 等待人工与异常 | officePresentation.ts attention优先、原Task路由；DashboardView.vue待处理；无新确认逻辑 | E2E WAITING/FAILED/无进展直达；真实question/permission答复及原Task确认完成 |

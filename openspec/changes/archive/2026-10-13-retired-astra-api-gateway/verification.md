@@ -18,12 +18,12 @@
 
 ## 实际运行的检查
 
-- 后端：在 `backend/` 运行 `../.venv/bin/python -m pytest -q tests/test_gateway_control.py tests/test_gateway_observability.py tests/test_service_gateway.py tests/test_gateway_data_plane.py`，104 passed、2 skipped。
+- 后端：在 `services/task-platform/` 运行 `../.venv/bin/python -m pytest -q tests/test_gateway_control.py tests/test_gateway_observability.py tests/test_service_gateway.py tests/test_gateway_data_plane.py`，104 passed、2 skipped。
 - 全后端：`../.venv/bin/python -m pytest -q`，435 passed、4 skipped。最后补齐发布对账来源后，重新运行 `test_gateway_control.py`，27 passed。
 - 静态检查：后端 `../.venv/bin/python -m ruff check app tests` 通过；最后修改的 service 与控制面测试再次检查通过。
 - 管理台：在 `frontend/` 运行 `npx vue-tsc -b`、`npx vite build` 通过；本轮未重建 `workspace-ui`。构建存在既有 chunk 大小提示，不影响构建结果。
 - 浏览器：隔离 Vite 服务 `127.0.0.1:15174`，Gateway 9 个 spec 文件与 `page-layout.spec.ts` 共 77 项 Chromium 用例通过，分三次取得证据：Key/布局 10 项、其余 66 项、修正 stats 401 内联错误断言后定向复验 1 项。Astra 全局 API 与 Gateway API 均使用本地 mock；此前因未隔离全局请求导致的导航超时在补齐 mock 后消失。
-- OpenSpec：`node .opencode/tools/openspec.mjs validate api-gateway`、`node scripts/check_openspec_config.mjs` 通过；bootstrap 回归与 `git diff --check` 通过。
+- OpenSpec：`node .opencode/tools/openspec.mjs validate api-gateway`、`node tools/e2e/check_openspec_config.mjs` 通过；bootstrap 回归与 `git diff --check` 通过。
 
 ## 验证边界与风险
 

@@ -25,6 +25,6 @@ Phase 1 已经有可对话的 AgentScope 数字员工，但员工不能创建或
 ## Impact
 
 - 方案文件在 `openspec/changes/nexus-v1-0-1-phase2/`。
-- 后续实现会接入 `backend/app` 的任务、运行时、网关和图书馆，并扩展 `nexus/` 的导航、员工配置和 Agent Service 启动脚本。
+- 后续实现会接入 `services/task-platform/app` 的任务、运行时、网关和图书馆，并扩展 `nexus/` 的导航、员工配置和 Agent Service 启动脚本。
 - Phase 1 的员工目录、私聊、团队交流和 `contact_employee` 保持为对话事实源。
 - `domains/` 是历史提交之后另起的一套模型，不作为本阶段复用源。是否采纳这一点，见 design 的待确认项。

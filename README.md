@@ -2,95 +2,85 @@
 
 Nexus 是数字员工的目录和交流产品。推理、会话、技能、知识和记忆由 **AgentScope 2.0.10 Agent Service** 承担。Nexus 只通过 HTTP 调用它。
 
-数字员工、私聊和团队在 `nexus/`。任务、Agent Worker、API 网关和数字图书馆复用 `backend/app`，Nexus 页面通过 `/api` 调用。3D 办公和 `domains/` 不是这条产品路径。
+任务、Agent Worker、API 网关和数字图书馆在 `services/task-platform`。员工目录在 `services/nexus-api`。页面只有 `web/nexus`。
 
-## 页面
+## 目录
 
-- 员工管理：创建、检索、编辑、启用和删除数字员工。没有模型或凭证配置。
-- 数字员工：同一员工可以有多条私聊。回复只来自 Agent Service 的事件流。
-- 团队交流：讨论成员对等联系。`@员工名` 只唤醒被点名的员工。同事之间继续说话时，由 Agent 调用 `contact_employee`，Nexus 不代写回复。
+```text
+services/task-platform   Task API、网关、Task MCP、Worker、Alembic
+services/nexus-api       员工目录与会话绑定
+services/agent-service   AgentScope Agent Service
+web/nexus                唯一前端
+web/workspace-ui         OpenCode 工作台静态资源
+ops/dev                  本地启动与停止
+ops/deploy               安装脚本、部署说明、systemd
+ops/env/.env.example     唯一环境模板
+tools/e2e                验证脚本
+tools/llm_wiki           llm_wiki 隧道与 ingest pump
+docs/product             产品说明与需求资料
+docs/architecture        架构与运行时说明
+docs/deploy              部署说明
+docs/reports             验证记录与证据
+```
+
+`openspec/`、`.opencode/` 和 `opencode.json` 留在仓库根目录。
+
+## 端口
+
+| 服务 | 端口 | 目录 |
+|---|---|---|
+| Agent Service | 8000 | `services/agent-service` |
+| Task API | 8100 | `services/task-platform` |
+| Gateway | 8110 | `services/task-platform` |
+| Nexus API | 8120 | `services/nexus-api` |
+| Library MCP | 8201 | `services/task-platform` |
+| Task MCP | 8202 | `services/task-platform` |
+| Nexus Web | 5174 | `web/nexus` |
+| 员工 OpenCode | 4096 | 由 Task 平台拉起 |
+| 助手 OpenCode | 4097 | 由 Task 平台拉起 |
+| Redis | 6379 | Agent Service 与 Celery |
 
 ## 本地启动
 
-API：
+复制 `ops/env/.env.example` 为 `ops/env/.env` 后填写。脚本只读这一个文件。密钥留在环境变量里，不要写进仓库。
 
 ```bash
-python3 -m venv nexus/api/.venv
-nexus/api/.venv/bin/pip install -r nexus/api/requirements-dev.txt
-NEXUS_DATA_DIR=nexus/api/data nexus/api/.venv/bin/uvicorn nexus_api.main:app --app-dir nexus/api --port 8120
+cp ops/env/.env.example ops/env/.env
+redis-server --port 6379
+ops/dev/start_agent_service.sh start
+ops/dev/start_astra.sh start
+ops/dev/start_nexus_api.sh start
 ```
 
-页面：
+页面开发：
 
 ```bash
-cd nexus/web
+cd web/nexus
 npm install
 npm run dev
 ```
 
-打开 `http://127.0.0.1:5174`。开发服务器把 `/api/v1` 代理到 `8120`，其余 `/api` 代理到任务服务 `8100`。
+打开 `http://127.0.0.1:5174`。开发服务器把 `/api/v1` 代理到 `8120`，其余 `/api` 代理到 `8100`。
 
-未设置 `NEXUS_AGENTSCOPE_BASE_URL` 时，员工目录仍可保存。发送消息会留下用户内容，并说明 AgentScope 未连接、没有生成回复。
+停止：`ops/dev/start_astra.sh stop`、`ops/dev/start_nexus_api.sh stop`、`ops/dev/start_agent_service.sh stop`。
 
-接上 Agent Service 时：
-
-```bash
-export NEXUS_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000
-export NEXUS_AGENTSCOPE_USER_ID=nexus
-```
-
-Agent Service 与 Redis 的安装见 [nexus/deploy/agentscope.md](nexus/deploy/agentscope.md)。版本钉在 [nexus/deploy/agentscope.version](nexus/deploy/agentscope.version)。接口记录在 [nexus/docs/agentscope-2.0.10.md](nexus/docs/agentscope-2.0.10.md)。
-
-## 任务、Worker 与 OpenCode
-
-任务服务、Celery、网关和图书馆仍从仓库根目录启动。Nexus 页面不另写一套任务状态。
-
-```bash
-# Redis
-redis-server --port 6379
-
-# 任务 API、Celery beat 与 control worker、按配置启用的 OpenCode
-backend/.venv/bin/python scripts/astra_service.py dev
-
-# Task MCP
-ASTRA_TASK_MCP_PORT=8202 backend/.venv/bin/astra-task-mcp
-
-# Agent Service
-NEXUS_API_BASE=http://127.0.0.1:8120 python nexus/deploy/agent_service.py
-
-# Nexus API 与页面见上面的「本地启动」
-```
-
-任务唤醒使用 `ASTRA_NEXUS_API_BASE`、`ASTRA_AGENTSCOPE_BASE_URL` 和 `ASTRA_AGENTSCOPE_USER_ID`。员工会话上的 MCP 地址是 `NEXUS_TASK_MCP_URL`，默认 `http://127.0.0.1:8202/mcp`。OpenCode 直连模型是 `ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash`；远程 Worker 经网关写成 `astra-gateway/deepseek-flash`。聊天模型仍是 `OPENAI_MODEL=deepseek-flash`，基址 `https://api.deepseek.com`。不要把密钥写进仓库。
+`NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG` 由 `services/agent-service/bootstrap_chat_model.py` 生成。页面上没有模型或凭证字段。
 
 ## 检查
 
 ```bash
-cd nexus/web && npm run type-check && npm run build
-cd ../..
-PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests
+cd services/task-platform && .venv/bin/ruff check app tests && .venv/bin/pytest
+PYTHONPATH=services/nexus-api services/nexus-api/.venv/bin/pytest services/nexus-api/tests
+cd web/nexus && npm run type-check && npm run build
 ```
 
-OpenSpec 的活跃变更是 `openspec/changes/nexus-v1-0-1/`。工作流仍使用仓库内的 `node .opencode/tools/openspec.mjs`。Superpowers 的实际名单见 `docs/OPENSPEC_SUPERPOWERS.md`。
-
-## Agent Service
-
-Redis、官方 AgentScope 2.0.10 和健康检查见 [nexus/deploy/agentscope.md](nexus/deploy/agentscope.md)。聊天模型由 `nexus/deploy/bootstrap_chat_model.py` 登记到 Agent Service，再通过 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG` 传给新建 Session。页面上没有这一项。
-
-真实联调：
-
-```bash
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py -s
-```
+部署见 [ops/deploy/DEPLOYMENT_GUIDE.md](ops/deploy/DEPLOYMENT_GUIDE.md)。Agent Service 的安装细节见 [docs/deploy/agentscope.md](docs/deploy/agentscope.md)。版本钉在 [services/agent-service/agentscope.version](services/agent-service/agentscope.version)。接口记录在 [docs/architecture/agentscope-2.0.10.md](docs/architecture/agentscope-2.0.10.md)。
 
 ## 已知限制
 
-- 官方 `get_toolkit` 会挂上任务规划、`ToolStop`、定时任务和 Agent Team。Nexus 启动脚本在组装之后卸掉这些名字，保留 `contact_employee` 和工作区文件工具。没有修改 AgentScope 安装包。做法写在 [nexus/deploy/agentscope.md](nexus/deploy/agentscope.md)。
-- 本机如果只有 `qwen2.5:3b`，它可能改错同事名字，于是下一跳联系失败。这不是 Nexus 代写的回复。
-- 聊天验证目标是 DeepSeek 的 OpenAI 兼容接口：`OPENAI_BASE_URL=https://api.deepseek.com`，`OPENAI_MODEL=deepseek-flash`。密钥用 `OPENAI_API_KEY`，或在它为空时用 `DEEPSEEK_API_KEY`。没有密钥的机器仍用 Ollama。不要把密钥写进仓库。
-- OpenCode 执行模型默认同一个模型 id `deepseek-flash`。现有适配器要求 `provider/model`，所以 `ASTRA_OPENCODE_MODEL` 默认是 `deepseek/deepseek-flash`，上游基址仍是 `https://api.deepseek.com`。Worker 自己的 `model_name` 优先。
-- 知识库没有启用。AgentScope 2.0.10 不能把 sentence-transformers 或 DeepSeek 当成嵌入模型，本机也没有 `pymilvus`。`GET /knowledge_bases/` 会是 503。本地 `all-MiniLM-L6-v2` 只通过 `nexus/deploy/embedding_smoke.py` 做冒烟。
-- `PER_SESSION` 只隔离工作目录，不是进程或文件沙箱。Agent Service 进程持有模型 API 密钥。邮箱和团队 Session 使用 `dont_ask`，避免无人确认时停住；私聊仍使用默认权限。
+- 官方 `get_toolkit` 会挂上任务规划、`ToolStop`、定时任务和 Agent Team。启动脚本在组装之后卸掉这些名字，保留 `contact_employee` 和工作区文件工具。没有修改 AgentScope 安装包。
+- 聊天验证目标是 DeepSeek 的 OpenAI 兼容接口：`OPENAI_BASE_URL=https://api.deepseek.com`，`OPENAI_MODEL=deepseek-flash`。密钥用 `OPENAI_API_KEY`，或在它为空时用 `DEEPSEEK_API_KEY`。
+- OpenCode 执行模型默认 `ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash`。Worker 自己的 `model_name` 优先。远程 Worker 经网关写成 `astra-gateway/deepseek-flash`。
+- 知识库没有启用。`GET /knowledge_bases/` 会是 503。本地嵌入只通过 `services/agent-service/embedding_smoke.py` 做冒烟。
+- `PER_SESSION` 只隔离工作目录，不是进程或文件沙箱。
 - `X-User-ID` 仍是 Agent Service 的占位身份。私聊用浏览器里的匿名标识隔离，不是登录账号。
-- 图片可以放进 `data` 块。文本模型是否看见图，要换成带视觉的模型后再验证。

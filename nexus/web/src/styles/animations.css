@@ -1,3 +1,0 @@
-@keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; } 50% { opacity: .72; box-shadow: 0 0 0 4px transparent; } }
-@keyframes spin { to { transform: rotate(360deg); } }
-.spin { animation: spin .8s linear infinite; }
