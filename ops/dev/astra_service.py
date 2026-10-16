@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -143,33 +144,377 @@ def spawn(
             env=env or os.environ.copy(),
             **options,
         )
+    identity = read_process_identity(process.pid) or {}
     return {
         "pid": process.pid,
+        "pgid": identity.get("pgid"),
+        "started_at": identity.get("started_at"),
         "log": str(log_path),
         "command": command,
         "cwd": str(cwd),
     }
 
 
-def command_matches(pid: int, command: list[str] | None) -> bool:
-    needle = command[0] if command else ""
-    if not needle:
-        return False
-    raw = ""
-    proc_path = Path(f"/proc/{pid}/cmdline")
+_GENERIC_EXECUTABLES = {
+    "python",
+    "python3",
+    "pythonw",
+    "node",
+    "npm",
+    "npm.cmd",
+}
+
+
+def command_markers(command: list[str] | None) -> list[str]:
+    """识别参数，而不是 argv[0]。
+
+    macOS 的 ps 会把 venv 里的 Python 显示成 Frameworks/.../Python，
+    把 npm-cli.js 显示成 ``npm run ...``。只用可执行文件路径会把仍在运行的
+    受管进程当成别人的进程。
+    """
+
+    if not command:
+        return []
+    markers: list[str] = []
+    args = command[1:]
+    for index, token in enumerate(args):
+        if token in {"-m", "-A", "-c"} and index + 1 < len(args):
+            markers.append(args[index + 1])
+        elif token == "run" and index + 1 < len(args) and not args[index + 1].startswith("-"):
+            markers.append("run")
+            markers.append(args[index + 1])
+        elif token in {"beat", "worker"}:
+            markers.append(token)
+        elif token.startswith("--queues="):
+            markers.append(token.split("=", 1)[1])
+        elif token == "--queues" and index + 1 < len(args):
+            markers.append(args[index + 1])
+        elif token.startswith("--hostname="):
+            markers.append(token.split("=", 1)[1].split("@", 1)[0])
+        elif token == "--hostname" and index + 1 < len(args):
+            markers.append(args[index + 1].split("@", 1)[0])
+        elif token.startswith("--schedule="):
+            markers.append(Path(token.split("=", 1)[1]).name)
+        elif token == "--port" and index + 1 < len(args):
+            markers.append(args[index + 1])
+        elif token.startswith("--port="):
+            markers.append(token.split("=", 1)[1])
+        elif ":" in token and not token.startswith(("-", "/", "\\")):
+            markers.append(token)
+        elif Path(token).suffix in {".py", ".js", ".mjs", ".cjs"}:
+            markers.append(Path(token).name)
+    if not markers:
+        name = Path(command[0]).name
+        if name and name.lower() not in _GENERIC_EXECUTABLES and name != "Python":
+            markers.append(name)
+    unique: list[str] = []
+    for marker in markers:
+        if marker and marker not in unique:
+            unique.append(marker)
+    return unique
+
+
+def command_line_has_markers(command: list[str] | None, command_line: str) -> bool:
+    markers = command_markers(command)
+    return bool(markers) and all(marker in command_line for marker in markers)
+
+
+def command_port(command: list[str] | None) -> int | None:
+    if not command:
+        return None
+    args = command[1:]
+    for index, token in enumerate(args):
+        raw = ""
+        if token == "--port" and index + 1 < len(args):
+            raw = args[index + 1]
+        elif token.startswith("--port="):
+            raw = token.split("=", 1)[1]
+        if not raw:
+            continue
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _same_dir(left: str, right: str) -> bool:
     try:
-        raw = proc_path.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        return os.path.realpath(left) == os.path.realpath(right)
+    except OSError:
+        return left == right
+
+
+def _proc_stat_fields(pid: int) -> list[str] | None:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    end = raw.rfind(")")
+    if end == -1:
+        return None
+    return raw[end + 2 :].split()
+
+
+def _process_started_at(pid: int) -> str | None:
+    fields = _proc_stat_fields(pid)
+    if fields is not None and len(fields) >= 20:
+        return f"ticks:{fields[19]}"
+    proc = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    value = (proc.stdout or "").strip()
+    return value or None
+
+
+def _process_cwd(pid: int) -> str | None:
+    try:
+        return os.path.realpath(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    if not shutil.which("lsof"):
+        return None
+    proc = subprocess.run(
+        ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("n"):
+            try:
+                return os.path.realpath(line[1:])
+            except OSError:
+                return line[1:]
+    return None
+
+
+def _process_command_line(pid: int) -> str:
+    path = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = path.read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
     except OSError:
         raw = ""
-    if not raw.strip():
-        proc = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "args="],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        raw = proc.stdout or ""
-    return needle in raw
+    if raw:
+        return raw
+    proc = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "args="],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return (proc.stdout or "").strip()
+
+
+def _process_pgid(pid: int) -> int | None:
+    if os.name == "nt" or not hasattr(os, "getpgid"):
+        return None
+    try:
+        return os.getpgid(pid)
+    except (OSError, ProcessLookupError):
+        return None
+
+
+def read_process_identity(pid: int) -> dict[str, Any] | None:
+    if not process_exists(pid):
+        return None
+    return {
+        "pgid": _process_pgid(pid),
+        "cwd": _process_cwd(pid),
+        "started_at": _process_started_at(pid),
+        "command_line": _process_command_line(pid),
+    }
+
+
+def _launch_fields_match(info: dict[str, Any], live: dict[str, Any]) -> bool:
+    if not info.get("started_at") or live.get("started_at") != info.get("started_at"):
+        return False
+    if os.name == "nt":
+        return True
+    recorded_pgid = info.get("pgid")
+    if recorded_pgid is None or live.get("pgid") != int(recorded_pgid):
+        return False
+    live_cwd = live.get("cwd")
+    recorded_cwd = str(info.get("cwd") or "")
+    return bool(live_cwd and recorded_cwd and _same_dir(str(live_cwd), recorded_cwd))
+
+
+def _proves_reuse(info: dict[str, Any], live: dict[str, Any]) -> bool:
+    """启动时刻或进程组变了，说明这个 PID 已经不是当时拉起的进程。"""
+
+    if not info.get("started_at") or not live.get("started_at"):
+        return False
+    if live["started_at"] != info["started_at"]:
+        return True
+    if os.name == "nt":
+        return False
+    recorded_pgid = info.get("pgid")
+    live_pgid = live.get("pgid")
+    return recorded_pgid is not None and live_pgid is not None and int(recorded_pgid) != int(live_pgid)
+
+
+def identify_process(info: dict[str, Any], pid: int) -> str:
+    """返回 gone、ours、reused 或 unknown。unknown 不发送信号。"""
+
+    if not process_exists(pid):
+        return "gone"
+    live = read_process_identity(pid)
+    if live is None:
+        return "unknown"
+    markers_match = command_line_has_markers(info.get("command"), live["command_line"])
+    if _launch_fields_match(info, live) and markers_match:
+        return "ours"
+    if _proves_reuse(info, live):
+        return "reused"
+    return "unknown"
+
+
+def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket() as sock:
+        sock.settimeout(0.2)
+        try:
+            return sock.connect_ex((host, port)) == 0
+        except OSError:
+            return False
+
+
+def _is_zombie(pid: int) -> bool:
+    fields = _proc_stat_fields(pid)
+    return bool(fields) and fields[0] == "Z"
+
+
+def _leader_live(pid: int) -> bool:
+    return process_exists(pid) and not _is_zombie(pid)
+
+
+def _reap_owned(pid: int, pgid: int | None) -> None:
+    """回收本进程拉起、尚未 wait 的子进程。其他进程拉起的服务由 init 回收。"""
+
+    if os.name == "nt" or not hasattr(os, "waitpid"):
+        return
+    targets = [int(pid)]
+    if pgid is not None:
+        targets.append(-int(pgid))
+    for target in targets:
+        while True:
+            try:
+                reaped, _status = os.waitpid(target, os.WNOHANG)
+            except ChildProcessError:
+                break
+            except InterruptedError:
+                continue
+            except OSError:
+                break
+            if reaped == 0:
+                break
+
+
+def _linux_group_members(pgid: int) -> list[int]:
+    members: list[int] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return members
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        fields = _proc_stat_fields(int(entry.name))
+        if not fields or len(fields) < 3 or fields[0] == "Z":
+            continue
+        try:
+            if int(fields[2]) == pgid:
+                members.append(int(entry.name))
+        except ValueError:
+            continue
+    return members
+
+
+def _ps_group_members(pgid: int) -> list[int]:
+    proc = subprocess.run(
+        ["ps", "-ax", "-o", "pid=,pgid=,state="],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    members: list[int] = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            member = int(parts[0])
+            group = int(parts[1])
+        except ValueError:
+            continue
+        if group == pgid and not parts[2].startswith("Z"):
+            members.append(member)
+    return members
+
+
+def _live_group_members(pgid: int) -> list[int]:
+    if Path("/proc").is_dir():
+        return _linux_group_members(pgid)
+    return _ps_group_members(pgid)
+
+
+def _group_alive(pgid: int) -> bool:
+    return bool(_live_group_members(pgid))
+
+
+def _recorded_pgid(info: dict[str, Any], pid: int | None = None) -> int | None:
+    raw = info.get("pgid")
+    if raw is None:
+        return pid
+    return int(raw)
+
+
+def _signal_group(pgid: int, sig: int) -> bool:
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_stopped(pid: int, pgid: int | None, port: int | None, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        _reap_owned(pid, pgid)
+        leader_alive = _leader_live(pid)
+        group_alive = pgid is not None and _group_alive(pgid)
+        listening = port is not None and port_in_use(port)
+        if not leader_alive and not group_alive and not listening:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def stop_managed(info: dict[str, Any], *, term_timeout: float = 5, kill_timeout: float = 2) -> bool:
+    """向进程组发信号，并确认进程退出、监听端口释放。"""
+
+    pid = int(info["pid"])
+    port = command_port(info.get("command"))
+    if os.name == "nt":
+        if process_exists(pid):
+            stop_pid(pid)
+        return _wait_stopped(pid, None, port, timeout=term_timeout)
+    pgid = _recorded_pgid(info, pid)
+    assert pgid is not None
+    _reap_owned(pid, pgid)
+    if _leader_live(pid) or _group_alive(pgid):
+        if not _signal_group(pgid, signal.SIGTERM):
+            return False
+        if _wait_stopped(pid, pgid, port, timeout=term_timeout):
+            return True
+        if not _signal_group(pgid, signal.SIGKILL):
+            return False
+    return _wait_stopped(pid, pgid, port, timeout=kill_timeout)
 
 
 def stop_pid(pid: int) -> None:
@@ -186,16 +531,13 @@ def stop_pid(pid: int) -> None:
             stderr=subprocess.DEVNULL,
         )
         return
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    _signal_group(pid, signal.SIGTERM)
 
 
 def rollback(processes: dict[str, dict[str, Any]]) -> None:
     for info in reversed(list(processes.values())):
         try:
-            stop_pid(int(info["pid"]))
+            stop_managed(info)
         except Exception:
             pass
 
@@ -424,7 +766,7 @@ def start_opencode(
     except Exception as exc:
         info = processes.pop("assistant-opencode", None)
         if info:
-            stop_pid(int(info["pid"]))
+            stop_managed(info)
         print(f"[WARN] platform assistant degraded: {exc}")
 
 
@@ -602,17 +944,60 @@ def stop(settings: Any) -> int:
         print("Astra is not running.")
         return 0
 
+    remaining: dict[str, dict[str, Any]] = {}
     for name, info in reversed(list(processes.items())):
         pid = int(info["pid"])
-        if process_exists(pid):
-            if not command_matches(pid, info.get("command")):
-                print(f"[SKIP] {name} PID={pid} is not the managed command")
+        pgid = _recorded_pgid(info)
+        port = command_port(info.get("command"))
+        _reap_owned(pid, pgid)
+        if _leader_live(pid):
+            verdict = identify_process(info, pid)
+            if verdict == "reused":
+                print(f"[SKIP] {name} PID={pid} belongs to a different process; not stopping it")
                 continue
+            if verdict == "unknown":
+                print(f"[KEEP] {name} PID={pid} could not be confirmed as the managed process")
+                remaining[name] = info
+                continue
+            if verdict == "ours":
+                print(f"[STOP] {name} (PID={pid})")
+                if not stop_managed(info):
+                    print(f"[KEEP] {name} PID={pid} is still running")
+                    remaining[name] = info
+                continue
+        # 组长已退出。组号等于组长 PID，组内还有进程时这个组号不可能被新会话复用。
+        _reap_owned(pid, pgid)
+        group_live = pgid == pid and _group_alive(pid)
+        listening = port is not None and port_in_use(port)
+        if group_live:
             print(f"[STOP] {name} (PID={pid})")
-            stop_pid(pid)
+            if not stop_managed(info):
+                print(f"[KEEP] {name} PID={pid} is still running")
+                remaining[name] = info
+            continue
+        if listening:
+            print(f"[KEEP] {name} PID={pid} exited but port {port} is still in use")
+            remaining[name] = info
+    if remaining:
+        mode = str(load_state(settings).get("mode") or "dev")
+        save_state(settings, mode, remaining)
+        print("Astra did not stop completely.")
+        return 1
     clear_state(settings)
     print("Astra stopped.")
     return 0
+
+
+def _blocks_start(info: dict[str, Any]) -> bool:
+    pid = int(info["pid"])
+    pgid = _recorded_pgid(info)
+    _reap_owned(pid, pgid)
+    if _leader_live(pid):
+        return identify_process(info, pid) in {"ours", "unknown"}
+    if pgid == pid and _group_alive(pid):
+        return True
+    port = command_port(info.get("command"))
+    return port is not None and port_in_use(port)
 
 
 def start(
@@ -623,7 +1008,7 @@ def start(
     local_command: Any,
 ) -> int:
     existing = managed_processes(settings)
-    if any(process_exists(int(info["pid"])) for info in existing.values()):
+    if any(_blocks_start(info) for info in existing.values()):
         print("Astra already has managed services running; use restart.")
         return status(settings)
 
@@ -675,7 +1060,9 @@ def main() -> int:
     if args.action == "stop":
         return stop(settings)
     if args.action == "restart":
-        stop(settings)
+        stopped = stop(settings)
+        if stopped != 0:
+            return stopped
     return start(
         args.mode,
         settings,
