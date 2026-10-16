@@ -53,8 +53,11 @@ async def test_middleware_does_not_trust_employee_header_alone(monkeypatch):
                 "/mcp",
                 headers={"Authorization": "Bearer secret", "X-Nexus-Employee-Id": "emp_9"},
             )
+            health = await client.get("/health")
         assert accepted.status_code == 200
         assert accepted.json()["employee"] == "emp_9"
+        assert health.status_code == 200
+        assert health.json()["ok"] is True
         assert nexus_employee_id.get() == ""
     finally:
         get_settings.cache_clear()

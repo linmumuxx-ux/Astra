@@ -192,14 +192,51 @@ async def test_task_tools_require_owner_and_hide_transport_errors(session, monke
         current = await session.get(Task, other.id)
         assert current.title == "别人的"
 
-        async def explode(_task_id):
+        async def explode(_self, _task_id):
             raise OpenCodeServerUnavailable("ssh root@secret-host password=hunter2")
 
         monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", explode)
         failed = await TaskTools(session).start(owned.id)
         assert failed["ok"] is False
-        assert failed["error"] == "执行环境暂时不可用"
-        assert "hunter2" not in failed["error"]
+        assert failed["failure_code"] == "SSH_AUTH_FAILED"
+        assert failed["error"] == "SSH 认证失败"
+        rendered = str(failed)
+        assert "hunter2" not in rendered
+        assert "secret-host" not in rendered
+
+        async def time_out(_self, _task_id):
+            raise TimeoutError("password=hunter2 at 10.1.2.3")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", time_out)
+        timed = await TaskTools(session).start(owned.id)
+        assert timed["failure_code"] == "EXECUTION_TIMEOUT"
+        assert "hunter2" not in str(timed)
+
+        async def conflict(_self, _task_id):
+            raise RuntimeError("端口冲突：该 Serve 属于另一员工或工作空间 password=hunter2")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", conflict)
+        blocked = await TaskTools(session).start(owned.id)
+        assert blocked["failure_code"] == "WORKSPACE_CONFLICT"
+        assert "hunter2" not in str(blocked)
+
+        async def offline(_self, _task_id):
+            raise OpenCodeServerUnavailable("connection refused")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", offline)
+        unreachable = await TaskTools(session).start(owned.id)
+        assert unreachable["failure_code"] == "ENVIRONMENT_UNREACHABLE"
+        assert unreachable["hint"]
+
+        async def unknown(_self, _task_id):
+            raise RuntimeError("token=abc secret-host")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", unknown)
+        generic = await TaskTools(session).start(owned.id)
+        assert generic["failure_code"] == "ENVIRONMENT_UNAVAILABLE"
+        assert generic["error"] == "执行环境暂时不可用"
+        assert "abc" not in str(generic)
+        assert "secret-host" not in str(generic)
     finally:
         nexus_employee_id.reset(mine)
 

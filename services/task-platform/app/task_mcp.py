@@ -42,6 +42,8 @@ def authenticate_mcp(headers, settings: Settings) -> str:
 
 class NexusIdentityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        if request.url.path == "/health":
+            return JSONResponse({"ok": True})
         try:
             employee = authenticate_mcp(request.headers, get_settings())
         except PermissionError:

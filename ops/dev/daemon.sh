@@ -21,7 +21,12 @@ run_and_wait() {
 }
 
 wait_http() {
-  local url="$1" pid="$2" attempts="${3:-150}" i code
+  local url="$1" pid="$2" attempts=150 i code
+  shift 2
+  if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+    attempts="$1"
+    shift
+  fi
   if ! command -v curl >/dev/null 2>&1; then
     echo "curl is required to check $url" >&2
     kill "$pid" 2>/dev/null || true
@@ -32,10 +37,10 @@ wait_http() {
       echo "process $pid exited before ready; log $LOG" >&2
       return 1
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "$url" || true)"
-    if [ -n "$code" ] && [ "$code" != "000" ]; then
-      return 0
-    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "$@" "$url" || true)"
+    case "$code" in
+      2[0-9][0-9]) return 0 ;;
+    esac
     sleep 0.2
   done
   echo "not ready: $url; log $LOG" >&2

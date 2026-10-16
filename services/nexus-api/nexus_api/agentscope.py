@@ -241,21 +241,69 @@ class AgentScopeClient:
         url: str,
         headers: dict[str, str],
     ) -> None:
+        payload = {
+            "name": "nexus-task",
+            "is_stateful": False,
+            "mcp_config": {"type": "http_mcp", "url": url, "headers": headers, "timeout": 30},
+        }
         try:
             await self.request(
                 "POST",
                 "/workspace/mcp",
                 params={"agent_id": agent_id, "session_id": session_id},
-                json={
-                    "name": "nexus-task",
-                    "is_stateful": False,
-                    "mcp_config": {"type": "http_mcp", "url": url, "headers": headers, "timeout": 30},
-                },
+                json=payload,
             )
+            return
         except AgentScopeError as exc:
-            if exc.status_code == 409:
-                return
-            raise
+            if exc.status_code != 409:
+                raise
+        if await self._workspace_mcp_matches(agent_id, session_id, url=url, headers=headers):
+            return
+        await self.remove_workspace_mcp(agent_id, session_id)
+        await self.request(
+            "POST",
+            "/workspace/mcp",
+            params={"agent_id": agent_id, "session_id": session_id},
+            json=payload,
+        )
+
+    async def _workspace_mcp_matches(
+        self,
+        agent_id: str,
+        session_id: str,
+        *,
+        url: str,
+        headers: dict[str, str],
+    ) -> bool:
+        try:
+            response = await self.request(
+                "GET",
+                "/workspace/mcp",
+                params={"agent_id": agent_id, "session_id": session_id},
+            )
+        except AgentScopeError:
+            return False
+        payload = response.json()
+        if not isinstance(payload, list):
+            return False
+        for item in payload:
+            if not isinstance(item, dict) or item.get("name") != "nexus-task":
+                continue
+            config = item.get("mcp_config") if isinstance(item.get("mcp_config"), dict) else {}
+            current = config.get("headers") if isinstance(config.get("headers"), dict) else {}
+            return config.get("url") == url and dict(current) == dict(headers)
+        return False
+
+    async def list_workspace_skills(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        response = await self.request(
+            "GET",
+            "/workspace/skill",
+            params={"agent_id": agent_id, "session_id": session_id},
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise AgentScopeError("AgentScope 技能列表不是数组")
+        return [item for item in payload if isinstance(item, dict)]
 
     async def remove_workspace_mcp(self, agent_id: str, session_id: str, name: str = "nexus-task") -> None:
         try:

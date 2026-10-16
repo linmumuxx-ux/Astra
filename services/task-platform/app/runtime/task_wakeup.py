@@ -48,7 +48,7 @@ class HttpWakeSender:
                         "agent_id": body["agent_id"],
                         "hint": row.hint,
                         "user_id": settings.agentscope_user_id,
-                        "event_id": row.event_id,
+                        "event_id": str(row.event_id),
                     },
                 )
             except httpx.HTTPError as exc:

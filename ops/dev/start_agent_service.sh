@@ -18,12 +18,13 @@ export AGENTSCOPE_PORT="${AGENTSCOPE_PORT:-8000}"
 export AGENTSCOPE_REDIS_HOST="${AGENTSCOPE_REDIS_HOST:-127.0.0.1}"
 export AGENTSCOPE_REDIS_PORT="${AGENTSCOPE_REDIS_PORT:-6379}"
 export AGENTSCOPE_WORKSPACE_DIR="${AGENTSCOPE_WORKSPACE_DIR:-$ROOT/services/agent-service/data/workspaces}"
+export NEXUS_AGENTSCOPE_USER_ID="${NEXUS_AGENTSCOPE_USER_ID:-nexus}"
 case "$ACTION" in
   start)
     stop_if_matches "$PIDFILE" "agent_service.py" || true
     cd "$ROOT"
     pid="$(detach "$PY" "$ROOT/services/agent-service/agent_service.py")"
-    if wait_http "http://127.0.0.1:${AGENTSCOPE_PORT}/health" "$pid"; then
+    if wait_http "http://127.0.0.1:${AGENTSCOPE_PORT}/health" "$pid" -H "X-User-ID: ${NEXUS_AGENTSCOPE_USER_ID}"; then
       echo "$pid" >"$PIDFILE"
       echo "agent service ready; log $LOG"
     else

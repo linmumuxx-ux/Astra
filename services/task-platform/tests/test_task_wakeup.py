@@ -161,4 +161,4 @@ async def test_wake_post_includes_event_id_and_retries_disabled_employee(session
     async with httpx.AsyncClient(transport=httpx.MockTransport(ok)) as client:
         await HttpWakeSender(client).send(row)
     assert seen["event"] == str(row.event_id)
-    assert seen["body"] == row.event_id
+    assert seen["body"] == str(row.event_id)

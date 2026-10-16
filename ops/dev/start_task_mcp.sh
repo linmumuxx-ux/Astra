@@ -29,7 +29,7 @@ case "$ACTION" in
     stop_if_matches "$PIDFILE" "task_mcp" || true
     cd "$ROOT/services/task-platform"
     pid="$(detach "${CMD[@]}")"
-    if wait_http "http://127.0.0.1:${PORT}/mcp" "$pid"; then
+    if wait_http "http://127.0.0.1:${PORT}/health" "$pid"; then
       echo "$pid" >"$PIDFILE"
       echo "task mcp ready on ${ASTRA_TASK_MCP_HOST}:${PORT}; log $LOG"
     else

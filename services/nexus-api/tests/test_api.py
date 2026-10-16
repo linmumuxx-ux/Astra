@@ -1487,6 +1487,8 @@ def test_task_skill_is_revoked_and_restored_on_existing_sessions(tmp_path, monke
             return httpx.Response(200, json={})
         if request.url.path == "/skill":
             return httpx.Response(200, json=[])
+        if request.method == "GET" and request.url.path == "/workspace/skill":
+            return httpx.Response(200, json=[{"name": "任务管理", "dir": "task-management"}])
         if request.url.path in {"/workspace/skill/upload", "/workspace/mcp"} or request.method == "DELETE":
             return httpx.Response(200, json={})
         return httpx.Response(404, json={"detail": "missing"})
@@ -1522,7 +1524,7 @@ def test_task_skill_is_revoked_and_restored_on_existing_sessions(tmp_path, monke
         )
         assert removed.status_code == 200, removed.text
         revoked = {(method, path, session_id) for method, path, session_id, _auth in calls}
-        assert ("DELETE", "/workspace/skill/task-management", employee["mailbox_session_id"]) in revoked
+        assert ("DELETE", "/workspace/skill/任务管理", employee["mailbox_session_id"]) in revoked
         assert ("DELETE", "/workspace/mcp/nexus-task", employee["mailbox_session_id"]) in revoked
         assert ("DELETE", "/workspace/mcp/nexus-task", "ses_chat") in revoked
         calls.clear()

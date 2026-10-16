@@ -78,6 +78,32 @@ async def attach_task_capability(
         logger.warning("任务技能或 MCP 未挂上：%s", exc.detail)
 
 
+def _is_task_skill(item: dict) -> bool:
+    skill_name = str(item.get("name") or "").strip()
+    directory = str(item.get("dir") or item.get("path") or "").replace("\\", "/").rstrip("/")
+    folder = directory.rsplit("/", 1)[-1]
+    return skill_name in {TASK_SKILL_NAME, TASK_SKILL_ID} or folder == TASK_SKILL_ID
+
+
+async def revoke_task_skill(client: AgentScopeClient, agent_id: str, session_id: str) -> None:
+    """按 AgentScope 保存的技能名删除。本地目录 id 和 frontmatter 名称不是同一个值。"""
+
+    listed = await client.list_workspace_skills(agent_id, session_id)
+    targets: list[str] = []
+    for item in listed:
+        skill_name = str(item.get("name") or "").strip()
+        if skill_name and _is_task_skill(item) and skill_name not in targets:
+            targets.append(skill_name)
+    if TASK_SKILL_NAME not in targets:
+        targets.append(TASK_SKILL_NAME)
+    for skill_name in targets:
+        await client.remove_workspace_skill(agent_id, session_id, skill_name)
+    listed = await client.list_workspace_skills(agent_id, session_id)
+    remaining = [item for item in listed if _is_task_skill(item)]
+    if remaining:
+        raise AgentScopeError("任务技能收回后仍在工作区")
+
+
 async def sync_task_capability(client: AgentScopeClient, employee: dict, sessions: list[dict]) -> None:
     """员工保存时安装或收回任务技能。收回要覆盖已有 Session，重新勾选后再装回去。"""
 
@@ -110,7 +136,7 @@ async def sync_task_capability(client: AgentScopeClient, employee: dict, session
                 logger.warning("任务 MCP 未挂上：%s", exc.detail)
         return
     try:
-        await client.remove_workspace_skill(agent_id, usable[0]["session_id"], TASK_SKILL_ID)
+        await revoke_task_skill(client, agent_id, usable[0]["session_id"])
     except AgentScopeError as exc:
         logger.warning("任务技能未收回：%s", exc.detail)
     for item in usable:

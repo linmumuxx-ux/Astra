@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import os
 
-from pydantic import BaseModel
+from fastapi import HTTPException, Request
+from pydantic import BaseModel, field_validator
 
 
 class TaskHintBody(BaseModel):
@@ -20,6 +21,13 @@ class TaskHintBody(BaseModel):
     user_id: str = "nexus"
     event_id: str = ""
 
+    @field_validator("event_id", mode="before")
+    @classmethod
+    def stringify_event_id(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
 
 _event_lock = asyncio.Lock()
 _seen_events: dict[str, None] = {}
@@ -27,21 +35,32 @@ _inflight_events: set[str] = set()
 _SEEN_LIMIT = 1000
 
 
-async def claim_event(event_id: str | None) -> bool:
-    """同一 event id 只投递一次。失败后释放，允许 outbox 再试。"""
+def reset_event_claims() -> None:
+    _seen_events.clear()
+    _inflight_events.clear()
 
-    value = (event_id or "").strip()
+
+def _event_key(event_id: str | int | None) -> str:
+    return str(event_id or "").strip()
+
+
+async def claim_event(event_id: str | int | None) -> str:
+    """返回 owner、done 或 inflight。失败后释放，只有 inbox 接受后才记 done。"""
+
+    value = _event_key(event_id)
     if not value:
-        return True
+        return "owner"
     async with _event_lock:
-        if value in _seen_events or value in _inflight_events:
-            return False
+        if value in _seen_events:
+            return "done"
+        if value in _inflight_events:
+            return "inflight"
         _inflight_events.add(value)
-        return True
+        return "owner"
 
 
-async def finish_event(event_id: str | None, *, delivered: bool) -> None:
-    value = (event_id or "").strip()
+async def finish_event(event_id: str | int | None, *, delivered: bool) -> None:
+    value = _event_key(event_id)
     if not value:
         return
     async with _event_lock:
@@ -51,6 +70,28 @@ async def finish_event(event_id: str | None, *, delivered: bool) -> None:
         _seen_events[value] = None
         while len(_seen_events) > _SEEN_LIMIT:
             _seen_events.pop(next(iter(_seen_events)))
+
+
+def register_task_hint(app, deliver) -> None:
+    """注册真实唤醒路由。Request 必须在模块全局里，延迟注解才能解析。"""
+
+    @app.post("/nexus/task-hint")
+    async def task_hint(body: TaskHintBody, request: Request) -> dict[str, bool]:
+        if not body.session_id.strip() or not body.agent_id.strip() or not body.hint.strip():
+            raise HTTPException(status_code=422, detail="缺少会话、员工或提示")
+        event_id = request.headers.get("x-nexus-event-id") or body.event_id
+        state = await claim_event(event_id)
+        if state == "done":
+            return {"ok": True}
+        if state == "inflight":
+            raise HTTPException(status_code=409, detail="同一事件正在投递")
+        try:
+            await deliver(body.user_id, body.agent_id, body.session_id, body.hint)
+        except Exception:
+            await finish_event(event_id, delivered=False)
+            raise
+        await finish_event(event_id, delivered=True)
+        return {"ok": True}
 
 
 NEXUS_TASK_MCP_PREFIX = "mcp__nexus-task__"
@@ -177,31 +218,19 @@ def main() -> None:
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
     listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
-    from fastapi import HTTPException, Request
 
-    @app.post("/nexus/task-hint")
-    async def task_hint(body: TaskHintBody, request: Request) -> dict[str, bool]:
-        if not body.session_id.strip() or not body.agent_id.strip() or not body.hint.strip():
-            raise HTTPException(status_code=422, detail="缺少会话、员工或提示")
-        event_id = request.headers.get("x-nexus-event-id") or body.event_id
-        if not await claim_event(event_id):
-            return {"ok": True}
-        try:
-            await deliver_task_hint(
-                deliver_to_inbox,
-                HintBlock,
-                message_bus,
-                body.user_id,
-                body.agent_id,
-                body.session_id,
-                body.hint,
-            )
-        except Exception:
-            await finish_event(event_id, delivered=False)
-            raise
-        await finish_event(event_id, delivered=True)
-        return {"ok": True}
+    async def deliver(user_id: str, agent_id: str, session_id: str, hint: str) -> None:
+        await deliver_task_hint(
+            deliver_to_inbox,
+            HintBlock,
+            message_bus,
+            user_id,
+            agent_id,
+            session_id,
+            hint,
+        )
 
+    register_task_hint(app, deliver)
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 

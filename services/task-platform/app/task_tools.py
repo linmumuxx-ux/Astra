@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import Priority, TaskStatus, TaskType
+from app.executors.errors import OpenCodeExecutionTimeout, OpenCodeServerUnavailable
 from app.models import DigitalEmployee, Event, KnowledgeItem, Task, TaskCategory, TaskSummary
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.schemas import AcceptanceCriterion, TaskCreate
@@ -27,6 +28,57 @@ _CONCLUDED = {TaskStatus.SUCCEEDED.value, TaskStatus.FAILED.value, TaskStatus.CA
 
 def _text(value: str | None) -> str:
     return (value or "").strip()
+
+
+_CONFLICT_MARKERS = ("端口冲突", "另一员工", "归属冲突", "workspace 与员工", "启动 workspace")
+_AUTH_TYPES = {"AuthenticationException", "BadAuthenticationType", "AuthenticationFailed"}
+_AUTH_MARKERS = ("authentication failed", "authentication exception", "publickey", "password=", "passwd=")
+_UNREACHABLE_TYPES = {"ConnectError", "ConnectTimeout", "NetworkError", "ReadError", "WriteError"}
+
+
+def classify_runtime_error(exc: Exception) -> dict[str, str]:
+    """把执行环境异常收成固定原因。不回传原始文本，避免带上主机、口令或路径。"""
+
+    if isinstance(exc, (TimeoutError, OpenCodeExecutionTimeout)):
+        return {
+            "failure_code": "EXECUTION_TIMEOUT",
+            "error": "执行超时",
+            "hint": "请稍后重试；若反复超时，检查 Worker 的 Serve 是否卡住",
+        }
+    text = f"{type(exc).__name__} {exc}".lower()
+    if any(marker in text for marker in _CONFLICT_MARKERS) or "另一员工或工作空间" in str(exc):
+        return {
+            "failure_code": "WORKSPACE_CONFLICT",
+            "error": "Workspace 或端口归属冲突",
+            "hint": "检查该员工的端口是否被其他员工或工作区占用",
+        }
+    if type(exc).__name__ in _AUTH_TYPES or any(marker in text for marker in _AUTH_MARKERS):
+        return {
+            "failure_code": "SSH_AUTH_FAILED",
+            "error": "SSH 认证失败",
+            "hint": "检查远程账号配置，不要在对话里重复发送密码",
+        }
+    if isinstance(exc, PermissionError):
+        return {
+            "failure_code": "PERMISSION_DENIED",
+            "error": "没有执行该操作的权限",
+            "hint": "确认当前责任员工是否仍拥有该任务",
+        }
+    if (
+        isinstance(exc, (OpenCodeServerUnavailable, ConnectionError, OSError))
+        or type(exc).__name__ in _UNREACHABLE_TYPES
+        or any(marker in text for marker in ("unreachable", "connection refused", "connect error", "不可达"))
+    ):
+        return {
+            "failure_code": "ENVIRONMENT_UNREACHABLE",
+            "error": "执行环境不可达",
+            "hint": "检查 Worker 网络和 Serve 是否在运行",
+        }
+    return {
+        "failure_code": "ENVIRONMENT_UNAVAILABLE",
+        "error": "执行环境暂时不可用",
+        "hint": "稍后重试；若仍失败，查看该 Worker 的运行环境",
+    }
 
 
 class TaskTools:
@@ -309,16 +361,34 @@ class TaskTools:
             updated = await call()
         except (RuntimeStateError, InvalidTransition, ValueError) as exc:
             return await self._runtime_failure(task_id, str(exc))
-        except Exception:
-            return await self._runtime_failure(task_id, "执行环境暂时不可用")
+        except Exception as exc:
+            failure = classify_runtime_error(exc)
+            return await self._runtime_failure(
+                task_id,
+                failure["error"],
+                failure_code=failure["failure_code"],
+                hint=failure["hint"],
+            )
         return self._ok(updated)
 
-    async def _runtime_failure(self, task_id: str, reason: str) -> dict[str, Any]:
+    async def _runtime_failure(
+        self,
+        task_id: str,
+        reason: str,
+        *,
+        failure_code: str | None = None,
+        hint: str | None = None,
+    ) -> dict[str, Any]:
         await self.session.rollback()
         current = await self.session.get(Task, task_id)
         if current is None:
-            return {"ok": False, "error": reason, "task_id": task_id}
-        return self._refuse(current, reason)
+            body = {"ok": False, "error": reason, "task_id": task_id}
+            if failure_code:
+                body["failure_code"] = failure_code
+            if hint:
+                body["hint"] = hint
+            return body
+        return self._refuse(current, reason, failure_code=failure_code, hint=hint)
 
     async def _owned(self, task_id: str) -> Task | dict[str, Any]:
         actor = _text(nexus_employee_id.get())
@@ -346,8 +416,20 @@ class TaskTools:
         body["acceptance_criteria"] = task.acceptance_criteria
         return body
 
-    def _refuse(self, task: Task, error: str) -> dict[str, Any]:
-        return {"ok": False, "error": error, "task_id": task.id, "status": task.status}
+    def _refuse(
+        self,
+        task: Task,
+        error: str,
+        *,
+        failure_code: str | None = None,
+        hint: str | None = None,
+    ) -> dict[str, Any]:
+        body = {"ok": False, "error": error, "task_id": task.id, "status": task.status}
+        if failure_code:
+            body["failure_code"] = failure_code
+        if hint:
+            body["hint"] = hint
+        return body
 
     def _brief(self, task: Task) -> dict[str, Any]:
         return {
