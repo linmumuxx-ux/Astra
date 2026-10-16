@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/ops/dev/load_env.sh"
+# shellcheck disable=SC1091
+. "$ROOT/ops/dev/daemon.sh"
 ACTION="${1:-start}"
 export PATH="${HOME}/.local/bin:${PATH}"
 export ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS="${ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS:-30}"
@@ -22,8 +24,13 @@ LOG="${ASTRA_LOG:-/tmp/nexus-task-platform.log}"
 cd "$ROOT/services/task-platform"
 case "$ACTION" in
   start)
-    setsid nohup "$PY" "$ROOT/ops/dev/astra_service.py" dev start >>"$LOG" 2>&1 &
-    echo "task platform starting; log $LOG"
+    if run_and_wait "$PY" "$ROOT/ops/dev/astra_service.py" dev start; then
+      echo "task platform started; log $LOG"
+    else
+      status=$?
+      echo "task platform failed to start (exit=$status); log $LOG" >&2
+      exit "$status"
+    fi
     ;;
   restart|stop|status)
     "$PY" "$ROOT/ops/dev/astra_service.py" dev "$ACTION"

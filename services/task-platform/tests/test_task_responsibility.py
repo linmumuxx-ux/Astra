@@ -94,8 +94,14 @@ async def test_retry_pending_does_not_start(session):
 
 
 async def test_refused_start_returns_ok_false_after_rollback(session):
-    task = await TaskService(session).create(_create())
-    result = await TaskTools(session).start(task.id)
+    from app.task_tools import nexus_employee_id
+
+    token = nexus_employee_id.set("emp_1")
+    try:
+        task = await TaskService(session).create(_create(responsible_employee_id="emp_1"))
+        result = await TaskTools(session).start(task.id)
+    finally:
+        nexus_employee_id.reset(token)
 
     assert result["ok"] is False
     assert result["task_id"] == task.id
@@ -166,6 +172,47 @@ def test_task_mcp_structured_output_accepts_dict_annotations():
     tools = server._tool_manager.list_tools()
     assert {tool.name for tool in tools} >= {"nexus_task_create", "nexus_task_get", "nexus_task_start"}
     assert all(tool.output_schema for tool in tools)
+
+
+async def test_task_tools_require_owner_and_hide_transport_errors(session, monkeypatch):
+    from app.executors.errors import OpenCodeServerUnavailable
+    from app.task_tools import nexus_employee_id
+
+    mine = nexus_employee_id.set("emp_1")
+    try:
+        owned = await TaskService(session).create(_create(title="自己的", responsible_employee_id="emp_1"))
+        other = await TaskService(session).create(_create(title="别人的", responsible_employee_id="emp_2"))
+        listed = await TaskTools(session).list()
+        assert listed["ok"] is True
+        assert [item["task_id"] for item in listed["tasks"]] == [owned.id]
+        hidden = await TaskTools(session).get(other.id)
+        assert hidden == {"ok": False, "error": "任务不存在"}
+        updated = await TaskTools(session).update(other.id, title="改掉")
+        assert updated["ok"] is False
+        current = await session.get(Task, other.id)
+        assert current.title == "别人的"
+
+        async def explode(_task_id):
+            raise OpenCodeServerUnavailable("ssh root@secret-host password=hunter2")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", explode)
+        failed = await TaskTools(session).start(owned.id)
+        assert failed["ok"] is False
+        assert failed["error"] == "执行环境暂时不可用"
+        assert "hunter2" not in failed["error"]
+    finally:
+        nexus_employee_id.reset(mine)
+
+    anonymous = await TaskTools(session).list()
+    assert anonymous["ok"] is False
+    assert anonymous["tasks"] == []
+
+
+async def test_running_replaces_waiting_progress(session):
+    task = await TaskService(session).create(_create())
+    assert task.current_progress == "等待领取"
+    await TaskService(session).transition(task, TaskStatus.RUNNING)
+    assert task.current_progress == "执行中"
 
 
 def test_opencode_model_names():

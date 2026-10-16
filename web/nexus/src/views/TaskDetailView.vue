@@ -41,7 +41,8 @@
           <ElButton v-if="task?.pending_message_id" :disabled="busy || loading" @click="action('retry-submission')">核对并重试未确认输入</ElButton>
         </div>
       </ElAlert>
-      <iframe v-if="frameUrl" :key="frameKey" :src="frameUrl" title="OpenCode Task Workspace" class="task-detail__frame" allow="clipboard-read; clipboard-write" />
+      <ElAlert v-if="workspaceUiError" class="workspace-alert" type="warning" show-icon :closable="false" :title="workspaceUiError" />
+      <iframe v-else-if="frameUrl" :key="frameKey" :src="frameUrl" title="OpenCode Task Workspace" class="task-detail__frame" allow="clipboard-read; clipboard-write" />
       <ElEmpty v-else-if="binding" :image-size="80" :description="task?.current_session_id ? 'Session 绑定异常，请重连检查；系统不会自动创建新 Session。' : '任务尚未创建 Session，请先启动任务。'" />
     </ElMain>
 
@@ -283,8 +284,12 @@ async function loadChanges() {
 }
 async function openChanges() { showChanges.value = true; await loadChanges() }
 const selectedSessionBinding = computed(() => binding.value?.sessions.find(item => item.id === selectedSession.value))
-const frameUrl = computed(() => {
+const workspaceUiError = computed(() => {
   if (!selectedSession.value) return ''
+  return selectedSessionBinding.value?.workspace_ui_error || binding.value?.runtime.workspace_ui_error || ''
+})
+const frameUrl = computed(() => {
+  if (!selectedSession.value || workspaceUiError.value) return ''
   const workspaceUi = selectedSessionBinding.value?.workspace_ui || binding.value?.runtime.workspace_ui
   if (!workspaceUi) return ''
   return `${workspaceUi}?task=${encodeURIComponent(String(route.params.id))}&session=${encodeURIComponent(selectedSession.value)}`

@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/ops/dev/load_env.sh"
+# shellcheck disable=SC1091
+. "$ROOT/ops/dev/daemon.sh"
 ACTION="${1:-start}"
 PIDFILE="${AGENT_SERVICE_PIDFILE:-$ROOT/.astra/run/agent-service.pid}"
 LOG="${AGENT_SERVICE_LOG:-/tmp/nexus-agent-service.log}"
@@ -16,22 +18,20 @@ export AGENTSCOPE_PORT="${AGENTSCOPE_PORT:-8000}"
 export AGENTSCOPE_REDIS_HOST="${AGENTSCOPE_REDIS_HOST:-127.0.0.1}"
 export AGENTSCOPE_REDIS_PORT="${AGENTSCOPE_REDIS_PORT:-6379}"
 export AGENTSCOPE_WORKSPACE_DIR="${AGENTSCOPE_WORKSPACE_DIR:-$ROOT/services/agent-service/data/workspaces}"
-stop_agent() {
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    kill "$(cat "$PIDFILE")"
-    rm -f "$PIDFILE"
-  fi
-}
 case "$ACTION" in
   start)
-    stop_agent || true
+    stop_if_matches "$PIDFILE" "agent_service.py" || true
     cd "$ROOT"
-    setsid nohup "$PY" "$ROOT/services/agent-service/agent_service.py" >>"$LOG" 2>&1 &
-    echo $! >"$PIDFILE"
-    echo "agent service starting; log $LOG"
+    pid="$(detach "$PY" "$ROOT/services/agent-service/agent_service.py")"
+    if wait_http "http://127.0.0.1:${AGENTSCOPE_PORT}/health" "$pid"; then
+      echo "$pid" >"$PIDFILE"
+      echo "agent service ready; log $LOG"
+    else
+      exit 1
+    fi
     ;;
   stop)
-    stop_agent
+    stop_if_matches "$PIDFILE" "agent_service.py"
     ;;
   status)
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then

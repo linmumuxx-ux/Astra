@@ -497,7 +497,8 @@ export interface TaskWorkspaceBinding {
     connection: string
     error: string | null
     opencode_version: string
-    workspace_ui: string
+    workspace_ui: string | null
+    workspace_ui_error: string | null
   }
   sessions: Array<{
     id: string
@@ -508,6 +509,7 @@ export interface TaskWorkspaceBinding {
     finished_at: string | null
     current: boolean
     opencode_version: string
-    workspace_ui: string
+    workspace_ui: string | null
+    workspace_ui_error: string | null
   }>
 }

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
 from app.database import SessionLocal
 from app.task_tools import (
     TaskTools,
@@ -18,10 +20,34 @@ from app.task_tools import (
 )
 
 
+def presented_bearer(header: str | None) -> str:
+    value = (header or "").strip()
+    if len(value) < 7 or value[:7].lower() != "bearer ":
+        return ""
+    return value[7:].strip()
+
+
+def authenticate_mcp(headers, settings: Settings) -> str:
+    """共享密钥证明请求来自 Nexus 挂接的 Session。员工 id 必须同时存在。"""
+
+    expected = (settings.task_mcp_key or "").strip()
+    presented = presented_bearer(headers.get("authorization"))
+    if not expected or not presented or not hmac.compare_digest(presented, expected):
+        raise PermissionError("unauthorized")
+    employee = (headers.get("x-nexus-employee-id") or "").strip()
+    if not employee:
+        raise PermissionError("missing employee")
+    return employee
+
+
 class NexusIdentityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        try:
+            employee = authenticate_mcp(request.headers, get_settings())
+        except PermissionError:
+            return JSONResponse({"ok": False, "error": "未授权"}, status_code=401)
         tokens = [
-            (nexus_employee_id, nexus_employee_id.set(request.headers.get("x-nexus-employee-id", ""))),
+            (nexus_employee_id, nexus_employee_id.set(employee)),
             (nexus_session_id, nexus_session_id.set(request.headers.get("x-nexus-session-id", ""))),
             (
                 nexus_conversation_id,

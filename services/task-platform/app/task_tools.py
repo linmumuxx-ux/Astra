@@ -57,7 +57,13 @@ class TaskTools:
             level = Priority(priority)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        employee = _text(responsible_employee_id) or _text(nexus_employee_id.get())
+        actor = _text(nexus_employee_id.get())
+        if not actor:
+            return {"ok": False, "error": "未识别当前责任员工"}
+        requested_owner = _text(responsible_employee_id)
+        if requested_owner and requested_owner != actor:
+            return {"ok": False, "error": "不能代替其他责任员工创建任务"}
+        employee = actor
         session_id = _text(source_session_id) or _text(nexus_session_id.get())
         conversation_id = _text(source_conversation_id) or _text(nexus_conversation_id.get())
         channel_id = _text(source_channel_id) or _text(nexus_channel_id.get())
@@ -89,9 +95,9 @@ class TaskTools:
         return self._ok(task)
 
     async def get(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         return self._ok(task)
 
     async def list(
@@ -103,12 +109,13 @@ class TaskTools:
         status: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
-        query = select(Task)
-        owner = _text(responsible_employee_id)
-        if not owner and not _text(worker_id) and not _text(source_channel_id):
-            owner = _text(nexus_employee_id.get())
-        if owner:
-            query = query.where(Task.responsible_employee_id == owner)
+        actor = _text(nexus_employee_id.get())
+        if not actor:
+            return {"ok": False, "error": "未识别当前责任员工", "tasks": []}
+        requested = _text(responsible_employee_id)
+        if requested and requested != actor:
+            return {"ok": False, "error": "不能查询其他责任员工的任务", "tasks": []}
+        query = select(Task).where(Task.responsible_employee_id == actor)
         if _text(worker_id):
             query = query.where(Task.employee_id == _text(worker_id))
         if _text(source_channel_id):
@@ -128,9 +135,9 @@ class TaskTools:
         description: str | None = None,
         acceptance_criteria: list[str] | None = None,
     ) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status in _CONCLUDED:
             return self._refuse(task, "已结束的任务不能修改")
         if title:
@@ -147,9 +154,9 @@ class TaskTools:
         return self._ok(task)
 
     async def assign(self, task_id: str, worker_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status != TaskStatus.PENDING.value:
             return self._refuse(task, "只有待领取任务可以指定 Worker")
         refusal = await self._worker_refusal(worker_id, task.task_type, task.category_id or "")
@@ -163,17 +170,17 @@ class TaskTools:
         return self._ok(task)
 
     async def start(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status != TaskStatus.PENDING.value:
             return self._refuse(task, "只有待领取任务可以开始")
         return await self._runtime(task, lambda: RuntimeService(self.session).start(task.id))
 
     async def pause(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status != TaskStatus.RUNNING.value:
             return self._refuse(task, "只有执行中的任务可以暂停")
         return await self._runtime(
@@ -181,34 +188,34 @@ class TaskTools:
         )
 
     async def resume(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status != TaskStatus.WAITING.value:
             return self._refuse(task, "只有等待中的任务可以恢复")
         restart = bool(task.current_session_id)
         return await self._runtime(task, lambda: RuntimeService(self.session).start(task.id, restart=restart))
 
     async def terminate(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status in _CONCLUDED:
             return self._refuse(task, "任务已结束")
         return await self._runtime(task, lambda: RuntimeService(self.session).stop(task.id, cancel_task=True))
 
     async def retry(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELED.value}:
             return self._refuse(task, "只有失败或已终止的任务可以重试")
         return await self._runtime(task, lambda: RuntimeService(self.session).start(task.id, restart=True))
 
     async def logs(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         rows = (
             await self.session.scalars(
                 select(Event).where(Event.task_id == task.id).order_by(Event.id.desc()).limit(50)
@@ -225,9 +232,9 @@ class TaskTools:
         }
 
     async def result(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         return {
             "ok": True,
             "task_id": task.id,
@@ -240,9 +247,9 @@ class TaskTools:
         }
 
     async def intervene(self, task_id: str, reason: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status in _CONCLUDED:
             return self._refuse(task, "已结束的任务不能请求人工处理")
         note = {"reason": reason.strip(), "source": "nexus-task"}
@@ -262,9 +269,9 @@ class TaskTools:
         return self._ok(task)
 
     async def confirm(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         if task.status == TaskStatus.SUCCEEDED.value:
             return self._ok(task)
         if task.status in {TaskStatus.CANCELED.value, TaskStatus.FAILED.value, TaskStatus.PENDING.value}:
@@ -272,9 +279,9 @@ class TaskTools:
         return await self._runtime(task, lambda: RuntimeService(self.session).confirm_completion(task.id))
 
     async def summary(self, task_id: str) -> dict[str, Any]:
-        task = await self._optional(task_id)
-        if not task:
-            return {"ok": False, "error": "任务不存在"}
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
         summary = await self.session.scalar(select(TaskSummary).where(TaskSummary.task_id == task.id))
         candidates = (
             await self.session.scalars(
@@ -301,15 +308,26 @@ class TaskTools:
         try:
             updated = await call()
         except (RuntimeStateError, InvalidTransition, ValueError) as exc:
-            await self.session.rollback()
-            current = await self.session.get(Task, task_id)
-            if current is None:
-                return {"ok": False, "error": str(exc), "task_id": task_id}
-            return self._refuse(current, str(exc))
+            return await self._runtime_failure(task_id, str(exc))
+        except Exception:
+            return await self._runtime_failure(task_id, "执行环境暂时不可用")
         return self._ok(updated)
 
-    async def _optional(self, task_id: str) -> Task | None:
-        return await self.session.get(Task, task_id)
+    async def _runtime_failure(self, task_id: str, reason: str) -> dict[str, Any]:
+        await self.session.rollback()
+        current = await self.session.get(Task, task_id)
+        if current is None:
+            return {"ok": False, "error": reason, "task_id": task_id}
+        return self._refuse(current, reason)
+
+    async def _owned(self, task_id: str) -> Task | dict[str, Any]:
+        actor = _text(nexus_employee_id.get())
+        if not actor:
+            return {"ok": False, "error": "未识别当前责任员工"}
+        task = await self.session.get(Task, task_id)
+        if task is None or (task.responsible_employee_id or "") != actor:
+            return {"ok": False, "error": "任务不存在"}
+        return task
 
     async def _worker_refusal(self, worker_id: str, task_type: str, category_id: str) -> str | None:
         worker = await self.session.get(DigitalEmployee, worker_id)

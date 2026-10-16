@@ -155,6 +155,14 @@ def _workspace_ui_tree(
     return frontend
 
 
+def test_running_opencode_version_requires_its_own_bundle(tmp_path, monkeypatch):
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.2.27", "1.18.31"])
+    monkeypatch.setattr(service, "FRONTEND", frontend)
+    with pytest.raises(RuntimeError, match="9.9.9"):
+        service.ensure_workspace_ui_bundle("v9.9.9")
+    service.ensure_workspace_ui_bundle("1.2.27")
+
+
 def test_validate_start_accepts_default_and_upstream_bundles(tmp_path, monkeypatch):
     frontend = _workspace_ui_tree(
         tmp_path, upstream_tag="v1.18.31", installed=["1.2.27", "1.18.31"]

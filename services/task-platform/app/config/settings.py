@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     inactivity_timeout: int = 900
     outbox_interval: int = Field(default=2, ge=1, le=3600)
     outbox_retry_seconds: int = Field(default=5, ge=1, le=3600)
+    outbox_retry_cap_seconds: int = Field(default=300, ge=1, le=86400)
+    outbox_lease_seconds: int = Field(default=30, ge=5, le=3600)
     runtime_startup_timeout: int = Field(default=120, ge=10, le=86400)
     runtime_heartbeat_timeout: int = Field(default=90, ge=10, le=86400)
     executor_type: str = "opencode_server"
@@ -73,6 +75,8 @@ class Settings(BaseSettings):
     agentscope_user_id: str = "nexus"
     task_mcp_host: str = "127.0.0.1"
     task_mcp_port: int = Field(default=8202, ge=1, le=65535)
+    # Shared with Nexus API (NEXUS_TASK_MCP_KEY). Empty rejects every Task MCP call.
+    task_mcp_key: str | None = None
     opencode_timeout_seconds: int = 3600
     # Control-plane requests (status/messages/session/abort/prompt) must never
     # inherit the long execution budget; a stalled control call has to fail fast

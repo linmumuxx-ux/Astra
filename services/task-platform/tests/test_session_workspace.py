@@ -201,6 +201,20 @@ async def test_workspace_uses_runtime_session_opencode_version(runtime):
     body = response.json()
     assert body["runtime"]["opencode_version"] == "1.18.31"
     assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.18.31/index.html"
+    assert body["runtime"]["workspace_ui_error"] is None
+
+
+async def test_missing_workspace_bundle_is_not_served_as_the_spa(runtime):
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "opencode_version": "9.9.9"}
+    await runtime.session.commit()
+
+    response = await runtime.api.get("/api/tasks/T1/workspace")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime"]["workspace_ui"] is None
+    assert "9.9.9" in body["runtime"]["workspace_ui_error"]
+    assert body["sessions"][0]["workspace_ui"] is None
 
 
 async def test_continue_keeps_session_and_does_not_create_execution_copies(runtime):

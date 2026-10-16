@@ -160,6 +160,8 @@ class TaskService:
         task.status = target.value
         if current_progress is not None:
             task.current_progress = current_progress
+        elif target is TaskStatus.RUNNING:
+            task.current_progress = "执行中"
         if target is TaskStatus.RUNNING and task.started_at is None:
             task.claimed_at = task.claimed_at or now
             task.started_at = now

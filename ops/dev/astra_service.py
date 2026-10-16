@@ -151,6 +151,27 @@ def spawn(
     }
 
 
+def command_matches(pid: int, command: list[str] | None) -> bool:
+    needle = command[0] if command else ""
+    if not needle:
+        return False
+    raw = ""
+    proc_path = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = proc_path.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        raw = ""
+    if not raw.strip():
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "args="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        raw = proc.stdout or ""
+    return needle in raw
+
+
 def stop_pid(pid: int) -> None:
     if not process_exists(pid):
         return
@@ -212,6 +233,21 @@ def upstream_workspace_ui_version() -> str:
     if not version:
         raise RuntimeError(f"workspace-ui upstream metadata missing valid 'tag': {path}")
     return version
+
+
+def ensure_workspace_ui_bundle(version: str | None) -> None:
+    """运行中的 OpenCode 版本必须有对应的 Workspace UI，不能回落到 Nexus 页面。"""
+
+    cleaned = str(version or "").strip().removeprefix("v")
+    if not cleaned or cleaned == "unknown":
+        raise RuntimeError("OpenCode did not report a version; cannot select a Workspace UI bundle")
+    path = FRONTEND / "public" / "opencode-workspace" / cleaned / "index.html"
+    if not path.is_file():
+        raise RuntimeError(
+            f"workspace-ui bundle missing for running OpenCode {cleaned}: {path}; "
+            "restore the committed bundle from the repository, or rebuild that version "
+            "with: node tools/e2e/workspace_ui.mjs build"
+        )
 
 
 def missing_workspace_ui_bundles(settings: Any) -> list[Path]:
@@ -359,6 +395,7 @@ def start_opencode(
                 env=manager.process_environment(),
             )
         health = asyncio.run(manager.wait_until_ready())
+        ensure_workspace_ui_bundle(health.version)
         print(f"[READY] employee OpenCode Server ({health.version or 'unknown'})")
 
     if not settings.assistant_enabled:
@@ -568,6 +605,9 @@ def stop(settings: Any) -> int:
     for name, info in reversed(list(processes.items())):
         pid = int(info["pid"])
         if process_exists(pid):
+            if not command_matches(pid, info.get("command")):
+                print(f"[SKIP] {name} PID={pid} is not the managed command")
+                continue
             print(f"[STOP] {name} (PID={pid})")
             stop_pid(pid)
     clear_state(settings)

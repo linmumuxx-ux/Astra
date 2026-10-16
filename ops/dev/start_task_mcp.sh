@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/ops/dev/load_env.sh"
+# shellcheck disable=SC1091
+. "$ROOT/ops/dev/daemon.sh"
 ACTION="${1:-start}"
 PIDFILE="${TASK_MCP_PIDFILE:-$ROOT/.astra/run/task-mcp.pid}"
 LOG="${TASK_MCP_LOG:-/tmp/nexus-task-mcp.log}"
@@ -14,12 +16,6 @@ PY="$ROOT/services/task-platform/.venv/bin/python"
 mkdir -p "$(dirname "$PIDFILE")"
 export ASTRA_TASK_MCP_HOST="${ASTRA_TASK_MCP_HOST:-127.0.0.1}"
 export ASTRA_TASK_MCP_PORT="$PORT"
-stop_mcp() {
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    kill "$(cat "$PIDFILE")"
-    rm -f "$PIDFILE"
-  fi
-}
 case "$ACTION" in
   start)
     if [ -x "$BIN" ]; then
@@ -30,14 +26,18 @@ case "$ACTION" in
       echo "missing $BIN; install services/task-platform first" >&2
       exit 1
     fi
-    stop_mcp || true
+    stop_if_matches "$PIDFILE" "task_mcp" || true
     cd "$ROOT/services/task-platform"
-    setsid nohup "${CMD[@]}" >>"$LOG" 2>&1 &
-    echo $! >"$PIDFILE"
-    echo "task mcp starting on ${ASTRA_TASK_MCP_HOST}:${PORT}; log $LOG"
+    pid="$(detach "${CMD[@]}")"
+    if wait_http "http://127.0.0.1:${PORT}/mcp" "$pid"; then
+      echo "$pid" >"$PIDFILE"
+      echo "task mcp ready on ${ASTRA_TASK_MCP_HOST}:${PORT}; log $LOG"
+    else
+      exit 1
+    fi
     ;;
   stop)
-    stop_mcp
+    stop_if_matches "$PIDFILE" "task_mcp"
     ;;
   status)
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then

@@ -1,6 +1,9 @@
 import asyncio
+import json
 import shlex
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
@@ -103,6 +106,28 @@ class ExecutionEnvironmentRuntime:
             return await self._test_local(environment)
         return await self._test_remote(environment)
 
+    async def _local_serve_identity(self, client, environment, port: int, health: dict) -> CheckItem:
+        """Read /path and the owner file. Do not write the owner or start a server."""
+
+        expected = self.settings.employee_workspace_path(environment.workspace_root)
+        try:
+            paths = await client.request("GET", "/path")
+        except Exception as exc:
+            return CheckItem("OpenCode Server", False, f"无法读取 Serve Workspace：{exc}")
+        actual = Path(str((paths or {}).get("directory") or "")).resolve()
+        if actual != expected:
+            return CheckItem("OpenCode Server", False, "Serve 的启动 Workspace 与员工配置不一致")
+        owner_path = Path(tempfile.gettempdir()) / "astra-employee-serve" / f"{port}.json"
+        if owner_path.is_file():
+            try:
+                owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return CheckItem("OpenCode Server", False, f"无法读取 Serve 归属：{exc}")
+            if owner.get("employee_id") != environment.employee_id:
+                return CheckItem("OpenCode Server", False, "该 Serve 属于另一员工或工作空间")
+        version = health.get("version") if isinstance(health, dict) else None
+        return CheckItem("OpenCode Server", True, f"健康：{port} · {version} · Workspace 匹配")
+
     async def _test_local(self, environment: OpenCodeExecutionEnvironment) -> list[CheckItem]:
         binary = environment.opencode_path
         resolved = resolve_executable(binary)
@@ -154,9 +179,7 @@ class ExecutionEnvironmentRuntime:
                 client = OpenCodeServerClient(self.settings, base_url=f"http://127.0.0.1:{port}")
                 try:
                     health = await client.health()
-                    checks.append(
-                        CheckItem("OpenCode Server", True, f"健康：{port} · {health.get('version')}")
-                    )
+                    checks.append(await self._local_serve_identity(client, environment, port, health))
                 except Exception as exc:
                     import socket
 

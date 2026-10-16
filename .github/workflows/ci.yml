@@ -34,8 +34,10 @@ jobs:
           cache: pip
       - name: Install Nexus API
         run: python -m pip install -r services/nexus-api/requirements-dev.txt
-      - name: Test
-        run: PYTHONPATH=services/nexus-api python -m pytest services/nexus-api/tests
+      - name: Lint and test
+        run: |
+          python -m ruff check --config services/nexus-api/pyproject.toml services/nexus-api/nexus_api services/nexus-api/tests
+          PYTHONPATH=services/nexus-api python -m pytest services/nexus-api/tests
 
   agent-service:
     runs-on: ubuntu-latest

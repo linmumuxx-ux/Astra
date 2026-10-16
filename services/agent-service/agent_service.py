@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from pydantic import BaseModel
@@ -17,6 +18,39 @@ class TaskHintBody(BaseModel):
     agent_id: str
     hint: str
     user_id: str = "nexus"
+    event_id: str = ""
+
+
+_event_lock = asyncio.Lock()
+_seen_events: dict[str, None] = {}
+_inflight_events: set[str] = set()
+_SEEN_LIMIT = 1000
+
+
+async def claim_event(event_id: str | None) -> bool:
+    """同一 event id 只投递一次。失败后释放，允许 outbox 再试。"""
+
+    value = (event_id or "").strip()
+    if not value:
+        return True
+    async with _event_lock:
+        if value in _seen_events or value in _inflight_events:
+            return False
+        _inflight_events.add(value)
+        return True
+
+
+async def finish_event(event_id: str | None, *, delivered: bool) -> None:
+    value = (event_id or "").strip()
+    if not value:
+        return
+    async with _event_lock:
+        _inflight_events.discard(value)
+        if not delivered:
+            return
+        _seen_events[value] = None
+        while len(_seen_events) > _SEEN_LIMIT:
+            _seen_events.pop(next(iter(_seen_events)))
 
 
 NEXUS_TASK_MCP_PREFIX = "mcp__nexus-task__"
@@ -143,21 +177,29 @@ def main() -> None:
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
     listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
-    from fastapi import HTTPException
+    from fastapi import HTTPException, Request
 
     @app.post("/nexus/task-hint")
-    async def task_hint(body: TaskHintBody) -> dict[str, bool]:
+    async def task_hint(body: TaskHintBody, request: Request) -> dict[str, bool]:
         if not body.session_id.strip() or not body.agent_id.strip() or not body.hint.strip():
             raise HTTPException(status_code=422, detail="缺少会话、员工或提示")
-        await deliver_task_hint(
-            deliver_to_inbox,
-            HintBlock,
-            message_bus,
-            body.user_id,
-            body.agent_id,
-            body.session_id,
-            body.hint,
-        )
+        event_id = request.headers.get("x-nexus-event-id") or body.event_id
+        if not await claim_event(event_id):
+            return {"ok": True}
+        try:
+            await deliver_task_hint(
+                deliver_to_inbox,
+                HintBlock,
+                message_bus,
+                body.user_id,
+                body.agent_id,
+                body.session_id,
+                body.hint,
+            )
+        except Exception:
+            await finish_event(event_id, delivered=False)
+            raise
+        await finish_event(event_id, delivered=True)
         return {"ok": True}
 
     uvicorn.run(app, host=listen_host, port=listen_port)

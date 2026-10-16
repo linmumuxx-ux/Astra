@@ -9,7 +9,6 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.main import (
     assistant_messages,
@@ -1438,3 +1437,102 @@ def test_new_employee_attaches_task_capability_with_the_new_agent_id(tmp_path, m
     assert employee["agentscope_agent_id"] == "agent-星河"
     assert ("/workspace/skill/upload", "agent-星河") in attached
     assert ("/workspace/mcp", "agent-星河") in attached
+
+
+def test_disabled_employee_defers_wake(client):
+    from nexus_api.db import connect
+    from nexus_api.main import db_path
+
+    employee = client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+    connection = connect(db_path())
+    connection.execute(
+        "UPDATE employees SET enabled = 0, agentscope_agent_id = ?, mailbox_session_id = ? WHERE id = ?",
+        ("agt_1", "ses_mail", employee["id"]),
+    )
+    connection.commit()
+    connection.close()
+
+    deferred = client.get("/api/v1/internal/wake-target", params={"employee_id": employee["id"]})
+    assert deferred.status_code == 409
+    assert "禁用" in deferred.json()["detail"]
+
+
+def test_task_skill_is_revoked_and_restored_on_existing_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NEXUS_TASK_MCP_KEY", "shared-secret")
+    calls: list[tuple[str, str, str | None, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        mcp_auth = None
+        if request.url.path == "/workspace/mcp" and request.content:
+            payload = json.loads(request.content.decode())
+            mcp_auth = payload.get("mcp_config", {}).get("headers", {}).get("Authorization")
+        calls.append(
+            (
+                request.method,
+                request.url.path,
+                request.url.params.get("session_id"),
+                mcp_auth,
+            )
+        )
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.method == "PATCH" and request.url.path.startswith("/agent/"):
+            return httpx.Response(200, json={})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['agent_id']}"})
+        if request.method == "PATCH" and request.url.path.startswith("/sessions/"):
+            return httpx.Response(200, json={})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        if request.url.path in {"/workspace/skill/upload", "/workspace/mcp"} or request.method == "DELETE":
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"detail": "missing"})
+
+    application = create_app()
+    with TestClient(application) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        created = test_client.post("/api/v1/employees", json=employee_body(skills=["task-management"]))
+        assert created.status_code == 201, created.text
+        employee = created.json()["employee"]
+        from nexus_api.db import connect
+        from nexus_api.main import db_path
+
+        connection = connect(db_path())
+        connection.execute(
+            """
+            INSERT INTO conversations (
+                id, employee_id, owner_id, name, agentscope_session_id, created_at, updated_at
+            ) VALUES ('conv_1', ?, 'owner', '对话', 'ses_chat', 't', 't')
+            """,
+            (employee["id"],),
+        )
+        connection.commit()
+        connection.close()
+        calls.clear()
+        removed = test_client.patch(
+            f"/api/v1/employees/{employee['id']}",
+            json=employee_body(skills=[]),
+        )
+        assert removed.status_code == 200, removed.text
+        revoked = {(method, path, session_id) for method, path, session_id, _auth in calls}
+        assert ("DELETE", "/workspace/skill/task-management", employee["mailbox_session_id"]) in revoked
+        assert ("DELETE", "/workspace/mcp/nexus-task", employee["mailbox_session_id"]) in revoked
+        assert ("DELETE", "/workspace/mcp/nexus-task", "ses_chat") in revoked
+        calls.clear()
+        restored = test_client.patch(
+            f"/api/v1/employees/{employee['id']}",
+            json=employee_body(skills=["task-management"]),
+        )
+        assert restored.status_code == 200, restored.text
+        mcp_calls = [
+            item for item in calls if item[0] == "POST" and item[1] == "/workspace/mcp"
+        ]
+        assert {item[2] for item in mcp_calls} >= {employee["mailbox_session_id"], "ses_chat"}
+        assert all(item[3] == "Bearer shared-secret" for item in mcp_calls)

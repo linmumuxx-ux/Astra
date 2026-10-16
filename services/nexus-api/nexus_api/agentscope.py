@@ -257,6 +257,28 @@ class AgentScopeClient:
                 return
             raise
 
+    async def remove_workspace_mcp(self, agent_id: str, session_id: str, name: str = "nexus-task") -> None:
+        try:
+            await self.request(
+                "DELETE",
+                f"/workspace/mcp/{name}",
+                params={"agent_id": agent_id, "session_id": session_id},
+            )
+        except AgentScopeError as exc:
+            if exc.status_code != 404:
+                raise
+
+    async def remove_workspace_skill(self, agent_id: str, session_id: str, name: str) -> None:
+        try:
+            await self.request(
+                "DELETE",
+                f"/workspace/skill/{name}",
+                params={"agent_id": agent_id, "session_id": session_id},
+            )
+        except AgentScopeError as exc:
+            if exc.status_code != 404:
+                raise
+
     async def list_launcher_tools(self) -> list[dict[str, str]]:
         if not await self.probe():
             raise AgentScopeError("AgentScope 未连接")
