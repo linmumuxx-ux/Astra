@@ -5,13 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/ops/dev/load_env.sh"
-# shellcheck disable=SC1091
-. "$ROOT/ops/dev/daemon.sh"
 ACTION="${1:-start}"
-PIDFILE="${NEXUS_API_PIDFILE:-$ROOT/.astra/run/nexus-api.pid}"
-LOG="${NEXUS_API_LOG:-/tmp/nexus-api.log}"
-PY="$ROOT/services/nexus-api/.venv/bin/uvicorn"
-mkdir -p "$(dirname "$PIDFILE")"
 export NEXUS_DATA_DIR="${NEXUS_DATA_DIR:-$ROOT/services/nexus-api/data}"
 export NEXUS_AGENTSCOPE_BASE_URL="${NEXUS_AGENTSCOPE_BASE_URL:-http://127.0.0.1:8000}"
 export NEXUS_AGENTSCOPE_USER_ID="${NEXUS_AGENTSCOPE_USER_ID:-nexus}"
@@ -22,28 +16,10 @@ export OPENAI_MODEL="${OPENAI_MODEL:-deepseek-flash}"
 if [ -z "${OPENAI_API_KEY:-}" ] && [ -n "${DEEPSEEK_API_KEY:-}" ]; then
   export OPENAI_API_KEY="$DEEPSEEK_API_KEY"
 fi
+PY="$ROOT/services/task-platform/.venv/bin/python"
 case "$ACTION" in
-  start)
-    stop_if_matches "$PIDFILE" "nexus_api.main" || true
-    cd "$ROOT/services/nexus-api"
-    pid="$(detach "$PY" nexus_api.main:app --app-dir "$ROOT/services/nexus-api" --host 127.0.0.1 --port 8120)"
-    if wait_http "http://127.0.0.1:8120/api/health" "$pid"; then
-      echo "$pid" >"$PIDFILE"
-      echo "nexus api ready; log $LOG"
-    else
-      exit 1
-    fi
-    ;;
-  stop)
-    stop_if_matches "$PIDFILE" "nexus_api.main"
-    ;;
-  status)
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-      echo "nexus api running pid $(cat "$PIDFILE")"
-    else
-      echo "nexus api is not running"
-      exit 1
-    fi
+  start|stop|status)
+    exec "$PY" "$ROOT/ops/dev/service_ctl.py" nexus-api "$ACTION"
     ;;
   *)
     echo "usage: $0 [start|stop|status]" >&2

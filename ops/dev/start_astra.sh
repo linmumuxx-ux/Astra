@@ -5,8 +5,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/ops/dev/load_env.sh"
-# shellcheck disable=SC1091
-. "$ROOT/ops/dev/daemon.sh"
 ACTION="${1:-start}"
 export PATH="${HOME}/.local/bin:${PATH}"
 export ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS="${ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS:-30}"
@@ -20,20 +18,10 @@ export ASTRA_AGENTSCOPE_BASE_URL="${ASTRA_AGENTSCOPE_BASE_URL:-http://127.0.0.1:
 export ASTRA_AGENTSCOPE_USER_ID="${ASTRA_AGENTSCOPE_USER_ID:-nexus}"
 export ASTRA_LLM_WIKI_API_BASE_URL="${ASTRA_LLM_WIKI_API_BASE_URL:-http://127.0.0.1:19828/api/v1}"
 PY="$ROOT/services/task-platform/.venv/bin/python"
-LOG="${ASTRA_LOG:-/tmp/nexus-task-platform.log}"
 cd "$ROOT/services/task-platform"
 case "$ACTION" in
-  start)
-    if run_and_wait "$PY" "$ROOT/ops/dev/astra_service.py" dev start; then
-      echo "task platform started; log $LOG"
-    else
-      status=$?
-      echo "task platform failed to start (exit=$status); log $LOG" >&2
-      exit "$status"
-    fi
-    ;;
-  restart|stop|status)
-    "$PY" "$ROOT/ops/dev/astra_service.py" dev "$ACTION"
+  start|restart|stop|status)
+    exec "$PY" "$ROOT/ops/dev/astra_service.py" dev "$ACTION"
     ;;
   *)
     echo "usage: $0 [start|restart|stop|status]" >&2

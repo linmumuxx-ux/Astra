@@ -62,7 +62,9 @@ npm run dev
 
 打开 `http://127.0.0.1:5174`。开发服务器把 `/api/v1` 代理到 `8120`，其余 `/api` 代理到 `8100`。
 
-停止：`ops/dev/start_astra.sh stop`、`ops/dev/start_nexus_api.sh stop`、`ops/dev/start_agent_service.sh stop`。
+这些 `.sh` 只加载 `ops/env/.env` 并调用 Python。进程由 `ops/dev/astra_service.py` 和 `ops/dev/service_ctl.py` 拉起：`Popen(start_new_session=True)` 记下 pid、pgid、psutil `create_time` 和 cwd。停止前必须 pid 与 `create_time` 仍一致，然后向进程组发 `SIGTERM`，超时再 `SIGKILL`，并用本机 socket 确认端口已释放。健康检查用 urllib，只接受 HTTP 2xx。停不干净时状态文件保留，进程以非 0 退出。
+
+停止：`ops/dev/start_astra.sh stop`、`ops/dev/start_nexus_api.sh stop`、`ops/dev/start_agent_service.sh stop`、`ops/dev/start_task_mcp.sh stop`。
 
 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG` 由 `services/agent-service/bootstrap_chat_model.py` 生成。页面上没有模型或凭证字段。
 

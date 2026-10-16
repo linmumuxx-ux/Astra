@@ -120,9 +120,13 @@ upsert_kv() { # file key value  (value never printed)
   grep -v "^$k=" "$f" > "$tmp" || true; printf '%s=%s\n' "$k" "$v" >> "$tmp"; mv "$tmp" "$f"; chmod 600 "$f"
 }
 get_kv() { [ -f "$1" ] && grep "^$2=" "$1" | tail -1 | cut -d= -f2- || true; }
-wait_http() { # url name timeout
-  local i; for ((i=0;i<${3:-60};i++)); do curl -fsS -m 5 -o /dev/null "$1" 2>/dev/null && { log "$2 健康"; return 0; }; sleep 2; done
-  die "$2 未就绪：$1"
+wait_http() { # url name timeout_seconds
+  local py="$NEXUS_ROOT/services/task-platform/.venv/bin/python"
+  if "$py" "$NEXUS_ROOT/ops/dev/service_ctl.py" wait-http "$1" --timeout "${3:-60}"; then
+    log "$2 健康"
+  else
+    die "$2 未就绪：$1"
+  fi
 }
 
 SECRETS="$NEXUS_STATE_DIR/secrets.env"; RUNENV="$NEXUS_STATE_DIR/nexus.env"; LOGS="$NEXUS_STATE_DIR/logs"
@@ -268,34 +272,49 @@ WantedBy=multi-user.target
 UNIT
 }
 
-svc_nohup() { # name cmd
-  local pidf="$NEXUS_STATE_DIR/$1.pid"
-  if [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then kill "$(cat "$pidf")" || true; sleep 2; fi
-  (set -a; . "$RUNENV"; . "$SECRETS"; set +a; cd "$NEXUS_ROOT"; setsid nohup bash -c "$2" >>"$LOGS/$1.log" 2>&1 & echo $! > "$pidf")
+svc_detach() { # name cmd
+  local py="$NEXUS_ROOT/services/task-platform/.venv/bin/python"
+  (set -a; . "$RUNENV"; . "$SECRETS"; set +a
+   SERVICE_CTL_STATE_DIR="$NEXUS_STATE_DIR" "$py" "$NEXUS_ROOT/ops/dev/service_ctl.py" detach "$1" --log "$LOGS/$1.log" -- bash -c "$2")
+}
+
+py_start() { # service_ctl name: agent, task-mcp, nexus-api
+  local py="$NEXUS_ROOT/services/task-platform/.venv/bin/python"
+  (set -a; . "$RUNENV"; . "$SECRETS"; set +a
+   SERVICE_CTL_STATE_DIR="$NEXUS_STATE_DIR" "$py" "$NEXUS_ROOT/ops/dev/service_ctl.py" "$1" start)
 }
 
 start_service() { # name type cmd [stop]
   if [ "$SYSTEMD" = 1 ]; then svc_unit "$@"; $SUDO systemctl daemon-reload; $SUDO systemctl enable -q "$1"; $SUDO systemctl restart "$1"
   elif [ "$2" = oneshot ]; then (set -a; . "$RUNENV"; . "$SECRETS"; set +a; cd "$NEXUS_ROOT"; bash -c "$3" >>"$LOGS/$1.log" 2>&1)
-  else svc_nohup "$1" "$3"; fi
+  else svc_detach "$1" "$3"; fi
 }
 
 step_services() {
-  detect_systemd; log "启动服务（$( [ "$SYSTEMD" = 1 ] && echo systemd || echo nohup )）"
+  detect_systemd; log "启动服务（$( [ "$SYSTEMD" = 1 ] && echo systemd || echo python )）"
   local R="$NEXUS_ROOT"
   start_service nexus-astra oneshot "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev restart" "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev stop"
   wait_http http://127.0.0.1:8100/api/health "Task API(8100)" 90
-  start_service nexus-task-mcp simple "cd $R/services/task-platform && exec .venv/bin/astra-task-mcp"
-  start_service nexus-agent-service simple "exec $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/agent_service.py"
-  local i; for ((i=0;i<60;i++)); do curl -fsS -m 5 -H 'X-User-ID: nexus' -o /dev/null http://127.0.0.1:8000/health && break; sleep 2; done
-  [ "$i" -lt 60 ] || die "Agent Service(8000) 未就绪"
+  if [ "$SYSTEMD" = 1 ]; then
+    start_service nexus-task-mcp simple "cd $R/services/task-platform && exec .venv/bin/astra-task-mcp"
+    start_service nexus-agent-service simple "exec $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/agent_service.py"
+  else
+    py_start task-mcp
+    py_start agent
+  fi
+  "$R/services/task-platform/.venv/bin/python" "$NEXUS_ROOT/ops/dev/service_ctl.py" wait-http http://127.0.0.1:8000/health --timeout 120 --header "X-User-ID: nexus" \
+    || die "Agent Service(8000) 未就绪"
   if [ -z "$(get_kv "$RUNENV" NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG)" ]; then
     log "登记聊天模型（bootstrap_chat_model.py）"
     local cfg; cfg="$(set -a; . "$RUNENV"; . "$SECRETS"; set +a; "$R/services/agent-service/.venv-agentscope/bin/python" "$R/services/agent-service/bootstrap_chat_model.py" | grep -E '^\{' | tail -1)"
     [ -n "$cfg" ] || die "bootstrap_chat_model.py 未输出配置"
     printf 'NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG=%s\n' "$cfg" >> "$RUNENV"
   fi
-  start_service nexus-api simple "cd $R/services/nexus-api && exec .venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 8120"
+  if [ "$SYSTEMD" = 1 ]; then
+    start_service nexus-api simple "cd $R/services/nexus-api && exec .venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 8120"
+  else
+    py_start nexus-api
+  fi
   wait_http http://127.0.0.1:8120/api/v1/knowledge "Nexus API(8120)" 60
   if [ -d "$R/web/nexus/dist" ]; then
     start_service nexus-web simple "cd $R/web/nexus && exec npx vite preview --host $NEXUS_BIND_HOST --port 5174"

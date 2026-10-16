@@ -141,7 +141,7 @@ cp /opt/nexus/ops/env/.env.example /opt/services/agent-service/.env && chmod 600
 /opt/nexus/ops/deploy/install_nexus.sh --preflight-only
 /opt/nexus/ops/deploy/install_nexus.sh [--with-llm-wiki] [--remote-worker 1.2.3.4] [--skip-web-build] [--no-systemd]
 ```
-脚本幂等：已有 venv/密钥/项目/网关路由/Worker 均复用；有 systemd 时生成 `nexus-*.service`，否则 nohup（pid 在 `$NEXUS_STATE_DIR/*.pid`，日志在 `$NEXUS_STATE_DIR/logs`）。
+脚本幂等：已有 venv/密钥/项目/网关路由/Worker 均复用；有 systemd 时生成 `nexus-*.service`，否则由 `ops/dev/service_ctl.py` 拉起进程（身份记录在 `$NEXUS_STATE_DIR/service-ctl.json`，日志在 `$NEXUS_STATE_DIR/logs`）。
 > 安装脚本在 `ops/deploy/install_nexus.sh`，环境模板在 `ops/env/.env.example`，llm_wiki 工具在 `tools/llm_wiki/`。
 
 ---
@@ -179,24 +179,21 @@ cd $R/services/task-platform && ASTRA_GATEWAY_MASTER_KEY=$(cat ../.gwmaster) AST
   ASTRA_REDIS_URL=redis://localhost:6379/0 ASTRA_OUTBOX_INTERVAL=2 ASTRA_OUTBOX_RETRY_SECONDS=5 \
   ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash ASTRA_NEXUS_API_BASE=http://127.0.0.1:8120 \
   ASTRA_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000 ASTRA_AGENTSCOPE_USER_ID=nexus \
-  setsid nohup .venv/bin/python ../ops/dev/astra_service.py dev start >>/tmp/p2_astra.log 2>&1 &
+  .venv/bin/python ../ops/dev/astra_service.py dev start
 ```
-（即 box 上的 `start_astra.sh [start|restart|stop|status]`。）它拉起 backend 8100（uvicorn --reload）、gateway 8110、Library MCP 8201、Celery beat/control/agent、OpenCode 4096/4097、管理台 5173；启动前会做 13 项自检。
+（即 `ops/dev/start_astra.sh [start|restart|stop|status]`。）Python 用新会话拉起 backend 8100（uvicorn --reload）、gateway 8110、Library MCP 8201、Celery beat/control/agent、OpenCode 4096/4097、管理台 5174，并记录 pid 与 create_time。健康检查只认 HTTP 2xx。停不干净时保留 `astra-service.json` 并以非 0 退出。启动前会做自检。
 
 ### 5.4 Task MCP
 ```bash
-cd $R/services/task-platform && ASTRA_TASK_MCP_PORT=8202 setsid nohup .venv/bin/astra-task-mcp >>/tmp/p2_taskmcp.log 2>&1 &
+ASTRA_TASK_MCP_PORT=8202 ops/dev/start_task_mcp.sh start
 ```
 
 ### 5.5 Agent Service（AgentScope 2.0.10）与聊天模型
 ```bash
 python3 -m venv $R/services/agent-service/.venv-agentscope
 $R/services/agent-service/.venv-agentscope/bin/pip install -r $R/services/agent-service/requirements.txt
-# start_agent_service.sh
-NEXUS_API_BASE=http://127.0.0.1:8120 AGENTSCOPE_HOST=0.0.0.0 AGENTSCOPE_PORT=8000 AGENTSCOPE_REDIS_HOST=127.0.0.1 \
-AGENTSCOPE_REDIS_PORT=6379 AGENTSCOPE_WORKSPACE_DIR=$R/services/agent-service/data/workspaces \
-setsid nohup $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/agent_service.py >>/tmp/p2_agentscope.log 2>&1 &
-bash $R/services/agent-service/healthcheck.sh       # Redis PONG + GET /health（带 X-User-ID）
+# start_agent_service.sh 交给 service_ctl.py，健康检查要求 /health 返回 2xx 且带 X-User-ID
+ops/dev/start_agent_service.sh start
 # 登记模型（只需一次，凭证存 Redis）
 NEXUS_CHAT_PROVIDER=openai OPENAI_BASE_URL=https://api.deepseek.com OPENAI_MODEL=deepseek-flash \
   $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/bootstrap_chat_model.py
@@ -210,7 +207,7 @@ CFG='<上一步输出的 JSON>'
 NEXUS_DATA_DIR=$R/services/nexus-api/data NEXUS_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000 NEXUS_AGENTSCOPE_USER_ID=nexus \
 NEXUS_TASK_MCP_URL=http://127.0.0.1:8202/mcp NEXUS_CHAT_PROVIDER=openai OPENAI_BASE_URL=https://api.deepseek.com \
 OPENAI_MODEL=deepseek-flash OPENAI_API_KEY="$DEEPSEEK_API_KEY" NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG="$CFG" \
-setsid nohup .venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 8120 >>/tmp/p2_nexus_api.log 2>&1 &
+ops/dev/start_nexus_api.sh start
 ```
 
 ### 5.7 web/nexus
@@ -317,7 +314,7 @@ curl -X POST $B/nodes/<node>/probe     # 直到 HEALTHY → ACTIVE
 | 对端回复不出现在私聊 | `json.dumps` 转义换行导致 key 不匹配；跳过了含回复的消息 | fix_peer_replies.diff |
 | 本地 Worker 环境测试失败 | OpenCode 端口 4096 与平台 Serve 冲突、工作区目录不存在 | 改 4196 并先建目录 |
 | 任务卡 WAITING：`external_directory` | 仓库在任务工作区外，OpenCode 请求权限 | 回复 always，或把仓库放进工作区 |
-| `./start_astra.sh restart` 后仍是旧配置、"Astra is not running" | 旧 uvicorn `--reload` 父进程仍占 8100 | `ss -ltnp | grep 8100` 找到并 kill 后重启；用 `/proc/<pid>/environ` 确认新变量 |
+| `./start_astra.sh restart` 后仍是旧配置，或提示没有停干净 | 旧进程的 pid 与 create_time 对不上，或 8100 仍接受连接 | `astra_service.py dev stop` 会保留 `astra-service.json` 并以非 0 退出。确认记录里的 pid 已退出、8100 不再接受连接后再 start |
 | 部署 deploy 被拒：stdio MCP | 远程要求 streamable-http | 设 `ASTRA_MCP_TRANSPORT`/`ASTRA_MCP_API_KEY` |
 | 节点凭据无法解密 | 换了/丢了 `ASTRA_GATEWAY_MASTER_KEY` | 固定保存主密钥；丢失只能重建节点 |
 | 图书馆 "知识服务：异常 — 未启用 llm_wiki" | `ASTRA_LLM_WIKI_ENABLED` 未设 | 按 §2.6 设置并重启 |
@@ -341,13 +338,10 @@ curl -X POST $B/nodes/<node>/probe     # 直到 HEALTHY → ACTIVE
 **重启**（box 现状）：
 ```bash
 cd /workspace/nexus-p2
-./start_astra.sh restart              # 8100/8110/8201/5173/4096/4097 + Celery
-./start_agent_service.sh              # 8000（先 kill 旧进程）
-./start_nexus_api.sh                  # 8120（先 kill 旧进程）
-cd services/task-platform && ASTRA_TASK_MCP_PORT=8202 setsid nohup .venv/bin/astra-task-mcp >>/tmp/p2_taskmcp.log 2>&1 &
-(cd web/nexus && setsid nohup npx vite --port 5174 >>/tmp/p2_vite.log 2>&1 &)
-(setsid nohup tools/llm_wiki/llm_wiki_tunnel.sh >/tmp/llm_wiki_tunnel.log 2>&1 &)
-(setsid nohup python3 tools/llm_wiki/llm_wiki_ingest_pump.py >>/tmp/llm_wiki_pump.log 2>&1 &)
+ops/dev/start_astra.sh restart        # 8100/8110/8201/5174/4096/4097 + Celery
+ops/dev/start_agent_service.sh start  # 8000
+ops/dev/start_nexus_api.sh start      # 8120
+ops/dev/start_task_mcp.sh start       # 8202
 ```
 一键脚本部署的机器：`systemctl restart nexus-astra nexus-task-mcp nexus-agentscope nexus-api nexus-web [nexus-llm-wiki-tunnel nexus-llm-wiki-pump]`。
 远端：`docker restart llm-wiki-web`（重启主机后先重新注册 binfmt）。

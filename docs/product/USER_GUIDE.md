@@ -33,27 +33,25 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup-windows.ps1
 
 开发环境：
 
-```powershell
-.\.venv\Scripts\python.exe .\scripts\astra_service.py dev
+```bash
+ops/dev/start_astra.sh start
 ```
 
 正式环境：
 
-```powershell
-.\.venv\Scripts\python.exe .\scripts\astra_service.py pro
+```bash
+services/task-platform/.venv/bin/python ops/dev/astra_service.py pro start
 ```
 
 查看、重启和停止：
 
-```powershell
-.\.venv\Scripts\python.exe .\scripts\astra_service.py dev status
-.\.venv\Scripts\python.exe .\scripts\astra_service.py dev restart
-.\.venv\Scripts\python.exe .\scripts\astra_service.py dev stop
+```bash
+ops/dev/start_astra.sh status
+ops/dev/start_astra.sh restart
+ops/dev/start_astra.sh stop
 ```
 
-正式环境将 `dev` 替换为 `pro`。
-
-Astra 不再维护独立的 bat / sh / PowerShell 启停脚本。`setup-windows.ps1` 只负责首次安装，`check-windows.ps1` 只负责诊断。
+正式环境把 `astra_service.py` 的模式参数换成 `pro`。`ops/dev/*.sh` 只把环境交给 Python。启停、身份核对和健康检查都在 `ops/dev/astra_service.py` 与 `ops/dev/service_ctl.py`。
 
 ## 3. 推荐配置顺序
 
@@ -231,25 +229,28 @@ Token 只使用 Agent 事件中的真实数据，不根据字符数估算。没�
 
 ## 12. Runtime
 
-Astra 服务统一由：
+Astra 服务由 Python 管理，macOS 和 Linux 同一套脚本：
 
 ```text
 ops/dev/astra_service.py
+ops/dev/service_ctl.py
 ```
 
-管理。
+`ops/dev/start_astra.sh`、`start_agent_service.sh`、`start_nexus_api.sh`、`start_task_mcp.sh` 只负责把环境传给这两个程序。
 
 开发：
 
-```powershell
-.\.venv\Scripts\python.exe .\scripts\astra_service.py dev
+```bash
+ops/dev/start_astra.sh start
 ```
 
-正式：
+正式把第一个参数换成 `pro`：
 
-```powershell
-.\.venv\Scripts\python.exe .\scripts\astra_service.py pro
+```bash
+services/task-platform/.venv/bin/python ops/dev/astra_service.py pro start
 ```
+
+启动时记录 pid、进程组、psutil `create_time` 和 cwd。停止时先核对 pid 与 `create_time`，再向进程组发信号，并确认进程退出、端口不再接受连接。核对不上或端口仍被占用时，`astra-service.json` 保留，命令以非 0 退出。
 
 它统一管理：
 
@@ -262,7 +263,7 @@ ops/dev/astra_service.py
 - 平台助手 OpenCode Server
 - 可选 Library MCP
 
-日志位于 `ASTRA_LOG_DIR`，PID 和启动模式位于 `ASTRA_RUNTIME_DIR/astra-service.json`。
+日志位于 `ASTRA_LOG_DIR`。Task 平台的 pid、`create_time` 和启动模式位于 `ASTRA_RUNTIME_DIR/astra-service.json`。Agent Service、Nexus API 和 Task MCP 的记录位于 `.astra/run/service-ctl.json`。
 
 ## 13. 质量验证
 
