@@ -2,7 +2,7 @@
   <ElDrawer
     class="employee-detail-drawer"
     :model-value="Boolean(props.employee)"
-    :title="model ? `${model.name} 员工详情` : '员工详情'"
+    :title="model ? `${model.name} Worker 详情` : 'Worker 详情'"
     size="620px"
     @close="emit('close')"
   >
@@ -43,7 +43,7 @@
       <ElCard shadow="never">
         <template #header><h3>基本信息</h3></template>
         <ElDescriptions :column="2" border size="small">
-          <ElDescriptionsItem label="员工编号">{{ model.employee.id }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="Worker 编号">{{ model.employee.id }}</ElDescriptionsItem>
           <ElDescriptionsItem label="岗位">{{ model.employee.role }}</ElDescriptionsItem>
           <ElDescriptionsItem label="所在区域">{{ model.areaName }}</ElDescriptionsItem>
           <ElDescriptionsItem label="启用状态"><ElTag size="small" :type="model.employee.enabled ? 'success' : 'info'" :effect="model.employee.enabled ? 'light' : 'plain'">{{ model.employee.enabled ? '已启用' : '已停用' }}</ElTag></ElDescriptionsItem>

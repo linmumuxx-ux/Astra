@@ -7,11 +7,11 @@
       </template>
     </AstraPageHeader>
 
-    <AstraFilterPanel label="员工筛选" testid="employee-filter">
-      <ElSelect v-model="status" class="astra-filter__select" data-testid="employee-filter-status" aria-label="员工状态" placeholder="状态：全部" clearable>
+    <AstraFilterPanel label="Worker 筛选" testid="employee-filter">
+      <ElSelect v-model="status" class="astra-filter__select" data-testid="employee-filter-status" aria-label="Worker 状态" placeholder="状态：全部" clearable>
         <ElOption v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />
       </ElSelect>
-      <ElSelect v-model="role" class="astra-filter__select" data-testid="employee-filter-role" aria-label="员工职责" placeholder="职责：全部" clearable>
+      <ElSelect v-model="role" class="astra-filter__select" data-testid="employee-filter-role" aria-label="Worker 职责" placeholder="职责：全部" clearable>
         <ElOption v-for="item in roles" :key="item" :value="item" :label="item" />
       </ElSelect>
       <ElSelect v-model="area" class="astra-filter__select" data-testid="employee-filter-area" aria-label="所属区域" placeholder="区域：全部" clearable>
@@ -22,7 +22,7 @@
         <ElOption value="disabled" label="已停用" />
       </ElSelect>
       <template #search>
-        <ElInput v-model="query" class="astra-filter__keyword" data-testid="employee-filter-keyword" aria-label="搜索员工" placeholder="搜索员工名称 / 编号 / 职责 / 任务" clearable>
+        <ElInput v-model="query" class="astra-filter__keyword" data-testid="employee-filter-keyword" aria-label="搜索 Worker" placeholder="搜索 Worker 名称 / 编号 / 职责 / 任务" clearable>
           <template #prefix><Search :size="15" /></template>
         </ElInput>
         <ElButton type="primary" :icon="Search" data-testid="employee-search" @click="applySearch">搜索</ElButton>
@@ -31,7 +31,7 @@
 
     <section class="astra-table-panel astra-table-panel--clickable" aria-label="Agent Worker 列表">
       <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="onRowClick">
-        <ElTableColumn label="员工" width="230">
+        <ElTableColumn label="Worker" width="230">
           <template #default="{ row }">
             <div class="employee-cell">
               <EmployeeAvatar :employee="row.employee" size="small" />
@@ -93,7 +93,7 @@
           </template>
         </ElTableColumn>
         <template #empty>
-          <ElEmpty v-if="store.error && !store.employees.length" :image-size="72" description="员工数据加载失败">
+          <ElEmpty v-if="store.error && !store.employees.length" :image-size="72" description="Worker 数据加载失败">
             <ElText type="info">{{ store.error }}</ElText>
             <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
           </ElEmpty>
@@ -107,7 +107,7 @@
 
     <footer class="astra-page__footer">
       <ElText type="info" data-testid="employee-total">共 {{ filtered.length }} 条</ElText>
-      <nav aria-label="员工列表分页">
+      <nav aria-label="Worker 列表分页">
         <ElPagination v-model:current-page="page" :page-size="pageSize" :total="filtered.length" layout="prev, pager, next" data-testid="employee-pagination" />
       </nav>
     </footer>
@@ -192,7 +192,7 @@ async function onModalSaved(id: string) {
 }
 async function toggleEnabled(employee: Employee) {
   busyId.value = employee.id
-  try { await api.updateEmployee(employee.id, { enabled: !employee.enabled }); await store.refresh(); notify(employee.enabled ? '员工已停用' : '员工已启用') }
+  try { await api.updateEmployee(employee.id, { enabled: !employee.enabled }); await store.refresh(); notify(employee.enabled ? 'Worker 已停用' : 'Worker 已启用') }
   catch (reason) { notify(reason instanceof Error ? reason.message : '操作失败', 'error') }
   finally { busyId.value = '' }
 }

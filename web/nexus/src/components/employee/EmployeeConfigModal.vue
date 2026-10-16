@@ -22,7 +22,7 @@
           :disabled="!configRef?.dirty"
           @click="configRef?.save()"
         >
-          {{ configRef?.saving ? '保存中' : creating ? '创建员工' : '保存' }}
+          {{ configRef?.saving ? '保存中' : creating ? '创建 Worker' : '保存' }}
         </ElButton>
       </ElSpace>
     </template>
@@ -53,7 +53,7 @@ async function requestClose() {
   if (configRef.value?.saving) return
   if (configRef.value?.getDirty()) {
     const confirmed = await confirmDialog({
-      title: '放弃未保存的员工配置？',
+      title: '放弃未保存的 Worker 配置？',
       message: '当前修改尚未保存，关闭后将无法恢复。',
       confirmLabel: '放弃并关闭',
       danger: true,

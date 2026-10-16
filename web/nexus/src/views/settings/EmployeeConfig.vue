@@ -3,7 +3,7 @@
     <AstraPageHeader
       v-if="!embedded"
       :title="creating ? '创建 Worker' : `${employeeDisplayName(employee?.name)} 配置`"
-      description="配置描述员工职责与工作环境；运行状态由系统状态机维护。"
+      description="配置描述 Worker 职责与工作环境；运行状态由系统状态机维护。"
       testid="employee-config-header"
     />
     <ElForm
@@ -20,37 +20,37 @@
     >
       <ElDivider content-position="left">基本信息</ElDivider>
 
-      <ElFormItem v-if="!creating" label="员工 ID">
+      <ElFormItem v-if="!creating" label="Worker ID">
         <IdDisplay :value="employee?.id ?? ''" :max-width="200" />
       </ElFormItem>
-      <ElFormItem v-else label="员工 ID" prop="id">
-        <ElInput v-model.trim="form.id" placeholder="employee-04" />
+      <ElFormItem v-else label="Worker ID" prop="id">
+        <ElInput v-model.trim="form.id" placeholder="worker-04" />
       </ElFormItem>
-      <ElFormItem label="员工名称" prop="name">
-        <ElInput v-model.trim="form.name" placeholder="员工-04" />
+      <ElFormItem label="Worker 名称" prop="name">
+        <ElInput v-model.trim="form.name" placeholder="Worker-04" />
       </ElFormItem>
-      <ElFormItem label="员工形象" prop="character_id">
+      <ElFormItem label="Worker 形象" prop="character_id">
         <div class="employee-character-field">
-          <ElRadioGroup v-model="form.character_id" class="employee-character-options" aria-label="员工形象" data-testid="employee-character-picker">
+          <ElRadioGroup v-model="form.character_id" class="employee-character-options" aria-label="Worker 形象" data-testid="employee-character-picker">
             <ElRadio v-for="character in employeeCharacters" :key="character.id" :value="character.id" border>
               <img :src="employeeCharacterSource(character.id)" alt="" draggable="false" />
               <span>{{ character.name }}</span>
             </ElRadio>
           </ElRadioGroup>
-          <p class="employee-character-help">与首页数字空间共用形象，保存后应用到该员工。</p>
+          <p class="employee-character-help">与首页数字空间共用形象，保存后应用到该 Worker。</p>
         </div>
       </ElFormItem>
       <ElFormItem label="岗位" prop="role">
         <ElInput v-model.trim="form.role" placeholder="测试平台开发" />
       </ElFormItem>
       <ElFormItem prop="default_work_area">
-        <template #label>默认办公区域 <FieldHelp label="默认办公区域" help="无特定任务场景时，员工会出现在这个区域。" /></template>
+        <template #label>默认办公区域 <FieldHelp label="默认办公区域" help="无特定任务场景时，Worker 会出现在这个区域。" /></template>
         <ElSelect v-model="form.default_work_area">
           <ElOption v-for="area in workspaceAreas" :key="area.id" :value="area.id" :label="area.name" />
         </ElSelect>
       </ElFormItem>
       <ElFormItem label="说明">
-        <ElInput v-model="form.description" type="textarea" :rows="4" placeholder="说明该员工的工作职责与边界" />
+        <ElInput v-model="form.description" type="textarea" :rows="4" placeholder="说明该 Worker 的工作职责与边界" />
       </ElFormItem>
 
       <ElDivider content-position="left">工作范围</ElDivider>
@@ -70,11 +70,11 @@
       <ElDivider content-position="left">运行配置</ElDivider>
 
       <ElFormItem>
-        <template #label>启用员工 <FieldHelp label="启用员工" help="停用后不再自动分配新任务" /></template>
-        <ElSwitch v-model="form.enabled" aria-label="启用员工" />
+        <template #label>启用 Worker <FieldHelp label="启用 Worker" help="停用后不再自动分配新任务" /></template>
+        <ElSwitch v-model="form.enabled" aria-label="启用 Worker" />
       </ElFormItem>
       <ElFormItem>
-        <template #label>自动领取任务 <FieldHelp label="自动领取任务" help="空闲时可以领取匹配的新任务。每位员工同时只处理一项任务。" /></template>
+        <template #label>自动领取任务 <FieldHelp label="自动领取任务" help="空闲时可以领取匹配的新任务。每位 Worker 同时只处理一项任务。" /></template>
         <ElSwitch v-model="form.auto_claim" aria-label="自动领取任务" />
       </ElFormItem>
       <ElFormItem>
@@ -87,7 +87,7 @@
           <ElTag :type="statusTagType(employee?.status ?? 'UNKNOWN')">
             {{ runtimeLabel }}
           </ElTag>
-          <p>{{ paused ? '员工已暂停接单，不会领取新任务。' : '员工可正常领取匹配任务。' }}</p>
+          <p>{{ paused ? 'Worker 已暂停接单，不会领取新任务。' : 'Worker 可正常领取匹配任务。' }}</p>
           <ElButton :disabled="statusChanging || (!paused && currentTaskCount > 0)" @click="toggleRuntime">
             {{ statusChanging ? '处理中…' : paused ? '继续接单' : '暂停接单' }}
           </ElButton>
@@ -119,11 +119,11 @@
           <ElInput v-model="form.environment.description" placeholder="例如：测试平台开发环境" />
         </ElFormItem>
         <ElFormItem prop="environment.workspace_root">
-          <template #label>工作空间 <FieldHelp label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于员工，会在不同任务间长期复用。" /></template>
+          <template #label>工作空间 <FieldHelp label="工作空间" help="支持 Windows 盘符、空格和中文目录；该路径属于 Worker，会在不同任务间长期复用。" /></template>
           <ElInput v-model.trim="form.environment.workspace_root" :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" />
         </ElFormItem>
         <ElFormItem prop="environment.opencode_server_port">
-          <template #label>OpenCode Server Port <FieldHelp label="OpenCode Server Port" help="人工配置固定端口，同一主机的员工须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" /></template>
+          <template #label>OpenCode Server Port <FieldHelp label="OpenCode Server Port" help="人工配置固定端口，同一主机的 Worker 须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" /></template>
           <ElInput v-model.number="form.environment.opencode_server_port" type="number" min="1" max="65535" />
         </ElFormItem>
         <template v-if="form.environment.mode === 'LINUX_REMOTE'">
@@ -165,7 +165,7 @@
               <ElButton data-testid="deploy-environment" type="primary" :loading="maintenanceAction === 'deploy'" :disabled="maintenanceDisabled" @click="maintain('deploy')">一键部署</ElButton>
               <ElButton data-testid="restart-environment" :loading="maintenanceAction === 'restart'" :disabled="maintenanceDisabled" @click="maintain('restart')">重启 OpenCode Serve</ElButton>
             </ElSpace>
-            <p class="maintenance-help">{{ isDirty ? '请先保存配置，再执行部署或重启。' : currentTaskCount > 0 ? '员工有未结束任务，请先结束任务再维护环境。' : '部署会安装依赖、设置 npm 镜像，并备份、合并当前 SSH 用户的全局 OpenCode 模型中转和数字图书馆配置。' }}</p>
+            <p class="maintenance-help">{{ isDirty ? '请先保存配置，再执行部署或重启。' : currentTaskCount > 0 ? 'Worker 有未结束任务，请先结束任务再维护环境。' : '部署会安装依赖、设置 npm 镜像，并备份、合并当前 SSH 用户的全局 OpenCode 模型中转和数字图书馆配置。' }}</p>
           </div>
         </ElFormItem>
 
@@ -195,7 +195,7 @@
       <ElButton data-testid="cancel-environment-operation" @click="maintenanceController?.abort()">取消操作</ElButton>
     </div>
 
-    <StickyActionBar v-if="isDirty && !embedded" :dirty="isDirty" :saving="saving" :save-label="creating ? '创建员工' : '保存配置'" @save="save" @cancel="reset" />
+    <StickyActionBar v-if="isDirty && !embedded" :dirty="isDirty" :saving="saving" :save-label="creating ? '创建 Worker' : '保存配置'" @save="save" @cancel="reset" />
   </component>
 </template>
 
@@ -213,7 +213,7 @@ import StickyActionBar from '@/components/astra/StickyActionBar.vue'
 import { workspaceAreas, type WorkspaceAreaId } from '@/features/workspace/sceneLayout'
 import { employeeCharacters, employeeCharacterSource } from '@/features/workspace/characterAssets'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, statusLabel, statusTagType } from '@/utils/format'
+import { employeeDisplayName, formatTime, statusLabel, statusTagType, workerFacingMessage } from '@/utils/format'
 
 const props = defineProps<{ employee: Employee | null; creating: boolean; categories: TaskCategory[]; embedded?: boolean }>()
 const emit = defineEmits<{ (e: 'saved', id: string, environmentOk?: boolean): void }>()
@@ -239,8 +239,8 @@ const portValidator = (_rule: unknown, value: unknown, callback: (error?: Error)
   callback(value !== '' && Number.isInteger(numeric) && numeric >= 1 && numeric <= 65535 ? undefined : new Error('端口需在 1-65535 之间'))
 }
 const formRules = computed<FormRules>(() => ({
-  id: [{ required: true, message: '请输入员工 ID', trigger: 'blur' }],
-  name: [{ required: true, message: '请输入员工名称', trigger: 'blur' }],
+  id: [{ required: true, message: '请输入 Worker ID', trigger: 'blur' }],
+  name: [{ required: true, message: '请输入 Worker 名称', trigger: 'blur' }],
   role: [{ required: true, message: '请输入岗位', trigger: 'blur' }],
   'environment.name': [{ required: true, message: '请输入环境名称', trigger: 'blur' }],
   'environment.opencode_path': [{ required: true, message: '请输入 Agent 可执行文件', trigger: 'blur' }],
@@ -359,9 +359,9 @@ async function maintain(action: 'deploy' | 'restart') {
     const result = await maintainEnvironment(props.employee.id, action, (event) => {
       if (event.type !== 'step' || !event.name) return
       checks.value = checks.value.filter((item) => item.name !== event.name)
-      checks.value.push({ name: event.name, passed: event.passed ?? false, detail: event.detail || (event.state === 'running' ? '正在执行…' : '完成'), state: event.state })
+      checks.value.push({ name: event.name, passed: event.passed ?? false, detail: workerFacingMessage(event.detail || (event.state === 'running' ? '正在执行…' : '完成')), state: event.state })
     }, maintenanceController.value.signal)
-    message.value = result.success ? action === 'deploy' ? '部署完成，远程员工环境可用。' : 'OpenCode Serve 已重启，健康检查通过。' : result.message || '环境操作失败'
+    message.value = result.success ? action === 'deploy' ? '部署完成，远程 Worker 环境可用。' : 'OpenCode Serve 已重启，健康检查通过。' : workerFacingMessage(result.message || '环境操作失败')
     messageIsError.value = !result.success
   } catch (error) {
     messageIsError.value = true
@@ -396,7 +396,7 @@ async function toggleRuntime() {
     const action = paused.value ? 'resume' : 'pause'
     await api.employeeAction(props.employee.id, action)
     await store.refresh()
-    message.value = action === 'resume' ? '员工已恢复接单。' : '员工已暂停接单，不会领取新任务。'
+    message.value = action === 'resume' ? 'Worker 已恢复接单。' : 'Worker 已暂停接单，不会领取新任务。'
   } catch (error) { messageIsError.value = true; message.value = error instanceof Error ? error.message : '状态更新失败' } finally { statusChanging.value = false }
 }
 

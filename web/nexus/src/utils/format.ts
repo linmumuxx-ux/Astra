@@ -60,7 +60,10 @@ export const formatTokens = (value: number | null | undefined) => {
 }
 
 export const employeeDisplayName = (value: string | null | undefined) =>
-  String(value ?? '数字员工').replace(/^Astra-(\d+)$/i, '员工-$1')
+  String(value ?? 'Worker').replace(/^Astra-(\d+)$/i, 'Worker-$1')
+
+export const workerFacingMessage = (value: string) =>
+  value.replaceAll('数字员工', 'Worker').replaceAll('员工', 'Worker')
 
 export const formatDurationSeconds = (seconds: number | null | undefined) => {
   if (seconds === null || seconds === undefined) return '—'

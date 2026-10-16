@@ -18,8 +18,8 @@
         </div>
         <ElSpace :size="10">
           <ElButton :icon="Settings2" @click="editOpen = true">编辑</ElButton>
-          <ElButton v-if="employee.status !== 'PAUSED' && !employee.current_task_count" :icon="Pause" @click="employeeAction('pause')">暂停员工</ElButton>
-          <ElButton v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" type="primary" :icon="Play" @click="employeeAction('resume')">恢复员工</ElButton>
+          <ElButton v-if="employee.status !== 'PAUSED' && !employee.current_task_count" :icon="Pause" @click="employeeAction('pause')">暂停 Worker</ElButton>
+          <ElButton v-else-if="employee.status === 'PAUSED' && !employee.current_task_count" type="primary" :icon="Play" @click="employeeAction('resume')">恢复 Worker</ElButton>
         </ElSpace>
       </div>
     </ElCard>
@@ -59,7 +59,7 @@
             <ElDescriptionsItem label="执行会话" :span="3">{{ currentTask.current_session_id ?? '执行会话尚未创建' }}</ElDescriptionsItem>
           </ElDescriptions>
         </div>
-        <ElEmpty v-else :image-size="60" description="当前空闲，员工正在等待下一项匹配任务。" />
+        <ElEmpty v-else :image-size="60" description="当前空闲，Worker 正在等待下一项匹配任务。" />
         <ElAlert v-if="latestError" class="employee-detail__inline-alert" type="warning" show-icon :closable="false" :title="latestErrorCopy" />
       </ElCard>
 
@@ -76,7 +76,7 @@
       <ElCard shadow="never">
         <template #header>
           <div class="employee-detail__card-header">
-            <div class="employee-detail__card-title"><h3>工作环境</h3><ElText size="small" type="info">员工长期复用的 Agent 工作空间</ElText></div>
+            <div class="employee-detail__card-title"><h3>工作环境</h3><ElText size="small" type="info">Worker 长期复用的 Agent 工作空间</ElText></div>
             <ElButton size="small" :icon="RefreshCw" :loading="checking" @click="testEnvironment">{{ checking ? '检查中' : '测试连接' }}</ElButton>
           </div>
         </template>
@@ -171,7 +171,7 @@
 
       <ElCard shadow="never" class="employee-detail__panel--wide">
         <template #header>
-          <div class="employee-detail__card-title"><h3>员工任务队列</h3><ElText size="small" type="info">当前任务优先，其后按优先级和创建时间</ElText></div>
+          <div class="employee-detail__card-title"><h3>Worker 任务队列</h3><ElText size="small" type="info">当前任务优先，其后按优先级和创建时间</ElText></div>
         </template>
         <ElTable :data="employeeQueue" size="small" @row-click="openTask">
           <ElTableColumn label="顺序" width="70" align="right"><template #default="{ $index }">{{ $index + 1 }}</template></ElTableColumn>
@@ -260,7 +260,7 @@ const metrics = computed(() => {
   return [
     { label: '今日 Token', value: formatTokens(today?.total_tokens), unit: '', hint: 'Agent 实际用量' },
     { label: '工具调用', value: today?.tool_call_count ?? '—', unit: '次', hint: '成功与失败均保留' },
-    { label: '今日完成', value: employee.value?.today_completed ?? '—', unit: '项', hint: '员工已提交结果' },
+    { label: '今日完成', value: employee.value?.today_completed ?? '—', unit: '项', hint: 'Worker 已提交结果' },
     { label: '处理中', value: statusCount('RUNNING'), unit: '项', hint: '当前工作' },
     { label: '等待人工', value: statusCount('WAITING'), unit: '项', hint: '需要补充信息' },
     { label: '今日工作时长', value: formatDurationSeconds(today?.duration_seconds), unit: '', hint: '按任务开始到结束计算' },
@@ -294,7 +294,7 @@ onMounted(load)
 async function onSaved() { await store.refresh() }
 async function employeeAction(action: 'pause' | 'resume') {
   try { await api.employeeAction(id.value, action); await store.refresh() }
-  catch (error) { notify(error instanceof Error ? error.message : '员工操作失败', 'error') }
+  catch (error) { notify(error instanceof Error ? error.message : 'Worker 操作失败', 'error') }
 }
 async function testEnvironment() {
   checking.value = true

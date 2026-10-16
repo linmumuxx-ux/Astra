@@ -1,3 +1,4 @@
+import { workerFacingMessage } from '@/utils/format'
 import type {
   AstraEvent,
   DashboardActivity,
@@ -49,7 +50,8 @@ export async function maintainEnvironment(
   })
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(body.detail ?? '环境操作失败', response.status)
+    const detail = typeof body.detail === 'string' ? body.detail : '环境操作失败'
+    throw new ApiError(workerFacingMessage(detail), response.status)
   }
   if (!response.body) throw new Error('无法读取环境操作进度')
   const reader = response.body.getReader()
@@ -93,7 +95,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new ApiError(body.detail ?? '请求失败', response.status)
+    const detail = body.detail ?? '请求失败'
+    const message = typeof detail === 'string' ? detail : '请求失败'
+    const workerSurface = path.startsWith('/api/employees') || path.startsWith('/api/tasks')
+    throw new ApiError(workerSurface ? workerFacingMessage(message) : message, response.status)
   }
   return response.json() as Promise<T>
 }
