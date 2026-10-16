@@ -169,11 +169,10 @@ def test_task_mcp_structured_output_accepts_dict_annotations():
 
 
 def test_opencode_model_names():
-    assert route_model_id(None) == "cat-jam-free"
-    assert route_model_id("opencode/cat-jam-free") == "cat-jam-free"
-    assert gateway_model("opencode/cat-jam-free") == "astra-gateway/cat-jam-free"
+    assert route_model_id(None) == "deepseek-flash"
     assert route_model_id("deepseek/deepseek-flash") == "deepseek-flash"
     assert route_model_id("astra-gateway/deepseek-flash") == "deepseek-flash"
+    assert gateway_model(None) == "astra-gateway/deepseek-flash"
     assert gateway_model("deepseek/deepseek-flash") == "astra-gateway/deepseek-flash"
     assert direct_model("opencode/glm-5.1", None) == "opencode/glm-5.1"
-    assert direct_model(None, "opencode/cat-jam-free") == "opencode/cat-jam-free"
+    assert direct_model(None, "deepseek/deepseek-flash") == "deepseek/deepseek-flash"

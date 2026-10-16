@@ -93,7 +93,7 @@
 | ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS | 建议 | — | 设 30，避免探测过慢 |
 | ASTRA_REDIS_URL | 是 | redis://localhost:6379/0 | Celery/网关 |
 | ASTRA_OUTBOX_INTERVAL / ASTRA_OUTBOX_RETRY_SECONDS | 否 | — | 唤醒 outbox 轮询（验证用 2 / 5） |
-| ASTRA_OPENCODE_MODEL | 是 | — | `opencode/cat-jam-free`（provider/model） |
+| ASTRA_OPENCODE_MODEL | 是 | — | `deepseek/deepseek-flash`（provider/model） |
 | ASTRA_OPENCODE_SERVER_PORT / ASTRA_ASSISTANT_OPENCODE_PORT | 否 | 4096 / 4097 | 平台/助手 OpenCode |
 | ASTRA_OPENCODE_SERVER_MIN_VERSION | 否 | 1.18.25 | 版本下限 |
 | ASTRA_NEXUS_API_BASE | 是 | — | `http://127.0.0.1:8120`（task-hint 唤醒） |
@@ -177,7 +177,7 @@ cd $R/services/task-platform && ASTRA_GATEWAY_MASTER_KEY=$(cat ../.gwmaster) AST
   ASTRA_LLM_WIKI_ENABLED=true ASTRA_LLM_WIKI_API_BASE_URL=http://127.0.0.1:19828/api/v1 \
   ASTRA_LLM_WIKI_API_TOKEN=$(cat ../.llmwikitoken) ASTRA_LLM_WIKI_PROJECT_ID=$(cat ../.llmwikiproject) ASTRA_LLM_WIKI_TIMEOUT=30 \
   ASTRA_REDIS_URL=redis://localhost:6379/0 ASTRA_OUTBOX_INTERVAL=2 ASTRA_OUTBOX_RETRY_SECONDS=5 \
-  ASTRA_OPENCODE_MODEL=opencode/cat-jam-free ASTRA_NEXUS_API_BASE=http://127.0.0.1:8120 \
+  ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash ASTRA_NEXUS_API_BASE=http://127.0.0.1:8120 \
   ASTRA_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000 ASTRA_AGENTSCOPE_USER_ID=nexus \
   setsid nohup .venv/bin/python ../ops/dev/astra_service.py dev start >>/tmp/p2_astra.log 2>&1 &
 ```

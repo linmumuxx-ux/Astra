@@ -2,7 +2,7 @@
 """真实员工 OpenCode → 人工确认 → 真实复盘 → 跨任务复用 → HTTP 人工发布。
 
 所有数据库、git worktree、进程及文件均隔离在临时目录；不写正式 Wiki。
-运行：.venv/bin/python tools/e2e/verify_task_review_real.py --model opencode/cat-jam-free
+运行：.venv/bin/python tools/e2e/verify_task_review_real.py --model deepseek/deepseek-flash
 """
 
 from __future__ import annotations
