@@ -6,7 +6,7 @@
 
 平台的 API 中转必须启用并至少有一个启用的模型路由。员工模型留空时部署选择首个路由，也可填写 `astra-gateway/<路由模型>`。部署为员工创建专属 Key，重复部署复用有效 Key；失败时吊销本次新建 Key，修复后可再次部署。
 
-数字图书馆须运行 HTTP MCP。平台 `.env` 设置 `ASTRA_MCP_TRANSPORT=streamable-http`、`ASTRA_MCP_API_KEY=<服务密钥>`，重启平台并运行 `python -m app.mcp_server`（在 backend 内，使用项目虚拟环境）。平台和图书馆服务须加载同一份配置。服务管理命令见 [部署文档](DEPLOYMENT.md)。
+数字图书馆须运行 HTTP MCP。平台 `.env` 设置 `ASTRA_MCP_TRANSPORT=streamable-http`、`ASTRA_MCP_API_KEY=<服务密钥>`，重启平台并运行 `python -m app.mcp_server`（在 backend 内，使用项目虚拟环境）。平台和图书馆服务须加载同一份配置。服务管理命令见 [部署指南](../../ops/deploy/DEPLOYMENT_GUIDE.md)。
 
 默认通过 SSH 反向隧道连接 Astra 所在主机的 API 中转和图书馆，远端不需要公开 Serve 端口。SSH 服务须允许 TCP 转发。生产中可设置 `ASTRA_REMOTE_GATEWAY_PUBLIC_URL` 和 `ASTRA_MCP_PUBLIC_URL`，使用远端可达的 HTTPS 地址。
 

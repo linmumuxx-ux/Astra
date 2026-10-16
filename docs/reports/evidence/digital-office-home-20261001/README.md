@@ -44,7 +44,7 @@
 | 素材 | frontend/public/assets/office/、frontend/THIRD_PARTY_NOTICES.md |
 | 回归 | services/task-platform/tests/test_dashboard_office.py、test_api.py、frontend/e2e/digital-office.spec.ts |
 | 现有 E2E 校正 | frontend/e2e/astra.spec.ts、form-help.spec.ts、task-detail-workspace.spec.ts：按既有页面更新过期断言与缺失 mock，未顺带修改核心页面 |
-| 契约与文档 | docs/product/design/DIGITAL_OFFICE.md、openspec 的 digital-office-home capability/change、design-qa.md |
+| 契约与文档 | 设计说明 DIGITAL_OFFICE.md 已从树中删除；openspec 的 digital-office-home capability/change、design-qa.md |
 
 ## 静态、模拟与构建验证
 

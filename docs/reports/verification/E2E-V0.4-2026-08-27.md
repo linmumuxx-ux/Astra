@@ -45,7 +45,7 @@
 
 ## 真实本地 OpenCode 验收
 
-执行命令：
+当时执行的 `tools/e2e/real_opencode_smoke.py` 已从树中删除（它依赖已不存在的 `TaskCoordinator`）。下面是 2026-08-27 的原始命令，不能再复跑。当前可选的真实 OpenCode 检查是 `tools/e2e/phase1a_real_opencode.py`。
 
 ```bash
 .venv/bin/python tools/e2e/real_opencode_smoke.py \
@@ -53,7 +53,7 @@
   --opencode /opt/homebrew/bin/opencode
 ```
 
-该脚本在仓库内创建隔离的临时员工工作空间和 SQLite 数据库，通过真实 `TaskCoordinator` 运行一项任务；成功后自动清理现场，不读取或输出模型凭据。
+该脚本当时在仓库内创建隔离的临时员工工作空间和 SQLite 数据库，通过真实 `TaskCoordinator` 运行一项任务；成功后自动清理现场，不读取或输出模型凭据。
 
 本次结果：
 
@@ -87,6 +87,8 @@
 - 管理台没有内置认证/RBAC，生产必须放在可信内网或企业认证网关之后。
 
 ## 复现顺序
+
+`real_opencode_smoke.py` 与 `scripts/verify.sh` 都已不在树中。当时的复现命令是：
 
 ```bash
 ./scripts/verify.sh

@@ -104,7 +104,7 @@
 | ASTRA_LLM_WIKI_PROJECT_ID | 同上 | — | llm_wiki 项目 UUID（`.llm-wiki/project.json`） |
 | ASTRA_LLM_WIKI_TIMEOUT | 否 | 10 | 远端仿真时建议 30 |
 | ASTRA_REMOTE_OPENCODE_VERSION / ASTRA_REMOTE_NODE_VERSION / ASTRA_REMOTE_NPM_REGISTRY | 否 | 1.18.33 / 22.23.3 / npmmirror | 远程一键部署 |
-| ASTRA_DATABASE_* | 生产 | dev 用 SQLite | 生产可改 MySQL（见 docs/DEPLOYMENT.md） |
+| ASTRA_DATABASE_* | 生产 | dev 用 SQLite | 生产把 `ASTRA_DATABASE_URL` 指到 MySQL |
 | ASTRA_SERVICE_BACKEND_PORT / _GATEWAY_PORT / _FRONTEND_PORT | 否 | 8100 / 8110 / 5173 | astra_service 端口 |
 
 **Agent Service（services/agent-service/env.example）**
@@ -371,6 +371,6 @@ cd $R/web/nexus && npm ci && npm run build
 3. **llm_wiki Web 版 ingest 需打开的网页**：加工逻辑在前端 JS，服务端不能推事件；无头 Chrome + pump 是变通方案，依赖打包文件名，不处理删除，进程不随开机自启（一键脚本用 systemd 托管）。
 4. **aarch64 仿真**：x86_64 上靠 qemu-user，慢且内存大；binfmt 重启失效；生产应使用原生 aarch64 主机或 x86_64 构建。
 5. **llm_wiki token 未强制**：Web 模式下 `/api/v1` 无 token 也返回 200，只靠 127.0.0.1 绑定 + SSH 隧道保护；不要开放端口。
-6. 归档/删除来源后共享 Wiki 页面仍可能被检索（`archive_remaining_hits`），`library_related` 返回 unsupported（docs/DEPLOYMENT.md 已述）。
+6. 归档/删除来源后共享 Wiki 页面仍可能被检索（`archive_remaining_hits`），`library_related` 返回 unsupported。
 7. Agent Service 的 `X-User-ID` 只是占位身份，对外前须加真实认证/反代。
 8. 远程 Worker 隧道属于 backend 进程，backend 重启期间远端无法访问网关/MCP。

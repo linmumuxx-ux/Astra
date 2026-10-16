@@ -87,7 +87,7 @@ OpenCode Server 1.18.25 在当前 macOS 主机和真实 `opencode/glm-5.1` 模�
 
 ### Case 9：Astra Coordinator 真实端到端
 
-- 脚本：`tools/e2e/real_opencode_smoke.py --model opencode/glm-5.1`。
+- 当时脚本 `tools/e2e/real_opencode_smoke.py --model opencode/glm-5.1` 已删除，下面只保留当次结果。
 - Task：`T-20260830-320FC7`，Run：`RUN-3C58DD4833`。
 - OpenCode Session：`ses_fab042febffe27v2QcDF09LqjW`。
 - `executor_type=opencode_server`，Task/Run 均完成，exit code 0。

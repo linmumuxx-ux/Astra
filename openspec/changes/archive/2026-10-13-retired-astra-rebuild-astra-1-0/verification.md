@@ -1,5 +1,7 @@
 # rebuild-astra-1-0 验证报告
 
+`docs/architecture/astra-1.0/` 已从工作树删除。下面的路径是 2026-10-13 的记录，对应内容在标签 `astra-1.0-legacy`。
+
 日期：2026-10-13。已读取 proposal/design/全部 delta specs/tasks，并运行 status/instructions apply；以既有 change 为范围。status 的规划产物完成不代表产品完成。
 
 | 维度 | 结论 |

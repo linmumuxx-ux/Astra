@@ -31,7 +31,7 @@
 
 - [x] 5.1 更新根 `AGENTS.md`：移除 `nexus-assistant/` 目录说明，说明助手为项目级 Agent
 - [x] 5.2 更新 `docs/product/design/PLATFORM_ASSISTANT.md` 与 `docs/reports/verification/PLATFORM-ASSISTANT-2026-09-04.md`
-- [x] 5.3 更新 `docs/deploy/DEPLOYMENT.md` 中 `ASTRA_ASSISTANT_*` 与助手启动/日志/健康检查说明
+- [x] 5.3 更新当时的 `docs/deploy/DEPLOYMENT.md` 中 `ASTRA_ASSISTANT_*` 与助手启动/日志/健康检查说明（该手册已删除，现行说明是 `ops/deploy/DEPLOYMENT_GUIDE.md`）
 - [x] 5.4 更新 `docs/architecture/OPENSPEC_SUPERPOWERS.md` 中嵌套工作区隔离的描述
 
 ## 6. 测试与验证

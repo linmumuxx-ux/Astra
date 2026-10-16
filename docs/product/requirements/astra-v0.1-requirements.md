@@ -1643,6 +1643,8 @@ configs/
 └── sources.yaml
 ```
 
+当前仓库只保留 `services/task-platform/configs/employees.yaml`。`astra.yaml` 与 `sources.yaml` 已删除，运行参数和来源由 settings 环境变量承担。
+
 `astra.yaml`
 
 ```yaml
