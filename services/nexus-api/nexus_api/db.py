@@ -80,6 +80,43 @@ CREATE TABLE IF NOT EXISTS attachments (
     path TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS im_bots (
+    employee_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    UNIQUE (provider, bot_id)
+);
+CREATE TABLE IF NOT EXISTS im_events (
+    provider TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    employee_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    accepted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, event_id)
+);
+CREATE TABLE IF NOT EXISTS im_bindings (
+    employee_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    external_key TEXT NOT NULL DEFAULT '',
+    owner_uid TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (employee_id, kind, external_key, owner_uid)
+);
+CREATE TABLE IF NOT EXISTS im_threads (
+    employee_id TEXT NOT NULL,
+    conversation_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (employee_id, conversation_key)
+);
+CREATE TABLE IF NOT EXISTS im_outbox (
+    delivery_id TEXT PRIMARY KEY,
+    employee_id TEXT NOT NULL,
+    conversation_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS peer_deliveries (
     id TEXT PRIMARY KEY,
     scope TEXT NOT NULL,

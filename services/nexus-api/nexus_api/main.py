@@ -30,6 +30,15 @@ from pydantic import BaseModel, Field
 from .agentscope import PINNED_VERSION, AgentScopeClient, AgentScopeError
 from .db import connect, employee_from_row, init_db, message_from_row, new_id, utcnow
 from .groups import HumanEvents, chat_inputs, merge_timeline, messages_since
+from .im import (
+    ImError,
+    accept_inbound,
+    acknowledge,
+    bind_bot,
+    contact_human,
+    open_external,
+    redeliver,
+)
 from .task_skill import TASK_SKILL_ID, attach_task_capability, sync_task_capability, with_builtin_skill
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -77,6 +86,43 @@ class ChannelBody(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     description: str = Field(min_length=1)
     member_ids: list[str] = Field(min_length=1)
+
+
+class ImBotBody(BaseModel):
+    employee_id: str
+    provider: str
+    bot_id: str
+
+
+class ImEventBody(BaseModel):
+    provider: str
+    event_id: str
+    bot_id: str
+    sender_uid: str = ""
+    text: str = ""
+    external_key: str = ""
+    conversation_key: str = ""
+
+
+class ImGroupBody(BaseModel):
+    employee_id: str
+    external_key: str
+    session_id: str
+
+
+class ImContactBody(BaseModel):
+    employee_id: str
+    conversation_key: str
+    session_id: str
+    body: str
+
+
+class ImAckBody(BaseModel):
+    delivery_id: str
+
+
+class ImRedeliverBody(BaseModel):
+    conversation_key: str
 
 
 def package_dir() -> Path:
@@ -1969,6 +2015,86 @@ def create_app() -> FastAPI:
                 yield f"data: {payload}\n\n"
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    def raise_im(exc: ImError) -> None:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    @app.post("/api/v1/im/bots")
+    def save_im_bot(body: ImBotBody, connection=Depends(database)) -> dict[str, str]:
+        load_employee(connection, body.employee_id)
+        try:
+            return bind_bot(connection, body.employee_id, body.provider, body.bot_id)
+        except ImError as exc:
+            raise_im(exc)
+
+    @app.post("/api/v1/im/groups")
+    def save_im_group(body: ImGroupBody, connection=Depends(database)) -> dict[str, str]:
+        load_employee(connection, body.employee_id)
+        try:
+            return open_external(connection, body.employee_id, body.external_key, body.session_id)
+        except ImError as exc:
+            raise_im(exc)
+
+    @app.post("/api/v1/im/events")
+    async def im_event(body: ImEventBody, request: Request, connection=Depends(database)) -> dict[str, Any]:
+        client = client_of(request)
+
+        async def accept(employee_id: str, session_id: str, text: str) -> None:
+            employee = load_employee(connection, employee_id)
+            if not client.configured or not employee["agentscope_agent_id"]:
+                raise ImError("AgentScope 还没有接受这次输入", 503)
+            await client.trigger_chat(
+                employee["agentscope_agent_id"],
+                session_id,
+                [{"type": "text", "text": text}],
+                body.sender_uid or "im",
+                verified_uid=body.sender_uid or None,
+            )
+
+        try:
+            return await accept_inbound(
+                connection,
+                provider=body.provider,
+                event_id=body.event_id,
+                bot_id=body.bot_id,
+                sender_uid=body.sender_uid,
+                text=body.text,
+                accept=accept,
+                external_key=body.external_key,
+                conversation_key=body.conversation_key,
+            )
+        except ImError as exc:
+            raise_im(exc)
+        except AgentScopeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    @app.post("/api/v1/im/contacts")
+    def im_contact(body: ImContactBody, connection=Depends(database)) -> dict[str, str]:
+        load_employee(connection, body.employee_id)
+        try:
+            return contact_human(
+                connection,
+                employee_id=body.employee_id,
+                conversation_key=body.conversation_key,
+                session_id=body.session_id,
+                body=body.body,
+            )
+        except ImError as exc:
+            raise_im(exc)
+
+    @app.post("/api/v1/im/acks")
+    def im_ack(body: ImAckBody, connection=Depends(database)) -> dict[str, str]:
+        try:
+            return acknowledge(connection, body.delivery_id)
+        except ImError as exc:
+            raise_im(exc)
+
+    @app.post("/api/v1/im/redeliver")
+    def im_redeliver(body: ImRedeliverBody, connection=Depends(database)) -> dict[str, str]:
+        try:
+            return redeliver(connection, body.conversation_key)
+        except ImError as exc:
+            raise_im(exc)
 
     return app
 

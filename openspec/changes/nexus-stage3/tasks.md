@@ -93,9 +93,9 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B 和 D。公司 SDK 不在本批。
 
-- [ ] F.1 入站事件、出站、ACK、身份映射。幂等键 `provider + event_id`。AgentScope 接受输入之后才向 Adapter 返回成功。每个员工自己的机器人映射；未绑定则 IM 不可用，Web 仍可用
-- [ ] F.2 同一 UID、同一员工复用 B 的绑定。外部群使用独立协作绑定，不因机器人相同而合并
-- [ ] F.3 `contact_human`：员工发起 → outbox → ACK → 人类回复进入同一 Session。同一会话串行投递。ACK 丢失时按 `delivery_id` 重投，不第二次推理
+- [x] F.1 入站事件、出站、ACK、身份映射。幂等键 `provider + event_id`。AgentScope 接受输入之后才向 Adapter 返回成功。每个员工自己的机器人映射；未绑定则 IM 不可用，Web 仍可用
+- [x] F.2 同一 UID、同一员工复用 B 的绑定。外部群使用独立协作绑定，不因机器人相同而合并
+- [x] F.3 `contact_human`：员工发起 → outbox → ACK → 人类回复进入同一 Session。同一会话串行投递。ACK 丢失时按 `delivery_id` 重投，不第二次推理
   - 验证：模拟 Adapter 走完主动联系和丢 ACK。重复入站事件不产生第二次回复
 
 ## G. 员工模型路由
