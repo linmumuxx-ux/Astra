@@ -23,18 +23,18 @@
 - [ ] 2.3 断线重连后核对原生 Session、完整分页消息、问题和权限；不新建 Session，不重发最后一条 Prompt
 - [ ] 2.4 通信中断、执行超时和 OpenCode 异常分开记录；投影仍只走 `apply_session_state()`
 - [ ] 2.5 保留 `pending_message_id` / `pending_prompt`（含 `in_flight`）和 `pending_attempt`
-- [ ] 2.6 事件日志保留最近 N 条；最慢消费者未读达到 N 时暂停该 directory 的 SSE。http 与 SSE 在独立任务中执行，不阻塞 pong/取消
-- [ ] 2.7 HTTP 承载请求体和响应体：WebSocket 只发就绪通知，Worker GET 请求、PUT 响应。完成记录带上 `x-next-cursor` 等响应头。取消使用独立 request_id
-- [ ] 2.8 显式 `worker_channel` 标记。打标记前由 Worker 探测内网 8110/8201 并写入直连地址。已迁移环境不回退 SSH，不跑会杀旧进程的启动脚本。worktree 与文件 SSH 留到阶段 3
-- [ ] 2.9 拆开首次发送和人工重试。人工重试先检查过期，再 CAS 认领；读失败不清 `in_flight`；重发前要求原指令已终结并核对完整分页。恢复、重连、调度、心跳、超时永不调用它
-- [ ] 2.10 先修占用被提前释放的 bug。一个谓词用于投影、心跳、调度、start、send、维护和取消完成。维护前保留 Session RUNNING/WAITING/UNKNOWN 的第二道检查，并提供人工释放入口
+- [ ] 2.6 事件日志保留最近 N 条。消费者游标有租约。未读达到 N 时发 pause_events，收回后 resume_events，没有消费者时 stop_events。缺口 refresh 按 Task 合并。http 与 SSE 在独立任务中执行
+- [ ] 2.7 HTTP 承载请求体和响应体：WebSocket 只发就绪通知，Worker GET 请求、PUT 响应。请求体 TTL 盖过 deadline。每次上传用独立 upload_id。完成记录带上 `x-next-cursor` 等响应头。取消使用独立 request_id。最终 CAS 带 WorkerInstance.epoch 子查询
+- [ ] 2.8 显式 `worker_channel`，连接时按 environment_id 读环境行，不读快照。切换是受占用约束的维护操作：只探测配置地址，受控重载后核对生效配置。已迁移环境的 workspace 准备改成 Agent 指令。文件和 Git 浏览在阶段 3 前仍走 SSH
+- [ ] 2.9 拆开首次发送和人工重试。保存 attempt 到 request_id 的映射和 body_fetched_at。只有从未拉取请求体才证明未发送；拉取后视为结果未知，等本地上限加落库余量，再由人确认才可重发。epoch 结束后不得开始本地 POST。恢复、重连、调度、心跳、超时永不调用人工重试
+- [ ] 2.10 先修占用被提前释放的 bug。谓词只作用于已认领或已绑定的 Task。人工释放只用于 CANCELED 或取消进行中，记录操作人、原因、Session 和 attempt；新 attempt、重启或新 Session 时清除。RUNNING/WAITING 不因该时间戳释放
 - [ ] 2.11 幂等身份包含 session_id。相同 request_id 在 Worker、指令名、payload、session_id 不一致时返回 409
 - [ ] 2.12 有副作用的指令用原生消息核对决定能否重发。OpenCode 1.18.35 不按 messageID 去重。不新增 Agent 落盘去重账本
-- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖八项，包括认领后 epoch 切换和上传中途 epoch 切换
+- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖十项，包括认领后和上传中途的 epoch 切换、拉取证据和过期事件游标
 
 ## 3. Workspace、文件与 Git
 
-- [ ] 3.1 目录准备、worktree、diff、浏览和上传改由 Worker 本地执行
+- [ ] 3.1 文件浏览、Git diff 和上传改由 Worker 本地执行。目录和 worktree 准备已在阶段 2 完成
 - [ ] 3.2 浏览器继续使用现有 Workspace HTTP/SSE
 - [ ] 3.3 上传经阶段 2 的 HTTP 拉取/上传端点传输；保留大小、权限、路径和校验和边界
 - [ ] 3.4 Worker 端校验真实路径、符号链接和 TOCTOU，校验上传校验和并清理暂存

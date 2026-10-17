@@ -53,7 +53,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 
 同一进程、同一 epoch 里，LPOP 之后消费者崩溃，租约到期后幂等指令可以再投。新 epoch 不读取旧队列。
 
-阶段 2 在允许再次发送 `prompt` 之前，先用已有的 `pending_message_id` / `pending_prompt`（含 `in_flight`）和原生 Session 的完整分页消息列表核对。没有原生证据表明 OpenCode 未接受时，不重发。重连、恢复、调度、心跳和超时都不发送 Prompt，也不新建 Session。只有人工显式重试可以再发，而且必须满足「阶段 2 契约」里的过期、CAS、命令终结和分页核对。OpenCode 1.18.35 不会把相同 `messageID` 当成一次无操作。
+阶段 2 在允许再次发送 `prompt` 之前，先核对原生 Session 的完整分页消息，以及这次 attempt 的请求体有没有被 Agent 拉取过。消息还不可见，只说明 OpenCode 还没落库，不能当成未发送。重连、恢复、调度、心跳和超时都不发送 Prompt，也不新建 Session。只有人工显式重试可以再发，而且必须满足「阶段 2 契约」里的拉取证据、本地上限和再次确认。OpenCode 1.18.35 不会把相同 `messageID` 当成一次无操作。
 
 ## Risks / Trade-offs
 
@@ -90,11 +90,15 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 
 远程环境看显式标记 `opencode_execution_environments.worker_channel`，取值 `ssh` 或 `worker`，默认 `ssh`。有 `worker_instances` 行但标记仍是 `ssh` 的，数据面继续走现有 SSH。标记写成 `worker` 之后，Worker 离线就失败，不打开 SSH，不调用 `_start_server`。
 
+`environment_snapshot`（`environment.py` 约 27–40 行）不写入 `worker_channel`。`environment_from_snapshot`（约 44–60 行）和 `session_connection.py` 的两个 resolver（约 34–53 行）也不能从快照得到它。所有 `connect()` 入口按 `environment_id` 重新读取环境行上的 `worker_channel`。快照里即使出现这个字段也忽略。
+
+切换 `worker_channel` 是一次维护操作，不是普通连接的副作用。它受占用谓词和维护前的 Session 检查约束；员工被占用时拒绝。探测只访问配置里的 Gateway 与 MCP 地址（现为 8110 和 8201），不接受指令 payload 里传来的 URL。写入配置后做一次受控重载：只在无人占用时重启本机 `127.0.0.1` 上的 OpenCode，然后读取运行中的生效配置。项目级 `opencode.json` 可以覆盖全局配置，所以核对的是生效地址，不是刚写下去的那个文件。生效地址与配置的内网地址一致，才把标记改成 `worker`。
+
 标记改成 `worker` 的前置条件，全部满足才做条件更新：
 
-1. 该环境已有 Worker 实例，并且当前 epoch 在线。
-2. Worker 从自己的网络对内网 Gateway（现配置为 8110）和图书馆 MCP（现配置为 8201）做 HTTP 探测并成功。探测失败则标记保持 `ssh`。
-3. 写到 Worker 上的 OpenCode 配置使用这两个内网直连地址，保留 Gateway Key 和 MCP Token。不再写入反向隧道产生的回环地址。
+1. 该环境已有 Worker 实例，并且当前 epoch 在线。员工当时不被占用。
+2. Worker 从自己的网络对配置中的内网 Gateway 和图书馆 MCP 做 HTTP 探测并成功。探测失败则标记保持 `ssh`。
+3. 写到 Worker 上的 OpenCode 配置使用这两个内网直连地址，保留 Gateway Key 和 MCP Token。不再写入反向隧道产生的回环地址。受控重载后，生效配置里的地址与此一致。
 4. OpenCode 监听地址仍是 `127.0.0.1`，端口仍是环境上的 `opencode_server_port`。
 
 这是阶段 2 的迁移门，不是阶段 4 才做的检查。LLM Wiki 的独立连接不改。
@@ -105,7 +109,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 2. 再改 `session_connection.connect()`。`lifecycle` 的首次发送、refresh、stop，以及 `recovery.watch_session`，都从这里进入。人工重试单独走下面的重试函数，不走首次发送。
 3. `native_events` 和 Workspace 代理，包括现在直连 `client.base_url` 的请求，随第 2 步改走传输。浏览器 URL 和 SSE 的 `data:` 行格式不变。响应头至少带回 `x-next-cursor`、`link`、`x-has-more`。
 4. 已标记 `worker` 的 `RemoteOpenCodeServerConnection.__aenter__` 返回同一客户端。不再为这次连接打开 SSH，不再调用 `ensure_remote_gateway_tunnel` / `ensure_remote_mcp_tunnel`，也不再跑 `_start_server`。
-5. 文件、Git、worktree 仍走 SSH，阶段 3 再切。隧道代码在仍有 `ssh` 环境时保留，阶段 4 再删。`opencode_remote.py` CLI fallback 和 `ssh_client.py` 不改。
+5. 已迁移环境的目录、worktree 和复制 `opencode.json` 改成 Agent 指令，见下表。文件与 Git 浏览仍走 SSH，阶段 3 再切。隧道代码在仍有 `ssh` 环境时保留，阶段 4 再删。`opencode_remote.py` CLI fallback 和 `ssh_client.py` 不改。
 
 `connect(..., start=True)` 在已迁移环境上只表示「经 Worker 确认本机 OpenCode 健康」。健康失败把这次调用标为不可用。连接路径不启动、不杀掉 OpenCode。日常重启留给阶段 4 的显式维护命令。
 
@@ -113,8 +117,8 @@ Workspace 启动里的 SSH，阶段 2 按环境拆开：
 
 | 步骤 | 未迁移（`ssh`） | 已迁移（`worker`） | 之后 |
 | --- | --- | --- | --- |
-| `session_connection._ensure_remote_workspace`（约 168–211 行）：目录、worktree、复制 `opencode.json` | 保留 | 阶段 2 仍保留 | 阶段 3 改到 Worker 本地 |
-| `workspace_files` / `workspace_changes` / 任务仓库的 `git` | 保留 | 阶段 2 仍保留 | 阶段 3 |
+| `session_connection._ensure_remote_workspace`（约 168–211 行）：目录、worktree、复制 `opencode.json` | 保留 SSH | 阶段 2 改为 Agent 指令 `prepare_workspace`，不再走 SSH | 已在阶段 2 完成 |
+| `workspace_files` / `workspace_changes` / 任务仓库的 `git` 浏览和 diff | 保留 | 阶段 3 之前仍依赖 SSH。`worker` 标记不取消这条依赖 | 阶段 3 |
 | `RemoteOpenCodeServerConnection` 的 SSH 会话、到 OpenCode 端口的本地转发、每次连接维持的 Gateway/MCP 反向隧道（`opencode_remote_server.py` 约 146–162 行） | 保留 | 阶段 2 去掉 | 阶段 4 删除实现 |
 | `remote_provisioning` 把隧道地址写进 OpenCode 配置（约 286–303 行） | 保留 | 阶段 2 改为写入内网 8110/8201，并先由 Worker 探测 | 阶段 4 不再准备隧道 |
 | `_start_server` 里先 `kill` 旧 pid 再 `nohup` | 保留 | 阶段 2 不跑 | 阶段 4 的显式重启也不得杀掉健康进程 |
@@ -131,14 +135,14 @@ Workspace 启动里的 SSH，阶段 2 按环境拆开：
 
 调用步骤：
 
-1. 调用方提交 `http` 指令。请求体先存到路由总线的 `astra:worker-gateway:body-request:{request_id}`，不放进 WebSocket 帧。阶段 2 的服务调用正文上限 8 MiB，超过则 `body_too_large`，不发布。
-2. 指令先落库再发布。发布出去的帧只有就绪通知。
-3. Agent 在独立任务里处理这条通知，见 2.6 的并发规则。它用登记 token 和 epoch 调用 GET。Nexus 核对 token 摘要、指令属于这个 Worker、指令 epoch 等于当前 `WorkerInstance.epoch`，并且指令仍是 `pending` 或 `accepted`。旧 epoch 返回 409，不返回正文。
-4. Agent 只访问 `http://127.0.0.1:{opencode_server_port}{path}`。
-5. Agent PUT 响应。请求头仍是 `Authorization: Bearer <登记 token>` 和 `X-Astra-Worker-Epoch: <epoch>`。不用管理密钥，也不发一次性调用凭证。PUT 带 HTTP 状态、`content-type`，以及 `x-next-cursor`、`link`、`x-has-more`。正文分块，每块不超过 256 KiB。非流式响应累计超过 8 MiB 则 `response_too_large`。
-6. 等待者由这次 PUT 的完成唤醒。`worker_commands.result` 只存 `{http_status, size, sha256, headers}`。正文在 `astra:worker-gateway:body-response:{request_id}`，TTL 沿用结果 TTL（60 秒），取走后删除。WebSocket 上不再为响应体发完成帧。
+1. 调用方提交 `http` 指令。请求体先存到路由总线的 `astra:worker-gateway:body-request:{request_id}`，不放进 WebSocket 帧。阶段 2 的服务调用正文上限 8 MiB，超过则 `body_too_large`，不发布。这个键的过期时间不早于该指令的 `deadline_at` 再加上 `worker_gateway_dispatch_lease_seconds`。
+2. 指令先落库再发布。发布出去的帧只有就绪通知。有副作用的 Prompt 在同一事务里把 `(pending_message_id, pending_attempt)` 映射到这条 `request_id`。
+3. Agent 在独立任务里处理这条通知，见 2.6 的并发规则。它用登记 token 和 epoch 调用 GET。Nexus 核对 token 摘要、指令属于这个 Worker、指令 epoch 等于当前 `WorkerInstance.epoch`，并且指令仍是 `pending` 或 `accepted`。旧 epoch 返回 409，不返回正文。GET 成功时记下 `body_fetched_at`；这是「请求体已被拉取」的记录。
+4. Agent 只访问 `http://127.0.0.1:{opencode_server_port}{path}`。本地调用的硬上限是 `opencode_control_timeout_seconds`。所属 epoch 已经结束时，还没发出的本地 POST 不得再发。已经发出的调用仍受这个上限约束，到点中止。
+5. Agent PUT 响应。每次上传使用独立暂存键 `astra:worker-gateway:body-response:{request_id}:{upload_id}`。请求头仍是 `Authorization: Bearer <登记 token>` 和 `X-Astra-Worker-Epoch: <epoch>`。不用管理密钥，也不发一次性调用凭证。PUT 带 HTTP 状态、`content-type`，以及 `x-next-cursor`、`link`、`x-has-more`。正文分块，每块不超过 256 KiB。非流式响应累计超过 8 MiB 则 `response_too_large`。
+6. 等待者只由最终 CAS 成功的那次上传唤醒。`worker_commands.result` 只存 `{http_status, size, sha256, headers, upload_id}`。CAS 失败只删除自己的 `upload_id` 键，不删除另一个上传的正文。WebSocket 上不再为响应体发完成帧。
 
-同一 `request_id` 的第二次 PUT：摘要相同则返回 200，且不再次唤醒；摘要不同返回 409。
+同一 `request_id` 再 PUT 一次：若 CAS 已经成功且摘要相同，返回 200，不再次唤醒。摘要不同，或 CAS 没有赢，返回 409，并只清理这次 `upload_id`。
 
 每个 Worker 同时最多 8 个未完成的 `http`。超出的指令保持 `pending`，直到有空位或到达 `deadline_at`。这 8 路和事件订阅都不占用 WebSocket 读循环，因此心跳不会被大请求堵住。
 
@@ -164,7 +168,7 @@ Workspace 启动里的 SSH，阶段 2 按环境拆开：
 
 共享日志键是 `astra:worker-gateway:eventlog:{worker}:{epoch}:{directory}`，只保留最近 N 条，N 就是 `worker_gateway_event_queue_size`（默认 64）。memory 总线在进程内保存同一份；多进程对账必须用已配置的 Redis。健康提示仍是「仅单进程可用」。阶段 1 的 `_SocketLease.inbound_events` 不是消费出口。
 
-消费者和各自的游标：
+消费者和各自的游标。游标带租约，默认 30 秒。浏览器流在响应仍被读取时续期；`recovery` 每个监督周期续期。租约到期的游标不再是活跃消费者，死标签页不能一直当最慢的一个。
 
 | 消费者 | 游标键 |
 | --- | --- |
@@ -174,7 +178,9 @@ Workspace 启动里的 SSH，阶段 2 按环境拆开：
 两条规则共用这一个 N：
 
 - 日志只留最近 N 条。游标已经落到保留窗口之外，就算缺口，发 `astra.event_gap`，不回放被裁掉的历史。
-- 某个订阅上，最慢的活跃消费者未读条数达到 N 时，Agent 暂停读取该 directory 的本地 SSE，而不是再丢一条还能放进帧的事件。没有活跃消费者时不暂停，日志仍只留 N 条。暂停只影响这一路 SSE，不影响其他 directory，也不影响 pong 和取消。
+- 某个订阅上，最慢的未过期消费者未读条数达到 N 时，Nexus 发控制帧 `pause_events`（带 directory）。Agent 暂停读取该 directory 的本地 SSE，而不是再丢一条还能放进帧的事件。落后收回去之后发 `resume_events`。没有任何未过期消费者时发 `stop_events`，结束本地订阅并删掉这路日志。暂停和停止只影响这一路 SSE，不影响其他 directory，也不影响 pong 和取消。
+
+同一个 Task 上，缺口触发的 `refresh` 正在进行时，后续缺口合并进这一次，不另起一趟对账。
 
 浏览器输出保持 `data: {OpenCode 事件}\n\n`；全局流仍是 `data: {"directory","payload"}\n\n`。缺口是：
 
@@ -192,33 +198,37 @@ Agent 现在在 `worker_agent/connection.py` 的读循环里串行执行命令�
 
 选择：**用原生消息核对，不在 Agent 上落盘去重账本。** 内存里的 `request_id` 记录只挡住同一进程的重复帧。它消失之后不能当作已执行或可重发的证据。
 
-OpenCode 1.18.35（标签 `v1.18.35`，`packages/opencode/src/session/prompt.ts` 的 `SessionPrompt.prompt`，以及 `handlers/session.ts` 的 `promptAsync`）**不按 `messageID` 去重**。`prompt` 用调用方给出的 `messageID`，没有就自己生成；它不先查询这个 id 是否已存在，然后总是 `updateMessage`（发布 `MessageUpdated`）并进入 `loop()`。`prompt_async` 把这次调用放进后台，立刻返回空响应；失败只打日志并发布 `session.error`。因此第二次 POST 同一个 `messageID` 会再次进入运行循环，不是一次无操作。Astra 必须自己保证：消息列表里已经能看到这个 id 时绝不 POST。不能把「OpenCode 会去重」写进重试条件。
+OpenCode 1.18.35（标签 `v1.18.35`）**不按 `messageID` 去重**。`packages/opencode/src/session/prompt.ts` 的 `createUserMessage` 到 `prompt`（约 635–1071 行）使用调用方给出的 `messageID`，没有就自己生成。它不先查询这个 id。用户消息要等 part 解析和插件 hook 之后才 `updateMessage`。`packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts` 的 `promptAsync`（约 311–329 行）把这次调用放进后台并立刻返回 204。因此 204 和「消息列表里还没有这条 id」都不能证明 POST 没发出去；列表里已经能看到这条 id，才证明已经落库。第二次 POST 同一个 `messageID` 会再次进入 `loop()`，不是一次无操作。Astra 在消息可见时绝不 POST。
 
-`pending_message_id` 仍在 POST 离开 Nexus 之前，与 `pending_prompt` 同一事务提交。`in_flight` 与 `in_flight_since` 覆盖「请求已发出、消息列表里还看不到」的窗口。Agent 的 ACK 只表示帧被接受，不表示 OpenCode 接受了 Prompt。新增整数列 `pending_attempt`，给下面的 CAS 使用。首次发送写成 1。
+`pending_message_id` 仍在调用离开 Nexus 之前，与 `pending_prompt` 同一事务提交。`in_flight` 与 `in_flight_since` 只表示 Nexus 已把这次 attempt 交出去。Agent 的 ACK 只表示帧被接受。新增 `pending_attempt`，以及这次 attempt 到 Worker `request_id` 的映射和 `body_fetched_at`。首次发送把 attempt 写成 1。
 
 把现在的 `retry_submission` 拆成两个函数。`start()` 在约 715 行调用的是首次发送：那时 Session 刚创建，`start()` 已经拒绝已有 Session 或已有 pending 的任务。`send()` 也是首次发送。人工重试只由 `POST /tasks/{id}/retry-submission`（`workspace_routes.py` 约 514 行）调用。恢复、重连、调度、心跳、超时路径都不调用人工重试。
 
+数据库里的 `expired` 只是 sweep 改了指令行。新 epoch 不会停掉旧 Agent 上已经开始的本地 POST。所以指令过期或 epoch 变化都不是「未发送」的证据。
+
 人工重试的顺序：
 
-1. 任务未结束，也没在取消；`pending_message_id` 和 `pending_prompt` 都在。
+1. 任务未结束；`pending_message_id`、`pending_prompt` 和到 `request_id` 的映射都在。
 2. 先看 `in_flight_since`。未超过 `opencode_control_timeout_seconds` 就拒绝，此时不重置 `in_flight_since`。
-3. 对应的 Worker 指令已经是 `expired` 或 `failed`，或者它的 epoch 已经不是该 Worker 的当前 epoch。否则拒绝。没有对应指令时同样拒绝，避免和仍在飞的首次发送重叠。
-4. CAS 认领：`UPDATE ... SET pending_attempt = pending_attempt + 1, pending_prompt = :armed WHERE id = :task AND pending_message_id = :id AND pending_attempt = :expected`。`rowcount` 不是 1 就放弃。这一步提交后才放出行锁。并发的两个人工重试只有一个能 POST。
-5. 用 `messages_page` 沿 `x-next-cursor` 读完整个消息列表。读失败、超时、Worker 离线或 epoch 失效：保持这次认领后的 `in_flight`，抛错，不调用 `_without_in_flight`。
-6. 列表里有这个 `messageID`：只清 `in_flight`，不 POST，再交给 `refresh`。
-7. 列表里没有：用同一个 `messageID` POST 一次。这是唯一允许重发 Prompt 的路径。
+3. 用映射找到 Worker 指令。没有映射就拒绝，因为无法证明这次 attempt 的下落。映射在、请求体从未被 GET：这是唯一可以视为未发送的证据。指令行即使还在 `pending`，只要正文没被拉取，就还没进本地 POST。
+4. 请求体已经被拉取：结果未知。必须再等到 `body_fetched_at` 加上本地硬上限，再加一段落库余量。余量取 `opencode_control_timeout_seconds`。在这之前拒绝。时间到了之后，仍要由这一次人工请求显式确认，才进入下一步。到点不会自动 POST。
+5. CAS 认领：`UPDATE ... SET pending_attempt = pending_attempt + 1, pending_prompt = :armed WHERE id = :task AND pending_message_id = :id AND pending_attempt = :expected`。`rowcount` 不是 1 就放弃。这一步提交后才放出行锁，并清掉旧的 `execution_stop_confirmed_at`。并发的两个人工重试只有一个能继续。
+6. 用 `messages_page` 沿 `x-next-cursor` 读完整个消息列表。读失败、超时、Worker 离线或 epoch 失效：保持这次认领后的 `in_flight`，抛错，不调用 `_without_in_flight`。
+7. 列表里有这个 `messageID`：只清 `in_flight`，不 POST，再交给 `refresh`。
+8. 列表里没有，并且第 3 步或第 4 步的证据成立：用同一个 `messageID` POST 一次。这是唯一允许重发 Prompt 的路径。
 
-首次发送不检查过期，也不要求旧指令已终结。它在 POST 前用同一种 CAS 认领自己的 `pending_attempt`，避免并发双发。
+首次发送不把「未拉取」当成重试条件。它在 POST 前用同一种 CAS 认领自己的 `pending_attempt`，写好 `request_id` 映射，避免并发双发。
 
 重连只读取已绑定的 Session：`GET /session/{id}`、分页消息、`GET /question`、`GET /permission` 和现有 `session_tree`。不创建 Session，不调用人工重试。
 
 | 证据 | 动作 |
 | --- | --- |
-| 完整分页里能看到 `pending_message_id` | 已接受。清 `in_flight`。不重发。交给 `refresh` / `apply_session_state()` |
-| 查询成功且整个列表都没有该 id，`in_flight` 已过期，旧 Worker 指令已终结或 epoch 已失效，并且是人工重试的 CAS 赢家 | 用同一个 `messageID` POST 一次 |
+| 完整分页里能看到 `pending_message_id` | 已落库。清 `in_flight`。不重发。交给 `refresh` / `apply_session_state()` |
+| 指令已存，请求体从未被 GET，分页确认没有该 id，并且是人工重试的 CAS 赢家 | 视为未发送。用同一个 `messageID` POST 一次 |
+| 请求体已被 GET，分页里仍没有该 id | 结果未知。先等本地上限加落库余量，再由人显式确认后才可 POST |
 | 查询失败、超时、Worker 离线、epoch 过期 | 不重发，不清 `in_flight`。通信按 2.4 记为不可用 |
-| OpenCode 已接受，Agent 在 PUT 结果之前退出 | 与第一行相同 |
-| 只丢失 WebSocket 就绪通知，消息尚未出现，`in_flight` 未过期 | 保持预约。不重发 |
+| OpenCode 已落库，Agent 在响应 PUT 之前退出 | 与第一行相同 |
+| 只丢失 WebSocket 就绪通知，请求体还没被 GET | 保持预约。不重发 |
 
 #### 2.4 / 2.8 故障分类、已迁移与恢复
 
@@ -238,19 +248,20 @@ Gateway、Agent 和传输层不赋值 `Task.status`。`recovery.py` 断线调用
 
 占用只有一个谓词。投影、心跳、调度、`start`、`send`、维护和取消完成都调用它。`current_task_count` 只由这个谓词写出，心跳不得另写 0。调度用这个谓词选员工，不再单独用 `current_task_count < 1` 判断。
 
-一条 Task 占用员工，除非下面之一成立：
+谓词只看已经认领或已经绑定的 Task：`claimed_at` 不为空、已有 Session、`pending_message_id` 不为空，或状态不是未认领的 `PENDING`。未认领的 `PENDING` 不占用员工，因此不会挡住 `dispatcher.py` 约 42–58 行去派这些任务。
+
+一条已认领或已绑定的 Task 占用员工，除非下面之一成立：
 
 - `status` 是 `SUCCEEDED`
-- `status` 是 `CANCELED`，并且执行已确认停止
-- 人工释放已经写下 `execution_stop_confirmed_at`
+- `status` 是 `CANCELED` 或取消正在进行，并且这次人工释放仍然对得上当前 Session 和 `pending_attempt`
 
-除此之外一律占用。这包括 `FAILED`、`RUNNING`、`WAITING`、已认领的 `PENDING`、`pending_message_id` 仍在、绑定的 RuntimeSession 缺失或异常，以及尚未确认停止的 `CANCELED`。套接字是否在线、Session 是否 `idle`、单条指令是否结束，都不释放。
+`RUNNING` 和 `WAITING` 即使写着 `execution_stop_confirmed_at` 也继续占用。`FAILED`、绑定异常、`pending_message_id` 仍在，以及还没被有效人工释放确认的 `CANCELED`，都占用。套接字是否在线、Session 是否 `idle`、单条指令是否结束，都不释放。
 
-`CANCELED` 的「执行已确认停止」指：`pending_message_id` 与 `pending_prompt` 都已清空，并且绑定 Session 不是 `RUNNING`、`WAITING` 或 `UNKNOWN`。函数自身不加超时。
+`disconnected()`（`lifecycle.py` 约 1598–1614 行）会因为通信故障把非终态 Session 写成 `UNKNOWN`。这个状态不证明执行已经停止。
 
-维护前保留第二道防线：该员工仍有 RuntimeSession 处于 `RUNNING`、`WAITING` 或 `UNKNOWN`，并且对应 Task 没有 `execution_stop_confirmed_at` 时，`reserve_operation` 拒绝。这道检查不代替谓词。
+维护前保留第二道防线：该员工仍有 RuntimeSession 处于 `RUNNING`、`WAITING` 或 `UNKNOWN`，而且对应 Task 没有一份仍然有效的人工释放时，`reserve_operation` 拒绝。这道检查不代替谓词。
 
-人工释放是单独入口，只由人调用。条件是绑定 Session 为 `UNKNOWN`，或绑定缺失。它写下 `execution_stop_confirmed_at`，不把 Task 改成 `SUCCEEDED`，不调用 `apply_session_state()`，也不发送 Prompt 或 abort。恢复、重连、调度、心跳和超时都不调用它。Session 可以保持 `UNKNOWN`；有了这个时间戳之后，谓词和第二道防线都不再因为这条 Session 占用或挡住维护。
+人工释放是单独入口，只由人调用。只接受 `CANCELED` 或取消正在进行的 Task。它记录操作人和原因，并绑定当时的 Session id 与 `pending_attempt`。不把 Task 改成 `SUCCEEDED`，不调用 `apply_session_state()`，也不发送 Prompt 或 abort。恢复、重连、调度、心跳和超时都不调用它。新的 attempt、显式重启或新 Session 都会清掉这份确认。确认被清掉或对不上当前 Session / attempt 时，任务继续占用。
 
 #### 2.11 幂等身份与取消
 
@@ -266,13 +277,13 @@ Gateway、Agent 和传输层不赋值 `Task.status`。`recovery.py` 断线调用
 | --- | --- |
 | 授权执行 | 数据库。`WorkerInstance.epoch` 和 `worker_commands` 的状态、epoch 决定能不能 GET 正文和执行。Redis owner 只决定哪个进程可以发布就绪通知，不能单独授权。 |
 | epoch 切换 | 数据库。认证时对 `WorkerInstance.epoch` 的条件更新是切换点。`set_owner` 的高水位只拒绝更旧的注册，不能把数据库 epoch 改回去。Redis owner 在这次提交成功之后写入。Redis 写入失败就结束会话，不以 Redis 里旧的 owner 继续发令。 |
-| 提交上传 | 数据库上的两次检查。PUT 开始时核对指令 epoch 等于当前 `WorkerInstance.epoch`。最终用 CAS：`UPDATE worker_commands SET status=succeeded ... WHERE id=:id AND epoch=:epoch AND status IN ('pending','accepted')`。`rowcount` 为 1 才唤醒等待者。Redis 只暂存正文。CAS 失败则删除正文，不唤醒。 |
+| 提交上传 | 数据库上的两次检查。PUT 开始时核对指令 epoch 等于当前 `WorkerInstance.epoch`。最终 CAS 与 `apply_response`（`service.py` 约 508–518 行）一样，带上当前实例的 epoch 子查询：`UPDATE worker_commands SET status='succeeded' ... WHERE id=:id AND epoch=:epoch AND status IN ('pending','accepted') AND worker_instance_id = (SELECT id FROM worker_instances WHERE id=:worker AND epoch=:epoch)`。`rowcount` 为 1 才把这次 `upload_id` 的正文交给等待者。Redis 只暂存正文。CAS 失败只删除这次 `upload_id` 的键，不唤醒。 |
 
-认领之后 epoch 变了：旧指令不再授权执行，新 epoch 不补投这条有副作用的指令。上传写到一半时 epoch 变了：后续块和最终 CAS 失败，已经写入的正文作废，等待者看不到它，`Task.status` 不变。
+认领之后 epoch 变了：旧指令不再授权执行，Agent 不得开始那次本地 POST，新 epoch 不补投这条有副作用的指令。上传写到一半时 epoch 变了：后续块和带 epoch 子查询的最终 CAS 失败，只作废这次 `upload_id` 的正文，等待者看不到它，`Task.status` 不变。
 
 #### 阶段 2 故障测试
 
-实现时先覆盖占用被提前释放的回归，再覆盖下面八项。阶段 1 已有的通道测试不代替这些项。
+实现时先覆盖占用被提前释放的回归，再覆盖下面十项。阶段 1 已有的通道测试不代替这些项。未认领的 `PENDING` 不占用员工，也要有一条回归，避免调度被自己的候选任务挡住。
 
 1. **epoch 乱序。** 旧 epoch 的事件帧被丢弃，序号不前进。旧 epoch 的请求 GET 和响应 PUT 得到 409。`Task.status` 不变。
 2. **双 owner。** 同一 epoch 的另一个 owner 不能注册，也不能发布。只有持有套接字的进程发出就绪通知。
@@ -281,11 +292,13 @@ Gateway、Agent 和传输层不赋值 `Task.status`。`recovery.py` 断线调用
 5. **ACK 丢失。** 完整分页里已经有 `pending_message_id`，Agent 在响应 PUT 之前退出。重连看到该消息，不重发 Prompt，不新建 Session，`in_flight` 被清掉。之后的业务状态只来自 `apply_session_state()`。
 6. **事件丢失对账。** 序号缺口或 `event_too_large`。消费方收到 `astra.event_gap`，`refresh` 重读 Session、完整分页消息、问题和权限。不新建 Session。
 7. **认领后 epoch 切换。** 指令认领之后 `WorkerInstance.epoch` 增加。旧 GET/PUT 被拒绝，新 epoch 不补投这条有副作用的指令。
-8. **上传中途 epoch 切换。** PUT 已经开始写正文，随后 epoch 变化。最终 CAS 失败，等待者收不到这份正文，`Task.status` 不变。
+8. **上传中途 epoch 切换。** PUT 已经开始写正文，随后 epoch 变化。带子查询的最终 CAS 失败，等待者收不到这份正文，`Task.status` 不变。同时进行的另一次上传若已经 CAS 成功，失败的一方不得删掉它的正文。
+9. **请求体拉取证据。** 指令已落库但从未 GET：人工重试可以视为未发送。已经 GET 而消息仍不可见：在本地上限加落库余量之前，以及没有新的人工确认时，不重发。
+10. **过期事件游标。** 浏览器流断开后，它的游标过期，不再把该 directory 的 SSE 停在暂停。
 
 ### 阶段 3
 
-目录、Git worktree、上传、路径校验和 diff 改到 Worker 本地。浏览器仍调用现有 Workspace HTTP/SSE。大文件的字节走阶段 2 的 HTTP 拉取和上传，并加上校验和、真实路径、符号链接和 TOCTOU 校验。暂存文件在成功、失败和进程退出时都要清理。`session_connection._ensure_remote_workspace` 在这一阶段不再走 SSH。
+文件浏览、Git diff、上传校验、路径和符号链接改到 Worker 本地。浏览器仍调用现有 Workspace HTTP/SSE。大文件的字节走阶段 2 的 HTTP 拉取和上传，并加上校验和、真实路径、符号链接和 TOCTOU 校验。暂存文件在成功、失败和进程退出时都要清理。目录、worktree 和复制 `opencode.json` 已在阶段 2 成为 Agent 指令。在本阶段完成之前，`worker_channel=worker` 的环境浏览文件和 Git 仍走 SSH。
 
 ### 阶段 4
 
