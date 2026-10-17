@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -293,7 +294,17 @@ def test_real_config_merge_writes_jsonc_and_keeps_user_settings(tmp_path):
     (repo / "SKILL.md").write_text("untouched", encoding="utf-8")
     source = Path("app/runtime/remote_install.sh").read_text().split("<<'NODE'\n", 1)[1].split("\nNODE", 1)[0]
     result = subprocess.run(
-        [shutil.which("node"), "-", str(payload_file), "op123"], input=source, text=True, capture_output=True
+        [
+            shutil.which("node"),
+            "-",
+            str(payload_file),
+            "op123",
+            sys.executable,
+            str(Path("app/worker_agent/jsonc.py")),
+        ],
+        input=source,
+        text=True,
+        capture_output=True,
     )
     assert result.returncode == 0, result.stderr
     config = json.loads(target.read_text())

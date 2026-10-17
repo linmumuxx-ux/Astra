@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -21,6 +22,7 @@ from app.config.settings import get_settings
 from app.domain import EmployeeStatus, EnvironmentStatus
 from app.gateway.security import CredentialCipher
 from app.models import CodeRepository, DigitalEmployee, GitCredential, OpenCodeExecutionEnvironment, Task
+from app.runtime.capability import binding_names, stamp_desired
 
 Runner = Callable[[list[str], dict[str, str]], tuple[int, str, str]]
 
@@ -208,12 +210,30 @@ async def bind_repository(
     return environment
 
 
+async def free_opencode_port(session: AsyncSession, host: str | None, preferred: int = 14096) -> int:
+    query = select(OpenCodeExecutionEnvironment.opencode_server_port)
+    if host is None:
+        query = query.where(OpenCodeExecutionEnvironment.host.is_(None))
+    else:
+        query = query.where(OpenCodeExecutionEnvironment.host == host)
+    used = set(await session.scalars(query))
+    if preferred not in used:
+        return preferred
+    port = preferred + 1
+    while port in used and port <= 65535:
+        port += 1
+    if port > 65535 or port in used:
+        raise RepositoryBindingError("没有可用的 OpenCode 端口")
+    return port
+
+
 async def copy_worker(
     session: AsyncSession,
     source: DigitalEmployee,
     *,
     new_id: str,
     name: str,
+    port: int | None = None,
 ) -> DigitalEmployee:
     environment = source.execution_environment
     if environment is None:
@@ -237,6 +257,9 @@ async def copy_worker(
     )
     session.add(employee)
     await session.flush()
+    chosen_port = port if port is not None else await free_opencode_port(session, environment.host)
+    names = binding_names(environment.skill_refs, environment.mcp_refs)
+    detail = stamp_desired({}, names, checked_at=datetime.now(UTC).isoformat()) if names else {}
     session.add(
         OpenCodeExecutionEnvironment(
             employee_id=employee.id,
@@ -247,7 +270,7 @@ async def copy_worker(
             port=22,
             username=environment.username,
             ssh_password=None,
-            opencode_server_port=14096,
+            opencode_server_port=chosen_port,
             opencode_path=environment.opencode_path,
             model_name=environment.model_name,
             workspace_root=fresh_workspace(environment.workspace_root, employee.id),
@@ -258,7 +281,7 @@ async def copy_worker(
             labels=list(environment.labels or []),
             worker_channel=environment.worker_channel,
             status=EnvironmentStatus.UNKNOWN,
-            status_detail={},
+            status_detail=detail,
         )
     )
     await session.commit()

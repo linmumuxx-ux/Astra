@@ -23,6 +23,7 @@ from app.dashboard import (
 )
 from app.database import SessionLocal, get_session
 from app.domain import EmployeeStatus, EnvironmentStatus, RuntimeSessionStatus, TaskStatus
+from app.event_bus import event_bus
 from app.library_service import KnowledgeService, LibraryPrincipal
 from app.models import (
     CodeRepository,
@@ -41,6 +42,7 @@ from app.models import (
     TaskWakeOutbox,
     WorkerInstance,
 )
+from app.runtime.capability import binding_names, stamp_desired
 from app.runtime.environment import (
     CheckItem,
     ExecutionEnvironmentRuntime,
@@ -288,6 +290,8 @@ async def list_employees(session: AsyncSession = Depends(get_session)):
 async def create_employee(payload: EmployeeCreate, session: AsyncSession = Depends(get_session)):
     await validate_category_ids(payload.category_ids, session)
     environment_payload = payload.execution_environment.model_dump()
+    skill_refs = environment_payload.pop("skill_refs", None)
+    mcp_refs = environment_payload.pop("mcp_refs", None)
     employee_payload = payload.model_dump(exclude={"execution_environment"})
     employee_payload["task_types"] = [item.value for item in payload.task_types]
     employee = DigitalEmployee(
@@ -299,13 +303,19 @@ async def create_employee(payload: EmployeeCreate, session: AsyncSession = Depen
     session.add(employee)
     try:
         await session.flush()
-        session.add(
-            OpenCodeExecutionEnvironment(
-                employee_id=employee.id,
-                **environment_payload,
-                status=EnvironmentStatus.UNKNOWN,
-            )
+        environment = OpenCodeExecutionEnvironment(
+            employee_id=employee.id,
+            **environment_payload,
+            status=EnvironmentStatus.UNKNOWN,
         )
+        if skill_refs is not None:
+            environment.skill_refs = skill_refs
+        if mcp_refs is not None:
+            environment.mcp_refs = mcp_refs
+        names = binding_names(environment.skill_refs, environment.mcp_refs)
+        if names:
+            environment.status_detail = stamp_desired({}, names, checked_at=datetime.now(UTC).isoformat())
+        session.add(environment)
         session.add(
             Event(
                 employee_id=employee.id,
@@ -358,15 +368,27 @@ async def update_employee_environment(
         environment = OpenCodeExecutionEnvironment(employee_id=employee.id)
         session.add(environment)
     updates = payload.model_dump()
+    skill_refs = updates.pop("skill_refs", None)
+    mcp_refs = updates.pop("mcp_refs", None)
     if not updates.get("ssh_password"):
         updates.pop("ssh_password", None)
+    previous = environment.status_detail if isinstance(environment.status_detail, dict) else {}
+    bindings_changed = skill_refs is not None or mcp_refs is not None
     for key, value in updates.items():
         setattr(environment, key, value)
+    if skill_refs is not None:
+        environment.skill_refs = skill_refs
+    if mcp_refs is not None:
+        environment.mcp_refs = mcp_refs
     environment.status = EnvironmentStatus.UNKNOWN
-    environment.status_detail = {
+    detail = {
         "message": "配置已更新，等待测试连接",
         "applies_to": "future_tasks" if employee.current_task_count else "all_new_runs",
     }
+    names = binding_names(environment.skill_refs, environment.mcp_refs)
+    if bindings_changed or names or (isinstance(previous.get("capability"), dict)):
+        detail = stamp_desired(detail, names, previous=previous, checked_at=datetime.now(UTC).isoformat())
+    environment.status_detail = detail
     await session.commit()
     await session.refresh(environment)
     session.add(
@@ -400,6 +422,10 @@ async def test_employee_environment(employee_id: str, session: AsyncSession = De
     from uuid import uuid4
 
     check_id = uuid4().hex
+    kept_capability = None
+    detail = environment.status_detail if isinstance(environment.status_detail, dict) else {}
+    if isinstance(detail.get("capability"), dict):
+        kept_capability = dict(detail["capability"])
     environment.status_detail = {"operation": {
         "id": check_id, "action": "test", "state": "RUNNING",
         "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
@@ -414,6 +440,8 @@ async def test_employee_environment(employee_id: str, session: AsyncSession = De
     detail = {
         "checks": [{"name": item.name, "passed": item.passed, "detail": item.detail} for item in checks]
     }
+    if kept_capability is not None:
+        detail["capability"] = kept_capability
     result = await session.execute(
         update(OpenCodeExecutionEnvironment)
         .where(
@@ -574,14 +602,17 @@ async def create_related_tasks(payload: RelatedTaskCreate, session: AsyncSession
                 description=payload.description,
                 acceptance_criteria=payload.acceptance_criteria,
                 repository_id=part.repository_id,
-            )
+            ),
+            commit=False,
         )
         if part.depends_on is not None:
             task.related_task_id = created_ids[part.depends_on]
-            await session.commit()
-            await session.refresh(task)
         created.append(task)
         created_ids.append(task.id)
+    await session.commit()
+    for task in created:
+        await session.refresh(task)
+        await event_bus.publish({"type": "TASK_CREATED", "task_id": task.id})
     return [
         {
             "id": task.id,

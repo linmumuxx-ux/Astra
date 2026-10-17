@@ -36,6 +36,8 @@ class ExecutionEnvironmentWrite(BaseModel):
     model_name: str | None = Field(default=None, max_length=255)
     workspace_root: str = Field(default="./workspaces", min_length=1)
     labels: list[str] = Field(default_factory=list)
+    skill_refs: list[str] | None = None
+    mcp_refs: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def validate_remote(self):

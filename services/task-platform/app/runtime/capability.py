@@ -14,11 +14,43 @@ def binding_revision(names: list[str]) -> str:
 
 
 def loads_jsonc(text: str) -> dict[str, Any]:
-    lines = [line for line in text.splitlines() if not line.strip().startswith("//")]
-    if not lines:
-        return {}
-    data = json.loads("\n".join(lines))
+    from app.worker_agent.jsonc import loads_jsonc as parse_jsonc
+
+    data = parse_jsonc(text)
     return data if isinstance(data, dict) else {}
+
+
+def binding_names(skill_refs: list[str] | None, mcp_refs: list[dict[str, Any]] | None) -> list[str]:
+    names = [str(name) for name in (skill_refs or []) if name]
+    for item in mcp_refs or []:
+        if isinstance(item, dict) and item.get("name"):
+            names.append(str(item["name"]))
+    return names
+
+
+def stamp_desired(
+    status_detail: dict[str, Any] | None,
+    names: list[str],
+    *,
+    previous: dict[str, Any] | None = None,
+    checked_at: str,
+) -> dict[str, Any]:
+    """绑定变更只写 desired。applied 留到部署发现之后。"""
+
+    detail = dict(status_detail or {})
+    source = previous if isinstance(previous, dict) else {}
+    record = dict(source.get("capability") or {}) if isinstance(source.get("capability"), dict) else {}
+    desired = binding_revision(names) if names else ""
+    record["desired_revision"] = desired
+    record["checked_at"] = checked_at
+    if names and record.get("applied_revision") != desired:
+        record["runtime_status"] = "pending"
+        record["error"] = ""
+    elif not names:
+        record["runtime_status"] = "applied"
+        record["error"] = ""
+    detail["capability"] = record
+    return detail
 
 
 def skill_names_in(root: Path) -> set[str]:
@@ -42,6 +74,12 @@ def discover_worker(skill_roots: list[Path], config_text: str) -> set[str]:
         found.update(skill_names_in(root))
     found.update(mcp_names_in(loads_jsonc(config_text)))
     return found
+
+
+def discover_names(skill_names: list[str], config_text: str) -> set[str]:
+    """部署回读：技能目录名加上配置里的 MCP 名。"""
+
+    return {name for name in skill_names if name} | mcp_names_in(loads_jsonc(config_text))
 
 
 def observe_bindings(
@@ -80,13 +118,18 @@ def write_capability(status_detail: dict[str, Any] | None, record: dict[str, Any
     return detail
 
 
-def dispatch_allowed(status_detail: dict[str, Any] | None) -> bool:
-    if not isinstance(status_detail, dict):
-        return True
-    record = status_detail.get("capability")
+def dispatch_allowed(
+    status_detail: dict[str, Any] | None,
+    *,
+    bindings: list[str] | None = None,
+) -> bool:
+    """有绑定却没有已应用的修订记录时，不允许分配。"""
+
+    names = [name for name in (bindings or []) if name]
+    record = status_detail.get("capability") if isinstance(status_detail, dict) else None
     if not isinstance(record, dict):
-        return True
+        return not names
     desired = str(record.get("desired_revision") or "")
     if not desired:
-        return True
+        return not names
     return record.get("applied_revision") == desired and record.get("runtime_status") != "error"

@@ -44,6 +44,7 @@ class RepositoryClone(BaseModel):
 class WorkerCopy(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
+    port: int | None = Field(default=None, ge=1, le=65535)
 
 
 def _binding_error(exc: RepositoryBindingError) -> HTTPException:
@@ -80,9 +81,13 @@ async def clone_registered_repository(
     )
     if credential is None:
         raise HTTPException(status_code=404, detail="仓库没有凭据")
+    from starlette.concurrency import run_in_threadpool
+
     try:
         token = cipher().decrypt(credential.token_ciphertext)
-        clone_repository(repository.url, repository.branch, payload.destination, token)
+        await run_in_threadpool(
+            clone_repository, repository.url, repository.branch, payload.destination, token
+        )
     except CredentialError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except CloneError as exc:
@@ -122,7 +127,7 @@ async def copy_employee(
         select(func.count()).select_from(Task).where(Task.employee_id == source.id)
     )
     try:
-        await copy_worker(session, source, new_id=payload.id, name=payload.name)
+        await copy_worker(session, source, new_id=payload.id, name=payload.name, port=payload.port)
     except RepositoryBindingError as exc:
         raise _binding_error(exc) from exc
     copied = await employee_read(await require_employee(payload.id, session), session)

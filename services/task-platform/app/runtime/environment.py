@@ -45,6 +45,7 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "opencode_path": environment.opencode_path,
         "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
+        "repository_id": environment.repository_id,
         "labels": list(environment.labels or []),
         "capability_revision": _capability_revision(environment),
     }

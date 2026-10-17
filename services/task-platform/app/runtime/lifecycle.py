@@ -405,7 +405,7 @@ class RuntimeService:
             }
             reason = state.terminal_reason
             if reason == SessionTerminalReason.TIMEOUT.value:
-                task.waiting_reason = None
+                task.waiting_reason = "TIMEOUT"
             elif reason == SessionTerminalReason.ABORTED.value:
                 task.waiting_reason = "MANUAL_INTERVENTION"
             elif reason in {
@@ -414,7 +414,10 @@ class RuntimeService:
                 SessionTerminalReason.INCOMPLETE.value,
             }:
                 task.waiting_reason = "RETRY_EXHAUSTED"
+            else:
+                task.waiting_reason = None
         else:
+            task.waiting_reason = None
             await self.session.commit()
             return
         task.human_required_reason = detail
@@ -544,6 +547,11 @@ class RuntimeService:
             await guard_environment_write(self.session, environment)
         except HTTPException as exc:
             raise RuntimeStateError(str(exc.detail)) from exc
+        from app.runtime.dispatcher import runtime_assignment_block
+
+        blocked = runtime_assignment_block(environment, task)
+        if blocked:
+            raise RuntimeStateError(blocked)
         new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
         reservation = {"pending_message_id": initial_id, "pending_attempt": 0}
@@ -622,6 +630,8 @@ class RuntimeService:
                 reuse_existing=reuse_workspace,
             )
             base_commit = await workspace_head_commit(environment, new_workspace)
+            if base_commit:
+                new_snapshot["base_commit"] = base_commit
 
             # New environment relocation cannot safely reuse materialized attachment
             # paths from the old host. Preserve metadata, but only materialize payloads
@@ -680,7 +690,15 @@ class RuntimeService:
 
                 # Only now switch the business pointer to the new environment/session.
                 task.workspace = new_workspace
+                previous_snapshot = (
+                    task.execution_environment_snapshot
+                    if isinstance(task.execution_environment_snapshot, dict)
+                    else {}
+                )
+                new_snapshot = {**previous_snapshot, **new_snapshot}
                 task.execution_environment_snapshot = new_snapshot
+                if new_snapshot.get("base_commit"):
+                    task.base_commit = new_snapshot["base_commit"]
                 task.attachments = materialized_attachments
                 task.current_session_id = created_session_id
                 clear_execution_stop(task)
@@ -1356,6 +1374,8 @@ class RuntimeService:
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_error = None
+        if cancel_task:
+            task.waiting_reason = None
         await self.project(
             task,
             TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
@@ -1776,6 +1796,17 @@ class RuntimeService:
         ):
             await self.session.rollback()
             raise RuntimeStateError("任务绑定已变化")
+        task.current_progress = "继续当前 Session"
+        await TaskService(self.session).add_event(
+            task,
+            "TASK_CONTINUED",
+            "work",
+            "继续当前 Session",
+            {"session_id": session_id, "workspace": workspace, "employee_id": employee_id},
+            commit=False,
+        )
+        await self.session.commit()
+        await self.session.refresh(task)
         return task
 
     async def confirm_completion(self, task_id: str):
@@ -1847,6 +1878,7 @@ class RuntimeService:
         task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None
         task.human_intervention = None
+        task.waiting_reason = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务已人工确认完成")
         return task
 

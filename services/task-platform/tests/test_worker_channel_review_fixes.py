@@ -232,11 +232,17 @@ async def test_open_event_stream_resumes_after_pause(environment_id, monkeypatch
     client = WorkerOpenCodeClient(environment_id=environment_id, gateway=gateway, timeout_seconds=5)
     stream = client.events(Path("/srv/app"), consumer="browser:pause").__aiter__()
     reading = asyncio.create_task(anext(stream))
-    await answering
-    assert names[0] == "subscribe_events"
-    assert "resume_events" in names
-    reading.cancel()
-    await asyncio.gather(reading, return_exceptions=True)
+    try:
+        await asyncio.wait_for(answering, 5)
+        assert names[0] == "subscribe_events"
+        assert "resume_events" in names
+    finally:
+        reading.cancel()
+        answering.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(reading, answering, return_exceptions=True), 2)
+        except TimeoutError:
+            pass
 
 
 def test_resume_wakes_a_paused_event_reader():

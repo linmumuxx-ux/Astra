@@ -130,7 +130,7 @@ async def test_projection_writes_waiting_reason_without_closing_or_retrying(sess
         SessionState(status="INTERRUPTED", terminal_reason="timeout"),
     )
     assert task.status == TaskStatus.WAITING
-    assert task.waiting_reason != "RETRY_EXHAUSTED"
+    assert task.waiting_reason == "TIMEOUT"
 
     task.status = TaskStatus.RUNNING
     task.waiting_reason = None
@@ -210,6 +210,7 @@ async def test_continue_reuses_the_worker_worktree_and_session(session):
     await session.commit()
 
     continued = await RuntimeService(session).continue_task("T1")
+    assert continued.current_progress == "继续当前 Session"
     assert continued.current_session_id == "ses"
     assert continued.workspace == "/tmp/workspaces/E1"
     assert continued.employee_id == "E1"

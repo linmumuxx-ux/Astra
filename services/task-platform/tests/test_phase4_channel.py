@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -37,6 +38,9 @@ RAW_KEY = "agw_phase4-install-key"
 
 def _direct(monkeypatch):
     settings = get_settings()
+    redis_url = os.environ.get("ASTRA_REDIS_URL") or os.environ.get("ASTRA_TEST_REDIS_URL")
+    if redis_url:
+        monkeypatch.setattr(settings, "redis_url", redis_url)
     monkeypatch.setattr(settings, "mcp_transport", "streamable-http")
     monkeypatch.setattr(settings, "remote_gateway_local_url", GATEWAY)
     monkeypatch.setattr(settings, "mcp_resource_server_url", MCP)

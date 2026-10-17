@@ -152,7 +152,7 @@ def test_copy_keeps_the_repository_and_drops_secrets(monkeypatch, tmp_path):
         assert environment["labels"] == ["runtime"]
         assert environment["workspace_root"] == "/tmp/workspaces/worker-copy"
         assert environment["port"] == 22
-        assert environment["opencode_server_port"] == 14096
+        assert environment["opencode_server_port"] != 19991
         assert environment["has_ssh_password"] is False
         other = client.post(
             "/api/repositories",

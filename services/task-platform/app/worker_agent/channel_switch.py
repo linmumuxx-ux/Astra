@@ -19,6 +19,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from app.worker_agent.jsonc import loads_jsonc
 from app.worker_agent.process_env import child_environ
 
 _GATEWAY_ENV = "ASTRA_REMOTE_GATEWAY_URL"
@@ -66,11 +67,8 @@ def probe_url(url: str, *, timeout: float = 3) -> bool:
 
 
 def _read_config(path: Path) -> dict:
-    text = "\n".join(
-        line for line in path.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//")
-    )
     try:
-        config = json.loads(text)
+        config = loads_jsonc(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise RuntimeError("全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置") from exc
     if not isinstance(config, dict):
@@ -89,8 +87,23 @@ def write_direct_config(path: Path, *, gateway_url: str, mcp_url: str) -> None:
         config = _read_config(jsonc)
         target = jsonc
         gateway = _mapping(_mapping(_mapping(config, "provider"), "astra-gateway"), "options")
-        if gateway is None and path.is_file() and path != jsonc:
-            config = _read_config(path)
+        legacy_path = jsonc.with_suffix(".json")
+        if gateway is None and legacy_path.is_file():
+            legacy = _read_config(legacy_path)
+            provider = _mapping(_mapping(legacy, "provider"), "astra-gateway")
+            if isinstance(provider, dict):
+                providers = config.get("provider")
+                if not isinstance(providers, dict):
+                    providers = {}
+                    config["provider"] = providers
+                providers["astra-gateway"] = provider
+            library = _mapping(_mapping(legacy, "mcp"), "nexus-library")
+            if isinstance(library, dict):
+                mcp = config.get("mcp")
+                if not isinstance(mcp, dict):
+                    mcp = {}
+                    config["mcp"] = mcp
+                mcp.setdefault("nexus-library", library)
     elif path.is_file():
         config = _read_config(path)
         target = path

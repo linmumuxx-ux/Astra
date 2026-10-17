@@ -27,13 +27,20 @@ from app.gateway.runtime import RedisRuntimeStore
 from app.gateway.schemas import GatewayKeyCreate
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
-from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment
-from app.runtime.capability import loads_jsonc
+from app.models import CodeRepository, DigitalEmployee, Event, GitCredential, OpenCodeExecutionEnvironment
+from app.runtime.capability import (
+    binding_names,
+    binding_revision,
+    discover_names,
+    loads_jsonc,
+    observe_bindings,
+    write_capability,
+)
 from app.runtime.direct_urls import require_direct_url
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
-from app.runtime.repository import collect_skill_files
+from app.runtime.repository import cipher, collect_skill_files
 
 PROVIDER_ID = "astra-gateway"
 E2E_MODEL = "opencode/deepseek-v4.1-flash-free"
@@ -397,7 +404,28 @@ class RemoteProvisioner:
             skills=collect_skill_files(list(self.environment.skill_refs or []), skill_source),
             mcp_refs=list(self.environment.mcp_refs or []),
         )
+        token_file = ""
+        if self.environment.repository_id:
+            async with SessionLocal() as db:
+                repository = await db.get(CodeRepository, self.environment.repository_id)
+                credential = await db.scalar(
+                    select(GitCredential).where(GitCredential.repository_id == self.environment.repository_id)
+                )
+            if repository is None or credential is None:
+                raise RuntimeError("绑定的仓库没有凭据")
+            token = cipher().decrypt(credential.token_ciphertext)
+            self.secrets.append(token)
+            token_file = stem + ".token"
+            await self.ssh.write_file(token_file, token.encode(), mode=0o600)
+            payload["repository"] = {
+                "url": repository.url,
+                "branch": self.environment.branch or repository.branch,
+            }
+        jsonc_file = stem + ".jsonc.py"
         await self.ssh.write_file(stem + ".json", json.dumps(payload, ensure_ascii=False).encode())
+        await self.ssh.write_file(
+            jsonc_file, Path(__file__).resolve().parents[1].joinpath("worker_agent", "jsonc.py").read_bytes()
+        )
         await self.ssh.write_file(stem + ".sh", Path(__file__).with_name("remote_install.sh").read_bytes())
         await self.step(emit, "部署配置", "passed", "已准备员工专属中转、数字图书馆与安全连接")
         args = [
@@ -409,6 +437,8 @@ class RemoteProvisioner:
             stem + ".json",
             self.operation["id"],
             self._agent_interpreter(),
+            jsonc_file,
+            token_file,
         ]
         command = (
             f"timeout -k 10 {self.settings.remote_deploy_timeout_seconds} bash {shlex.quote(stem + '.sh')} "
@@ -433,7 +463,10 @@ class RemoteProvisioner:
             await channel.close()
             stderr_task.cancel()
             await asyncio.gather(stderr_task, return_exceptions=True)
-            await self._command(f"rm -f {shlex.quote(stem + '.sh')} {shlex.quote(stem + '.json')}")
+            leftovers = [stem + ".sh", stem + ".json", jsonc_file]
+            if token_file:
+                leftovers.append(token_file)
+            await self._command("rm -f " + " ".join(shlex.quote(path) for path in leftovers))
 
     def _direct_endpoints(self) -> tuple[str, str]:
         return (
@@ -608,13 +641,47 @@ class RemoteProvisioner:
         )
         await self.step(emit, "重启 OpenCode Serve", "passed", "已通过 SSH 重启单元")
 
-    async def _finish(self, success, error=""):
+    async def _observe_capability(self) -> dict:
+        text = ""
+        skill_names: list[str] = []
+        error = ""
+        try:
+            if self.config_path and self.ssh is not None:
+                content = await self.ssh.read_file(self.config_path)
+                text = content.decode() if isinstance(content, bytes) else (content or "")
+                skill_root = str(Path(self.config_path).parent / "skill")
+                listing = await self._command(
+                    "find "
+                    + shlex.quote(skill_root)
+                    + " -mindepth 2 -maxdepth 2 -name SKILL.md -printf '%h\\n' || true"
+                )
+                skill_names = [Path(line.strip()).name for line in listing.splitlines() if line.strip()]
+            found = discover_names(skill_names, text)
+        except Exception as exc:
+            found = set()
+            error = self.redact(exc)
+        expected = binding_names(self.environment.skill_refs, self.environment.mcp_refs)
+        detail = self.environment.status_detail if isinstance(self.environment.status_detail, dict) else {}
+        current = detail.get("capability") if isinstance(detail.get("capability"), dict) else None
+        return observe_bindings(
+            current,
+            desired=binding_revision(expected),
+            found=found,
+            expected=expected,
+            error=error,
+            checked_at=datetime.now(UTC).isoformat(),
+        )
+
+    async def _finish(self, success, error="", capability=None):
         state = "SUCCEEDED" if success else "FAILED"
         operation = {**self.operation, "state": state, "finished_at": datetime.now(UTC).isoformat()}
+        detail = {"operation": operation, "checks": self.steps, "message": self.redact(error)}
+        if capability:
+            detail = write_capability(detail, capability)
         values = {
             "status": EnvironmentStatus.AVAILABLE if success else EnvironmentStatus.UNAVAILABLE,
             "last_checked_at": datetime.now(UTC),
-            "status_detail": {"operation": operation, "checks": self.steps, "message": self.redact(error)},
+            "status_detail": detail,
         }
         if success:
             values.update(model_name=self.target_model, opencode_path=self.target_binary)
@@ -666,6 +733,7 @@ class RemoteProvisioner:
 
     async def run(self, emit):
         success, error = False, ""
+        capability = None
         try:
             async with asyncio.timeout(self.settings.remote_deploy_timeout_seconds):
                 self._direct_endpoints()
@@ -682,6 +750,7 @@ class RemoteProvisioner:
                         await self._probe_gateway(emit)
                         await self._install_units(emit)
                         await self._mark_inside_operation(emit)
+                        capability = await self._observe_capability()
                     else:
                         await self._restart_offline(emit)
                     success = True
@@ -700,7 +769,8 @@ class RemoteProvisioner:
                 await self.step(emit, current, "failed", error)
             if self.ssh:
                 await self.ssh.close()
-            applied = await self._finish(success, error)
+                self.ssh = None
+            applied = await self._finish(success, error, capability if success else None)
             if not applied:
                 success = False
                 error = "环境配置或操作记录已变化，旧结果未写入；请刷新后核对"
