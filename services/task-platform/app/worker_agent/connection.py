@@ -113,6 +113,19 @@ def handle_command(
     data = message.payload.get("data")
     if not isinstance(data, dict):
         data = {}
+    if name in {"pause_events", "resume_events", "stop_events"}:
+        return {"action": name, "directory": str(data.get("directory") or "")}, None
+    if name == "prepare_workspace":
+        from app.worker_agent.workspace import prepare_workspace_local
+
+        try:
+            return prepare_workspace_local(
+                str(data.get("root") or ""),
+                str(data.get("target") or ""),
+                reuse_existing=bool(data.get("reuse_existing")),
+            ), None
+        except RuntimeError as exc:
+            return None, str(exc)
     if name == "ping":
         return {"pong": True}, None
     if name == "echo":
@@ -145,6 +158,13 @@ class WorkerConnectionManager:
         self.epochs: list[int] = []
         self.delays: list[float] = []
         self.ledger = CommandLedger(config.command_dedupe_limit, config.command_dedupe_ttl_seconds)
+        self.http_tasks: dict[str, asyncio.Task[None]] = {}
+        self.event_tasks: dict[str, asyncio.Task[None]] = {}
+        self.paused_directories: set[str] = set()
+        self.stopped_directories: set[str] = set()
+        self.fetch_body = None
+        self.local_request = None
+        self.upload_body = None
 
     async def run(self, connect: Connect, stop: asyncio.Event, *, max_sessions: int | None = None) -> None:
         attempt = 1
@@ -216,8 +236,21 @@ class WorkerConnectionManager:
                     continue
                 if incoming.type != "command":
                     continue
+                name = incoming.payload.get("name")
+                if name == "http":
+                    self._start_http(transport, incoming, epoch)
+                    continue
+                if name == "cancel":
+                    target = str((incoming.payload.get("data") or {}).get("target_request_id") or "")
+                    running = self.http_tasks.get(target)
+                    if running is not None:
+                        running.cancel()
                 await self._handle_command(transport, incoming, epoch)
         finally:
+            for task in list(self.http_tasks.values()):
+                task.cancel()
+            if self.http_tasks:
+                await asyncio.gather(*self.http_tasks.values(), return_exceptions=True)
             heartbeat_stop.set()
             if heartbeat is not None:
                 heartbeat.cancel()
@@ -248,6 +281,38 @@ class WorkerConnectionManager:
             raise WorkerTransportError("heartbeat_stopped")
         return recv_task.result()
 
+    def _start_http(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
+        if not frame_acceptable(incoming, epoch, self.clock()):
+            return
+        task = asyncio.create_task(self._execute_http(transport, incoming, epoch))
+        self.http_tasks[incoming.request_id] = task
+
+    async def _execute_http(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
+        try:
+            if not frame_acceptable(incoming, epoch, self.clock()):
+                return
+            await transport.send(self._response(incoming, "ack", None, None).to_dict())
+            if self.epoch != epoch:
+                return
+            data = incoming.payload.get("data") if isinstance(incoming.payload.get("data"), dict) else {}
+            if self.fetch_body is None or self.local_request is None or self.upload_body is None:
+                return
+            body = await self.fetch_body(incoming.request_id, epoch)
+            if self.epoch != epoch:
+                return
+            result = await self.local_request(
+                str(data.get("method") or "GET"),
+                str(data.get("path") or "/"),
+                body,
+            )
+            if self.epoch != epoch:
+                return
+            await self.upload_body(incoming.request_id, epoch, result)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self.http_tasks.pop(incoming.request_id, None)
+
     async def _handle_command(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
         if not frame_acceptable(incoming, epoch, self.clock()):
             return
@@ -264,8 +329,26 @@ class WorkerConnectionManager:
         await transport.send(self._response(incoming, "ack", None, None).to_dict())
         self.ledger.begin(incoming.request_id, now)
         result, error_code = handle_command(incoming, self.supervisor)
+        self._note_event_control(incoming.payload.get("name"), result)
         self.ledger.finish(incoming.request_id, result, error_code, self.clock())
         await transport.send(self._response(incoming, "result", result, error_code).to_dict())
+
+    def _note_event_control(self, name: Any, result: dict[str, Any] | None) -> None:
+        if name not in {"pause_events", "resume_events", "stop_events"} or not result:
+            return
+        directory = str(result.get("directory") or "")
+        if name == "pause_events":
+            self.paused_directories.add(directory)
+            self.stopped_directories.discard(directory)
+            return
+        if name == "resume_events":
+            self.paused_directories.discard(directory)
+            return
+        self.stopped_directories.add(directory)
+        self.paused_directories.discard(directory)
+        running = self.event_tasks.pop(directory, None)
+        if running is not None:
+            running.cancel()
 
     async def _recv(self, transport: FrameTransport) -> WorkerMessage:
         try:

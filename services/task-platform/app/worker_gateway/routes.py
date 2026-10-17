@@ -12,8 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
 from app.database import get_session
+from app.gateway.security import verify_gateway_key
 from app.models import WorkerCommand, WorkerInstance
 from app.worker_gateway.admin_key import warn_if_admin_key_missing
+from app.worker_gateway.data_channel import DataChannel
 from app.worker_gateway.protocol import WorkerGatewayError
 from app.worker_gateway.service import get_gateway
 
@@ -29,6 +31,9 @@ _STATUS = {
     "invalid_message": 400,
     "duplicate_request": 409,
     "epoch_conflict": 409,
+    "body_too_large": 413,
+    "response_too_large": 413,
+    "unknown_command": 404,
 }
 
 
@@ -177,6 +182,81 @@ async def get_command(
     if command is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_command", "message": "指令不存在"})
     return _command_body(command, delivered=False, replayed=False, error_code=None)
+
+
+class UploadBody(BaseModel):
+    upload_id: str = Field(min_length=1, max_length=80)
+    http_status: int = Field(ge=100, le=599)
+    headers: dict[str, str] = Field(default_factory=dict)
+    content_type: str | None = None
+    chunk: str = ""
+    complete: bool = True
+
+
+def _bearer(authorization: str | None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise WorkerGatewayError("unauthorized", "需要登记 token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise WorkerGatewayError("unauthorized", "需要登记 token")
+    return token
+
+
+async def _worker_for_token(session: AsyncSession, token: str) -> WorkerInstance:
+    rows = (await session.scalars(select(WorkerInstance))).all()
+    for row in rows:
+        if verify_gateway_key(token, row.token_digest):
+            return row
+    raise WorkerGatewayError("unauthorized", "登记 token 无效")
+
+
+@router.get("/data/{request_id}/request")
+async def fetch_request_body(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+    authorization: Annotated[str | None, Header()] = None,
+    epoch: Annotated[int | None, Header(alias="X-Astra-Worker-Epoch")] = None,
+) -> dict[str, Any]:
+    try:
+        if epoch is None:
+            raise WorkerGatewayError("unauthorized", "缺少 epoch")
+        worker = await _worker_for_token(session, _bearer(authorization))
+        return await DataChannel(get_gateway()).fetch_request(
+            session,
+            request_id=request_id,
+            worker_instance_id=worker.id,
+            epoch=epoch,
+        )
+    except WorkerGatewayError as exc:
+        _raise(exc)
+
+
+@router.put("/data/{request_id}/response")
+async def upload_response_body(
+    request_id: str,
+    body: UploadBody,
+    session: AsyncSession = Depends(get_session),
+    authorization: Annotated[str | None, Header()] = None,
+    epoch: Annotated[int | None, Header(alias="X-Astra-Worker-Epoch")] = None,
+) -> dict[str, Any]:
+    try:
+        if epoch is None:
+            raise WorkerGatewayError("unauthorized", "缺少 epoch")
+        worker = await _worker_for_token(session, _bearer(authorization))
+        return await DataChannel(get_gateway()).commit_upload(
+            session,
+            request_id=request_id,
+            worker_instance_id=worker.id,
+            epoch=epoch,
+            upload_id=body.upload_id,
+            http_status=body.http_status,
+            headers=body.headers,
+            content_type=body.content_type,
+            chunk=body.chunk,
+            complete=body.complete,
+        )
+    except WorkerGatewayError as exc:
+        _raise(exc)
 
 
 @router.websocket("/connect")

@@ -97,6 +97,7 @@ class OpenCodeExecutionEnvironment(Base):
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_root: Mapped[str] = mapped_column(Text, default="./workspaces")
     status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", index=True)
+    worker_channel: Mapped[str] = mapped_column(String(16), default="ssh", server_default="ssh")
     status_detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     labels: Mapped[list[str]] = mapped_column(JSON, default=list)
     last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -601,6 +602,7 @@ class WorkerCommand(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deadline_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    body_fetched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     delivery_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     delivery_state: Mapped[str] = mapped_column(
         String(16), default="unpublished", server_default="unpublished"

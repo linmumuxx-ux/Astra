@@ -279,6 +279,7 @@ class MemoryRouteBus:
         self.bound: dict[str, ConnectionQueues] = {}
         self._results: dict[str, tuple[float, dict[str, Any]]] = {}
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._texts: dict[str, tuple[float, str]] = {}
 
     def _remember_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> None:
         self.owners[worker_instance_id] = (
@@ -407,6 +408,29 @@ class MemoryRouteBus:
         for key in expired:
             del self._results[key]
 
+    async def put_text(self, key: str, value: str, ttl_seconds: float) -> None:
+        self._texts[key] = (time.monotonic() + ttl_seconds, value)
+
+    async def get_text(self, key: str) -> str | None:
+        item = self._texts.get(key)
+        if item is None:
+            return None
+        if item[0] <= time.monotonic():
+            self._texts.pop(key, None)
+            return None
+        return item[1]
+
+    async def delete_text(self, key: str) -> None:
+        self._texts.pop(key, None)
+
+    async def texts_with_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        now = time.monotonic()
+        found: list[tuple[str, str]] = []
+        for key, (deadline, raw) in list(self._texts.items()):
+            if key.startswith(prefix) and deadline > now:
+                found.append((key, raw))
+        return found
+
     async def aclose(self) -> None:
         return None
 
@@ -464,6 +488,30 @@ class RedisRouteBus:
 
     def _result_key(self, request_id: str) -> str:
         return f"{self.prefix}:result:{request_id}"
+
+    def _text_key(self, key: str) -> str:
+        return f"{self.prefix}:{key}"
+
+    async def put_text(self, key: str, value: str, ttl_seconds: float) -> None:
+        await self._connection().set(self._text_key(key), value, ex=max(1, int(ttl_seconds)))
+
+    async def get_text(self, key: str) -> str | None:
+        return await self._connection().get(self._text_key(key))
+
+    async def delete_text(self, key: str) -> None:
+        await self._connection().delete(self._text_key(key))
+
+    async def texts_with_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        client = self._connection()
+        pattern = f"{self._text_key(prefix)}*"
+        found: list[tuple[str, str]] = []
+        async for key in client.scan_iter(match=pattern, count=100):
+            raw = await client.get(key)
+            if raw is None:
+                continue
+            logical = key[len(self.prefix) + 1 :]
+            found.append((logical, raw))
+        return found
 
     async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> bool:
         if "|" in owner_id:

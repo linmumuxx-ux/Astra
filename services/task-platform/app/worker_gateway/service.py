@@ -16,7 +16,7 @@ from secrets import token_hex, token_urlsafe
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
@@ -32,6 +32,12 @@ from app.models import (
     utcnow,
 )
 from app.worker_gateway.bus import ConnectionQueues, build_route_bus
+from app.worker_gateway.data_channel import (
+    MAX_HTTP_IN_FLIGHT,
+    DataChannel,
+    http_frame_data,
+    side_effect_http,
+)
 from app.worker_gateway.protocol import (
     WorkerGatewayError,
     WorkerMessage,
@@ -275,9 +281,13 @@ class WorkerGateway:
         validate_command_name(name)
         if not isinstance(payload, dict):
             raise WorkerGatewayError("invalid_message", "payload 必须是对象")
+        if name == "http":
+            from app.worker_gateway.data_channel import encoded_body
+
+            encoded_body(payload)
         existing = await session.scalar(select(WorkerCommand).where(WorkerCommand.request_id == request_id))
         if existing is not None:
-            self._require_same_command(existing, worker_instance_id, name, payload)
+            self._require_same_command(existing, worker_instance_id, name, payload, session_id)
             return DispatchResult(existing, False, True, None)
         instance = await session.get(WorkerInstance, worker_instance_id)
         if instance is None:
@@ -290,7 +300,7 @@ class WorkerGateway:
             environment_id=instance.environment_id,
             session_id=session_id,
             message_type="command",
-            payload={"name": name, "data": payload},
+            payload={"name": name, "data": self._publish_data(name, payload)},
         )
         frame.epoch = instance.epoch
         frame.expires_at = int((now + timedelta(seconds=timeout)).timestamp())
@@ -325,20 +335,30 @@ class WorkerGateway:
             )
             if stored is None:
                 raise
-            self._require_same_command(stored, worker_instance_id, name, payload)
+            self._require_same_command(stored, worker_instance_id, name, payload, session_id)
             return DispatchResult(stored, False, True, None)
+        if name == "http":
+            await DataChannel(self).stage_request(command)
         if not online:
             return DispatchResult(command, False, False, "offline")
         delivered, reason = await self._handoff(command.id, owner_only=False)
+        if not delivered and reason == "http_busy":
+            return DispatchResult(command, False, False, None)
         return DispatchResult(command, delivered, False, None if delivered else reason)
 
     def _require_same_command(
-        self, existing: WorkerCommand, worker_instance_id: str, name: str, payload: dict[str, Any]
+        self,
+        existing: WorkerCommand,
+        worker_instance_id: str,
+        name: str,
+        payload: dict[str, Any],
+        session_id: str | None,
     ) -> None:
         if (
             existing.worker_instance_id != worker_instance_id
             or existing.name != name
             or existing.payload != payload
+            or existing.session_id != session_id
         ):
             raise WorkerGatewayError("duplicate_request", "request_id 已用于其他指令")
 
@@ -366,10 +386,13 @@ class WorkerGateway:
                     )
                 )
             ).all()
-            pending = [(row.id, row.name, row.delivery_state) for row in rows]
+            pending = [
+                (row.id, row.name, row.delivery_state, row.payload if isinstance(row.payload, dict) else {})
+                for row in rows
+            ]
         delivered = 0
-        for command_id, name, state in pending:
-            if name in SIDE_EFFECT_COMMANDS and state != "unpublished":
+        for command_id, name, state, payload in pending:
+            if self._side_effect(name, payload) and state != "unpublished":
                 continue
             ok, _reason = await self._handoff(command_id, owner_only=True)
             if ok:
@@ -381,7 +404,7 @@ class WorkerGateway:
             command = await session.get(WorkerCommand, command_id)
             if command is None or command.status != "pending":
                 return False, "offline"
-            if command.name in SIDE_EFFECT_COMMANDS and command.delivery_state != "unpublished":
+            if self._side_effect(command.name, command.payload) and command.delivery_state != "unpublished":
                 return False, "needs_reconcile"
             instance = await session.get(WorkerInstance, command.worker_instance_id)
             if instance is None or instance.epoch != command.epoch:
@@ -397,6 +420,11 @@ class WorkerGateway:
             attempts = command.delivery_attempts + 1
             worker_id = command.worker_instance_id
             epoch = command.epoch
+            if command.name == "http":
+                running = await self._http_inflight(session, worker_id, epoch, command.id)
+                if running >= MAX_HTTP_IN_FLIGHT:
+                    await session.rollback()
+                    return False, "http_busy"
             current_instance = (
                 select(WorkerInstance.id)
                 .where(WorkerInstance.id == worker_id, WorkerInstance.epoch == epoch)
@@ -479,6 +507,38 @@ class WorkerGateway:
             )
             await session.commit()
 
+    async def _http_inflight(
+        self, session: AsyncSession, worker_id: str, epoch: int, command_id: int
+    ) -> int:
+        running = await session.scalar(
+            select(func.count())
+            .select_from(WorkerCommand)
+            .where(
+                WorkerCommand.worker_instance_id == worker_id,
+                WorkerCommand.epoch == epoch,
+                WorkerCommand.name == "http",
+                WorkerCommand.id != command_id,
+                or_(
+                    WorkerCommand.status == "accepted",
+                    and_(
+                        WorkerCommand.status == "pending",
+                        WorkerCommand.delivery_state.in_(("uncertain", "published")),
+                    ),
+                ),
+            )
+        )
+        return int(running or 0)
+
+    @staticmethod
+    def _publish_data(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name == "http":
+            return http_frame_data(payload)
+        return payload
+
+    @staticmethod
+    def _side_effect(name: str, payload: dict[str, Any] | None) -> bool:
+        return name in SIDE_EFFECT_COMMANDS or side_effect_http(name, payload)
+
     def _command_frame(self, command: WorkerCommand) -> dict[str, Any]:
         deadline = command.deadline_at or (
             utcnow() + timedelta(seconds=self.settings.worker_gateway_command_timeout_seconds)
@@ -489,7 +549,7 @@ class WorkerGateway:
             environment_id=command.environment_id,
             session_id=command.session_id,
             message_type="command",
-            payload={"name": command.name, "data": command.payload},
+            payload={"name": command.name, "data": self._publish_data(command.name, command.payload or {})},
         )
         message.epoch = command.epoch
         message.expires_at = int(deadline.timestamp())
@@ -721,6 +781,20 @@ class WorkerGateway:
                 continue
             if message.type == "event":
                 lease.buffer_event(message.to_dict())
+                payload = message.payload if isinstance(message.payload, dict) else {}
+                directory = str(payload.get("directory") or "")
+                if directory and message.epoch == auth.epoch:
+                    from app.worker_gateway.events import EventLog
+
+                    await EventLog(
+                        self.bus, limit=self.settings.worker_gateway_event_queue_size
+                    ).append(
+                        worker_id=auth.worker_instance_id,
+                        epoch=auth.epoch,
+                        directory=directory,
+                        payload=payload,
+                    )
+                    await self.publish_event_control(auth, directory)
                 continue
             if message.type != "response":
                 continue
@@ -739,6 +813,30 @@ class WorkerGateway:
                 current = await self.epoch_is_current(session, auth.worker_instance_id, auth.epoch)
             if not current:
                 raise ConnectionError("epoch_stale")
+
+    async def publish_event_control(self, auth: AuthOk, directory: str) -> str | None:
+        from app.worker_gateway.events import EventLog
+
+        action = await EventLog(
+            self.bus, limit=self.settings.worker_gateway_event_queue_size
+        ).control(worker_id=auth.worker_instance_id, epoch=auth.epoch, directory=directory)
+        if action is None:
+            return None
+        queues = self.bus.bound.get(auth.worker_instance_id)
+        if queues is None:
+            return action
+        message = envelope(
+            request_id=f"evt-{uuid4().hex}",
+            worker_instance_id=auth.worker_instance_id,
+            environment_id=auth.environment_id,
+            session_id=None,
+            message_type="command",
+            payload={"name": action, "data": {"directory": directory}},
+        )
+        message.epoch = auth.epoch
+        message.expires_at = int(time.time()) + 30
+        await queues.put_control(message.to_dict())
+        return action
 
     async def _route_response(self, message: WorkerMessage) -> None:
         try:
