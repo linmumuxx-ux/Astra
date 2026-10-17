@@ -226,6 +226,10 @@ class RemoteProvisioner:
         self.target_binary = environment.opencode_path
         self.config_path = None
 
+    def _agent_interpreter(self) -> str:
+        configured = (self.settings.remote_python or "").strip()
+        return configured or "python3"
+
     def _gateway_service(self, db, runtime=None):
         return GatewayControlService(
             db,
@@ -371,6 +375,7 @@ class RemoteProvisioner:
             self.settings.remote_npm_registry,
             stem + ".json",
             self.operation["id"],
+            self._agent_interpreter(),
         ]
         command = (
             f"timeout -k 10 {self.settings.remote_deploy_timeout_seconds} bash {shlex.quote(stem + '.sh')} "
@@ -447,30 +452,12 @@ class RemoteProvisioner:
         await self.step(emit, "安装 Worker Agent", "running")
         gateway_url, mcp_url = self._direct_endpoints()
         agent_gateway = require_direct_url(self.settings.worker_agent_gateway_url, "Worker Gateway")
-        from app.worker_gateway.service import get_gateway
-
-        async with SessionLocal() as session:
-            enrolled = await get_gateway().enroll(session, self.environment.id)
         port = int(self.environment.opencode_server_port)
         opencode_unit = f"astra-opencode-{self.environment.id}.service"
         worker_unit = f"astra-worker-{self.environment.id}.service"
         token_path = f"/etc/astra/worker-{self.environment.id}.env"
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
-        env = "\n".join(
-            [
-                f"ASTRA_WORKER_TOKEN={enrolled.token}",
-                f"ASTRA_WORKER_GATEWAY_URL={agent_gateway}",
-                f"ASTRA_WORKER_INSTANCE_ID={enrolled.worker_instance_id}",
-                f"ASTRA_WORKER_ENVIRONMENT_ID={self.environment.id}",
-                f"ASTRA_REMOTE_GATEWAY_URL={gateway_url}",
-                f"ASTRA_MCP_RESOURCE_URL={mcp_url}",
-                f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
-                f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
-                f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
-                f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
-            ]
-        ) + "\n"
         opencode_unit_text = (
             "[Unit]\nDescription=Astra OpenCode\nAfter=network-online.target\n"
             "[Service]\n"
@@ -491,11 +478,36 @@ class RemoteProvisioner:
         await self._command("install -d -m 755 /opt/astra/worker")
         await self._command("install -d -m 700 /etc/astra /etc/systemd/system")
         await self.ssh.write_file(wheel_path, wheel_bytes, mode=0o644)
-        await self._command(
-            "python3 -m venv /opt/astra/worker/venv && "
+        interpreter = shlex.quote(self._agent_interpreter())
+        index = (self.settings.remote_pip_index_url or "").strip()
+        pip_index = f"-i {shlex.quote(index)} " if index else ""
+        pip = (
             f"{AGENT_PYTHON} -m pip install --disable-pip-version-check --upgrade --force-reinstall "
-            f"{shlex.quote(wheel_path)}"
+            f"{pip_index}{shlex.quote(wheel_path)}"
         )
+        await self._command(
+            f"{interpreter} -m venv /opt/astra/worker/venv && {pip}",
+            timeout=300,
+        )
+        from app.worker_gateway.service import get_gateway
+
+        async with SessionLocal() as session:
+            enrolled = await get_gateway().enroll(session, self.environment.id)
+        self.secrets.append(enrolled.token)
+        env = "\n".join(
+            [
+                f"ASTRA_WORKER_TOKEN={enrolled.token}",
+                f"ASTRA_WORKER_GATEWAY_URL={agent_gateway}",
+                f"ASTRA_WORKER_INSTANCE_ID={enrolled.worker_instance_id}",
+                f"ASTRA_WORKER_ENVIRONMENT_ID={self.environment.id}",
+                f"ASTRA_REMOTE_GATEWAY_URL={gateway_url}",
+                f"ASTRA_MCP_RESOURCE_URL={mcp_url}",
+                f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
+                f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
+                f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
+                f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
+            ]
+        ) + "\n"
         await self.ssh.write_file(token_path, env.encode(), mode=0o600)
         await self.ssh.write_file(
             f"/etc/systemd/system/{opencode_unit}", opencode_unit_text.encode(), mode=0o644
@@ -511,7 +523,6 @@ class RemoteProvisioner:
             f"systemctl start {shlex.quote(opencode_unit)} && "
             f"systemctl restart {shlex.quote(worker_unit)}"
         )
-        self.secrets.append(enrolled.token)
         await self.step(emit, "安装 Worker Agent", "passed", enrolled.worker_instance_id)
 
     async def _wait_until_online(self):

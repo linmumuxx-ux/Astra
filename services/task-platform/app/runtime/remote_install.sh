@@ -24,11 +24,21 @@ old_glibc=false
 glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}' || true)
 if test -n "$glibc" && test "$(printf '2.28\n%s\n' "$glibc" | sort -V | head -1)" != 2.28; then old_glibc=true; fi
 if test "$old_glibc" = true && test "$arch" != x64; then echo '旧 glibc 仅支持 x86_64，请升级系统' >&2; exit 1; fi
+python_bin=${8:-python3}
+if ! "$python_bin" -c 'import sys; sys.exit(sys.version_info<(3,11))' >/dev/null 2>&1; then
+  echo '需要 Python ≥3.11' >&2
+  exit 1
+fi
+py_mm=$("$python_bin" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+venv_pkg="python${py_mm}-venv"
+install_venv=false
+if ! "$python_bin" -c 'import ensurepip' >/dev/null 2>&1; then install_venv=true; fi
 if test "$(id -u)" = 0; then
   if command -v apt-get >/dev/null; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq ca-certificates curl tar xz-utils unzip git build-essential libcurl4-openssl-dev libssl-dev libexpat1-dev zlib1g-dev gettext
+    if test "$install_venv" = true; then apt-get install -y -qq "$venv_pkg" || apt-get install -y -qq python3-venv; fi
   elif command -v yum >/dev/null; then
     yum_args=()
     if test "$ID" = centos && test "${VERSION_ID%%.*}" = 7; then
@@ -54,6 +64,7 @@ REPO
 else
   for tool in curl tar xz git flock; do command -v "$tool" >/dev/null || { echo "缺少 $tool，请管理员安装系统依赖" >&2; exit 1; }; done
 fi
+if ! "$python_bin" -c 'import ensurepip' >/dev/null 2>&1; then echo "需要安装 $venv_pkg" >&2; exit 1; fi
 step '系统依赖' passed
 step 'Node.js 与 npm 镜像' running
 node_dist=linux-$arch

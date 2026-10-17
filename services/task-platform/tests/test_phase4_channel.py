@@ -256,6 +256,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
             commands.append(command)
             if "pip install" in command:
                 assert any(path.endswith(".whl") for path in files)
+                assert not any(path.endswith(".env") for path in files)
             if "session/status" in command:
                 return 0, "", ""
             if "$HOME" in command:
@@ -485,6 +486,23 @@ def test_remote_port_default_is_4096_and_llm_wiki_tunnel_stays():
     assert "llm_wiki_api_base_url" in (platform / "app/llm_wiki.py").read_text(encoding="utf-8")
 
 
+def _venv_python(tmp_path):
+    try:
+        probe = subprocess.run(["python3", "-c", "import ensurepip"], capture_output=True)
+    except FileNotFoundError:
+        pytest.skip("没有 python3")
+    if probe.returncode != 0:
+        pytest.skip("没有 ensurepip")
+    venv = tmp_path / "pip-venv"
+    created = subprocess.run(["python3", "-m", "venv", str(venv)], capture_output=True, text=True)
+    if created.returncode != 0:
+        pytest.skip("python3 -m venv 不可用")
+    python = venv / "bin" / "python"
+    if not python.is_file():
+        pytest.skip("venv 没有 python")
+    return python
+
+
 def test_agent_wheel_imports_without_the_backend(tmp_path):
     filename, payload = agent_wheel()
     wheel = tmp_path / filename
@@ -492,7 +510,7 @@ def test_agent_wheel_imports_without_the_backend(tmp_path):
     target = tmp_path / "site"
     subprocess.check_call(
         [
-            sys.executable,
+            str(_venv_python(tmp_path)),
             "-m",
             "pip",
             "install",

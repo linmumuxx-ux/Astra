@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     remote_opencode_version: str = "1.18.35"
     remote_node_version: str = "22.23.3"
     remote_npm_registry: str = "https://registry.npmmirror.com"
+    # Empty uses python3 on the remote. The interpreter must already be >= 3.11.
+    remote_python: str = ""
+    # Empty keeps pip's default index. A value is passed as pip -i.
+    remote_pip_index_url: str = ""
     remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)
     remote_gateway_local_url: str = "http://127.0.0.1:8110"
     remote_gateway_public_url: str | None = None

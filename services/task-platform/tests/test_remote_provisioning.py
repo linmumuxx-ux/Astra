@@ -1,9 +1,11 @@
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -466,3 +468,173 @@ chmod 755 "$prefix/bin/opencode"
     again = subprocess.run(["bash", "-eu", "-c", source], env=env, capture_output=True, text=True)
     assert again.returncode == 0, again.stderr
     assert len(calls.read_text().splitlines()) == 1
+
+
+def _install_script(*extra, home: Path, payload: Path):
+    return subprocess.run(
+        [
+            "bash",
+            "app/runtime/remote_install.sh",
+            "/srv/project",
+            "/usr/local/bin/opencode",
+            "22.23.3",
+            "1.18.35",
+            "https://registry.example.invalid",
+            str(payload),
+            "op123",
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+        timeout=20,
+    )
+
+
+def test_install_script_rejects_python_below_3_11(tmp_path):
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}")
+    result = _install_script(str(tmp_path / "missing-python"), home=tmp_path, payload=payload)
+    assert result.returncode != 0
+    assert "需要 Python ≥3.11" in result.stderr
+    assert "apt-get" not in result.stderr + result.stdout
+    assert "nodejs.org" not in result.stderr + result.stdout
+
+
+def test_install_script_installs_venv_package_for_the_selected_python(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    python = bindir / "python3.12"
+    python.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    *ensurepip*) exit 1 ;;\n"
+        "    *print*) printf '3.12\\n'; exit 0 ;;\n"
+        "  esac\n"
+        "done\n"
+        "exit 0\n"
+    )
+    python.chmod(0o755)
+    apt_log = tmp_path / "apt.log"
+    apt = bindir / "apt-get"
+    apt.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$APT_LOG\"\nexit 0\n")
+    apt.chmod(0o755)
+    payload = tmp_path / "payload.json"
+    payload.write_text("{}")
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "APT_LOG": str(apt_log),
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "app/runtime/remote_install.sh",
+            "/srv/project",
+            "/usr/local/bin/opencode",
+            "22.23.3",
+            "1.18.35",
+            "https://registry.example.invalid",
+            str(payload),
+            "op123",
+            str(python),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    assert result.returncode != 0
+    assert "需要安装 python3.12-venv" in result.stderr
+    assert "nodejs.org" not in result.stderr + result.stdout
+    if os.geteuid() == 0:
+        assert "python3.12-venv" in apt_log.read_text()
+    else:
+        assert not apt_log.exists()
+
+
+def _agent_install_worker(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "remote_python", "/usr/bin/python3.12")
+    monkeypatch.setattr(settings, "remote_pip_index_url", "https://pypi.example.invalid/simple")
+    environment = SimpleNamespace(
+        id=7,
+        opencode_server_port=4096,
+        workspace_root="/srv/project",
+        ssh_password="secret",
+        model_name="",
+        opencode_path="/usr/local/bin/opencode",
+    )
+    worker = RemoteProvisioner(environment, {"id": "op", "action": "deploy"})
+    calls = []
+
+    class SSH:
+        async def write_file(self, path, data, mode=0o644):
+            calls.append(path)
+
+        async def run_command(self, command):
+            return 0, "", ""
+
+    worker.ssh = SSH()
+
+    async def command(self, text, timeout=30):
+        calls.append((timeout, text))
+        return ""
+
+    monkeypatch.setattr(RemoteProvisioner, "_command", command)
+    return worker, calls
+
+
+@pytest.mark.asyncio
+async def test_failed_venv_does_not_rotate_the_worker_token(monkeypatch):
+    worker, calls = _agent_install_worker(monkeypatch)
+
+    class Gateway:
+        async def enroll(self, session, environment_id):
+            raise AssertionError("venv 失败不应轮换 token")
+
+    monkeypatch.setattr("app.worker_gateway.service.get_gateway", lambda: Gateway())
+
+    async def command(self, text, timeout=30):
+        calls.append((timeout, text))
+        if "pip install" in text:
+            raise RuntimeError("pip failed")
+        return ""
+
+    monkeypatch.setattr(RemoteProvisioner, "_command", command)
+
+    async def emit(_event):
+        return None
+
+    with pytest.raises(RuntimeError, match="pip failed"):
+        await worker._install_units(emit)
+    assert not any(item == "enroll" for item in calls)
+    assert not any(isinstance(item, str) and item.endswith(".env") for item in calls)
+    pip = next(item for item in calls if isinstance(item, tuple) and "pip install" in item[1])
+    assert pip[0] == 300
+    assert pip[1].startswith("/usr/bin/python3.12 -m venv /opt/astra/worker/venv && ")
+    assert "-i https://pypi.example.invalid/simple " in pip[1]
+
+
+@pytest.mark.asyncio
+async def test_enroll_happens_after_the_venv_and_writes_the_token(monkeypatch):
+    worker, calls = _agent_install_worker(monkeypatch)
+
+    class Gateway:
+        async def enroll(self, session, environment_id):
+            calls.append("enroll")
+            return SimpleNamespace(token="wtk_secret", worker_instance_id="wrk_test")
+
+    monkeypatch.setattr("app.worker_gateway.service.get_gateway", lambda: Gateway())
+
+    async def emit(_event):
+        return None
+
+    await worker._install_units(emit)
+    pip_at = next(i for i, item in enumerate(calls) if isinstance(item, tuple) and "pip install" in item[1])
+    enroll_at = calls.index("enroll")
+    token_at = next(i for i, item in enumerate(calls) if isinstance(item, str) and item.endswith(".env"))
+    assert pip_at < enroll_at < token_at
+    assert calls[pip_at][0] == 300
