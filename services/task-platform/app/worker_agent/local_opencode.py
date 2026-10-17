@@ -38,6 +38,16 @@ def bind_local_opencode(manager, *, timeout: float = 60) -> None:
                 response.raise_for_status()
                 return response.json()
 
+    async def fetch_upload(request_id: str, epoch: int) -> bytes:
+        async with asyncio.timeout(timeout):
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(
+                    f"{base}/api/worker-gateway/data/{request_id}/request",
+                    headers=_auth(token, epoch),
+                )
+                response.raise_for_status()
+                return response.content
+
     async def local_request(method: str, path: str, fetched: Any) -> dict[str, Any]:
         query: dict[str, Any] = {}
         raw = fetched
@@ -85,11 +95,17 @@ def bind_local_opencode(manager, *, timeout: float = 60) -> None:
                             "content_type": result.get("content_type"),
                             "chunk": piece,
                             "complete": index == len(pieces) - 1,
+                            **(
+                                {"result": result["result"]}
+                                if isinstance(result.get("result"), dict)
+                                else {}
+                            ),
                         },
                     )
                     response.raise_for_status()
 
     manager.fetch_body = fetch_body
+    manager.fetch_upload = fetch_upload
     manager.local_request = local_request
     manager.upload_body = upload_body
 

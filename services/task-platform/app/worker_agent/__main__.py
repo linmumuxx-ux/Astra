@@ -10,6 +10,7 @@ import os
 
 from app.config.settings import get_settings
 from app.worker_agent.connection import WorkerConnectionManager, load_agent_config
+from app.worker_agent.files import sweep_partials
 from app.worker_agent.local_opencode import bind_local_opencode
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import connect_websocket
@@ -17,6 +18,8 @@ from app.worker_agent.transport import connect_websocket
 
 async def _main() -> None:
     config = load_agent_config(dict(os.environ))
+    if config.workspace_root:
+        sweep_partials(config.workspace_root)
     manager = WorkerConnectionManager(config, supervisor=RuntimeSupervisor())
     bind_local_opencode(manager, timeout=get_settings().opencode_control_timeout_seconds)
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
+import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -13,6 +15,13 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.worker_agent.files import (
+    FILE_COMMAND_LIMIT,
+    FILE_COMMANDS,
+    FileCommandError,
+    connection_gate,
+    execute_file_command,
+)
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import WorkerTransportError
 from app.worker_gateway.protocol import (
@@ -62,6 +71,7 @@ class _Executed:
     result: dict[str, Any] | None
     error_code: str | None
     expires_at: float
+    error: str | None = None
 
 
 class CommandLedger:
@@ -86,8 +96,9 @@ class CommandLedger:
         result: dict[str, Any] | None,
         error_code: str | None,
         now: float,
+        error: str | None = None,
     ) -> None:
-        self._put(request_id, _Executed("done", result, error_code, now + self.ttl_seconds))
+        self._put(request_id, _Executed("done", result, error_code, now + self.ttl_seconds, error))
 
     def _put(self, request_id: str, item: _Executed) -> None:
         if request_id not in self._items:
@@ -183,12 +194,16 @@ class WorkerConnectionManager:
         self.delays: list[float] = []
         self.ledger = CommandLedger(config.command_dedupe_limit, config.command_dedupe_ttl_seconds)
         self.http_tasks: dict[str, asyncio.Task[None]] = {}
+        self.file_tasks: dict[str, asyncio.Task[None]] = {}
+        self.file_slots = asyncio.Semaphore(FILE_COMMAND_LIMIT)
         self.event_tasks: dict[str, asyncio.Task[None]] = {}
+        self.closed = threading.Event()
         self.event_seq: dict[str, int] = {}
         self.paused_directories: set[str] = set()
         self.stopped_directories: set[str] = set()
         self.resume_waiters: dict[str, asyncio.Event] = {}
         self.fetch_body = None
+        self.fetch_upload = None
         self.local_request = None
         self.upload_body = None
 
@@ -220,6 +235,7 @@ class WorkerConnectionManager:
         config = self.config
         heartbeat: asyncio.Task[None] | None = None
         heartbeat_stop = asyncio.Event()
+        self.closed = threading.Event()
         try:
             auth = envelope(
                 request_id=f"auth-{config.worker_instance_id}",
@@ -267,6 +283,9 @@ class WorkerConnectionManager:
                 if name == "http":
                     self._start_http(transport, incoming, epoch)
                     continue
+                if name in FILE_COMMANDS:
+                    self._start_file(transport, incoming, epoch)
+                    continue
                 if name == "subscribe_events":
                     self._start_events(transport, incoming, epoch)
                     continue
@@ -277,11 +296,18 @@ class WorkerConnectionManager:
                         running.cancel()
                 await self._handle_command(transport, incoming, epoch)
         finally:
+            self.closed.set()
             for task in list(self.http_tasks.values()):
                 task.cancel()
             for task in list(self.event_tasks.values()):
                 task.cancel()
-            pending = [*self.http_tasks.values(), *self.event_tasks.values()]
+            for task in list(self.file_tasks.values()):
+                task.cancel()
+            pending = [
+                *self.http_tasks.values(),
+                *self.event_tasks.values(),
+                *self.file_tasks.values(),
+            ]
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
             heartbeat_stop.set()
@@ -350,6 +376,90 @@ class WorkerConnectionManager:
             task = asyncio.current_task()
             if self.http_tasks.get(incoming.request_id) is task:
                 self.http_tasks.pop(incoming.request_id, None)
+
+    def _start_file(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
+        if not frame_acceptable(incoming, epoch, self.clock()):
+            return
+        current = self.file_tasks.get(incoming.request_id)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(self._execute_file(transport, incoming, epoch))
+        self.file_tasks[incoming.request_id] = task
+
+    async def _execute_file(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
+        """File work stays off the read loop and off the OpenCode http slots."""
+
+        try:
+            if not frame_acceptable(incoming, epoch, self.clock()):
+                return
+            recorded = self.ledger.lookup(incoming.request_id, self.clock())
+            if recorded is not None and recorded.state == "executing":
+                await transport.send(self._duplicate(incoming).to_dict())
+                return
+            if recorded is not None and recorded.state == "done":
+                await transport.send(
+                    self._response(
+                        incoming, "result", recorded.result, recorded.error_code, error=recorded.error
+                    ).to_dict()
+                )
+                return
+            await transport.send(self._response(incoming, "ack", None, None).to_dict())
+            self.ledger.begin(incoming.request_id, self.clock())
+            async with self.file_slots:
+                if self.closed.is_set() or self.epoch != epoch:
+                    raise FileCommandError("epoch_conflict", "epoch 已切换")
+                name = str(incoming.payload.get("name") or "")
+                content = None
+                if name == "upload_file":
+                    if self.fetch_upload is None:
+                        raise FileCommandError("io", "上传正文不存在")
+                    content = await self.fetch_upload(incoming.request_id, epoch)
+                closed = self.closed
+                result, body = await asyncio.to_thread(
+                    execute_file_command,
+                    incoming.payload,
+                    allowed_root=self.config.workspace_root,
+                    request_id=incoming.request_id,
+                    deadline=float(incoming.expires_at or 0),
+                    content=content,
+                    gate=connection_gate(closed, lambda: self.epoch == epoch),
+                )
+            if body:
+                if self.upload_body is None:
+                    raise FileCommandError("io", "上传通道不可用")
+                encoded = base64.b64encode(body).decode("ascii")
+                await self.upload_body(
+                    incoming.request_id,
+                    epoch,
+                    {"status": 200, "body": encoded, "headers": {}, "result": result},
+                )
+            else:
+                await transport.send(self._response(incoming, "result", result, None).to_dict())
+            self.ledger.finish(incoming.request_id, result, None, self.clock())
+        except FileCommandError as exc:
+            self.ledger.finish(incoming.request_id, None, exc.code, self.clock(), error=str(exc))
+            try:
+                await transport.send(
+                    self._response(incoming, "result", None, exc.code, error=str(exc)).to_dict()
+                )
+            except (ConnectionError, OSError):
+                return
+        except asyncio.CancelledError:
+            return
+        except (ConnectionError, OSError):
+            return
+        except Exception as exc:
+            self.ledger.finish(incoming.request_id, None, "io", self.clock())
+            try:
+                await transport.send(
+                    self._response(incoming, "result", None, "io", error=str(exc) or "打开路径失败").to_dict()
+                )
+            except (ConnectionError, OSError):
+                return
+        finally:
+            task = asyncio.current_task()
+            if self.file_tasks.get(incoming.request_id) is task:
+                self.file_tasks.pop(incoming.request_id, None)
 
     def _start_events(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
         if not frame_acceptable(incoming, epoch, self.clock()):
@@ -557,11 +667,14 @@ class WorkerConnectionManager:
         stage: str,
         result: dict[str, Any] | None,
         error_code: str | None,
+        error: str | None = None,
     ) -> WorkerMessage:
         payload: dict[str, Any] = {"stage": stage, "ok": error_code is None}
         if stage == "result":
             payload["result"] = result
             payload["error_code"] = error_code
+            if error:
+                payload["error"] = error
         return envelope(
             request_id=command.request_id,
             worker_instance_id=self.config.worker_instance_id,
