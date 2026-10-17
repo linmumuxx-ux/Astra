@@ -35,6 +35,7 @@ export interface ChatMessage {
   sender: string;
   speaker?: string;
   text: string;
+  tools?: { id: string; name: string; input: string; output: string; state: string }[];
   attachments: Attachment[];
   created_at: string;
 }

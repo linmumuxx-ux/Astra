@@ -364,6 +364,39 @@ def merge_transcript(
     return merged
 
 
+def tool_cards(content: Any) -> list[dict[str, str]]:
+    if not isinstance(content, list):
+        return []
+    cards: list[dict[str, str]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "tool_call":
+            cards.append(
+                {
+                    "id": str(block.get("id") or ""),
+                    "name": str(block.get("name") or ""),
+                    "input": str(block.get("input") or ""),
+                    "output": "",
+                    "state": str(block.get("state") or ""),
+                }
+            )
+        elif kind == "tool_result":
+            output = block.get("output")
+            text = block_text(output) if isinstance(output, list) else str(output or "")
+            cards.append(
+                {
+                    "id": str(block.get("id") or ""),
+                    "name": str(block.get("name") or ""),
+                    "input": "",
+                    "output": text,
+                    "state": str(block.get("state") or ""),
+                }
+            )
+    return cards
+
+
 def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, Any]]:
     """私聊历史只读 AgentScope。发言人取 Msg.name，不回退成匿名 user。"""
 
@@ -375,9 +408,10 @@ def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, An
         if role not in {"user", "assistant"}:
             continue
         text = block_text(message.get("content"))
+        tools = tool_cards(message.get("content"))
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
         attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
-        if role == "assistant" and not text:
+        if role == "assistant" and not text and not tools:
             continue
         raw_id = message.get("id")
         name = message.get("name") if isinstance(message.get("name"), str) else ""
@@ -388,6 +422,7 @@ def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, An
                 "sender": "user" if role == "user" else employee_id,
                 "speaker": name or str(metadata.get("verified_uid") or ""),
                 "text": text,
+                "tools": tools,
                 "attachments": [item for item in attachments if isinstance(item, dict)],
                 "accepted": True,
                 "created_at": canonical_timestamp(created) if isinstance(created, str) else "",

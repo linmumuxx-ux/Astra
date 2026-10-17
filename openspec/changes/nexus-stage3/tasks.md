@@ -62,7 +62,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B。
 
-- [ ] C.1 投影 AgentScope 事件：流式增量、Markdown、工具调用和工具结果、错误与中断
+- [x] C.1 投影 AgentScope 事件：流式增量、Markdown、工具调用和工具结果、错误与中断
   - 完成：离开页面只断开浏览器连接，不取消服务端运行。重连先读历史和游标，再用事件 id 去重
   - 验证：工具卡和历史一致。断流后续接不重复、不乱序
 

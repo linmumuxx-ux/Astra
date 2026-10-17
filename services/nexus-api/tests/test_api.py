@@ -22,6 +22,7 @@ from nexus_api.main import (
     observe_stream_event,
     package_dir,
     repo_root,
+    session_transcript,
     stream_cursor,
 )
 
@@ -183,6 +184,34 @@ def test_channel_requires_a_member_and_does_not_script_peer_replies(client):
     assert triggered[0]["accepted"] is False
     messages = client.get(f"/api/v1/channels/{channel['id']}/messages").json()["messages"]
     assert [item["sender"] for item in messages] == ["user"]
+
+
+def test_session_transcript_keeps_speaker_and_tool_cards():
+    rows = session_transcript(
+        [
+            {
+                "id": "u",
+                "role": "user",
+                "name": "张三",
+                "metadata": {"verified_uid": "u1"},
+                "content": [{"type": "text", "text": "hi"}],
+            },
+            {
+                "id": "a",
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "ok"},
+                    {"type": "tool_call", "id": "c1", "name": "read", "input": "{\"path\":\"a\"}"},
+                    {"type": "tool_result", "id": "c1", "name": "read", "output": "file", "state": "success"},
+                ],
+            },
+        ],
+        "emp",
+    )
+    assert rows[0]["speaker"] == "张三"
+    assert rows[1]["text"] == "ok"
+    assert rows[1]["tools"][0]["input"] == "{\"path\":\"a\"}"
+    assert rows[1]["tools"][1]["output"] == "file"
 
 
 def test_model_input_includes_text_and_does_not_invent_binary_analysis():
