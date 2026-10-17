@@ -34,10 +34,10 @@
 
 ## 3. Workspace、文件与 Git
 
-- [ ] 3.1 文件浏览、Git diff 和上传改由 Worker 本地执行。目录和 worktree 准备已在阶段 2 完成。测试：已迁移环境这些调用不打开 SSH，也不读 `session_connection.py` 里抄来的密码；删除文件的 diff 在最后一级 ENOENT 时仍返回该变更；指向 workspace 内的绝对符号链接被拒绝；git 在指令截止时间被杀掉并返回 code=124；`/repo` 的 `status_porcelain` 超限时 `dirty=true`
+- [ ] 3.1 文件浏览、Git diff 和上传改由 Worker 本地执行。目录和 worktree 准备已在阶段 2 完成。测试：已迁移环境这些调用不打开 SSH，也不读 `session_connection.py` 里抄来的密码；删除文件的 diff 在最后一级 ENOENT 时仍返回该变更；最后一级符号链接指向外部时 `validate_path` 返回 `symlink_escape`；指向 workspace 内的绝对符号链接被拒绝；git argv 固定带 `-c core.fsmonitor=false`，调用方传入的 `-c` 被拒；git 在指令截止时间被杀掉并返回 code=124；`/repo` 的 `status_porcelain` 超限时 `dirty=true`
 - [ ] 3.2 浏览器继续使用现有 Workspace HTTP/SSE。测试：URL 和响应字段不变；`/file*` 在 `validate_path` 之后仍由 OpenCode 返回，OpenCode 再次解析路径的窗口与 SSH 现状相同
 - [ ] 3.3 上传经阶段 2 的 HTTP 拉取/上传端点传输；保留大小、权限、路径和校验和边界。测试：`read_file` 与 Git 原始字节以 base64 写入现有文本块，`size`、`sha256` 和 20 MiB 都按原始字节，Nexus 再按 utf-8 `errors=replace` 解码；不新增端点；Agent 用独立任务表和上限 4 的信号量，套接字关闭时取消，不占 8 路 http 槽，也不加数据库槽
-- [ ] 3.4 Worker 端校验真实路径、符号链接和 TOCTOU，校验上传校验和并清理暂存。测试：`validate_path` 用 O_PATH 打开父目录，最后一级 ENOENT 返回 `{relative}`，EXDEV/ELOOP 为 `symlink_escape`，ENOSYS 或 seccomp EPERM 为 `io`；workspace 从允许根的 fd 用 openat2 打开；openat2 的原子打开只覆盖 `read_file` 和 `upload_file`；残留 partial 只扫 `{根或 .astra-tasks}/*/uploads/.partial-*` 且不跟随符号链接；rename 后的 0600 孤儿在 CAS 失败时保留，等待者只在 rowcount 为 1 时被唤醒；阻塞函数在创建 partial 前和 rename 前各核对一次 epoch
+- [ ] 3.4 Worker 端校验真实路径、符号链接和 TOCTOU，校验上传校验和并清理暂存。测试：`validate_path` 先用 `openat2(O_PATH, RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS)` 打开完整相对路径，只有 ENOENT 才同样打开父目录并返回 `{relative}`，最后一级指向外部的符号链接是 `symlink_escape`，EXDEV/ELOOP 为 `symlink_escape`，ENOSYS 或 seccomp EPERM 为 `io`；workspace 从允许根的 fd 用 openat2 打开；openat2 的原子打开只覆盖 `read_file` 和 `upload_file`；残留 partial 在 Agent 启动时只扫 `{根或 .astra-tasks}/*/uploads/.partial-*` 且不跟随符号链接；rename 后的 0600 孤儿在 CAS 失败时保留，等待者只在 rowcount 为 1 时被唤醒；阻塞函数在创建 partial 前和 rename 前同时检查连接的 `closed` 事件和 epoch，套接字关闭而 epoch 未变时也不创建文件
 
 ## 4. Gateway、MCP 与部署
 

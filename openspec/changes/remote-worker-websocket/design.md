@@ -355,7 +355,7 @@ WebSocket 指令结果只放结构化字段，编码后必须小于 `worker_gate
 
 `http` 的单次组装上限仍是 8 MiB（`data_channel.py` 的 `MAX_BODY_BYTES`）。`upload_file` 的请求体、`read_file` 和 `git_readonly` 的响应仍走同一对 GET/PUT，分块仍是 256 KiB（`MAX_CHUNK_BYTES`）。不提高 `http` 的 8 MiB，也不把浏览器已经公开的 20 MB 收成 8 MB，也不新增端点。
 
-`read_file` 和 `git_readonly` 的正文是原始字节的 base64，写进现有的 UTF-8 文本块（`data_channel.py:143` 与 `161-179`）。`size`、`sha256` 和 20 MiB 上限都按 base64 解码前的原始字节计算。文本块的组装上限只放到这份 base64 的长度（20 MiB 原始字节约为 27 MiB），不按 utf-8 替换解码后的字符串计。Nexus 先做 base64 解码，再按 utf-8 `errors=replace` 得到文本，与 `ssh_client.py:302` 和 `workspace_changes.py:168` 一致。这样二进制 `git show` 的校验和就是原始字节，Nexus 也能自己重算。
+`read_file` 和 `git_readonly` 的正文是原始字节的 base64，写进现有的 UTF-8 文本块（`data_channel.py:143` 与 `161-179`）。`size`、`sha256` 和 20 MiB 上限都按编码前（即解码后）的原始字节计算。文本块的组装上限只放到这份 base64 的长度（20 MiB 原始字节约为 27 MiB），不按 utf-8 替换解码后的字符串计。Nexus 先做 base64 解码，再按 utf-8 `errors=replace` 得到文本，与 `ssh_client.py:302` 和 `workspace_changes.py:168` 一致。这样二进制 `git show` 的校验和就是原始字节，Nexus 也能自己重算。
 
 `upload_file` 的 GET 按已落库的指令名返回原始字节：`Content-Type: application/octet-stream`，并带 `X-Astra-Sha256`。URL 仍是 `GET /api/worker-gateway/data/{request_id}/request`。`http` 的 JSON 正文不变。
 
@@ -410,7 +410,7 @@ WebSocket 指令结果只放结构化字段，编码后必须小于 `worker_gate
 
 workspace 本身从允许根（`ASTRA_WORKER_WORKSPACE_ROOT`，或该根父目录下的 `.astra-tasks`）的目录 fd 用 `openat2` 打开，标志为 `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`。不用 `realpath` 得到字符串再单独 `open`。允许范围与 `worker_agent/workspace.py` 的 `_require_allowed` 相同。`openat2` 返回 `ENOSYS`，或 seccomp 造成的 `EPERM`，指令失败为 `io`，不用字符串路径打开。
 
-`validate_path` 用 `O_PATH` 打开父目录来约束路径。最后一级 `ENOENT` 返回 `{relative}`，因为 `workspace_changes.py:207` 会对每个变更文件调用它，其中包括已删除的文件；SSH 的 `sftp.normalize` 和本地 `resolve(strict=False)` 都接受缺失的最后一级。`EXDEV` 或 `ELOOP` 是 `symlink_escape`。这样删除文件的 diff 不会因为路径检查整段失败。
+`validate_path` 先从 workspace 的 fd 用 `openat2(O_PATH, RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS)` 打开完整相对路径。这样最后一级若是指向外部的符号链接（例如 `link → /etc/passwd`），会得到 `EXDEV` 或 `ELOOP`，返回 `symlink_escape`，不会放行。`/file*` 只靠这次检查，必须在这里封住 SSH `sftp.normalize` 已经封住的逃逸。只有完整路径返回 `ENOENT` 时，才用同样的 `openat2` 打开父目录；父目录能打开就返回 `{relative}`。`workspace_changes.py:207` 会对已删除的文件调用它，SSH 的 `sftp.normalize` 和本地 `resolve(strict=False)` 都接受缺失的最后一级。`ENOSYS` 或 seccomp 造成的 `EPERM` 是 `io`。
 
 `read_file` 和 `upload_file` 的打开本身用 `openat2`，这一次打开是原子的。写最终分量时再加 `O_CREAT | O_EXCL | O_NOFOLLOW`，模式 `0o600`。`uploads` 目录用 `O_DIRECTORY | O_NOFOLLOW` 打开；尚不存在时从 workspace 的 dirfd 创建。把 partial 换成目标名时使用 `renameat2(RENAME_NOREPLACE)`。`/file*` 由 OpenCode 再解析，Git 由 git 再解析，这两处和 SSH 现状是同一窗口。
 
@@ -426,12 +426,13 @@ workspace 本身从允许根（`ASTRA_WORKER_WORKSPACE_ROOT`，或该根父目�
 | 相对符号链接留在 workspace 内 | `sftp.normalize` 之后必须等于根，或以 `根/` 开头 | `RESOLVE_BENEATH` 仍可读取 |
 | 指向 workspace 内的绝对符号链接 | `sftp.normalize` 接受，只要目标仍在根下 | `RESOLVE_BENEATH` 拒绝。这比 SSH 更严 |
 | 符号链接逃出 workspace | normalize 后不在根下则拒绝 | `EXDEV` / `ELOOP` 为 `symlink_escape` |
-| 已删除文件的最后一级 | normalize 与 `resolve(strict=False)` 接受缺失 | `validate_path` 对最后一级 `ENOENT` 返回 `{relative}` |
+| 已删除文件的最后一级 | normalize 与 `resolve(strict=False)` 接受缺失 | 先打开完整路径；只有 `ENOENT` 时再打开父目录，父目录能打开才返回 `{relative}` |
+| 最后一级符号链接指向外部 | normalize 后不在根下则拒绝 | 打开完整路径得到 `EXDEV` / `ELOOP`，为 `symlink_escape`。不能只打开父目录就放行 |
 | 上传文件名 | 必须等于 `PurePosixPath(filename).name`，无反斜杠和 NUL | 同样 |
 | 上传大小 | `MAX_UPLOAD` = 20 MiB；路由在 413 处先拒绝 | Nexus 与 Worker 都按原始字节 20 MiB 拒绝 |
 | 上传目录 | `uploads/{12 hex}-{name}`；`normalize(folder)==folder`；`sftp.open(..., "wx")` | 同样的相对路径。目录本身不能是符号链接。`O_EXCL` 且 `RENAME_NOREPLACE`，不覆盖 |
 | 上传模式 | SSH 不 `chmod`，随 umask。本地 Unix 是 `0o600` | Linux Worker 写 `0o600`。这比 SSH 更严 |
-| 返回路径 | 远程是 `{workspace}/{relative}` 的 posix 字符串（`workspace_files.py:172`） | 同样的字符串 |
+| 返回路径 | 远程是 `{workspace}/{relative}` 的 posix 字符串（`workspace_files.py:171`） | 同样的字符串 |
 | diff 单文件 | `stat` 与读入都不得超过 20 MiB；多读 1 字节再判断 | `read_file` 按原始字节同样封顶。正文是这些字节的 base64；Nexus 解码后再 utf-8 `replace` |
 | 缺失文件的内容 | 返回空字节 | `read_file` 为 `missing=true`，Nexus 使用空字符串 |
 | Git 参数 | 固定 argv，但是整串 shell 交给 SSH | 只允许上表，并固定加 `-c core.fsmonitor=false`。`--no-ext-diff`、`--no-textconv`、`--no-renames`、porcelain v1 `-z`、`--untracked-files=all`、`rev-list --max-count=200` 都保留 |
@@ -445,11 +446,11 @@ workspace 本身从允许根（`ASTRA_WORKER_WORKSPACE_ROOT`，或该根父目�
 
 Redis 上的请求体和响应体沿用阶段 2：失败、epoch 冲突和重复成功都只删除这一次的键。`http` 的 8 MiB 与槽位规则不改。Gateway 仍只在最终更新的 `rowcount` 为 1 时唤醒等待者。Agent 发出结果后没有确认帧（`connection.py:453`，`service.py:596-630`），所以 Gateway 的 CAS 失败不能再通知 Agent 去删文件。
 
-Worker 本地的暂存名是 `uploads/.partial-{request_id}`。顺序是：GET 并按原始字节核对 `size` 与 `sha256`；在阻塞函数里、创建 partial 之前核对一次 `self.epoch`；在 `uploads` 的 dirfd 上以 `O_EXCL|O_NOFOLLOW|0o600` 创建 partial；写完并 `fsync`；rename 之前再核对一次 `self.epoch`；然后 `renameat2(RENAME_NOREPLACE)` 到最终名。`to_thread` 里的阻塞函数取消不了，所以这两次核对做在函数内部。任一次 epoch 已经变化，就不创建或不改名，并删掉已经存在的 partial。套接字关闭时取消这条上传任务。rename 之前的失败删除 partial。
+Worker 本地的暂存名是 `uploads/.partial-{request_id}`。每个连接有一个 `threading.Event`（`closed`）。`run_session` 的 `finally` 里把它 `set`；断开清理不改 `self.epoch`（`connection.py:279-286`），所以不能只看 epoch。顺序是：GET 并按原始字节核对 `size` 与 `sha256`；在阻塞函数里、创建 partial 之前同时检查 `closed` 和 `self.epoch`；在 `uploads` 的 dirfd 上以 `O_EXCL|O_NOFOLLOW|0o600` 创建 partial；写完并 `fsync`；rename 之前再同时检查 `closed` 和 `self.epoch`；然后 `renameat2(RENAME_NOREPLACE)` 到最终名。`to_thread` 里的阻塞函数取消不了，所以这两次检查做在函数内部。任一次 `closed` 已置位或 epoch 已经变化，就不创建或不改名，并删掉已经存在的 partial。套接字关闭时取消这条上传任务。rename 之前的失败删除 partial。
 
 rename 已经完成后，文件留在 `uploads/`，模式 `0o600`，名字是随机的。CAS 失败、等待者没被唤醒、或者进程在 rename 之后退出，都留下这个孤儿文件，不自动重发，也不再删它。人可以再次上传，那是新的 `request_id` 和新文件名。
 
-残留 partial 的扫描只覆盖 `{允许根}/*/uploads/.partial-*` 和 `{允许根父目录}/.astra-tasks/*/uploads/.partial-*`。扫描不跟随符号链接。指令 `finally` 只删除本次尚未改名的 partial。
+残留 partial 的扫描在 Agent 启动时执行，只覆盖 `{允许根}/*/uploads/.partial-*` 和 `{允许根父目录}/.astra-tasks/*/uploads/.partial-*`。扫描不跟随符号链接。指令 `finally` 只删除本次尚未改名的 partial。
 
 #### 浏览器契约
 
@@ -470,7 +471,7 @@ URL、方法和响应形状保持不变：
 
 只读指令（`validate_path`、`git_readonly`、`read_file`）没有本地副作用。同一 epoch 的派发租约到期后可以重投。新 epoch 可以重新执行，因为它们不修改工作区。旧 epoch 的迟到结果仍不能覆盖新行。
 
-`upload_file` 有副作用。离开 `unpublished` 之后不重投，不自动重发。套接字关闭时取消这条任务。阻塞函数内部在创建 partial 之前和 rename 之前各核对一次 `self.epoch`；epoch 已经变化就不再创建或改名。rename 完成后的 `0o600` 随机名文件可以留下。Gateway 只在 `rowcount` 为 1 时唤醒等待者，CAS 失败不要求 Agent 删除该文件。人再次上传才会产生新文件。
+`upload_file` 有副作用。离开 `unpublished` 之后不重投，不自动重发。套接字关闭时取消这条任务，并在该连接的 `closed` 事件上 `set`。阻塞函数内部在创建 partial 之前和 rename 之前同时检查 `closed` 和 `self.epoch`；任一不满足就不再创建或改名。rename 完成后的 `0o600` 随机名文件可以留下。Gateway 只在 `rowcount` 为 1 时唤醒等待者，CAS 失败不要求 Agent 删除该文件。人再次上传才会产生新文件。
 
 这些失败都不写 `Task.status`，也不调用 `apply_session_state()`。Gateway 和 Agent 不认识 Task。调用方保持现在的异常政策：`workspace_head_commit` 失败得到 `None`，`collect_workspace_changes` 得到 `{}`，diff、上传和路径错误变成现有 HTTP 错误。`start()` 里的基线提交和附件落盘发生在创建 Session 之前；通信失败仍走 `lifecycle.py:730` 之后的现有处理，不把这种失败归类成 `OpenCodeExecutionError`，因此不会由此把 Task 投影成 `WAITING`。已迁移环境在这些调用失败时不打开 SSH 隧道。
 
@@ -482,7 +483,7 @@ URL、方法和响应形状保持不变：
 
 #### 实现时要覆盖的测试
 
-落地时再写，本设计不附带代码。至少包括：已迁移环境的 `validate_path`、`upload`、`_git`、`_working_text` 和 `GET /repo` 不调用 `open_session`，也不读 `session_connection.py:44` 与 `:55` 抄来的密码；`ssh` 环境仍调用；删除文件的 diff 在最后一级 `ENOENT` 时仍返回该变更；相对符号链接留在 workspace 内仍可读取；指向 workspace 内的绝对符号链接被拒绝；逃出 workspace 的符号链接是 `symlink_escape`；`ENOSYS` 与 seccomp `EPERM` 是 `io`；校验和不匹配时不创建文件；`O_EXCL` / `RENAME_NOREPLACE` 不覆盖；partial 只扫 `{根或 .astra-tasks}/*/uploads/.partial-*` 且不跟随符号链接；rename 之后的 `0o600` 孤儿在 CAS 失败时保留，等待者只在 `rowcount` 为 1 时被唤醒；创建 partial 前和 rename 前各核对一次 epoch；同一 `request_id` 不写两次；枚举之外的 Git 操作被拒绝；git 在指令截止时间被杀掉并返回 `code=124` 与空输出；`/repo` 的 `status_porcelain` 超限时 `dirty=true`；文件和 Git 响应的 base64 按原始字节计算 `size` 与 `sha256`，Nexus 再做 utf-8 `replace`；上述浏览器响应字段不变；指令失败不修改 `Task.status`；只读指令可在租约到期后重投，`upload_file` 不重投；这四条指令使用独立任务表和上限 4 的信号量，套接字关闭时取消，不占 8 路 `http` 槽，也不写数据库槽。
+落地时再写，本设计不附带代码。至少包括：已迁移环境的 `validate_path`、`upload`、`_git`、`_working_text` 和 `GET /repo` 不调用 `open_session`，也不读 `session_connection.py:44` 与 `:55` 抄来的密码；`ssh` 环境仍调用；删除文件的 diff 在完整路径 `ENOENT` 且父目录能打开时仍返回该变更；最后一级符号链接指向外部时 `validate_path` 是 `symlink_escape`；相对符号链接留在 workspace 内仍可读取；指向 workspace 内的绝对符号链接被拒绝；逃出 workspace 的符号链接是 `symlink_escape`；`ENOSYS` 与 seccomp `EPERM` 是 `io`；校验和不匹配时不创建文件；`O_EXCL` / `RENAME_NOREPLACE` 不覆盖；Agent 启动时 partial 只扫 `{根或 .astra-tasks}/*/uploads/.partial-*` 且不跟随符号链接；rename 之后的 `0o600` 孤儿在 CAS 失败时保留，等待者只在 `rowcount` 为 1 时被唤醒；创建 partial 前和 rename 前同时检查 `closed` 与 epoch，套接字关闭而 epoch 未变时不创建文件；同一 `request_id` 不写两次；枚举之外的 Git 操作被拒绝；git argv 固定带 `-c core.fsmonitor=false`，调用方传入的 `-c` 被拒；git 在指令截止时间被杀掉并返回 `code=124` 与空输出；`/repo` 的 `status_porcelain` 超限时 `dirty=true`；文件和 Git 响应的 base64 按编码前的原始字节计算 `size` 与 `sha256`，Nexus 再做 utf-8 `replace`；上述浏览器响应字段不变；指令失败不修改 `Task.status`；只读指令可在租约到期后重投，`upload_file` 不重投；这四条指令使用独立任务表和上限 4 的信号量，套接字关闭时取消，不占 8 路 `http` 槽，也不写数据库槽。
 
 ### 阶段 4
 
