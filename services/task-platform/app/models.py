@@ -607,6 +607,7 @@ class WorkerCommand(Base):
     delivery_state: Mapped[str] = mapped_column(
         String(16), default="unpublished", server_default="unpublished"
     )
+    slot_held: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     last_dispatched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     dispatched_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
@@ -614,3 +615,13 @@ class WorkerCommand(Base):
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     worker: Mapped[WorkerInstance] = relationship(back_populates="commands")
+
+
+class WorkerHttpSlot(Base):
+    """同一 Worker、同一 epoch 上正在执行的 http 数量。认领时对这一行做条件加一。"""
+
+    __tablename__ = "worker_http_slots"
+
+    worker_instance_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    inflight: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

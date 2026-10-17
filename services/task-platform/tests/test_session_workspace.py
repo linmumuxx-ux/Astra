@@ -2309,17 +2309,83 @@ async def test_visible_prompt_refresh_does_not_resend_or_open_a_session(runtime)
         return wrapped
 
     r.native.status = _track("status", r.native.status)
-    r.native.messages = _track("messages", r.native.messages)
+    r.native.messages_page = _track("messages_page", r.native.messages_page)
     r.native.questions = _track("questions", r.native.questions)
     r.native.permissions = _track("permissions", r.native.permissions)
     await r.service.refresh("T1")
     await r.session.refresh(r.task)
-    assert reads[:4] == ["status", "questions", "permissions", "messages"]
+    assert reads[:4] == ["status", "questions", "permissions", "messages_page"]
     assert r.native.sent == []
     assert set(r.native.sessions) == sessions
     assert r.task.current_session_id == "ses_current"
     assert r.task.pending_message_id is None
     assert r.task.pending_prompt is None
+
+
+async def test_refresh_reads_later_pages_before_clearing_pending(runtime):
+    r = runtime
+    pending_id = "msg_page2000001"
+    pages = {
+        None: {
+            "messages": [{"info": {"id": "msg_other000001", "role": "user"}, "parts": []}],
+            "next_before": "cursor-2",
+        },
+        "cursor-2": {
+            "messages": [
+                {"info": {"id": pending_id, "role": "user"}, "parts": [{"type": "text", "text": "go"}]}
+            ],
+            "next_before": None,
+        },
+    }
+
+    async def messages_page(_directory, _sid, *, limit, before=None):
+        assert limit == 100
+        return pages[before]
+
+    r.native.messages_page = messages_page
+    r.native.state = "idle"
+    r.task.status = "RUNNING"
+    r.task.pending_message_id = pending_id
+    r.task.last_message_id = pending_id
+    r.task.pending_attempt = 1
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "go"}]},
+        "in_flight": True,
+        "in_flight_since": datetime.now(UTC).isoformat(),
+    }
+    await r.session.commit()
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    assert r.task.pending_message_id is None
+    assert r.task.runtime_error is None
+
+
+async def test_refresh_stops_at_the_message_page_bound(runtime):
+    from app.runtime.lifecycle import _MAX_MESSAGE_PAGES
+
+    r = runtime
+    calls = {"n": 0}
+
+    async def messages_page(_directory, _sid, *, limit, before=None):
+        calls["n"] += 1
+        return {
+            "messages": [{"info": {"id": f"msg_{calls['n']:03}", "role": "assistant"}, "parts": []}],
+            "next_before": f"cursor-{calls['n']}",
+        }
+
+    r.native.messages_page = messages_page
+    r.native.state = "idle"
+    r.task.status = "RUNNING"
+    r.task.pending_message_id = "msg_missing"
+    r.task.last_message_id = "msg_missing"
+    r.task.pending_attempt = 1
+    r.task.pending_prompt = {"action": "prompt_async", "body": {"messageID": "msg_missing"}}
+    await r.session.commit()
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    assert calls["n"] == _MAX_MESSAGE_PAGES
+    assert r.task.pending_message_id == "msg_missing"
 
 
 async def test_cancel_does_not_release_worker_until_human_confirms(runtime):

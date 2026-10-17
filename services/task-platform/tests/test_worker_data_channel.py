@@ -2,16 +2,26 @@
 
 import asyncio
 import json
+import subprocess
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
-from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, Task, WorkerCommand, WorkerInstance
+from app.models import (
+    DigitalEmployee,
+    OpenCodeExecutionEnvironment,
+    Task,
+    WorkerCommand,
+    WorkerHttpSlot,
+    WorkerInstance,
+)
 from app.runtime.submission import put_attempt
 from app.runtime.worker_channel import mark_worker_channel, read_worker_channel
+from app.runtime.worker_client import WorkerOpenCodeClient
 from app.worker_agent.connection import WorkerConnectionManager
 from app.worker_agent.workspace import prepare_workspace_local
 from app.worker_gateway.bus import MemoryRouteBus
@@ -266,23 +276,111 @@ def test_prepare_workspace_copies_opencode_config(tmp_path):
     assert json.loads((target / "opencode.json").read_text())["model"] == "deepseek-flash"
 
 
+def _commit_repo(path):
+    path.mkdir()
+    subprocess.run(["git", "-C", str(path), "init"], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(path),
+            "-c", "user.email=astra@localhost",
+            "-c", "user.name=Astra",
+            "commit", "--allow-empty", "-m", "init",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_prepare_workspace_adds_a_detached_worktree_once(tmp_path):
+    root = tmp_path / "root"
+    _commit_repo(root)
+    (root / "opencode.json").write_text('{"model":"deepseek-flash"}\n')
+    subprocess.run(["git", "-C", str(root), "add", "opencode.json"], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git", "-C", str(root),
+            "-c", "user.email=astra@localhost",
+            "-c", "user.name=Astra",
+            "commit", "-m", "config",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    target = tmp_path / "tasks" / "T1"
+    first = prepare_workspace_local(str(root), str(target))
+    assert first["created"] == "true"
+    assert (target / ".git").exists()
+    (target / "opencode.json").write_text('{"model":"local"}\n')
+    second = prepare_workspace_local(str(root), str(target))
+    assert second["created"] == "false"
+    assert json.loads((target / "opencode.json").read_text())["model"] == "local"
+    listed = subprocess.check_output(
+        ["git", "-C", str(root), "worktree", "list", "--porcelain"], text=True
+    )
+    assert f"worktree {target.resolve()}" in listed
+
+
+def test_prepare_workspace_rejects_reuse_symlink_subdir_and_foreign_repo(tmp_path):
+    root = tmp_path / "root"
+    _commit_repo(root)
+    with pytest.raises(RuntimeError, match="请显式重新执行"):
+        prepare_workspace_local(str(root), str(tmp_path / "missing"), reuse_existing=True)
+    link = tmp_path / "link"
+    link.symlink_to(root, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="符号链接"):
+        prepare_workspace_local(str(root), str(link))
+    nested = root / "nested"
+    nested.mkdir()
+    with pytest.raises(RuntimeError, match="不是目录根"):
+        prepare_workspace_local(str(root), str(nested))
+    other = tmp_path / "other"
+    _commit_repo(other)
+    with pytest.raises(RuntimeError, match="不属于当前仓库"):
+        prepare_workspace_local(str(root), str(other))
+
+
+def _direct_switch_result() -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "gateway_url": settings.remote_gateway_local_url + "/",
+        "mcp_url": settings.mcp_resource_server_url + "/",
+        "reloaded": True,
+    }
+
+
 @pytest.mark.asyncio
-async def test_worker_channel_probe_and_occupancy(environment_id):
+async def test_worker_channel_switch_checks_effective_config_and_occupancy(environment_id):
     async with SessionLocal() as session:
         assert await read_worker_channel(session, environment_id) == "ssh"
+        calls: list[str] = []
 
-        async def fail(_url):
-            return False
+        async def fail():
+            calls.append("fail")
+            raise RuntimeError("内网 Gateway 或 MCP 探测失败")
 
         with pytest.raises(HTTPException) as blocked:
-            await mark_worker_channel(session, environment_id, probe=fail)
+            await mark_worker_channel(session, environment_id, switch=fail)
         assert blocked.value.status_code == 409
+        assert "探测失败" in blocked.value.detail
         assert await read_worker_channel(session, environment_id) == "ssh"
 
-        async def ok(_url):
-            return True
+        async def mismatch():
+            calls.append("mismatch")
+            result = _direct_switch_result()
+            result["gateway_url"] = "http://127.0.0.1:19999"
+            return result
 
-        marked = await mark_worker_channel(session, environment_id, probe=ok)
+        with pytest.raises(HTTPException) as differed:
+            await mark_worker_channel(session, environment_id, switch=mismatch)
+        assert differed.value.status_code == 409
+        assert "Gateway" in differed.value.detail
+        assert await read_worker_channel(session, environment_id) == "ssh"
+
+        async def ok():
+            calls.append("ok")
+            return _direct_switch_result()
+
+        marked = await mark_worker_channel(session, environment_id, switch=ok)
         assert marked.worker_channel == "worker"
         employee_id = marked.employee_id
         session.add(
@@ -297,8 +395,48 @@ async def test_worker_channel_probe_and_occupancy(environment_id):
         )
         await session.commit()
         with pytest.raises(HTTPException) as occupied:
-            await mark_worker_channel(session, environment_id, probe=ok)
+            await mark_worker_channel(session, environment_id, switch=ok)
         assert occupied.value.status_code == 409
+        assert calls == ["fail", "mismatch", "ok"]
+
+
+@pytest.mark.asyncio
+async def test_worker_channel_without_an_online_worker_stays_ssh(environment_id, monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("离线环境不能下发切换")
+
+    monkeypatch.setattr(WorkerOpenCodeClient, "run_command", forbidden)
+    async with SessionLocal() as session:
+        with pytest.raises(HTTPException) as offline:
+            await mark_worker_channel(session, environment_id)
+        assert offline.value.status_code == 409
+        assert "不在线" in offline.value.detail
+        assert await read_worker_channel(session, environment_id) == "ssh"
+
+
+@pytest.mark.asyncio
+async def test_worker_channel_dispatches_workspace_and_port_only(environment_id, monkeypatch):
+    gateway = gateway_for()
+    await _online(gateway, environment_id)
+    captured: dict[str, object] = {}
+
+    async def fake_run(_self, name, data, *, session_id=None):
+        captured["name"] = name
+        captured["data"] = dict(data)
+        captured["session_id"] = session_id
+        return _direct_switch_result()
+
+    monkeypatch.setattr(WorkerOpenCodeClient, "run_command", fake_run)
+    async with SessionLocal() as session:
+        environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
+        assert environment is not None
+        expected = {"workspace": environment.workspace_root, "port": environment.opencode_server_port}
+        marked = await mark_worker_channel(session, environment_id)
+        assert marked.worker_channel == "worker"
+    assert captured["name"] == "switch_channel"
+    assert captured["data"] == expected
+    assert "gateway_url" not in captured["data"]
+    assert "mcp_url" not in captured["data"]
 
 
 @pytest.mark.asyncio
@@ -341,6 +479,39 @@ async def test_http_inflight_stays_pending_past_eight(environment_id):
             complete=True,
         )
     assert await gateway.dispatch_due(enrolled.worker_instance_id, auth.epoch) == 1
+
+
+@pytest.mark.asyncio
+async def test_http_claims_stop_at_eight_under_concurrency(environment_id):
+    gateway = gateway_for()
+    enrolled, auth, _queues = await _online(gateway, environment_id)
+
+    async def claim(index: int):
+        async with SessionLocal() as session:
+            return await gateway.dispatch(
+                session,
+                worker_instance_id=enrolled.worker_instance_id,
+                request_id=f"req-race-{index}",
+                name="http",
+                payload={"method": "GET", "path": "/global/health", "body": {}},
+            )
+
+    results = await asyncio.gather(*(claim(index) for index in range(12)))
+    assert sum(result.delivered for result in results) == 8
+    async with SessionLocal() as session:
+        slot = await session.get(WorkerHttpSlot, (enrolled.worker_instance_id, auth.epoch))
+        rows = (
+            await session.scalars(
+                select(WorkerCommand).where(WorkerCommand.request_id.like("req-race-%"))
+            )
+        ).all()
+    assert slot is not None
+    assert slot.inflight == 8
+    assert sum(row.slot_held for row in rows) == 8
+    held_back = [row for row in rows if not row.slot_held]
+    assert len(held_back) == 4
+    assert {row.status for row in held_back} == {"pending"}
+    assert {row.delivery_state for row in held_back} == {"unpublished"}
 
 
 @pytest.mark.asyncio

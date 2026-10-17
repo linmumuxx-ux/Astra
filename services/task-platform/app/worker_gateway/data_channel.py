@@ -12,11 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Task, WorkerCommand, WorkerInstance, utcnow
 from app.runtime.submission import mark_body_fetched
+from app.worker_gateway.http_limit import release_http_slot
 from app.worker_gateway.protocol import WorkerGatewayError
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 MAX_CHUNK_BYTES = 256 * 1024
-MAX_HTTP_IN_FLIGHT = 8
 _READY = "ready"
 
 
@@ -159,6 +159,7 @@ class DataChannel:
             .where(WorkerInstance.id == worker_instance_id, WorkerInstance.epoch == epoch)
             .scalar_subquery()
         )
+        held = bool(command.slot_held)
         result = await session.execute(
             update(WorkerCommand)
             .where(
@@ -173,12 +174,15 @@ class DataChannel:
                 error_code=None,
                 finished_at=utcnow(),
                 updated_at=utcnow(),
+                slot_held=False,
             )
         )
         if result.rowcount != 1:
             await session.rollback()
             await self.gateway.bus.delete_text(response_key(request_id, upload_id))
             raise WorkerGatewayError("epoch_conflict", "上传没有提交")
+        if held:
+            await release_http_slot(session, worker_instance_id, epoch)
         await session.commit()
         await self.gateway.bus.publish_response(request_id, {"result": meta, "body": raw})
         return {"status": "stored", "result": meta}

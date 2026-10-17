@@ -16,7 +16,7 @@ from secrets import token_hex, token_urlsafe
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
@@ -32,12 +32,8 @@ from app.models import (
     utcnow,
 )
 from app.worker_gateway.bus import ConnectionQueues, build_route_bus
-from app.worker_gateway.data_channel import (
-    MAX_HTTP_IN_FLIGHT,
-    DataChannel,
-    http_frame_data,
-    side_effect_http,
-)
+from app.worker_gateway.data_channel import DataChannel, http_frame_data, side_effect_http
+from app.worker_gateway.http_limit import release_http_slot, reserve_http_slot
 from app.worker_gateway.protocol import (
     WorkerGatewayError,
     WorkerMessage,
@@ -420,9 +416,11 @@ class WorkerGateway:
             attempts = command.delivery_attempts + 1
             worker_id = command.worker_instance_id
             epoch = command.epoch
-            if command.name == "http":
-                running = await self._http_inflight(session, worker_id, epoch, command.id)
-                if running >= MAX_HTTP_IN_FLIGHT:
+            name = command.name
+            reserved = False
+            if name == "http" and previous_state == "unpublished":
+                reserved = await reserve_http_slot(session, worker_id, epoch)
+                if not reserved:
                     await session.rollback()
                     return False, "http_busy"
             current_instance = (
@@ -449,6 +447,7 @@ class WorkerGateway:
                     last_dispatched_at=now,
                     dispatched_epoch=command.epoch,
                     updated_at=now,
+                    **({"slot_held": True} if reserved else {}),
                 )
             )
             if claim.rowcount != 1:
@@ -464,7 +463,9 @@ class WorkerGateway:
         if published:
             await self._mark_published(command_id, attempts, epoch)
             return True, ""
-        await self._revert_definite(command_id, attempts, epoch, previous_state)
+        await self._revert_definite(
+            command_id, attempts, epoch, previous_state, worker_id=worker_id, release_slot=reserved
+        )
         fresh_owner = await self.bus.get_owner(worker_id)
         if fresh_owner is None or fresh_owner[1] != epoch:
             return False, "offline"
@@ -484,7 +485,14 @@ class WorkerGateway:
             await session.commit()
 
     async def _revert_definite(
-        self, command_id: int, attempts: int, epoch: int, previous_state: str
+        self,
+        command_id: int,
+        attempts: int,
+        epoch: int,
+        previous_state: str,
+        *,
+        worker_id: str = "",
+        release_slot: bool = False,
     ) -> None:
         values: dict[str, Any] = {
             "delivery_attempts": attempts - 1,
@@ -494,8 +502,9 @@ class WorkerGateway:
         if previous_state == "unpublished":
             values["last_dispatched_at"] = None
             values["dispatched_epoch"] = None
+            values["slot_held"] = False
         async with SessionLocal() as session:
-            await session.execute(
+            reverted = await session.execute(
                 update(WorkerCommand)
                 .where(
                     WorkerCommand.id == command_id,
@@ -505,29 +514,9 @@ class WorkerGateway:
                 )
                 .values(**values)
             )
+            if release_slot and worker_id and reverted.rowcount == 1:
+                await release_http_slot(session, worker_id, epoch)
             await session.commit()
-
-    async def _http_inflight(
-        self, session: AsyncSession, worker_id: str, epoch: int, command_id: int
-    ) -> int:
-        running = await session.scalar(
-            select(func.count())
-            .select_from(WorkerCommand)
-            .where(
-                WorkerCommand.worker_instance_id == worker_id,
-                WorkerCommand.epoch == epoch,
-                WorkerCommand.name == "http",
-                WorkerCommand.id != command_id,
-                or_(
-                    WorkerCommand.status == "accepted",
-                    and_(
-                        WorkerCommand.status == "pending",
-                        WorkerCommand.delivery_state.in_(("uncertain", "published")),
-                    ),
-                ),
-            )
-        )
-        return int(running or 0)
 
     @staticmethod
     def _publish_data(name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -600,11 +589,20 @@ class WorkerGateway:
             values["error_code"] = None
         result_body = message.payload.get("result")
         values["result"] = result_body if isinstance(result_body, dict) else {"value": result_body}
+        held = await session.scalar(
+            select(WorkerCommand.slot_held).where(
+                WorkerCommand.request_id == message.request_id,
+                WorkerCommand.worker_instance_id == worker_instance_id,
+                WorkerCommand.epoch == epoch,
+            )
+        )
         result = await session.execute(
             update(WorkerCommand)
             .where(*where, WorkerCommand.status.in_(("pending", "accepted")))
-            .values(**values)
+            .values(**values, slot_held=False)
         )
+        if result.rowcount == 1 and held:
+            await release_http_slot(session, worker_instance_id, epoch)
         await session.commit()
         return result.rowcount == 1
 
@@ -635,6 +633,16 @@ class WorkerGateway:
             offline = await session.execute(
                 update(WorkerInstance).where(*stale_filter).values(status="offline", updated_at=current)
             )
+            held_slots = (
+                await session.execute(
+                    select(WorkerCommand.id, WorkerCommand.worker_instance_id, WorkerCommand.epoch).where(
+                        WorkerCommand.status.in_(("pending", "accepted")),
+                        WorkerCommand.deadline_at.is_not(None),
+                        WorkerCommand.deadline_at <= current,
+                        WorkerCommand.slot_held.is_(True),
+                    )
+                )
+            ).all()
             expired = await session.execute(
                 update(WorkerCommand)
                 .where(
@@ -647,8 +655,11 @@ class WorkerGateway:
                     error_code="timeout",
                     finished_at=current,
                     updated_at=current,
+                    slot_held=False,
                 )
             )
+            for _command_id, worker_id, epoch in held_slots:
+                await release_http_slot(session, worker_id, epoch)
             await session.commit()
             offlined: list[tuple[str, int]] = []
             if stale_rows:

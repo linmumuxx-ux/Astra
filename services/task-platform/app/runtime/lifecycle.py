@@ -225,6 +225,9 @@ class RuntimeStateError(ValueError):
     pass
 
 
+_MAX_MESSAGE_PAGES = 20
+
+
 class RuntimeService:
     def __init__(self, session):
         self.session = session
@@ -970,7 +973,7 @@ class RuntimeService:
         collected: list[dict] = []
         before = None
         seen: set[str] = set()
-        while True:
+        for _page in range(_MAX_MESSAGE_PAGES):
             page = await client.messages_page(directory, session_id, limit=100, before=before)
             batch = list(page.get("messages") or [])
             collected.extend(batch)
@@ -979,6 +982,7 @@ class RuntimeService:
                 return collected
             seen.add(str(cursor))
             before = cursor
+        return collected
 
     async def deliver_first_submission(self, task_id: str):
         """Post the prompt reserved by start(). This is not a human retry."""
@@ -1611,12 +1615,12 @@ class RuntimeService:
             observed = RuntimeSessionStatus.WAITING if has_pending else RuntimeSessionStatus.RUNNING
             await self.apply_session_state(task, SessionState(status=observed.value))
             return task
-        messages = await client.messages(directory, session_id)
+        messages = await self._all_messages(client, directory, session_id)
         usage_messages = list(messages)
         for child_session_id in sorted(allowed_sessions - {session_id}):
             try:
                 usage_messages.extend(
-                    await client.messages(directory, child_session_id)
+                    await self._all_messages(client, directory, child_session_id)
                 )
             except OpenCodeSessionNotFound:
                 continue

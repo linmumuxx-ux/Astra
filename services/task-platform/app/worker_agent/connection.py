@@ -130,6 +130,19 @@ def handle_command(
             ), None
         except RuntimeError as exc:
             return None, str(exc)
+    if name == "switch_channel":
+        from app.worker_agent.channel_switch import apply_channel_switch
+
+        try:
+            port = int(data.get("port"))
+        except (TypeError, ValueError):
+            return None, "OpenCode 端口无效"
+        try:
+            return apply_channel_switch(
+                workspace=str(data.get("workspace") or ""), port=port
+            ), None
+        except (RuntimeError, OSError, ValueError) as exc:
+            return None, str(exc)
     if name == "ping":
         return {"pong": True}, None
     if name == "echo":
