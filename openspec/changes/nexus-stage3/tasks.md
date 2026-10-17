@@ -141,9 +141,9 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：I。先迁执行器，再删入口。
 
-- [ ] J.1 把现有助手 OpenCode 收成内部复盘执行器：只听 `127.0.0.1`，启动配置只带复盘 MCP（含 `nexus_task_review_submit` 和只读工具）。不再依赖 `assistant_enabled` 和根目录 `opencode.json`
+- [x] J.1 把现有助手 OpenCode 收成内部复盘执行器：只听 `127.0.0.1`，启动配置只带复盘 MCP（含 `nexus_task_review_submit` 和只读工具）。不再依赖 `assistant_enabled` 和根目录 `opencode.json`
   - 验证：产品助手入口关闭时，仍能生成一条任务总结和一个候选经验。失败只更新复盘行
-- [ ] J.2 删除 `/api/assistant` 的用户路径、任务创建/取消类助手工具和根目录 `opencode.json`
+- [x] J.2 删除 `/api/assistant` 的用户路径、任务创建/取消类助手工具和根目录 `opencode.json`
   - 验证：页面没有旧助手入口。重试复盘不覆盖已发布经验
 
 ## K. 图书馆映射

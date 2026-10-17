@@ -16,23 +16,19 @@ from mcp.server.mcpserver.exceptions import ToolError
 from app.assistant import tool_gateway
 from app.assistant.operations import OperationError
 from app.assistant.review import ReviewExperience, session_messages, submit_review
-from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.library_service import LibraryError
 
 
 def build_assistant_mcp_server() -> MCPServer:
-    settings = get_settings()
-    acting_user = settings.assistant_user_id
     server = MCPServer(
-        name="NEXUS Assistant Tools",
-        title="NEXUS 平台助手工具",
+        name="NEXUS Review Tools",
+        title="NEXUS 复盘工具",
         version="1.0.0",
-        description="查询和操作 NEXUS 数字员工平台的任务、员工、运行和知识。",
+        description="只读查询任务、员工、运行和知识，并提交任务总结与候选经验。",
         instructions=(
-            "查询类工具直接调用；任务经验沉淀使用 nexus_task_review_submit 提交总结和 candidate，无需确认；"
-            "其他变更必须先调用 prepare 工具，"
-            "等待平台向用户展示确认卡，禁止重复调用 prepare，也不要自己执行确认。"
+            "查询类工具直接调用。任务经验沉淀使用 nexus_task_review_submit 提交总结和 candidate。"
+            "不要创建、取消或重试任务。"
         ),
     )
 
@@ -72,60 +68,7 @@ def build_assistant_mcp_server() -> MCPServer:
         """获取单个任务的完整详情。"""
         return await _run(lambda session: tool_gateway.task_get(session, task_id))
 
-    @server.tool(name="nexus_task_prepare_create", structured_output=True)
-    async def nexus_task_prepare_create(
-        task_type: str,
-        employee_id: str | None = None,
-        title: str | None = None,
-        description: str | None = None,
-        category_id: str | None = None,
-        acceptance_criteria: list[str] | None = None,
-        priority: str | None = None,
-    ) -> dict[str, Any]:
-        """准备创建任务：校验参数与员工资格并生成预览，等待用户确认后才真正创建。"""
-        return await _run(
-            lambda session: tool_gateway.task_prepare_create(
-                session,
-                acting_user_id=acting_user,
-                conversation_id=None,
-                task_type=task_type,
-                employee_id=employee_id,
-                title=title,
-                description=description,
-                category_id=category_id,
-                acceptance_criteria=acceptance_criteria,
-                priority=priority,
-            )
-        )
-
-    @server.tool(name="nexus_task_prepare_cancel", structured_output=True)
-    async def nexus_task_prepare_cancel(task_id: str, reason: str | None = None) -> dict[str, Any]:
-        """准备取消任务：运行中的任务按高风险处理，需用户确认。"""
-        return await _run(
-            lambda session: tool_gateway.task_prepare_action(
-                session,
-                acting_user_id=acting_user,
-                conversation_id=None,
-                action="cancel",
-                task_id=task_id,
-                reason=reason,
-            )
-        )
-
-    @server.tool(name="nexus_task_prepare_retry", structured_output=True)
-    async def nexus_task_prepare_retry(task_id: str, reason: str | None = None) -> dict[str, Any]:
-        """准备重试失败或执行异常的任务，需用户确认。"""
-        return await _run(
-            lambda session: tool_gateway.task_prepare_action(
-                session,
-                acting_user_id=acting_user,
-                conversation_id=None,
-                action="retry",
-                task_id=task_id,
-                reason=reason,
-            )
-        )
-
+    # 任务创建、取消和重试留在平台自己的接口。复盘执行器不提供这些工具。
 
     # ── Employee Tools ────────────────────────────────────────
 

@@ -308,9 +308,6 @@ def start_opencode(
         ensure_workspace_ui_bundle(health.version)
         print(f"[READY] employee OpenCode Server ({health.version or 'unknown'})")
 
-    if not settings.assistant_enabled:
-        return
-
     assistant = AssistantOpenCodeServerManager(settings)
     health = asyncio.run(assistant.health())
     if health.healthy:

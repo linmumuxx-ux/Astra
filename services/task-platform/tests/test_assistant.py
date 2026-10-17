@@ -85,7 +85,7 @@ class FakeAssistantClient:
 
 def test_assistant_server_manager_configures_isolated_runtime(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings, "assistant_opencode_hostname", "127.0.0.1")
+    monkeypatch.setattr(settings, "assistant_opencode_hostname", "0.0.0.0")
     monkeypatch.setattr(settings, "assistant_opencode_port", 4097)
     monkeypatch.setattr(settings, "assistant_opencode_username", "assistant-user")
     monkeypatch.setattr(settings, "assistant_opencode_password", "assistant-password")
@@ -102,7 +102,11 @@ def test_assistant_server_manager_configures_isolated_runtime(monkeypatch):
     assert manager.mcp_entrypoint.parent == Path(sys.executable).parent
     assert environment["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).parent)
     assert manager.workspace == PROJECT_ROOT
-    assert environment["ASTRA_RUNTIME_ROLE"] == "platform-assistant"
+    assert environment["ASTRA_RUNTIME_ROLE"] == "review-executor"
+    assert command[command.index("--hostname") + 1] == "127.0.0.1"
+    config = json.loads(Path(environment["OPENCODE_CONFIG"]).read_text(encoding="utf-8"))
+    assert set(config) == {"mcp"}
+    assert set(config["mcp"]) == {"nexus-review"}
 
     monkeypatch.setattr(settings, "assistant_opencode_password", None)
     assert "OPENCODE_SERVER_PASSWORD" not in manager.process_environment()
@@ -118,8 +122,9 @@ def test_assistant_uses_project_level_capabilities_without_workspace():
     assert (
         PROJECT_ROOT / ".opencode" / "skills" / "nexus-task-experience-review" / "SKILL.md"
     ).is_file()
-    config = json.loads((PROJECT_ROOT / "opencode.json").read_text(encoding="utf-8"))
-    assert "nexus-assistant" in config.get("mcp", {})
+    assert not (PROJECT_ROOT / "opencode.json").exists()
+    config = AssistantOpenCodeServerManager(settings).review_config()
+    assert set(config["mcp"]) == {"nexus-review"}
 
 
 @pytest.mark.asyncio
@@ -603,115 +608,11 @@ async def test_tool_gateway_search_recommend_and_overview():
 # ── REST API + Fake OpenCode Client ────────────────────────────
 
 
-def test_assistant_api_conversation_message_and_confirm_flow(fake_orchestrator):
-    fake, orchestrator = fake_orchestrator
+def test_product_assistant_routes_are_gone():
     with TestClient(app) as client:
-        health = client.get("/api/assistant/health")
-        assert health.status_code == 200
-        assert health.json()["available"] is True
-
-        created = client.post("/api/assistant/conversations", json={"title": "平台助手验收"})
-        assert created.status_code == 201
-        conversation = created.json()
-        conversation_id = conversation["id"]
-        assert len(fake.sessions) == 1
-
-        listed = client.get("/api/assistant/conversations")
-        assert [item["id"] for item in listed.json()] == [conversation_id]
-
-        sent = client.post(
-            f"/api/assistant/conversations/{conversation_id}/messages",
-            json={
-                "content": "让图丫丫执行回归测试",
-                "page_context": {"route": "/tasks/T-1", "type": "task", "id": "T-1"},
-            },
-        )
-        assert sent.status_code == 201
-        assert len(fake.prompts) == 1
-        assert "让图丫丫执行回归测试" in fake.prompts[0][1]
-        assert "当前用户" in fake.prompts[0][1]
-
-        duplicate = client.post(
-            f"/api/assistant/conversations/{conversation_id}/messages",
-            json={"content": "不要并发提交"},
-        )
-        assert duplicate.status_code == 409
-
-        messages = client.get(f"/api/assistant/conversations/{conversation_id}/messages")
-        assert messages.status_code == 200
-        assert messages.json()[0]["role"] == "USER"
-
-        assert client.post(f"/api/assistant/conversations/{conversation_id}/abort").status_code == 202
-        assert fake.aborts
-
-        deleted = client.delete(f"/api/assistant/conversations/{conversation_id}")
-        assert deleted.status_code == 204
-        assert client.get(f"/api/assistant/conversations/{conversation_id}").status_code == 404
-
-
-def test_assistant_message_rate_limit_returns_retry_after(fake_orchestrator, monkeypatch):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "assistant_rate_limit_per_minute", 1)
-    assistant_rate_limiter.reset()
-    with TestClient(app) as client:
-        created = client.post("/api/assistant/conversations", json={})
-        conversation_id = created.json()["id"]
-        first = client.post(
-            f"/api/assistant/conversations/{conversation_id}/messages",
-            json={"content": "第一条助手消息"},
-        )
-        assert first.status_code == 201
-        limited = client.post(
-            f"/api/assistant/conversations/{conversation_id}/messages",
-            json={"content": "第二条助手消息"},
-        )
-        assert limited.status_code == 429
-        assert int(limited.headers["retry-after"]) >= 1
-
-
-def test_assistant_degrades_when_opencode_unavailable(monkeypatch):
-    """OpenCode 停止时：助手显示不可用；平台其他功能完全正常；不残留脏消息。"""
-    from app.assistant.client import AssistantOpenCodeClient
-
-    settings = get_settings()
-    # 指向必然不可达的端口，保证测试与本机是否有真实服务无关。
-    monkeypatch.setattr(settings, "assistant_opencode_url", "http://127.0.0.1:59999")
-    monkeypatch.setattr(settings, "assistant_enabled", True)
-    set_orchestrator(AssistantOrchestrator(settings, client=AssistantOpenCodeClient(settings)))
-    try:
-        with TestClient(app) as client:
-            health = client.get("/api/assistant/health").json()
-            assert health["available"] is False
-            assert health["assistant"] == "degraded"
-
-            created = client.post("/api/assistant/conversations", json={"title": "降级测试"})
-            assert created.status_code == 201
-            conversation_id = created.json()["id"]
-
-            sent = client.post(
-                f"/api/assistant/conversations/{conversation_id}/messages",
-                json={"content": "你好"},
-            )
-            assert sent.status_code == 503
-            assert client.get(f"/api/assistant/conversations/{conversation_id}/messages").json() == []
-
-            assert client.get("/api/health").status_code == 200
-            assert client.get("/api/system/metrics").status_code == 200
-            assert client.delete(f"/api/assistant/conversations/{conversation_id}").status_code == 204
-    finally:
-        set_orchestrator(None)
-
-
-def test_assistant_api_disabled_without_orchestrator(monkeypatch):
-    settings = get_settings()
-    set_orchestrator(None)
-    monkeypatch.setattr(settings, "assistant_enabled", False)
-    with TestClient(app) as client:
-        response = client.post("/api/assistant/conversations", json={})
-        assert response.status_code == 503
-        health = client.get("/api/assistant/health")
-        assert health.status_code == 200
-        assert health.json()["available"] is False
+        assert client.get("/api/assistant/health").status_code == 404
+        assert client.post("/api/assistant/conversations", json={}).status_code == 404
+        assert client.get("/api/health").status_code == 200
 
 
 # ── Orchestrator 事件处理（卡片与确认卡）────────────────────────
@@ -848,27 +749,13 @@ async def test_orchestrator_links_confirmation_and_cards(fake_orchestrator):
     )
     assert confirm_envelope["data"]["operation_id"] == operation_id
 
-    with TestClient(app) as client:
-        listed = client.get(f"/api/assistant/conversations/{conversation_id}/messages")
-        assert listed.status_code == 200
-        part_types = [part["part_type"] for message in listed.json() for part in message["parts"]]
-        assert "TASK_CARD" in part_types
-        assert "CONFIRM_CARD" in part_types
-
-        confirmed = client.post(f"/api/assistant/operations/{operation_id}/confirm")
-        assert confirmed.status_code == 200
-        assert confirmed.json()["status"] == "SUCCESS"
-        assert confirmed.json()["result"]["status"] == "CANCELED"
-
-        # 刷新后确认卡按操作真实状态渲染，不误导用户重复确认
-        refreshed = client.get(f"/api/assistant/conversations/{conversation_id}/messages")
-        confirm_parts = [
-            part
-            for message in refreshed.json()
-            for part in message["parts"]
-            if part["part_type"] == "CONFIRM_CARD"
-        ]
-        assert confirm_parts and confirm_parts[0]["payload"]["status"] == "SUCCESS"
+    async with SessionLocal() as session:
+        confirmed = await OperationService(session, get_settings()).confirm(
+            operation_id, get_settings().assistant_user_id
+        )
+        stored = await OperationService(session).get(operation_id)
+        assert stored is not None and stored.status == "SUCCESS"
+        assert confirmed["status"] == "CANCELED"
 
 
 @pytest.mark.asyncio

@@ -68,9 +68,8 @@
           <ElTag data-testid="task-review-status" :type="review.status === 'failed' ? 'danger' : 'info'">{{ reviewStatusLabel }}</ElTag>
           <ElText type="info">已尝试 {{ review.attempts }} 次</ElText>
           <ElButton :loading="reviewLoading" @click="loadReview(String(route.params.id))">刷新复盘</ElButton>
-          <ElButton v-if="review.can_retry && review.enabled" type="primary" :loading="reviewRetrying" data-testid="task-review-retry" @click="retryReview">重试复盘</ElButton>
+          <ElButton v-if="review.can_retry" type="primary" :loading="reviewRetrying" data-testid="task-review-retry" @click="retryReview">重试复盘</ElButton>
         </div>
-        <ElAlert v-if="!review.enabled" title="后台复盘未启用，请启用平台助手后刷新。" type="info" :closable="false" />
         <ElAlert v-if="review.error" :title="review.error" type="error" :closable="false" />
         <ElAlert v-if="review.summary && !review.summary_current" title="以下是历史轮次总结，当前轮次尚未完成复盘。" type="warning" :closable="false" />
         <div v-if="review.summary" class="task-review__summary" data-testid="task-review-summary" v-html="safeSummary" />

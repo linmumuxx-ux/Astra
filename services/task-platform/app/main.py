@@ -13,8 +13,7 @@ from app.api.repository_routes import router as repository_router
 from app.api.routes import router
 from app.api.worker_routes import router as worker_router
 from app.api.workspace_routes import router as workspace_router
-from app.assistant.api import router as assistant_router
-from app.assistant.orchestrator import AssistantOrchestrator, get_orchestrator, set_orchestrator
+from app.assistant.orchestrator import get_orchestrator, set_orchestrator
 from app.bootstrap import bootstrap_categories, bootstrap_employees, bootstrap_knowledge_spaces
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
@@ -46,15 +45,6 @@ async def lifespan(_: FastAPI):
     warn_if_admin_key_missing(settings.worker_gateway_admin_key)
     supervisor = asyncio.create_task(supervise_sessions())
     worker_sweep = asyncio.create_task(sweep_worker_gateway())
-    # 平台助手是增强能力：启动失败不得影响核心任务执行链。
-    # 已注入 Orchestrator（测试 / 嵌入式部署）时保持原有实例。
-    if settings.assistant_enabled and get_orchestrator() is None:
-        try:
-            orchestrator = AssistantOrchestrator(settings)
-            set_orchestrator(orchestrator)
-            await orchestrator.start()
-        except Exception:
-            set_orchestrator(None)
     try:
         yield
     finally:
@@ -90,7 +80,6 @@ app.include_router(worker_gateway_router)
 app.include_router(environment_router)
 app.include_router(workspace_router)
 app.include_router(library_router)
-app.include_router(assistant_router)
 app.include_router(gateway_router)
 app.add_exception_handler(LibraryError, library_error_handler)
 app.add_exception_handler(GatewayError, gateway_error_handler)

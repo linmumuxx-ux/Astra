@@ -86,6 +86,30 @@ async def test_task_experience_is_filed_under_its_category_space():
         assert public.knowledge_count == 0
 
 
+async def test_retry_does_not_overwrite_published_experience():
+    async with experience_session() as (session, _):
+        service = KnowledgeService(session)
+        item = await service.mcp_submit_experience(
+            LibrarySubmitExperienceInput(title="已发布标题", content_md="正式正文"),
+            review_session=await session.get(RuntimeSession, "ses_1"),
+            review_key="published",
+        )
+        stored = await session.get(KnowledgeItem, item.id)
+        stored.status = "published"
+        await session.commit()
+        again = await service.mcp_submit_experience(
+            LibrarySubmitExperienceInput(title="改写标题", content_md="另一套正文"),
+            review_session=await session.get(RuntimeSession, "ses_2"),
+            review_key="retry",
+            merge_into_id=item.id,
+            merge_reason="同一方法",
+        )
+        assert again.id == item.id
+        assert again.title == "已发布标题"
+        assert again.content_md == "正式正文"
+        assert again.status == "published"
+
+
 async def test_manual_experience_is_unverified_and_deduped():
     async with experience_session() as (session, _):
         service = KnowledgeService(session)
