@@ -148,12 +148,14 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         result = payload.get("result")
         return result if isinstance(result, dict) else {"value": result}
 
-    async def events(self, directory: WorkspacePath) -> AsyncIterator[dict[str, Any]]:
+    async def events(
+        self, directory: WorkspacePath, *, consumer: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         folder = str(directory)
         await self.run_command("subscribe_events", {"directory": folder})
         worker_id, epoch = await self._online()
-        log = EventLog(self.gateway.bus, limit=self.gateway.settings.worker_gateway_event_queue_size)
-        consumer = f"browser:{uuid4().hex}"
+        log = self._event_log()
+        holder = consumer or f"browser:{uuid4().hex}"
         seen = 0
         while True:
             state = await log._load(log._key(worker_id, epoch, folder))
@@ -165,7 +167,7 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
                 seen = seq
                 delivered = True
                 await log.touch_cursor(
-                    worker_id=worker_id, epoch=epoch, directory=folder, consumer=consumer, seq=seq
+                    worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=seq
                 )
                 if item.get("gap"):
                     yield {
@@ -177,7 +179,25 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
                 elif isinstance(item.get("event"), dict):
                     yield item["event"]
             if not delivered:
+                await log.touch_cursor(
+                    worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=seen
+                )
                 await asyncio.sleep(0.05)
+
+    def _event_log(self) -> EventLog:
+        return EventLog(self.gateway.bus, limit=self.gateway.settings.worker_gateway_event_queue_size)
+
+    async def claim_gap_refresh(self, directory: WorkspacePath) -> bool:
+        worker_id, epoch = await self._online()
+        return await self._event_log().begin_refresh(
+            worker_id=worker_id, epoch=epoch, directory=str(directory)
+        )
+
+    async def finish_gap_refresh(self, directory: WorkspacePath) -> bool:
+        worker_id, epoch = await self._online()
+        return await self._event_log().finish_refresh(
+            worker_id=worker_id, epoch=epoch, directory=str(directory)
+        )
 
     async def _dispatch(
         self, request_id: str, name: str, payload: dict[str, Any], session_id: str | None

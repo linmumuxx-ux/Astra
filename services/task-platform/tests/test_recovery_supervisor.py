@@ -85,6 +85,98 @@ async def test_watch_session_reconciles_on_absolute_deadline(
     assert refreshes["count"] > 1
 
 
+async def test_event_gap_refreshes_once_without_opening_a_session(
+    monkeypatch, session_factory, tmp_path
+):
+    async with session_factory() as session:
+        session.add(
+            Task(
+                id="T1",
+                task_type="ISSUE",
+                title="t",
+                status="RUNNING",
+                current_session_id="ses_current",
+                workspace=str(tmp_path),
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(recovery, "SessionLocal", session_factory)
+    monkeypatch.setattr(recovery, "resolve_environment", _fake_resolve_environment)
+    monkeypatch.setattr(recovery, "session_tree", _fake_session_tree)
+    monkeypatch.setattr(get_settings(), "opencode_reconcile_interval_seconds", 30)
+
+    class FakeClient:
+        def __init__(self):
+            self.reads: list[str] = []
+            self.created: list[str] = []
+
+        async def _events(self):
+            yield {"type": "astra.event_gap", "directory": str(tmp_path), "from": 1, "to": 3}
+            yield {"type": "astra.event_gap", "directory": str(tmp_path), "from": 3, "to": 5}
+            await asyncio.Event().wait()
+
+        def events(self, directory):
+            return self._events()
+
+        async def status(self, *_args):
+            self.reads.append("status")
+            return "busy"
+
+        async def messages(self, *_args):
+            self.reads.append("messages")
+            return []
+
+        async def questions(self, *_args):
+            self.reads.append("questions")
+            return []
+
+        async def permissions(self, *_args):
+            self.reads.append("permissions")
+            return []
+
+        async def create_session(self, *_args, **_kwargs):
+            self.created.append("session")
+
+    client = FakeClient()
+    connects = {"count": 0}
+
+    @asynccontextmanager
+    async def fake_connect(*args, **kwargs):
+        connects["count"] += 1
+        yield client
+
+    monkeypatch.setattr(recovery, "connect", fake_connect)
+    refreshes = {"count": 0}
+
+    async def fake_refresh(task_id, bound):
+        refreshes["count"] += 1
+        await bound.status(tmp_path, "ses_current")
+        await bound.messages(tmp_path, "ses_current")
+        await bound.questions(tmp_path)
+        await bound.permissions(tmp_path)
+        return SimpleNamespace(
+            status="RUNNING", current_session_id="ses_current", submitted_at=None
+        )
+
+    monkeypatch.setattr(recovery, "_refresh_with_client", fake_refresh)
+    watcher = asyncio.create_task(recovery.watch_session("T1"))
+    await asyncio.sleep(0.6)
+    watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
+
+    assert connects["count"] == 1
+    assert refreshes["count"] == 2
+    assert client.reads.count("status") == 2
+    assert client.reads.count("messages") == 2
+    assert client.reads.count("questions") == 2
+    assert client.reads.count("permissions") == 2
+    assert client.created == []
+    async with session_factory() as session:
+        task = await session.get(Task, "T1")
+    assert task.current_session_id == "ses_current"
+
+
 async def test_old_session_error_event_does_not_fail_new_running_round(
     monkeypatch, session_factory, tmp_path
 ):

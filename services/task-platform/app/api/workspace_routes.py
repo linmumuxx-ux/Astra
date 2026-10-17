@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -295,7 +296,11 @@ def event_session(event):
 async def native_events(environment, workspace, root, global_stream):
     async with connect(environment, start=True) as client:
         allowed = await session_tree(client, Path(workspace), root)
-        async for event in client.events(Path(workspace)):
+        if getattr(client, "records_fetch", False):
+            stream = client.events(Path(workspace), consumer=f"browser:{uuid4().hex}")
+        else:
+            stream = client.events(Path(workspace))
+        async for event in stream:
             props = event.get("properties", {})
             info = props.get("info", {})
             if event.get("type") == "session.created" and info.get("parentID") in allowed:

@@ -61,7 +61,10 @@ async def watch_session(task_id):
 
             async with connect(environment, start=True) as client:
                 directory = Path(workspace)
-                events = client.events(directory).__aiter__()
+                if getattr(client, "records_fetch", False):
+                    events = client.events(directory, consumer=f"recovery:{task_id}").__aiter__()
+                else:
+                    events = client.events(directory).__aiter__()
                 # Start the subscription first, then reconcile. A bounded refresh
                 # below closes any remaining read-before-subscribe race.
                 next_event = asyncio.create_task(anext(events))
@@ -70,6 +73,8 @@ async def watch_session(task_id):
                     return
                 allowed = await session_tree(client, directory, session_id)
                 deadline = loop.time() + settings.opencode_reconcile_interval_seconds
+                gap_followup = False
+                owned_refresh = False
 
                 while True:
                     # The reconcile deadline is absolute: unrelated SSE events must
@@ -79,10 +84,18 @@ async def watch_session(task_id):
                         if not current or current.status in {"SUCCEEDED", "FAILED", "CANCELED"}:
                             return
                         allowed = await session_tree(client, directory, session_id)
+                        again = False
+                        if gap_followup and owned_refresh:
+                            finish = getattr(client, "finish_gap_refresh", None)
+                            again = finish is not None and await finish(directory)
+                        gap_followup = False
+                        owned_refresh = False
                         delay = 1
-                        deadline = (
-                            loop.time() + settings.opencode_reconcile_interval_seconds
-                        )
+                        deadline = loop.time() + settings.opencode_reconcile_interval_seconds
+                        if again:
+                            gap_followup = True
+                            owned_refresh = True
+                            deadline = loop.time()
                         continue
 
                     done, _ = await asyncio.wait(
@@ -104,6 +117,14 @@ async def watch_session(task_id):
                         child_id = info.get("id")
                         if child_id:
                             allowed.add(child_id)
+                    if event.get("type") == "astra.event_gap":
+                        if not gap_followup:
+                            claim = getattr(client, "claim_gap_refresh", None)
+                            if claim is None or await claim(directory):
+                                owned_refresh = True
+                            gap_followup = True
+                            deadline = min(deadline, loop.time() + 0.25)
+                        continue
                     event_session_id = server_event_session_id(event)
                     if event_session_id and event_session_id not in allowed:
                         continue

@@ -2258,6 +2258,70 @@ async def test_human_retry_refuses_without_fetch_evidence(runtime):
     assert not r.native.sent
 
 
+async def test_unfetched_attempt_can_be_retried_once(runtime):
+    r = runtime
+    pending_id = "msg_unfetched001"
+    r.task.status = "RUNNING"
+    r.task.last_message_id = pending_id
+    r.task.pending_message_id = pending_id
+    r.task.pending_attempt = 1
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "again"}]},
+    }
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {"request_id": "req_unfetched", "body_fetched_at": None},
+    }
+    await r.session.commit()
+    sessions = set(r.native.sessions)
+    await r.service.retry_submission("T1")
+    assert len(r.native.sent) == 1
+    assert set(r.native.sessions) == sessions
+    assert r.task.current_session_id == "ses_current"
+
+
+async def test_visible_prompt_refresh_does_not_resend_or_open_a_session(runtime):
+    r = runtime
+    pending_id = "msg_seen0000001"
+    r.native.sessions["ses_current"] = [
+        {"info": {"id": pending_id, "role": "user"}, "parts": [{"type": "text", "text": "go"}]}
+    ]
+    r.native.state = "idle"
+    r.task.status = "RUNNING"
+    r.task.pending_message_id = pending_id
+    r.task.last_message_id = pending_id
+    r.task.pending_attempt = 1
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "go"}]},
+        "in_flight": True,
+        "in_flight_since": datetime.now(UTC).isoformat(),
+    }
+    await r.session.commit()
+    sessions = set(r.native.sessions)
+    reads = []
+
+    def _track(name, method):
+        async def wrapped(*args, **kwargs):
+            reads.append(name)
+            return await method(*args, **kwargs)
+
+        return wrapped
+
+    r.native.status = _track("status", r.native.status)
+    r.native.messages = _track("messages", r.native.messages)
+    r.native.questions = _track("questions", r.native.questions)
+    r.native.permissions = _track("permissions", r.native.permissions)
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    assert reads[:4] == ["status", "questions", "permissions", "messages"]
+    assert r.native.sent == []
+    assert set(r.native.sessions) == sessions
+    assert r.task.current_session_id == "ses_current"
+    assert r.task.pending_message_id is None
+    assert r.task.pending_prompt is None
+
+
 async def test_cancel_does_not_release_worker_until_human_confirms(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
