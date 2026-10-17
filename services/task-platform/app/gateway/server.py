@@ -69,10 +69,9 @@ from app.gateway.models import (
 )
 from app.gateway.probe import GatewayProbeClient, HttpGatewayProbeClient
 from app.gateway.proxy import GatewayProxy, NotSentDownstream, build_upstream_headers
+from app.gateway.request_lifecycle import recover_abandoned_requests
 from app.gateway.runtime import (
-    CIRCUIT_CLOSED,
     CIRCUIT_HALF_OPEN,
-    CIRCUIT_OPEN,
     SCOPE_KEY,
     SCOPE_NODE,
     RedisRuntimeStore,
@@ -132,6 +131,9 @@ class RequestRecord:
     output_tokens: int | None = None
     total_tokens: int | None = None
     output_tps: float | None = None
+    gateway_instance_id: str | None = None
+    gateway_instance_started_at: datetime | None = None
+    outcome: str | None = None
 
     def to_row(self, *, finished: bool) -> GatewayRequest:
         return GatewayRequest(
@@ -156,6 +158,9 @@ class RequestRecord:
             output_tps=self.output_tps,
             started_at=self.started_at,
             finished_at=utcnow() if finished else None,
+            gateway_instance_id=self.gateway_instance_id,
+            gateway_instance_started_at=self.gateway_instance_started_at,
+            outcome=self.outcome,
         )
 
 
@@ -163,17 +168,27 @@ class StreamUsageCollector:
     """增量解析 SSE ``data:`` 行，提取结尾 usage 与首个非空内容，不缓存完整响应。"""
 
     def __init__(self) -> None:
-        self._buffer = ""
+        self._pending = bytearray()
         self.usage: dict[str, Any] | None = None
         self.saw_content = False
 
     def feed(self, chunk: bytes) -> bool:
-        """喂入一块字节。返回本块是否第一次拼出非空内容 token。"""
+        """喂入一块字节。先攒满一行再按 UTF-8 解码，避免多字节字符被拆开后丢内容。"""
 
         before = self.saw_content
-        self._buffer += chunk.decode("utf-8", errors="ignore")
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
+        self._pending.extend(chunk)
+        while True:
+            newline = self._pending.find(b"\n")
+            if newline < 0:
+                break
+            raw = bytes(self._pending[:newline])
+            del self._pending[: newline + 1]
+            if raw.endswith(b"\r"):
+                raw = raw[:-1]
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
             self._consume(line.strip())
         return self.saw_content and not before
 
@@ -245,6 +260,9 @@ _REQUEST_COLUMNS = (
     "output_tps",
     "started_at",
     "finished_at",
+    "gateway_instance_id",
+    "gateway_instance_started_at",
+    "outcome",
 )
 
 
@@ -328,6 +346,12 @@ class GatewayDataPlane:
                 interval=self._config_poll_interval,
             )
             self._tasks.append(asyncio.create_task(refresher.run()))
+        # 先发布本代次心跳，再回收上一代表面未完成的请求。心跳失败时不扫描，
+        # 避免把自己仍在处理的行误标成结果未知。
+        try:
+            await self._beat_and_recover()
+        except Exception:  # noqa: BLE001 - 启动时运行态不可用不阻断服务
+            pass
         self._tasks.append(asyncio.create_task(self._heartbeat_loop()))
 
     async def shutdown(self) -> None:
@@ -503,12 +527,18 @@ class GatewayDataPlane:
     async def _heartbeat_loop(self) -> None:
         while True:
             try:
-                await self.runtime.heartbeat(
-                    self.instance_id, self.heartbeat_payload(), self._heartbeat_ttl
-                )
-            except Exception:  # noqa: BLE001 - 心跳失败不阻断服务
+                await self._beat_and_recover()
+            except Exception:  # noqa: BLE001 - 心跳失败不阻断服务，也不在本轮扫描
                 pass
             await asyncio.sleep(self._heartbeat_interval)
+
+    async def _beat_and_recover(self) -> None:
+        await self.runtime.heartbeat(self.instance_id, self.heartbeat_payload(), self._heartbeat_ttl)
+        await self._recover_abandoned_requests()
+
+    async def _recover_abandoned_requests(self) -> None:
+        async with self._session_factory() as session:
+            await recover_abandoned_requests(session, self.runtime)
 
     async def heartbeat_now(self) -> None:
         try:
@@ -548,7 +578,12 @@ class GatewayDataPlane:
     async def handle_chat(self, request: Request) -> Response:
         config = self.config_state.config
         started = utcnow()
-        record = RequestRecord(id=uuid4().hex, started_at=started)
+        record = RequestRecord(
+            id=uuid4().hex,
+            started_at=started,
+            gateway_instance_id=self.instance_id,
+            gateway_instance_started_at=self._started_at,
+        )
         self._counters["requests"] += 1
         # 到达即落一行。日志若只在完成时插入，超过 60 秒的请求和进行中的请求都不会进入当前 QPS。
         await self._persist(record, finished=False)
@@ -612,6 +647,11 @@ class GatewayDataPlane:
                     upstream_request = self.proxy.build_request(
                         node, "POST", CHAT_PATH, headers=headers, content=body
                     )
+                    # 额外上游尝试从真正发出的那一次起算。解密或组请求失败都不算。
+                    if attempt > 0:
+                        record.retry_count = attempt
+                    # 鉴权、模型和节点都已知后再更新同一行，上游还没返回时节点筛选就能看到它。
+                    await self._persist(record, finished=False)
                     if record.streaming:
                         upstream = await self.proxy.send(upstream_request, stream=True)
                         record.ttfb_ms = elapsed_ms(started)
@@ -638,7 +678,6 @@ class GatewayDataPlane:
                     record.error_code = error.code
                     tried.add(node.id)
                     if attempt < self._max_retries:
-                        record.retry_count = attempt + 1
                         continue
                     raise error from exc
                 except GatewayDataPlaneError:
@@ -760,6 +799,7 @@ class GatewayDataPlane:
                 hourly=schedule.hourly,
                 daily=schedule.daily,
                 health_state=schedule.health,
+                half_open_trials=schedule.half_open_trials,
             )
             if reason is not None:
                 reasons[reason] = reasons.get(reason, 0) + 1
@@ -890,24 +930,28 @@ class GatewayDataPlane:
         if not node_scope:
             return
         try:
-            previous = await self.runtime.circuit(node_scope)
-            await self.runtime.set_circuit_closed(node_scope)
+            transition = await self.runtime.transition_circuit_closed(node_scope)
         except Exception:  # noqa: BLE001
             return
-        if previous != CIRCUIT_CLOSED:
-            await self._write_circuit_event(node_scope, previous, CIRCUIT_CLOSED, "circuit_closed")
+        if transition.changed:
+            await self._write_circuit_event(
+                node_scope, transition.previous, transition.current, "circuit_closed"
+            )
 
     async def _record_node_failure(self, node_scope: str | None) -> None:
         if not node_scope:
             return
         try:
-            previous = await self.runtime.circuit(node_scope)
-            await self.runtime.set_circuit_open(node_scope, self._circuit_open_seconds)
+            transition = await self.runtime.transition_circuit_open(
+                node_scope, self._circuit_open_seconds
+            )
             await self.runtime.mark_degraded(node_scope)
         except Exception:  # noqa: BLE001
             return
-        if previous != CIRCUIT_OPEN:
-            await self._write_circuit_event(node_scope, previous, CIRCUIT_OPEN, "circuit_open")
+        if transition.changed:
+            await self._write_circuit_event(
+                node_scope, transition.previous, transition.current, "circuit_open"
+            )
 
     async def _write_circuit_event(
         self, node_scope: str, previous: str, current: str, kind: str

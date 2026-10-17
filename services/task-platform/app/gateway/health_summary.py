@@ -8,8 +8,9 @@
 - 生效路由：路由启用且所属资源池启用。禁用池、以及启用但没有生效路由的空闲池不参与。
 - 路由可服务：至少有一个可调度节点支持该模型。可调度与数据面相同，调用
   ``node_block_reason``（配置、调度、运行态健康、连接作用域熔断、模型、并发、额度）。
-- 最终失败：已完成请求里，流中断、缺少状态码，或状态码不在 200–399。
-  重试后最终成功不算失败。重试率是额外上游尝试次数之和 / 已完成请求。
+- 最终失败：已确认结束的请求里，流中断、缺少状态码，或状态码不在 200–399。
+  进行中、历史未完成，以及 outcome=lost（结果未知）不进失败分母，也不把未结束区间延伸到现在。
+  重试后最终成功不算失败。重试率是额外上游尝试次数之和 / 已确认结束的请求。
 - 错误率影响健康只统计生效路由上的请求。需要近 5 分钟已完成样本 ≥ 20，且至少两个
   连续的 1 分钟桶各自样本 ≥ 5 且失败率 > 2%。最近 1 分钟样本 ≥ 5 且失败率 ≤ 2% 则恢复。
 - 探测超过 ``max(180s, 3 × 探测间隔)`` 未更新，或运行态采集失败，状态为 unknown。
@@ -42,7 +43,14 @@ from app.gateway.models import (
     GatewayRuntimeEvent,
 )
 from app.gateway.observability import percentile
-from app.gateway.runtime import CIRCUIT_CLOSED, CIRCUIT_OPEN, RuntimeStore, TokenUsage
+from app.gateway.runtime import (
+    CIRCUIT_CLOSED,
+    CIRCUIT_HALF_OPEN,
+    CIRCUIT_HALF_OPEN_MAX_TRIALS,
+    CIRCUIT_OPEN,
+    RuntimeStore,
+    TokenUsage,
+)
 from app.gateway.scheduler import (
     REASON_CIRCUIT_OPEN,
     REASON_HEALTH_CHECKING,
@@ -115,6 +123,7 @@ class RequestSample:
     model: str | None
     pool_id: str | None
     error_code: str | None = None
+    outcome: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,7 @@ class NodeFact:
     last_checked_at: datetime | None
     probe_interval_seconds: int | None
     circuit: str = CIRCUIT_CLOSED
+    half_open_trials: int = 0
     hourly_token_limit: int | None = None
     daily_token_limit: int | None = None
     quota_policy: str = "STOP"
@@ -163,10 +173,20 @@ class HealthFacts:
     default_probe_interval: int = DEFAULT_PROBE_INTERVAL_SECONDS
 
 
-def is_final_failure(sample: RequestSample) -> bool:
-    """已完成请求的最终失败。进行中的请求不进入分母。"""
+def is_lost(sample: RequestSample) -> bool:
+    return sample.outcome == "lost"
 
-    if sample.finished_at is None:
+
+def is_confirmed_terminal(sample: RequestSample) -> bool:
+    """已确认结束：有结束时间，且不是结果未知。进行中和历史未完成都不是。"""
+
+    return sample.finished_at is not None and not is_lost(sample)
+
+
+def is_final_failure(sample: RequestSample) -> bool:
+    """已确认结束请求的最终失败。进行中、历史未完成和结果未知不进入分母。"""
+
+    if not is_confirmed_terminal(sample):
         return False
     if sample.stream_interrupted:
         return True
@@ -239,6 +259,7 @@ def _block(node: NodeFact, model: str) -> str | None:
         hourly=TokenUsage(total_tokens=node.hourly_used),
         daily=TokenUsage(total_tokens=node.daily_used),
         health_state=node.health,
+        half_open_trials=node.half_open_trials,
     )
 
 
@@ -304,7 +325,9 @@ def window_metrics(samples: list[RequestSample], now: datetime) -> OverviewMetri
 
     error_start = now - ERROR_WINDOW
     qps_start = now - QPS_WINDOW
-    finished = _finished_in(samples, error_start, now)
+    finished = [
+        sample for sample in _finished_in(samples, error_start, now) if is_confirmed_terminal(sample)
+    ]
     started_1m = [
         sample
         for sample in samples
@@ -350,10 +373,12 @@ def window_metrics(samples: list[RequestSample], now: datetime) -> OverviewMetri
 def _peak(samples: list[RequestSample], start: datetime, end: datetime) -> int:
     events: list[tuple[datetime, int]] = []
     for sample in samples:
-        started = _aware(sample.started_at)
-        if started is None or started > end:
+        if not is_confirmed_terminal(sample):
             continue
-        finished = _aware(sample.finished_at) or end
+        started = _aware(sample.started_at)
+        finished = _aware(sample.finished_at)
+        if started is None or finished is None or started > end:
+            continue
         if finished < start:
             continue
         event_start = max(started, start)
@@ -374,7 +399,11 @@ def _peak(samples: list[RequestSample], start: datetime, end: datetime) -> int:
 def _error_penalty(samples: list[RequestSample], now: datetime) -> str | None:
     """返回 'down_candidate' / 'degraded' / None。down 还要看剩余容量。"""
 
-    finished = _finished_in(samples, now - ERROR_WINDOW, now)
+    finished = [
+        sample
+        for sample in _finished_in(samples, now - ERROR_WINDOW, now)
+        if is_confirmed_terminal(sample)
+    ]
     if len(finished) < MIN_ERROR_SAMPLE:
         return None
     buckets: list[list[RequestSample]] = [[] for _ in range(5)]
@@ -594,8 +623,12 @@ def scheduling_label(node: NodeFact, *, runtime_ok: bool) -> tuple[str, str]:
         return "disabled", "手动停用"
     if not runtime_ok:
         return "available", "可用"
-    if node.circuit_open:
+    if node.circuit_open or (
+        node.circuit == CIRCUIT_HALF_OPEN and node.half_open_trials >= CIRCUIT_HALF_OPEN_MAX_TRIALS
+    ):
         return "circuit", "熔断"
+    if node.circuit == CIRCUIT_HALF_OPEN:
+        return "half_open", "半开试探"
     if node.max_concurrency > 0 and node.active >= node.max_concurrency:
         return "limited", "限流"
     return "available", "可用"
@@ -643,7 +676,7 @@ def node_window_metrics(facts: HealthFacts) -> list[NodeWindowMetric]:
                 abnormal=abnormal,
             )
         )
-    rank = {"disabled": 0, "circuit": 1, "limited": 2, "available": 3}
+    rank = {"disabled": 0, "circuit": 1, "half_open": 2, "limited": 3, "available": 4}
     metrics_by_node.sort(
         key=lambda item: (
             0 if item.abnormal else 1,
@@ -695,7 +728,7 @@ def build_trends(
         points: list[TrendPoint] = []
         for index, bucket_start in enumerate(starts):
             bucket = buckets[index]
-            finished = [sample for sample in bucket if sample.finished_at is not None]
+            finished = [sample for sample in bucket if is_confirmed_terminal(sample)]
             failures = sum(1 for sample in finished if is_final_failure(sample))
             points.append(
                 TrendPoint(
@@ -724,7 +757,7 @@ def build_trends(
         for key in ordered_keys
         if key in groups
     ]
-    finished = [sample for sample in chosen if sample.finished_at is not None]
+    finished = [sample for sample in chosen if is_confirmed_terminal(sample)]
     return TrendRead(
         window=window,
         group_by=group_by,
@@ -758,6 +791,7 @@ def _sample_from_row(row: Any) -> RequestSample:
         model=row.model,
         pool_id=row.pool_id,
         error_code=row.error_code,
+        outcome=row.outcome,
     )
 
 
@@ -830,6 +864,7 @@ class GatewayOpsService:
                     last_checked_at=node.last_checked_at,
                     probe_interval_seconds=node.probe_interval_seconds,
                     circuit=schedule.circuit if schedule is not None else CIRCUIT_CLOSED,
+                    half_open_trials=schedule.half_open_trials if schedule is not None else 0,
                     hourly_token_limit=node.hourly_token_limit,
                     daily_token_limit=node.daily_token_limit,
                     quota_policy=node.quota_policy or "STOP",

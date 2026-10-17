@@ -1,7 +1,7 @@
 # Nexus v1.0.1（Phase 1 + Phase 2）完整部署指南
 
 > 依据 2026-10-14 ~ 10-16 在部署机（box，Debian 13 x86_64）与 `LLM_WIKI_HOST` 指向的远程主机（CentOS 7.3 x86_64）上的实际部署整理。
-> 代码：<https://github.com/linmumuxx-ux/Astra>，分支 `cursor/nexus-v1-0-1-phase2-f6f2`（迁移到 `0037_gateway_runtime_events`）。
+> 代码：<https://github.com/linmumuxx-ux/Astra>，分支 `cursor/nexus-v1-0-1-phase2-f6f2`（迁移到 `0038_gateway_request_lifecycle`）。
 > 一键脚本：`ops/deploy/install_nexus.sh`（配置模板 `ops/env/.env.example`）。本文每一步都可以手工执行，脚本只是把它们串起来。
 
 ---
@@ -164,9 +164,11 @@ redis-cli ping                       # PONG
 ```bash
 cd $R/services/task-platform
 python3 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e '.[dev]'   # 或 uv pip install -e .[dev]
-.venv/bin/python -m alembic upgrade head        # 到 0037_gateway_runtime_events
+.venv/bin/python -m alembic upgrade head        # 到 0038_gateway_request_lifecycle
 ```
-`ops/deploy/systemd/nexus-task-api.service` 的 `ExecStartPre` 会在 Task API 启动时执行 `alembic upgrade head`。重启前先备份数据库。`0037` 的 downgrade 会删除 `gateway_runtime_events`，已记录的运行事件不可恢复。
+`ops/deploy/systemd/nexus-task-api.service` 的 `ExecStartPre` 会在 Task API 启动时执行 `alembic upgrade head`。重启前先备份数据库。`0037` 的 downgrade 会删除 `gateway_runtime_events`，已记录的运行事件不可恢复。`0038` 的 downgrade 会删除 `gateway_requests.gateway_instance_id`、`gateway_instance_started_at`、`outcome` 三列，不删除运行事件表。
+
+`0038` 之后，未完成调用按处理实例的心跳代次回收：实例失联时标成 `outcome=lost`（结果未知），不写成 500 或成功。`finished_at` 为空且 `gateway_instance_id` 为空的历史行保持原样，统计单独列为 legacy_open，查询不会按等待时间猜测成败。需要处理时只读列出这些行。保留清理只删除已经写下 `finished_at` 的终态历史。
 
 验证时 mcp 解析为 2.3.0（lock 为 2.1.1），均可用。
 
@@ -358,7 +360,7 @@ cd $R/web/nexus && npm ci && npm run build
 ```
 升级前备份：`backend` 的 SQLite/MySQL、`services/nexus-api/data/nexus.sqlite3`、Redis（AgentScope 数据与凭证）、`/var/lib/llm-wiki`、`secrets.env`/`.gwmaster`/`.mcpkey`。远程 Worker 升级后执行一次 `environment/restart`。
 
-systemd `nexus-task-api` 在启动前执行 `alembic upgrade head`，所以重启也会跑迁移；升级或重启前先备份数据库。从 `0037_gateway_runtime_events` 降级会删除 `gateway_runtime_events` 表。
+systemd `nexus-task-api` 在启动前执行 `alembic upgrade head`，所以重启也会跑迁移；升级或重启前先备份数据库。从 `0037_gateway_runtime_events` 降级会删除 `gateway_runtime_events` 表。从 `0038_gateway_request_lifecycle` 降级会删除调用日志上的实例代次与 `outcome` 列。`finished_at` 为空且没有 `gateway_instance_id` 的历史未完成行不会被自动改写成失败或成功。
 
 ---
 

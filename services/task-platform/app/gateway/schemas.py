@@ -255,6 +255,8 @@ class RequestLogRead(BaseModel):
     usage_known: bool
     started_at: datetime
     finished_at: datetime | None
+    outcome: str | None = None
+    gateway_instance_id: str | None = None
 
 
 class RequestLogPage(BaseModel):
@@ -291,6 +293,9 @@ class ScopeStats(BaseModel):
     success: int
     errors: int
     success_rate: float | None
+    in_progress: int = 0
+    lost: int = 0
+    legacy_open: int = 0
     input_tokens: int
     output_tokens: int
     total_tokens: int

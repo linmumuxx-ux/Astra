@@ -182,6 +182,11 @@ class GatewayRequest(Base):
     output_tps: Mapped[float | None] = mapped_column(Float, nullable=True)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # 处理该请求的网关进程。instance_id 跨重启稳定，代次用心跳 started_at 区分。
+    gateway_instance_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    gateway_instance_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # lost：处理实例的该代次已不在心跳上，结果未知。不填写 status_code / error_code。
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
 

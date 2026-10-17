@@ -162,6 +162,65 @@ end
 return state
 """
 
+# 与 circuit_eval 同一套 OPEN→HALF_OPEN 到期规则，额外返回已占用试探次数，不增加试探。
+# 返回 {state, trials}。
+_CIRCUIT_SNAPSHOT_LUA = """
+local state = redis.call('HGET', KEYS[1], 'state')
+if not state then return {'CLOSED', '0'} end
+if state == 'OPEN' then
+  local until_ms = tonumber(redis.call('HGET', KEYS[1], 'until') or '0')
+  if tonumber(ARGV[1]) < until_ms then
+    return {'OPEN', redis.call('HGET', KEYS[1], 'trials') or '0'}
+  end
+  redis.call('HSET', KEYS[1], 'state', 'HALF_OPEN', 'trials', 0)
+  redis.call('HDEL', KEYS[1], 'until')
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return {'HALF_OPEN', '0'}
+end
+return {state, redis.call('HGET', KEYS[1], 'trials') or '0'}
+"""
+
+# 原子打开：仍在 OPEN 窗口内只刷新截止时间，changed=0；否则写入 OPEN 并返回变化前状态。
+# 返回 {changed, previous, current}。
+_TRANSITION_OPEN_LUA = """
+local now = tonumber(ARGV[1])
+local until_ms = tonumber(ARGV[2])
+local ttl_ms = ARGV[3]
+local state = redis.call('HGET', KEYS[1], 'state')
+local previous = 'CLOSED'
+if state == 'OPEN' then
+  local existing = tonumber(redis.call('HGET', KEYS[1], 'until') or '0')
+  if now < existing then
+    redis.call('HSET', KEYS[1], 'until', until_ms, 'trials', 0)
+    redis.call('PEXPIRE', KEYS[1], ttl_ms)
+    return {0, 'OPEN', 'OPEN'}
+  end
+  previous = 'HALF_OPEN'
+elseif state then
+  previous = state
+end
+redis.call('HSET', KEYS[1], 'state', 'OPEN', 'until', until_ms, 'trials', 0)
+redis.call('PEXPIRE', KEYS[1], ttl_ms)
+return {1, previous, 'OPEN'}
+"""
+
+# 原子关闭：缺失或已是 CLOSED 时 changed=0。到期的 OPEN 按 HALF_OPEN 报告变化前状态。
+# 返回 {changed, previous, current}。
+_TRANSITION_CLOSE_LUA = """
+local state = redis.call('HGET', KEYS[1], 'state')
+if not state or state == 'CLOSED' then
+  if state then redis.call('DEL', KEYS[1]) end
+  return {0, 'CLOSED', 'CLOSED'}
+end
+local previous = state
+if state == 'OPEN' then
+  local until_ms = tonumber(redis.call('HGET', KEYS[1], 'until') or '0')
+  if tonumber(ARGV[1]) >= until_ms then previous = 'HALF_OPEN' end
+end
+redis.call('DEL', KEYS[1])
+return {1, previous, 'CLOSED'}
+"""
+
 _SET_CIRCUIT_OPEN_LUA = """
 redis.call('HSET', KEYS[1], 'state', 'OPEN', 'until', ARGV[1], 'trials', 0)
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -197,6 +256,23 @@ if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
 end
 return 0
 """
+
+
+@dataclass(frozen=True)
+class CircuitSnapshot:
+    """熔断读快照。trials 是半开已占用的试探次数，读取本身不占用名额。"""
+
+    state: str
+    trials: int
+
+
+@dataclass(frozen=True)
+class CircuitTransition:
+    """一次原子熔断转移。只有 changed 为真的调用方可以记事件。"""
+
+    changed: bool
+    previous: str
+    current: str
 
 
 @dataclass
@@ -297,6 +373,26 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def open_deadline_ms(open_seconds: int, now_ms: int | None = None) -> tuple[int, int]:
+    """返回 (until_ms, ttl_ms)。0 秒表示窗口已经到期，键仍保留到半开观察窗。"""
+
+    now = _now_ms() if now_ms is None else int(now_ms)
+    if int(open_seconds) <= 0:
+        return now, HALF_OPEN_TTL_SECONDS * 1000
+    span = int(open_seconds) * 1000
+    return now + span, span
+
+
+def _snapshot_from(raw: Any) -> CircuitSnapshot:
+    state, trials = raw
+    return CircuitSnapshot(state=str(state), trials=int(trials))
+
+
+def _transition_from(raw: Any) -> CircuitTransition:
+    changed, previous, current = raw
+    return CircuitTransition(changed=bool(int(changed)), previous=str(previous), current=str(current))
+
+
 class RuntimeStore(Protocol):
     async def healthy(self) -> bool: ...
 
@@ -341,9 +437,15 @@ class RuntimeStore(Protocol):
 
     async def circuit(self, node_id: str) -> str: ...
 
+    async def circuit_snapshot(self, node_id: str) -> CircuitSnapshot: ...
+
     async def set_circuit_open(self, node_id: str, open_seconds: int) -> None: ...
 
     async def set_circuit_closed(self, node_id: str) -> None: ...
+
+    async def transition_circuit_open(self, node_id: str, open_seconds: int) -> CircuitTransition: ...
+
+    async def transition_circuit_closed(self, node_id: str) -> CircuitTransition: ...
 
     async def try_circuit_trial(
         self, node_id: str, max_trials: int = CIRCUIT_HALF_OPEN_MAX_TRIALS
@@ -392,7 +494,10 @@ class RedisRuntimeStore:
                 ("record_probe", _RECORD_PROBE_LUA),
                 ("mark_degraded", _MARK_DEGRADED_LUA),
                 ("circuit_eval", _CIRCUIT_EVAL_LUA),
+                ("circuit_snapshot", _CIRCUIT_SNAPSHOT_LUA),
                 ("circuit_open", _SET_CIRCUIT_OPEN_LUA),
+                ("transition_open", _TRANSITION_OPEN_LUA),
+                ("transition_close", _TRANSITION_CLOSE_LUA),
                 ("circuit_trial", _TRY_TRIAL_LUA),
                 ("is_revoked", _IS_REVOKED_LUA),
             ):
@@ -521,23 +626,39 @@ class RedisRuntimeStore:
             args=[datetime.now().isoformat(), HEALTH_TTL_SECONDS],
         )
 
-    async def circuit(self, node_id: str) -> str:
+    async def circuit_snapshot(self, node_id: str) -> CircuitSnapshot:
         self._connection()
-        result = await self._scripts["circuit_eval"](
+        result = await self._scripts["circuit_snapshot"](
             keys=[circuit_key(node_id)], args=[_now_ms(), HALF_OPEN_TTL_SECONDS * 1000]
         )
-        return str(result)
+        return _snapshot_from(result)
+
+    async def circuit(self, node_id: str) -> str:
+        return (await self.circuit_snapshot(node_id)).state
 
     async def set_circuit_open(self, node_id: str, open_seconds: int) -> None:
         self._connection()
-        open_ms = max(1, int(open_seconds)) * 1000
-        await self._scripts["circuit_open"](
-            keys=[circuit_key(node_id)], args=[_now_ms() + open_ms, open_ms]
-        )
+        until_ms, ttl_ms = open_deadline_ms(open_seconds)
+        await self._scripts["circuit_open"](keys=[circuit_key(node_id)], args=[until_ms, ttl_ms])
 
     async def set_circuit_closed(self, node_id: str) -> None:
         client = self._connection()
         await client.delete(circuit_key(node_id))
+
+    async def transition_circuit_open(self, node_id: str, open_seconds: int) -> CircuitTransition:
+        self._connection()
+        until_ms, ttl_ms = open_deadline_ms(open_seconds)
+        result = await self._scripts["transition_open"](
+            keys=[circuit_key(node_id)], args=[_now_ms(), until_ms, ttl_ms]
+        )
+        return _transition_from(result)
+
+    async def transition_circuit_closed(self, node_id: str) -> CircuitTransition:
+        self._connection()
+        result = await self._scripts["transition_close"](
+            keys=[circuit_key(node_id)], args=[_now_ms()]
+        )
+        return _transition_from(result)
 
     async def try_circuit_trial(
         self, node_id: str, max_trials: int = CIRCUIT_HALF_OPEN_MAX_TRIALS
@@ -817,9 +938,13 @@ class InMemoryRuntimeStore:
             self._circuits[node_id] = entry
         return str(entry.get("state", CIRCUIT_CLOSED)), entry
 
+    async def circuit_snapshot(self, node_id: str) -> CircuitSnapshot:
+        state, entry = await self._eval_circuit(node_id)
+        trials = int(entry.get("trials", 0)) if entry else 0
+        return CircuitSnapshot(state=state, trials=trials)
+
     async def circuit(self, node_id: str) -> str:
-        state, _entry = await self._eval_circuit(node_id)
-        return state
+        return (await self.circuit_snapshot(node_id)).state
 
     async def set_circuit_open(self, node_id: str, open_seconds: int) -> None:
         self._circuits[node_id] = {
@@ -830,6 +955,29 @@ class InMemoryRuntimeStore:
 
     async def set_circuit_closed(self, node_id: str) -> None:
         self._circuits.pop(node_id, None)
+
+    async def transition_circuit_open(self, node_id: str, open_seconds: int) -> CircuitTransition:
+        state, _entry = await self._eval_circuit(node_id)
+        if state == CIRCUIT_OPEN:
+            self._circuits[node_id] = {
+                "state": CIRCUIT_OPEN,
+                "until": time.monotonic() + max(0, open_seconds),
+                "trials": 0,
+            }
+            return CircuitTransition(changed=False, previous=CIRCUIT_OPEN, current=CIRCUIT_OPEN)
+        self._circuits[node_id] = {
+            "state": CIRCUIT_OPEN,
+            "until": time.monotonic() + max(0, open_seconds),
+            "trials": 0,
+        }
+        return CircuitTransition(changed=True, previous=state, current=CIRCUIT_OPEN)
+
+    async def transition_circuit_closed(self, node_id: str) -> CircuitTransition:
+        state, _entry = await self._eval_circuit(node_id)
+        self._circuits.pop(node_id, None)
+        if state == CIRCUIT_CLOSED:
+            return CircuitTransition(changed=False, previous=CIRCUIT_CLOSED, current=CIRCUIT_CLOSED)
+        return CircuitTransition(changed=True, previous=state, current=CIRCUIT_CLOSED)
 
     async def try_circuit_trial(
         self, node_id: str, max_trials: int = CIRCUIT_HALF_OPEN_MAX_TRIALS

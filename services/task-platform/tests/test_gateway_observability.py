@@ -96,6 +96,10 @@ def _add_log(
     started_at=None,
     finished_at=None,
     streaming: bool = False,
+    unfinished: bool = False,
+    outcome: str | None = None,
+    gateway_instance_id: str | None = None,
+    gateway_instance_started_at=None,
 ) -> str:
     log_id = uuid4().hex
     start = started_at or utcnow()
@@ -117,7 +121,10 @@ def _add_log(
         duration_ms=duration_ms,
         streaming=streaming,
         started_at=start,
-        finished_at=finished_at or (start + timedelta(seconds=2)),
+        finished_at=None if unfinished else (finished_at or (start + timedelta(seconds=2))),
+        outcome=outcome,
+        gateway_instance_id=gateway_instance_id,
+        gateway_instance_started_at=gateway_instance_started_at,
     )
 
     async def write():
@@ -366,6 +373,101 @@ def test_scope_stats_tokens_latency_peak_and_unknown_usage(observability_env):
     assert len(stats["trend"]) >= 1
     assert sum(bucket["requests"] for bucket in stats["trend"]) == 3
     assert sum(bucket["unknown_usage_requests"] for bucket in stats["trend"]) == 1
+    assert stats["in_progress"] == 0
+    assert stats["lost"] == 0
+    assert stats["legacy_open"] == 0
+
+
+def test_final_result_stats_exclude_open_lost_and_legacy_rows(observability_env):
+    model = unique("model")
+    node = unique("node")
+    start = utcnow() - timedelta(minutes=2)
+    _add_log(
+        model=model,
+        node_id=node,
+        status_code=200,
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        started_at=start,
+        finished_at=start + timedelta(seconds=1),
+    )
+    _add_log(
+        model=model,
+        node_id=node,
+        status_code=500,
+        error_code="UPSTREAM_500",
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        started_at=start + timedelta(seconds=30),
+        finished_at=start + timedelta(seconds=31),
+    )
+    _add_log(
+        model=model,
+        node_id=node,
+        status_code=None,
+        error_code=None,
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        output_tps=None,
+        connect_ms=None,
+        ttfb_ms=None,
+        ttft_ms=None,
+        duration_ms=None,
+        started_at=start,
+        unfinished=True,
+        gateway_instance_id="gw-live",
+        gateway_instance_started_at=start,
+    )
+    _add_log(
+        model=model,
+        node_id=node,
+        status_code=None,
+        error_code=None,
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        output_tps=None,
+        started_at=start,
+        finished_at=start + timedelta(seconds=1),
+        outcome="lost",
+    )
+    _add_log(
+        model=model,
+        node_id=node,
+        status_code=None,
+        error_code=None,
+        input_tokens=None,
+        output_tokens=None,
+        total_tokens=None,
+        output_tps=None,
+        started_at=start,
+        unfinished=True,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/gateway/stats",
+            params={"scope": "node", "scope_id": node, "window": "7d"},
+        )
+        assert response.status_code == 200, response.text
+        stats = response.json()
+
+    assert stats["requests"] == 5
+    assert stats["success"] == 1
+    assert stats["errors"] == 1
+    assert stats["success_rate"] == pytest.approx(0.5)
+    assert stats["in_progress"] == 1
+    assert stats["lost"] == 1
+    assert stats["legacy_open"] == 1
+    assert stats["input_tokens"] == 10
+    assert stats["unknown_usage_requests"] == 1
+    assert stats["peak_concurrency"] == 1
+    assert sum(bucket["requests"] for bucket in stats["trend"]) == 5
+    assert sum(bucket["errors"] for bucket in stats["trend"]) == 1
+    assert sum(bucket["success"] for bucket in stats["trend"]) == 1
 
 
 def test_stats_overview_and_missing_scope_validation(observability_env):

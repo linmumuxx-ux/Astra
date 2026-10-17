@@ -29,6 +29,7 @@ from app.gateway.config import (
 from app.gateway.errors import (
     CLIENT_DISCONNECTED,
     NO_ELIGIBLE_NODE,
+    NODE_CREDENTIAL_ERROR,
     POOL_SATURATED,
     QUOTA_EXCEEDED,
     RUNTIME_UNAVAILABLE,
@@ -37,10 +38,12 @@ from app.gateway.health_summary import GatewayOpsService, window_metrics
 from app.gateway.models import GatewayKey, GatewayRequest, GatewayRuntimeEvent, utcnow
 from app.gateway.probe import ProbeOutcome
 from app.gateway.proxy import GatewayProxy
+from app.gateway.request_lifecycle import recover_abandoned_requests
 from app.gateway.runtime import (
     REVOKED_KEYS_KEY,
     SCOPE_KEY,
     SCOPE_NODE,
+    CircuitSnapshot,
     InMemoryRuntimeStore,
     RedisRuntimeStore,
     usage_buckets,
@@ -260,6 +263,7 @@ def build_plane(
     max_retries: int = 1,
     proxy: GatewayProxy | None = None,
     circuit_open_seconds: int = 30,
+    instance_id: str = "test-instance",
 ) -> SimpleNamespace:
     store = store or InMemoryRuntimeStore()
     # 数据面启动不再用配置视图播种健康；测试显式模拟「Redis 已有连接作用域运行态」。
@@ -275,7 +279,7 @@ def build_plane(
         cipher=cipher,
         session_factory=SessionLocal,
         config_loader=None,
-        instance_id="test-instance",
+        instance_id=instance_id,
         heartbeat_interval=3600,
         heartbeat_ttl=60,
         lease_ttl=lease_ttl,
@@ -830,6 +834,24 @@ class GatedProxy(GatewayProxy):
         return await super().send(request, stream=stream)
 
 
+class BarrierProxy(GatewayProxy):
+    """两个请求都进入 send 之后一起放行，用来卡住熔断转移前的交错。"""
+
+    def __init__(self, upstream: MockUpstream, *, parties: int = 2) -> None:
+        super().__init__(transport=httpx.MockTransport(upstream.handler))
+        self.parties = parties
+        self.arrived = asyncio.Event()
+        self.release = asyncio.Event()
+        self._seen = 0
+
+    async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+        self._seen += 1
+        if self._seen >= self.parties:
+            self.arrived.set()
+        await self.release.wait()
+        return await super().send(request, stream=stream)
+
+
 class SequencedProxy(GatewayProxy):
     """让两个请求都通过调度后再按顺序失败，用来验证熔断事件去重。"""
 
@@ -959,6 +981,16 @@ def test_sse_collector_records_first_nonempty_content_across_split_frames():
     assert collector.feed(b'data: {"choices":[{"delta":{"content":"more"}}]}\n') is False
 
 
+def test_sse_collector_keeps_a_multibyte_character_split_across_chunks():
+    collector = StreamUsageCollector()
+    raw = 'data: {"choices":[{"delta":{"content":"你"}}]}\n'.encode()
+    split = raw.index("你".encode()) + 1
+    assert collector.feed(raw[:split]) is False
+    assert collector.saw_content is False
+    assert collector.feed(raw[split:]) is True
+    assert collector.saw_content is True
+
+
 def _latest_stream(model: str) -> GatewayRequest:
     rows = asyncio.run(_fetch_logs(50))
     return next(row for row in rows if row.streaming and row.model == model)
@@ -1083,6 +1115,11 @@ def test_arrival_row_counts_in_qps_before_the_upstream_returns(cipher, upstream)
                 )
                 assert len(rows) == 1
                 assert rows[0].finished_at is None
+                assert rows[0].model == model
+                assert rows[0].node_id == NODE_A
+                assert rows[0].pool_id == POOL_ID
+                assert rows[0].key_id == "gk_test"
+                assert rows[0].gateway_instance_id == "test-instance"
                 request_id = rows[0].id
                 facts = await GatewayOpsService(
                     session,
@@ -1097,7 +1134,12 @@ def test_arrival_row_counts_in_qps_before_the_upstream_returns(cipher, upstream)
             ]
             assert len(mine) == 1
             assert mine[0].finished_at is None
-            assert window_metrics(mine, facts.now).qps_requests == 1
+            assert mine[0].model == model
+            assert mine[0].node_id == NODE_A
+            assert window_metrics(
+                [sample for sample in facts.samples if sample.node_id == NODE_A and sample.model == model],
+                facts.now,
+            ).qps_requests == 1
             proxy.release.set()
             response = await task
             assert response.status_code == 200
@@ -1111,6 +1153,294 @@ def test_arrival_row_counts_in_qps_before_the_upstream_returns(cipher, upstream)
         assert done[0].status_code == 200
 
     asyncio.run(scenario())
+
+
+def _post(client, model: str):
+    return client.post(
+        "/v1/chat/completions",
+        json={"model": model, "messages": []},
+        headers=auth_headers(),
+    )
+
+
+def test_single_candidate_with_default_retries_does_not_count_a_retry(cipher, upstream):
+    model = f"once-{uuid4().hex[:8]}"
+    upstream.fail_hosts = {"node-a.test"}
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = _post(client, model)
+    # 默认还会再找一轮；这一轮没有下一个候选，于是返回无可用节点，而不是把没发出的尝试算成重试。
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == NO_ELIGIBLE_NODE
+    assert len(upstream.requests) == 1
+    rows = asyncio.run(_fetch_logs())
+    latest = next(row for row in rows if row.model == model)
+    assert latest.retry_count == 0
+
+
+def test_missing_next_candidate_does_not_count_a_retry(cipher, upstream):
+    model = f"nocand-{uuid4().hex[:8]}"
+    upstream.fail_hosts = {"node-a.test"}
+    node_a = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    node_b = node_dict(NODE_B, host="node-b.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node_a, node_b],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    asyncio.run(kv.store.reset_health(config.nodes[NODE_B].runtime_scope))
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = _post(client, model)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == NO_ELIGIBLE_NODE
+    assert [request.url.host for request in upstream.requests] == ["node-a.test"]
+    rows = asyncio.run(_fetch_logs())
+    latest = next(row for row in rows if row.model == model)
+    assert latest.retry_count == 0
+
+
+def test_credential_decrypt_failure_does_not_count_a_retry(cipher, upstream):
+    model = f"decrypt-{uuid4().hex[:8]}"
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    node["api_key_encrypted"] = "not-a-fernet-token"
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = _post(client, model)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == NODE_CREDENTIAL_ERROR
+    assert upstream.requests == []
+    rows = asyncio.run(_fetch_logs())
+    latest = next(row for row in rows if row.model == model)
+    assert latest.retry_count == 0
+
+
+def test_failed_attempts_on_two_candidates_count_one_extra_send(cipher, upstream):
+    model = f"both-{uuid4().hex[:8]}"
+    upstream.fail_hosts = {"node-a.test", "node-b.test"}
+    nodes = [
+        node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,)),
+        node_dict(NODE_B, host="node-b.test", cipher=cipher, models=(model,)),
+    ]
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=nodes,
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = _post(client, model)
+    assert response.status_code == 502
+    assert len(upstream.requests) == 2
+    rows = asyncio.run(_fetch_logs())
+    latest = next(row for row in rows if row.model == model)
+    assert latest.retry_count == 1
+
+
+def test_ttft_survives_a_multibyte_character_split_in_the_sse_stream(cipher, upstream):
+    model = f"utf-{uuid4().hex[:8]}"
+    raw = 'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'.encode()
+    split = raw.index("你".encode()) + 1
+    upstream.stream_chunks = [raw[:split], raw[split:]]
+    upstream.stream_usage = None
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": [], "stream": True},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 200, response.text
+    assert "你" in response.text
+    assert _latest_stream(model).ttft_ms is not None
+
+
+def test_concurrent_failures_record_one_circuit_open_event(cipher, upstream):
+    node_id = f"gn_{uuid4().hex[:8]}"
+    host = f"{node_id}.test"
+    model = f"barrier-{uuid4().hex[:8]}"
+    upstream.fail_hosts = {host}
+    node = node_dict(node_id, host=host, cipher=cipher, models=(model,))
+    proxy = BarrierProxy(upstream)
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(
+        upstream,
+        config=config,
+        cipher=cipher,
+        max_retries=0,
+        proxy=proxy,
+        circuit_open_seconds=30,
+    )
+
+    async def post(client: httpx.AsyncClient) -> httpx.Response:
+        return await client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": []},
+            headers=auth_headers(),
+        )
+
+    async def scenario():
+        app = create_gateway_app(kv.plane)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as client:
+            first = asyncio.create_task(post(client))
+            second = asyncio.create_task(post(client))
+            await asyncio.wait_for(proxy.arrived.wait(), 5)
+            proxy.release.set()
+            done = await asyncio.gather(first, second)
+            assert [item.status_code for item in done] == [502, 502]
+
+    asyncio.run(scenario())
+
+    async def load():
+        async with SessionLocal() as session:
+            rows = await session.scalars(
+                select(GatewayRuntimeEvent).where(GatewayRuntimeEvent.node_id == node_id)
+            )
+            return [row.kind for row in rows]
+
+    assert asyncio.run(load()).count("circuit_open") == 1
+
+
+def test_circuit_transition_is_atomic_on_the_memory_store():
+    async def scenario():
+        store = InMemoryRuntimeStore()
+        scope = f"mem-{uuid4().hex[:8]}"
+        opened = await asyncio.gather(
+            store.transition_circuit_open(scope, 30),
+            store.transition_circuit_open(scope, 30),
+        )
+        assert sum(1 for item in opened if item.changed) == 1
+        assert {item.current for item in opened} == {"OPEN"}
+        refreshed = await store.transition_circuit_open(scope, 30)
+        assert refreshed.changed is False
+        assert refreshed.previous == "OPEN"
+        closed = await asyncio.gather(
+            store.transition_circuit_closed(scope),
+            store.transition_circuit_closed(scope),
+        )
+        assert sum(1 for item in closed if item.changed) == 1
+        assert await store.circuit_snapshot(scope) == CircuitSnapshot("CLOSED", 0)
+
+    asyncio.run(scenario())
+
+
+def test_startup_marks_dead_generation_lost_and_leaves_legacy_rows(cipher, upstream):
+    instance = f"boot-{uuid4().hex[:8]}"
+    model = f"life-{uuid4().hex[:8]}"
+    old = utcnow() - timedelta(hours=1)
+    dead_id = uuid4().hex
+    legacy_id = uuid4().hex
+    live_started_holder: dict[str, object] = {}
+
+    async def seed():
+        async with SessionLocal() as session:
+            session.add(
+                GatewayRequest(
+                    id=dead_id,
+                    model=model,
+                    gateway_instance_id=instance,
+                    gateway_instance_started_at=old,
+                    started_at=old,
+                    finished_at=None,
+                    status_code=None,
+                    error_code=None,
+                )
+            )
+            session.add(
+                GatewayRequest(
+                    id=legacy_id,
+                    model=model,
+                    started_at=old,
+                    finished_at=None,
+                    status_code=None,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher, instance_id=instance)
+    with TestClient(create_gateway_app(kv.plane)):
+        live_started_holder["started"] = kv.plane._started_at
+
+    async def load():
+        async with SessionLocal() as session:
+            dead = await session.get(GatewayRequest, dead_id)
+            legacy = await session.get(GatewayRequest, legacy_id)
+            assert dead is not None and legacy is not None
+            assert dead.outcome == "lost"
+            assert dead.finished_at is not None
+            assert dead.status_code is None
+            assert dead.error_code is None
+            assert legacy.outcome is None
+            assert legacy.finished_at is None
+            assert legacy.gateway_instance_id is None
+            store = InMemoryRuntimeStore()
+            started = kv.plane._started_at
+            await store.heartbeat(
+                instance, {"instance_id": instance, "started_at": started.isoformat()}, 60
+            )
+            kept_id = uuid4().hex
+            session.add(
+                GatewayRequest(
+                    id=kept_id,
+                    model=model,
+                    gateway_instance_id=instance,
+                    gateway_instance_started_at=started,
+                    started_at=utcnow(),
+                    finished_at=None,
+                )
+            )
+            await session.commit()
+            await recover_abandoned_requests(session, store)
+            kept = await session.get(GatewayRequest, kept_id)
+            assert kept is not None
+            assert kept.outcome is None
+            assert kept.finished_at is None
+
+    asyncio.run(load())
+    assert live_started_holder["started"] == kv.plane._started_at
 
 
 def test_runtime_unavailable_rejects_new_requests(cipher, upstream):
@@ -1621,6 +1951,33 @@ def test_new_connection_health_is_isolated_by_scope(cipher, upstream):
     not REDIS_URL,
     reason="未提供 ASTRA_TEST_REDIS_URL：Lua 脚本未在真实 Redis 上联调，默认仅验证进程内等价语义",
 )
+async def _assert_half_open_snapshot_and_transition(store) -> None:
+    scope = f"snap-{uuid4().hex[:8]}"
+    await store.set_circuit_open(scope, 0)
+    if isinstance(store, RedisRuntimeStore):
+        await asyncio.sleep(0.05)
+    snapshot = await store.circuit_snapshot(scope)
+    assert snapshot == CircuitSnapshot("HALF_OPEN", 0)
+    assert await store.try_circuit_trial(scope) is True
+    assert await store.circuit_snapshot(scope) == CircuitSnapshot("HALF_OPEN", 1)
+    # 再读一次仍不消耗试探。
+    assert await store.circuit_snapshot(scope) == CircuitSnapshot("HALF_OPEN", 1)
+    assert await store.try_circuit_trial(scope) is False
+    opened = await asyncio.gather(
+        store.transition_circuit_open(scope, 30),
+        store.transition_circuit_open(scope, 30),
+    )
+    assert sum(1 for item in opened if item.changed) == 1
+
+
+def test_memory_half_open_snapshot_does_not_consume_trials():
+    asyncio.run(_assert_half_open_snapshot_and_transition(InMemoryRuntimeStore()))
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Lua 脚本未在真实 Redis 上联调，默认仅验证进程内等价语义",
+)
 def test_redis_lua_scripts_against_real_redis():
     async def scenario():
         store = RedisRuntimeStore(REDIS_URL)
@@ -1633,6 +1990,21 @@ def test_redis_lua_scripts_against_real_redis():
             assert await store.renew(SCOPE_NODE, scope_id, lease, 5) is True
             await store.release(SCOPE_NODE, scope_id, lease)
             assert await store.active(SCOPE_NODE, scope_id) == 0
+        finally:
+            await store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：半开快照与原子熔断转移未在真实 Redis 上联调",
+)
+def test_redis_half_open_snapshot_matches_memory():
+    async def scenario():
+        store = RedisRuntimeStore(REDIS_URL)
+        try:
+            await _assert_half_open_snapshot_and_transition(store)
         finally:
             await store.close()
 

@@ -359,7 +359,10 @@
                   </ElTableColumn>
                   <ElTableColumn label="状态" min-width="150">
                     <template #default="{ row }">
-                      <ElTag v-if="row.error_code" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
+                      <ElTag v-if="row.outcome === 'lost'" type="warning">结果未知</ElTag>
+                      <ElTag v-else-if="!row.finished_at && row.gateway_instance_id" type="info">进行中</ElTag>
+                      <ElTag v-else-if="!row.finished_at" type="info">历史未完成</ElTag>
+                      <ElTag v-else-if="row.error_code" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
                       <ElTag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
                     </template>
                   </ElTableColumn>

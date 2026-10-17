@@ -35,7 +35,12 @@ from app.gateway.models import (
 )
 from app.gateway.observability import percentile
 from app.gateway.proxy import GatewayProxy
-from app.gateway.runtime import SCOPE_NODE, InMemoryRuntimeStore, node_runtime_scope, usage_buckets
+from app.gateway.runtime import (
+    SCOPE_NODE,
+    InMemoryRuntimeStore,
+    node_runtime_scope,
+    usage_buckets,
+)
 from app.gateway.scheduler import REASON_CIRCUIT_OPEN, REASON_HEALTH_UNKNOWN, REASON_QUOTA_EXCEEDED
 from app.gateway.security import CredentialCipher
 from app.gateway.server import GatewayDataPlane
@@ -631,6 +636,174 @@ def test_health_summary_uses_the_scheduler_exclusion(case: str, expected: str):
         assert impact.text == f"{pool_name} 不可用"
         assert summary.status != "normal"
         return impact
+
+    asyncio.run(scenario())
+
+
+def test_exhausted_half_open_matches_the_picker_and_does_not_consume_trials():
+    suffix = uuid4().hex[:8]
+    pool_id = f"pool-{suffix}"
+    node_id = f"node-{suffix}"
+    model = f"half-{suffix}"
+    pool_name = f"chat-{suffix}"
+
+    async def scenario():
+        runtime = InMemoryRuntimeStore()
+        node_payload = {
+            "id": node_id,
+            "name": f"node-{suffix}",
+            "pool_id": pool_id,
+            "base_url": "http://half.example",
+            "api_key_encrypted": None,
+            "auth_type": "NONE",
+            "auth_header": "",
+            "health_path": "",
+            "probe_interval_seconds": 60,
+            "models": [model],
+            "weight": 1,
+            "max_concurrency": 4,
+            "hourly_token_limit": None,
+            "daily_token_limit": None,
+            "quota_policy": "STOP",
+            "config_state": "ENABLED",
+            "scheduling_state": "ACTIVE",
+            "health_state": HEALTH_HEALTHY,
+        }
+        async with SessionLocal() as session:
+            session.add(GatewayPool(id=pool_id, name=pool_name, enabled=True))
+            node = GatewayNode(**node_payload, last_checked_at=datetime.now(UTC))
+            session.add(node)
+            session.add(GatewayRoute(id=f"route-{suffix}", model=model, pool_id=pool_id, enabled=True))
+            await session.commit()
+            scope = node_runtime_scope(node)
+        await runtime.seed_health(scope, HEALTH_HEALTHY)
+        await runtime.set_circuit_open(scope, 0)
+        assert (await runtime.circuit_snapshot(scope)).trials == 0
+        assert await runtime.try_circuit_trial(scope) is True
+        assert (await runtime.circuit_snapshot(scope)).trials == 1
+        config = GatewayConfig.from_snapshot(
+            {
+                "pools": [{"id": pool_id, "name": pool_name, "weight": 1, "enabled": True}],
+                "nodes": [node_payload],
+                "routes": [{"id": f"route-{suffix}", "model": model, "pool_id": pool_id, "enabled": True}],
+                "keys": [],
+            }
+        )
+        plane = GatewayDataPlane(
+            config_state=GatewayConfigState(config),
+            runtime=runtime,
+            proxy=GatewayProxy(transport=httpx.MockTransport(lambda request: httpx.Response(200))),
+            cipher=CredentialCipher(None),
+            session_factory=SessionLocal,
+            timezone="Asia/Shanghai",
+        )
+        try:
+            picked, _lease, reasons = await plane._pick_node_from_runtime(
+                config=config,
+                model=model,
+                pool=config.pools[pool_id],
+                exclude=set(),
+            )
+            assert picked is None
+            assert reasons.get(REASON_CIRCUIT_OPEN) == 1
+            async with SessionLocal() as session:
+                ops = GatewayOpsService(
+                    session, runtime=runtime, timezone="Asia/Shanghai", probe_interval_seconds=300
+                )
+                summary = await ops.health_summary()
+                metrics = await ops.node_metrics()
+        finally:
+            await plane.proxy.close()
+        assert (await runtime.circuit_snapshot(scope)).trials == 1
+        assert await runtime.try_circuit_trial(scope) is False
+        impact = next(item for item in summary.impact if item.model == model)
+        assert impact.state == "down"
+        assert impact.text == f"{pool_name} 不可用"
+        row = next(item for item in metrics if item.node_id == node_id)
+        assert row.scheduling == "circuit"
+        assert row.scheduling_label == "熔断"
+
+    asyncio.run(scenario())
+
+
+def test_half_open_with_a_remaining_trial_stays_schedulable_without_consuming_it():
+    suffix = uuid4().hex[:8]
+    pool_id = f"pool-{suffix}"
+    node_id = f"node-{suffix}"
+    model = f"open-{suffix}"
+    pool_name = f"chat-{suffix}"
+
+    async def scenario():
+        runtime = InMemoryRuntimeStore()
+        node_payload = {
+            "id": node_id,
+            "name": f"node-{suffix}",
+            "pool_id": pool_id,
+            "base_url": "http://open.example",
+            "api_key_encrypted": None,
+            "auth_type": "NONE",
+            "auth_header": "",
+            "health_path": "",
+            "probe_interval_seconds": 60,
+            "models": [model],
+            "weight": 1,
+            "max_concurrency": 4,
+            "hourly_token_limit": None,
+            "daily_token_limit": None,
+            "quota_policy": "STOP",
+            "config_state": "ENABLED",
+            "scheduling_state": "ACTIVE",
+            "health_state": HEALTH_HEALTHY,
+        }
+        async with SessionLocal() as session:
+            session.add(GatewayPool(id=pool_id, name=pool_name, enabled=True))
+            node = GatewayNode(**node_payload, last_checked_at=datetime.now(UTC))
+            session.add(node)
+            session.add(GatewayRoute(id=f"route-{suffix}", model=model, pool_id=pool_id, enabled=True))
+            await session.commit()
+            scope = node_runtime_scope(node)
+        await runtime.seed_health(scope, HEALTH_HEALTHY)
+        await runtime.set_circuit_open(scope, 0)
+        assert await runtime.circuit(scope) == "HALF_OPEN"
+        config = GatewayConfig.from_snapshot(
+            {
+                "pools": [{"id": pool_id, "name": pool_name, "weight": 1, "enabled": True}],
+                "nodes": [node_payload],
+                "routes": [{"id": f"route-{suffix}", "model": model, "pool_id": pool_id, "enabled": True}],
+                "keys": [],
+            }
+        )
+        async with SessionLocal() as session:
+            ops = GatewayOpsService(
+                session, runtime=runtime, timezone="Asia/Shanghai", probe_interval_seconds=300
+            )
+            summary = await ops.health_summary()
+            metrics = await ops.node_metrics()
+        assert (await runtime.circuit_snapshot(scope)).trials == 0
+        impact = next(item for item in summary.impact if item.model == model)
+        assert impact.state == "normal"
+        row = next(item for item in metrics if item.node_id == node_id)
+        assert row.scheduling == "half_open"
+        assert row.scheduling_label == "半开试探"
+        plane = GatewayDataPlane(
+            config_state=GatewayConfigState(config),
+            runtime=runtime,
+            proxy=GatewayProxy(transport=httpx.MockTransport(lambda request: httpx.Response(200))),
+            cipher=CredentialCipher(None),
+            session_factory=SessionLocal,
+            timezone="Asia/Shanghai",
+        )
+        try:
+            picked, _lease, _reasons = await plane._pick_node_from_runtime(
+                config=config,
+                model=model,
+                pool=config.pools[pool_id],
+                exclude=set(),
+            )
+        finally:
+            await plane.proxy.close()
+        assert picked is not None
+        assert (await runtime.circuit_snapshot(scope)).trials == 1
 
     asyncio.run(scenario())
 

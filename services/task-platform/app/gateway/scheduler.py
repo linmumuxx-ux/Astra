@@ -20,6 +20,8 @@ from app.gateway.models import (
     SCHEDULING_ACTIVE,
 )
 from app.gateway.runtime import (
+    CIRCUIT_HALF_OPEN,
+    CIRCUIT_HALF_OPEN_MAX_TRIALS,
     CIRCUIT_OPEN,
     SCOPE_NODE,
     RuntimeStore,
@@ -83,6 +85,7 @@ def node_block_reason(
     hourly: TokenUsage,
     daily: TokenUsage,
     health_state: str | None = None,
+    half_open_trials: int = 0,
 ) -> str | None:
     # 健康态只认运行态；调用方未提供时按 UNKNOWN 处理，绝不回退配置健康投影。
     health = health_state if health_state is not None else HEALTH_UNKNOWN
@@ -97,6 +100,8 @@ def node_block_reason(
     if health not in (HEALTH_HEALTHY, HEALTH_DEGRADED):
         return REASON_HEALTH_UNHEALTHY
     if circuit == CIRCUIT_OPEN:
+        return REASON_CIRCUIT_OPEN
+    if circuit == CIRCUIT_HALF_OPEN and half_open_trials >= CIRCUIT_HALF_OPEN_MAX_TRIALS:
         return REASON_CIRCUIT_OPEN
     if model not in node.models:
         return REASON_MODEL_UNSUPPORTED
@@ -114,6 +119,7 @@ class NodeSchedule:
     scope: str
     active: int
     circuit: str
+    half_open_trials: int
     health: str
     hourly: TokenUsage
     daily: TokenUsage
@@ -134,10 +140,12 @@ async def read_node_schedule(
 
     buckets = usage_buckets(now or utcnow(), timezone)
     scope = node_runtime_scope(node)
+    snapshot = await runtime.circuit_snapshot(scope)
     return NodeSchedule(
         scope=scope,
         active=int(await runtime.active(SCOPE_NODE, node.id)),
-        circuit=await runtime.circuit(scope),
+        circuit=snapshot.state,
+        half_open_trials=snapshot.trials,
         health=await runtime.health(scope) or HEALTH_UNKNOWN,
         hourly=await runtime.usage(SCOPE_NODE, node.id, "hour", buckets["hour"]),
         daily=await runtime.usage(SCOPE_NODE, node.id, "day", buckets["day"]),

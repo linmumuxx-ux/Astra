@@ -194,6 +194,8 @@ export interface GatewayRequestLog {
   usage_known: boolean
   started_at: string
   finished_at: string | null
+  outcome: string | null
+  gateway_instance_id: string | null
 }
 
 export interface GatewayRequestPage {
@@ -329,7 +331,7 @@ export interface GatewayNodeMetric {
   pool_name: string | null
   health: 'healthy' | 'unhealthy' | 'unknown'
   health_label: string
-  scheduling: 'available' | 'circuit' | 'limited' | 'disabled'
+  scheduling: 'available' | 'circuit' | 'half_open' | 'limited' | 'disabled'
   scheduling_label: string
   active: number | null
   capacity_limit: number | null

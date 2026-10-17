@@ -129,6 +129,15 @@
           </div>
         </div>
       </template>
+      <ElAlert
+        v-if="trendError"
+        type="warning"
+        show-icon
+        :closable="false"
+        :title="trendError"
+        data-testid="gateway-trend-error"
+      />
+      <p v-if="trendStale" class="gateway-overview__trend-stale" data-testid="gateway-trend-stale">{{ trendStale }}</p>
       <p class="gateway-overview__trend-headline">窗口 TTFT P95：{{ headlineTtft }} · 输出 TPS P95：{{ headlineTps }}</p>
       <GatewayTrendChart v-if="trendPoints" :points="trendPoints" mode="value" value-name="TTFT P95" />
       <ElEmpty v-else :image-size="52" description="暂无数据" />
@@ -172,6 +181,8 @@ const summary = ref<GatewayHealthSummary | null>(null)
 const rows = ref<GatewayNodeMetric[]>([])
 const events = ref<GatewayOpsEvent[]>([])
 const trend = ref<GatewayTrend | null>(null)
+const trendError = ref('')
+const trendUpdatedAt = ref<string | null>(null)
 const loading = ref(false)
 const error = ref('')
 const abnormalOnly = ref(false)
@@ -291,9 +302,18 @@ function healthTag(value: string): 'success' | 'danger' | 'info' {
 function schedulingTag(value: string): 'success' | 'danger' | 'warning' | 'info' {
   if (value === 'available') return 'success'
   if (value === 'circuit') return 'danger'
-  if (value === 'limited') return 'warning'
+  if (value === 'limited' || value === 'half_open') return 'warning'
   return 'info'
 }
+function trendWindowText(value: string): string {
+  return value === '15m' ? '15 分钟' : '1 小时'
+}
+const trendStale = computed(() => {
+  if (!trend.value || !trendUpdatedAt.value) return ''
+  const mismatch = trend.value.window !== trendWindow.value
+  if (!mismatch && !trendError.value) return ''
+  return `图表仍是近 ${trendWindowText(trend.value.window)}，更新于 ${formatDateTime(trendUpdatedAt.value)}`
+})
 function showAbnormal() {
   abnormalOnly.value = true
   showHealthy.value = false
@@ -402,7 +422,11 @@ async function load(silent: boolean) {
     if (eventRows.status === 'fulfilled') events.value = eventRows.value
     if (trendValue.status === 'fulfilled') {
       trend.value = trendValue.value
+      trendUpdatedAt.value = new Date().toISOString()
+      trendError.value = ''
       if (!trendValue.value.series.some((item) => item.key === seriesKey.value)) seriesKey.value = 'all'
+    } else if (!isAbort(trendValue.reason)) {
+      trendError.value = errorMessage(trendValue.reason, '趋势加载失败')
     }
   } finally {
     if (seq === loadSeq) loading.value = false

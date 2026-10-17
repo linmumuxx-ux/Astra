@@ -68,6 +68,8 @@ _STAT_COLUMNS = (
     GatewayRequest.output_tokens,
     GatewayRequest.total_tokens,
     GatewayRequest.output_tps,
+    GatewayRequest.outcome,
+    GatewayRequest.gateway_instance_id,
 )
 
 
@@ -132,6 +134,18 @@ def _parse_dt(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _phase(finished_at: datetime | None, outcome: str | None, instance_id: str | None) -> str:
+    """终态统计只认已确认结束的行。进行中、结果未知、历史未完成分开计。"""
+
+    if outcome == "lost":
+        return "lost"
+    if finished_at is None and instance_id:
+        return "in_progress"
+    if finished_at is None:
+        return "legacy_open"
+    return "terminal"
 
 
 def _is_success(status_code: int | None, stream_interrupted: bool) -> bool:
@@ -239,6 +253,8 @@ class GatewayObservabilityService:
             usage_known=_usage_known(row.input_tokens, row.output_tokens, row.total_tokens),
             started_at=row.started_at,
             finished_at=row.finished_at,
+            outcome=row.outcome,
+            gateway_instance_id=row.gateway_instance_id,
         )
 
     async def list_health_checks(
@@ -294,6 +310,10 @@ class GatewayObservabilityService:
 
         requests = len(rows)
         success = 0
+        errors = 0
+        in_progress = 0
+        lost = 0
+        legacy_open = 0
         input_tokens = 0
         output_tokens = 0
         total_tokens = 0
@@ -334,10 +354,27 @@ class GatewayObservabilityService:
                 out_tokens,
                 tot_tokens,
                 output_tps,
+                outcome,
+                instance_id,
             ) = row
+            index = self._bucket_index(started_at, start, tz, granularity)
+            if index is not None:
+                bucket_totals[index]["requests"] += 1
+            phase = _phase(finished_at, outcome, instance_id)
+            if phase == "in_progress":
+                in_progress += 1
+                continue
+            if phase == "lost":
+                lost += 1
+                continue
+            if phase == "legacy_open":
+                legacy_open += 1
+                continue
             succeeded = _is_success(status_code, bool(stream_interrupted))
             if succeeded:
                 success += 1
+            else:
+                errors += 1
             known = _usage_known(in_tokens, out_tokens, tot_tokens)
             if not known:
                 unknown_usage += 1
@@ -359,22 +396,21 @@ class GatewayObservabilityService:
                 if number is not None:
                     target.append(number)
 
-            event_end = finished_at or end
-            event_start = started_at
-            if event_start < start:
-                event_start = start
-            if event_end > end:
-                event_end = end
-            if event_end < event_start:
-                event_end = event_start
-            events.append((event_start, 1))
-            events.append((event_end, -1))
+            if started_at is not None and finished_at is not None:
+                event_end = finished_at
+                event_start = started_at
+                if event_start < start:
+                    event_start = start
+                if event_end > end:
+                    event_end = end
+                if event_end < event_start:
+                    event_end = event_start
+                events.append((event_start, 1))
+                events.append((event_end, -1))
 
-            index = self._bucket_index(started_at, start, tz, granularity)
             if index is None:
                 continue
             counter = bucket_totals[index]
-            counter["requests"] += 1
             counter["success"] += 1 if succeeded else 0
             counter["errors"] += 0 if succeeded else 1
             counter["input_tokens"] += in_value
@@ -395,8 +431,11 @@ class GatewayObservabilityService:
             window_end=end,
             requests=requests,
             success=success,
-            errors=requests - success,
-            success_rate=round(success / requests, 4) if requests else None,
+            errors=errors,
+            success_rate=round(success / (success + errors), 4) if success + errors else None,
+            in_progress=in_progress,
+            lost=lost,
+            legacy_open=legacy_open,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
