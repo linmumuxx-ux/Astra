@@ -1,6 +1,6 @@
 # NEXUS 平台助手真实验收报告（2026-09-04，2026-09-05 复核）
 
-验收对象：按《平台助手方案设计》（`docs/product/design/PLATFORM_ASSISTANT.md`）落地的第一版平台助手。
+验收对象：按《平台助手方案设计》（`docs/archive/design/PLATFORM_ASSISTANT.md`，原 `docs/product/design/PLATFORM_ASSISTANT.md`）落地的第一版平台助手。
 
 验收环境：
 

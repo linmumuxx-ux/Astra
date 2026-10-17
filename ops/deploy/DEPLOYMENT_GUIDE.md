@@ -41,7 +41,7 @@
 | Redis | 6.x+ 或 Docker | `redis-cli ping` | box：Redis 8.0.2 |
 | git, curl, ss | 必需 | | |
 | Docker | 可选（Redis 容器化、llm_wiki） | `docker --version` | CentOS 7 上用官方静态包 27.3.1 + 自写 systemd unit |
-| OpenCode CLI | ≥ 1.18.25，验证用 **1.18.33** | `opencode --version` | `npm i -g --prefix ~/.local opencode-ai@1.18.33` |
+| OpenCode CLI | **1.18.35**（唯一支持版本） | `opencode --version` | `npm i -g --prefix ~/.local opencode-ai@1.18.35` |
 | 浏览器 | 仅 llm_wiki ingest pump 需要 Chrome/Chromium | `google-chrome --version` | 见 §9 限制 |
 
 一键预检：`ops/deploy/install_nexus.sh --preflight-only [--with-llm-wiki] [--remote-worker HOST]`，失败立即退出且不做修改。
@@ -95,7 +95,7 @@
 | ASTRA_OUTBOX_INTERVAL / ASTRA_OUTBOX_RETRY_SECONDS | 否 | — | 唤醒 outbox 轮询（验证用 2 / 5） |
 | ASTRA_OPENCODE_MODEL | 是 | — | `deepseek/deepseek-flash`（provider/model） |
 | ASTRA_OPENCODE_SERVER_PORT / ASTRA_ASSISTANT_OPENCODE_PORT | 否 | 4096 / 4097 | 平台/助手 OpenCode |
-| ASTRA_OPENCODE_SERVER_MIN_VERSION | 否 | 1.18.25 | 版本下限 |
+| ASTRA_OPENCODE_SERVER_VERSION | 否 | 1.18.35 | 唯一支持的 OpenCode 版本 |
 | ASTRA_NEXUS_API_BASE | 是 | — | `http://127.0.0.1:8120`（task-hint 唤醒） |
 | ASTRA_AGENTSCOPE_BASE_URL / ASTRA_AGENTSCOPE_USER_ID | 是 | — | `http://127.0.0.1:8000` / `nexus` |
 | ASTRA_LLM_WIKI_ENABLED | 图书馆需要 | false | 打开 llm_wiki 集成 |
@@ -103,7 +103,7 @@
 | ASTRA_LLM_WIKI_API_TOKEN | 同上 | — | Bearer token |
 | ASTRA_LLM_WIKI_PROJECT_ID | 同上 | — | llm_wiki 项目 UUID（`.llm-wiki/project.json`） |
 | ASTRA_LLM_WIKI_TIMEOUT | 否 | 10 | 远端仿真时建议 30 |
-| ASTRA_REMOTE_OPENCODE_VERSION / ASTRA_REMOTE_NODE_VERSION / ASTRA_REMOTE_NPM_REGISTRY | 否 | 1.18.33 / 22.23.3 / npmmirror | 远程一键部署 |
+| ASTRA_REMOTE_OPENCODE_VERSION / ASTRA_REMOTE_NODE_VERSION / ASTRA_REMOTE_NPM_REGISTRY | 否 | 1.18.35 / 22.23.3 / npmmirror | 远程一键部署 |
 | ASTRA_DATABASE_* | 生产 | dev 用 SQLite | 生产把 `ASTRA_DATABASE_URL` 指到 MySQL |
 | ASTRA_SERVICE_BACKEND_PORT / _GATEWAY_PORT / _FRONTEND_PORT | 否 | 8100 / 8110 / 5173 | astra_service 端口 |
 
@@ -137,11 +137,11 @@
 
 ```bash
 git clone -b cursor/nexus-v1-0-1-phase2-f6f2 https://github.com/linmumuxx-ux/Astra /opt/nexus
-cp /opt/nexus/ops/env/.env.example /opt/services/agent-service/.env && chmod 600 /opt/services/agent-service/.env   # 填 DEEPSEEK_API_KEY 等
+cp /opt/nexus/ops/env/.env.example /opt/nexus/ops/env/.env && chmod 600 /opt/nexus/ops/env/.env   # 填 DEEPSEEK_API_KEY 等
 /opt/nexus/ops/deploy/install_nexus.sh --preflight-only
 /opt/nexus/ops/deploy/install_nexus.sh [--with-llm-wiki] [--remote-worker 1.2.3.4] [--skip-web-build] [--no-systemd]
 ```
-脚本幂等：已有 venv/密钥/项目/网关路由/Worker 均复用；有 systemd 时生成 `nexus-*.service`，否则由 `ops/dev/service_ctl.py` 拉起进程（身份记录在 `$NEXUS_STATE_DIR/service-ctl.json`，日志在 `$NEXUS_STATE_DIR/logs`）。
+脚本幂等：已有 venv/密钥/项目/网关路由/Worker 均复用；有 systemd 时由安装脚本生成 `nexus-*.service`（不读取 `ops/deploy/systemd` 静态文件），否则由 `ops/dev/service_ctl.py` 拉起进程（身份记录在 `$NEXUS_STATE_DIR/service-ctl.json`，日志在 `$NEXUS_STATE_DIR/logs`）。Task MCP 与管理台由 `astra_service.py dev` 拉起，安装脚本不再单独启动它们。
 > 安装脚本在 `ops/deploy/install_nexus.sh`，环境模板在 `ops/env/.env.example`，llm_wiki 工具在 `tools/llm_wiki/`。
 
 ---
@@ -166,14 +166,14 @@ cd $R/services/task-platform
 python3 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -e '.[dev]'   # 或 uv pip install -e .[dev]
 .venv/bin/python -m alembic upgrade head        # 到 0038_gateway_request_lifecycle
 ```
-`ops/deploy/systemd/nexus-task-api.service` 的 `ExecStartPre` 会在 Task API 启动时执行 `alembic upgrade head`。重启前先备份数据库。`0037` 的 downgrade 会删除 `gateway_runtime_events`，已记录的运行事件不可恢复。`0038` 的 downgrade 会删除 `gateway_requests.gateway_instance_id`、`gateway_instance_started_at`、`outcome` 三列，不删除运行事件表。
+`astra_service.py` 在监听前执行 `alembic upgrade head`（`prepare()`）。安装脚本生成的 `nexus-astra` 单元通过 ExecStart 调用 `astra_service.py dev restart`，因此 systemd 重启同样会迁移，效果与原先静态单元的 `ExecStartPre` 相同。仓库不再提交静态 unit 文件。重启前先备份数据库。`0037` 的 downgrade 会删除 `gateway_runtime_events`，已记录的运行事件不可恢复。`0038` 的 downgrade 会删除 `gateway_requests.gateway_instance_id`、`gateway_instance_started_at`、`outcome` 三列，不删除运行事件表。
 
 `0038` 之后，未完成调用按处理实例的心跳代次回收：实例失联时标成 `outcome=lost`（结果未知），不写成 500 或成功。`finished_at` 为空且 `gateway_instance_id` 为空的历史行保持原样，统计单独列为 legacy_open，查询不会按等待时间猜测成败。需要处理时只读列出这些行。保留清理只删除已经写下 `finished_at` 的终态历史。
 
 验证时 mcp 解析为 2.3.0（lock 为 2.1.1），均可用。
 
 ### 5.3 Task API / Celery / OpenCode
-OpenCode：`npm i -g --prefix ~/.local opencode-ai@1.18.33`，`~/.config/opencode/opencode.json` 增加 deepseek provider（apiKey 写 `{env:DEEPSEEK_API_KEY}`，不要写明文）。
+OpenCode：`npm i -g --prefix ~/.local opencode-ai@1.18.35`，`~/.config/opencode/opencode.json` 增加 deepseek provider（apiKey 写 `{env:DEEPSEEK_API_KEY}`，不要写明文）。
 ```bash
 export PATH=$HOME/.local/bin:$PATH
 cd $R/services/task-platform && ASTRA_GATEWAY_MASTER_KEY=$(cat ../.gwmaster) ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS=30 \
@@ -347,7 +347,7 @@ ops/dev/start_agent_service.sh start  # 8000
 ops/dev/start_nexus_api.sh start      # 8120
 ops/dev/start_task_mcp.sh start       # 8202
 ```
-一键脚本部署的机器：`systemctl restart nexus-astra nexus-task-mcp nexus-agentscope nexus-api nexus-web [nexus-llm-wiki-tunnel nexus-llm-wiki-pump]`。
+一键脚本部署的机器：`systemctl restart nexus-astra nexus-agent-service nexus-api [nexus-llm-wiki-tunnel nexus-llm-wiki-pump]`。Task MCP 与管理台随 `nexus-astra` 里的 `astra_service.py` 一起重启。
 远端：`docker restart llm-wiki-web`（重启主机后先重新注册 binfmt）。
 
 **升级**：
@@ -360,7 +360,7 @@ cd $R/web/nexus && npm ci && npm run build
 ```
 升级前备份：`backend` 的 SQLite/MySQL、`services/nexus-api/data/nexus.sqlite3`、Redis（AgentScope 数据与凭证）、`/var/lib/llm-wiki`、`secrets.env`/`.gwmaster`/`.mcpkey`。远程 Worker 升级后执行一次 `environment/restart`。
 
-systemd `nexus-task-api` 在启动前执行 `alembic upgrade head`，所以重启也会跑迁移；升级或重启前先备份数据库。从 `0037_gateway_runtime_events` 降级会删除 `gateway_runtime_events` 表。从 `0038_gateway_request_lifecycle` 降级会删除调用日志上的实例代次与 `outcome` 列。`finished_at` 为空且没有 `gateway_instance_id` 的历史未完成行不会被自动改写成失败或成功。
+`nexus-astra` 重启会经 `astra_service.py` 执行 `alembic upgrade head`，所以重启也会跑迁移；升级或重启前先备份数据库。从 `0037_gateway_runtime_events` 降级会删除 `gateway_runtime_events` 表。从 `0038_gateway_request_lifecycle` 降级会删除调用日志上的实例代次与 `outcome` 列。`finished_at` 为空且没有 `gateway_instance_id` 的历史未完成行不会被自动改写成失败或成功。
 
 ---
 

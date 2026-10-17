@@ -153,7 +153,7 @@ Vue Task Workbench
 
 ## 修改文件
 
-- `tools/e2e/opencode_server_poc.py`：可在 macOS/Linux/Windows 上复跑的真实 Server POC；默认启动独立 `opencode serve`，也可用 `--base-url` 连接已启动实例。
+- `docs/archive/opencode_server_poc.py`（原 `tools/e2e/opencode_server_poc.py`）：可在 macOS/Linux/Windows 上复跑的真实 Server POC；默认启动独立 `opencode serve`，也可用 `--base-url` 连接已启动实例。已归档，不是当前验收入口。
 - `services/task-platform/app/executors/opencode_server.py`：真实 HTTP/SSE Executor，处理 Session、Event、Child、Question/Permission Reply、Abort 和用量。
 - `services/task-platform/app/runtime/opencode_server.py`：共享 Server 命令、认证和健康检查。
 - `services/task-platform/app/executors/opencode_prompt.py`：Server 与 CLI fallback 共用任务提示，仅 Server 启用原生 Question。

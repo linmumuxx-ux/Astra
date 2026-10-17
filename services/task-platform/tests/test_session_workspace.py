@@ -182,16 +182,25 @@ async def runtime(tmp_path, monkeypatch):
     await engine.dispose()
 
 
-async def test_workspace_uses_default_version_for_historical_session(runtime):
+async def test_workspace_unknown_version_is_not_rewritten_or_served(runtime):
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    stored = dict(binding.environment)
+    assert "opencode_version" not in stored
+
     response = await runtime.api.get("/api/tasks/T1/workspace")
     assert response.status_code == 200
     body = response.json()
-    assert body["runtime"]["opencode_version"] == "1.2.27"
-    assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.2.27/index.html"
-    assert body["sessions"][0]["workspace_ui"] == "/opencode-workspace/1.2.27/index.html"
+    assert body["runtime"]["opencode_version"] == "unknown"
+    assert body["runtime"]["workspace_ui"] is None
+    assert body["runtime"]["workspace_ui_error"] == "版本未知/界面已退役"
+    assert body["sessions"][0]["opencode_version"] == "unknown"
+    assert body["sessions"][0]["workspace_ui"] is None
+    assert body["sessions"][0]["workspace_ui_error"] == "版本未知/界面已退役"
+    await runtime.session.refresh(binding)
+    assert binding.environment == stored
 
 
-async def test_workspace_uses_runtime_session_opencode_version(runtime):
+async def test_retired_recorded_version_keeps_the_snapshot_and_hides_the_ui(runtime):
     binding = await runtime.session.get(RuntimeSession, "ses_current")
     binding.environment = {**binding.environment, "opencode_version": "1.18.31"}
     await runtime.session.commit()
@@ -200,7 +209,23 @@ async def test_workspace_uses_runtime_session_opencode_version(runtime):
     assert response.status_code == 200
     body = response.json()
     assert body["runtime"]["opencode_version"] == "1.18.31"
-    assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.18.31/index.html"
+    assert body["runtime"]["workspace_ui"] is None
+    assert "版本未知/界面已退役" in body["runtime"]["workspace_ui_error"]
+    assert "1.18.31" in body["runtime"]["workspace_ui_error"]
+    await runtime.session.refresh(binding)
+    assert binding.environment["opencode_version"] == "1.18.31"
+
+
+async def test_supported_version_uses_its_bundle(runtime):
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "opencode_version": "1.18.35"}
+    await runtime.session.commit()
+
+    response = await runtime.api.get("/api/tasks/T1/workspace")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runtime"]["opencode_version"] == "1.18.35"
+    assert body["runtime"]["workspace_ui"] == "/opencode-workspace/1.18.35/index.html"
     assert body["runtime"]["workspace_ui_error"] is None
 
 
@@ -213,6 +238,7 @@ async def test_missing_workspace_bundle_is_not_served_as_the_spa(runtime):
     assert response.status_code == 200
     body = response.json()
     assert body["runtime"]["workspace_ui"] is None
+    assert "版本未知/界面已退役" in body["runtime"]["workspace_ui_error"]
     assert "9.9.9" in body["runtime"]["workspace_ui_error"]
     assert body["sessions"][0]["workspace_ui"] is None
 

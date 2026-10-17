@@ -438,7 +438,7 @@ def test_npm_install_migrates_manual_binary_and_preserves_it_on_failure(tmp_path
     stub_dir = tmp_path / "tools"
     stub_dir.mkdir()
     target = tmp_path / "opencode"
-    target.write_text("#!/bin/sh\nprintf '1.18.33\\n'\n")
+    target.write_text("#!/bin/sh\nprintf '1.18.35\\n'\n")
     target.chmod(0o755)
     calls = tmp_path / "npm-calls"
     npm = stub_dir / "npm"
@@ -449,8 +449,8 @@ printf '%s\\n' "$*" >>"$npm_calls"
 test "$install_outcome" != install-failed || exit 17
 prefix="$fixture_root/npm"
 mkdir -p "$prefix/bin" "$prefix/lib/node_modules/opencode-ai"
-printf '{"version":"1.18.33"}' >"$prefix/lib/node_modules/opencode-ai/package.json"
-actual=1.18.33
+printf '{"version":"1.18.35"}' >"$prefix/lib/node_modules/opencode-ai/package.json"
+actual=1.18.35
 test "$install_outcome" != wrong-version || actual=1.2.27
 printf '#!/bin/sh\\nprintf "%s\\\\n"\\n' "$actual" >"$prefix/bin/opencode"
 chmod 755 "$prefix/bin/opencode"
@@ -465,7 +465,7 @@ chmod 755 "$prefix/bin/opencode"
         fixture_root=str(fixture_root),
         npm_calls=str(calls),
         binary=str(target),
-        opencode_version="1.18.33",
+        opencode_version="1.18.35",
         npm_registry="https://registry.example.invalid",
         install_outcome=outcome,
     )
@@ -473,11 +473,11 @@ chmod 755 "$prefix/bin/opencode"
     if outcome != "success":
         assert result.returncode != 0
         assert not target.is_symlink()
-        assert "1.18.33" in target.read_text()
+        assert "1.18.35" in target.read_text()
         return
     assert result.returncode == 0, result.stderr
     assert target.is_symlink()
-    assert "opencode-ai@1.18.33" in calls.read_text()
+    assert "opencode-ai@1.18.35" in calls.read_text()
     assert "--registry https://registry.example.invalid" in calls.read_text()
     assert "--include=optional" in calls.read_text()
     # A satisfied npm package is reused; a matching standalone binary alone was not.

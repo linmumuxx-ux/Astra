@@ -13,7 +13,7 @@ services/agent-service   AgentScope Agent Service
 web/nexus                唯一前端
 web/workspace-ui         OpenCode 工作台静态资源
 ops/dev                  本地启动与停止
-ops/deploy               安装脚本、部署说明、systemd
+ops/deploy               安装脚本与部署说明
 ops/env/.env.example     唯一环境模板
 tools/e2e                验证脚本
 tools/llm_wiki           llm_wiki 隧道与 ingest pump

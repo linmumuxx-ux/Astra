@@ -17,10 +17,7 @@ BACKEND_ROOT = SERVICE_ROOT
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ASTRA_",
-        env_file=(
-            REPO_ROOT / "ops" / "env" / ".env",
-            REPO_ROOT / ".env",
-        ),
+        env_file=REPO_ROOT / "ops" / "env" / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -87,18 +84,10 @@ class Settings(BaseSettings):
     opencode_server_port: int = Field(default=4096, ge=1, le=65535)
     opencode_server_username: str = "opencode"
     opencode_server_password: str | None = None
-    # Version compatibility is enforced by default. Company environments that
-    # intentionally run a custom build while keeping the same API surface can
-    # disable it explicitly; never encode "off" as a magic minimum such as 0.0.0.
+    # Exactly one company OpenCode release is supported. A custom build can
+    # disable the check explicitly; never encode "off" as 0.0.0.
     opencode_server_version_check_enabled: bool = True
-    opencode_server_min_version: str = "1.18.25"
-    # Company standard OpenCode builds that are explicitly verified even when
-    # they are older than the rolling minimum.
-    opencode_server_compatible_versions: list[str] = Field(default_factory=lambda: ["1.2.27"])
-    # Embedded Workspace UI builds are stored by the exact OpenCode version.
-    # This default is only for historical RuntimeSessions created before Astra
-    # persisted the server version in the environment snapshot.
-    opencode_workspace_ui_default_version: str = "1.2.27"
+    opencode_server_version: str = "1.18.35"
     opencode_server_start_timeout_seconds: int = Field(default=30, ge=1, le=300)
     # A turn with no assistant reply is only a failure after this window; a
     # freshly submitted prompt must never be classified as failed.
@@ -109,7 +98,7 @@ class Settings(BaseSettings):
     opencode_restart_abort_timeout_seconds: int = Field(default=10, ge=1, le=300)
     ssh_connect_timeout_seconds: int = 10
 
-    remote_opencode_version: str = "1.18.33"
+    remote_opencode_version: str = "1.18.35"
     remote_node_version: str = "22.23.3"
     remote_npm_registry: str = "https://registry.npmmirror.com"
     remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)
@@ -232,36 +221,19 @@ class Settings(BaseSettings):
             raise ValueError("ASTRA_EXECUTOR_TYPE 只支持 opencode_server 或 opencode_cli_fallback")
         return normalized
 
-    @field_validator("opencode_server_compatible_versions")
+    @field_validator("opencode_server_version")
     @classmethod
-    def validate_opencode_server_compatible_versions(cls, values: list[str]) -> list[str]:
-        normalized = []
-        for value in values:
-            version = str(value).strip().removeprefix("v")
-            if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-                raise ValueError("ASTRA_OPENCODE_SERVER_COMPATIBLE_VERSIONS 包含非法版本号")
-            normalized.append(version)
-        return normalized
-
-    @field_validator("opencode_workspace_ui_default_version")
-    @classmethod
-    def validate_opencode_workspace_ui_default_version(cls, value: str) -> str:
+    def validate_opencode_server_version(cls, value: str) -> str:
         normalized = value.strip().removeprefix("v")
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", normalized):
-            raise ValueError("ASTRA_OPENCODE_WORKSPACE_UI_DEFAULT_VERSION 必须是完整版本号")
-        return normalized
-
-    @field_validator("opencode_server_min_version")
-    @classmethod
-    def validate_opencode_server_min_version(cls, value: str) -> str:
-        normalized = value.strip()
         if not normalized:
-            raise ValueError("ASTRA_OPENCODE_SERVER_MIN_VERSION 不能为空")
+            raise ValueError("ASTRA_OPENCODE_SERVER_VERSION 不能为空")
         if normalized == "0.0.0":
             raise ValueError(
                 "不能用 0.0.0 关闭版本校验；如需关闭请设置 "
                 "ASTRA_OPENCODE_SERVER_VERSION_CHECK_ENABLED=false"
             )
+        if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", normalized):
+            raise ValueError("ASTRA_OPENCODE_SERVER_VERSION 必须是完整版本号")
         return normalized
 
     @model_validator(mode="after")

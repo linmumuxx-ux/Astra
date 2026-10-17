@@ -27,22 +27,28 @@ def test_control_client_timeout_is_bounded_and_separate_from_execution():
     assert client._timeout_seconds < settings.opencode_timeout_seconds
 
 
-def test_min_version_magic_value_is_rejected():
+def test_exact_version_magic_value_is_rejected():
     with pytest.raises(ValueError, match="0.0.0"):
-        Settings(seed_demo=False, opencode_server_min_version="0.0.0")
+        Settings(seed_demo=False, opencode_server_version="0.0.0")
 
 
-def test_version_check_is_enforced_by_default_and_can_be_disabled():
+def test_version_check_accepts_only_the_supported_release():
     strict = OpenCodeServerManager(Settings(seed_demo=False))
+    assert strict.version_error("1.18.35") is None
+    assert strict.version_error("v1.18.35") is None
     assert strict.version_error("1.0.0") is not None
-    assert strict.version_error("1.2.27") is None
-    assert strict.version_error("v1.2.27") is None
-    assert strict.version_error("1.18.25") is None
+    assert strict.version_error("1.2.27") is not None
+    assert strict.version_error("v1.2.27") is not None
+    assert strict.version_error("1.18.25") is not None
+    assert strict.version_error("1.18.33") is not None
+    assert strict.version_error(None) is not None
+    assert strict.version_error("") is not None
 
     relaxed = OpenCodeServerManager(
         Settings(seed_demo=False, opencode_server_version_check_enabled=False)
     )
     assert relaxed.version_error("1.0.0") is None
+    assert relaxed.version_error(None) is None
 
 
 class FakeServerClient:

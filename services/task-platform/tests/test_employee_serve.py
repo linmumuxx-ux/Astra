@@ -21,7 +21,7 @@ def serve(tmp_path, monkeypatch):
         + """
 import http.server, json, os, sys
 if "--version" in sys.argv:
-    print("1.18.25")
+    print("1.18.35")
     sys.exit(0)
 port = int(sys.argv[sys.argv.index("--port") + 1])
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -29,7 +29,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         data = {"directory": os.getcwd()} if self.path == "/path" else {
-            "healthy": not os.path.exists("unhealthy"), "version": "1.18.25"}
+            "healthy": not os.path.exists("unhealthy"), "version": "1.18.35"}
         self.wfile.write(json.dumps(data).encode())
     def log_message(self, *args): pass
 http.server.HTTPServer.allow_reuse_address = True

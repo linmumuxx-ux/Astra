@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from app.api.routes import require_task
-from app.config.settings import REPO_ROOT, get_settings
+from app.config.settings import REPO_ROOT
 from app.database import get_session
 from app.domain import ExecutionMode, TaskStatus
 from app.executors.errors import OpenCodeSessionNotFound
@@ -79,6 +79,7 @@ REPLY = re.compile(r"^/(question|permission)/([^/]+)/(reply|reject)$")
 # 原生 Workspace UI 直接按 Session 回答权限请求，与 /permission/{id}/reply 等价。
 PERMISSION_REPLY = re.compile(r"^/session/([^/]+)/permissions/([^/]+)$")
 OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+RETIRED_WORKSPACE_UI = "版本未知/界面已退役"
 
 
 def workspace_ui_bundle(version: str) -> Path:
@@ -86,12 +87,19 @@ def workspace_ui_bundle(version: str) -> Path:
 
 
 def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None]:
-    raw = (snapshot or {}).get("opencode_version") or get_settings().opencode_workspace_ui_default_version
+    """Select the UI for the version already stored on the session.
+
+    Missing or unreadable versions stay unknown. A recorded version is never
+    replaced with the current release; a retired bundle is reported as such.
+    """
+    raw = (snapshot or {}).get("opencode_version")
+    if raw is None or not str(raw).strip():
+        return "unknown", None, RETIRED_WORKSPACE_UI
     version = str(raw).strip().removeprefix("v")
     if not OPENCODE_VERSION.fullmatch(version):
-        raise HTTPException(409, f"无法识别 OpenCode 版本：{raw}")
+        return version or "unknown", None, RETIRED_WORKSPACE_UI
     if not workspace_ui_bundle(version).is_file():
-        return version, None, f"未安装 OpenCode {version} 的 Workspace 界面"
+        return version, None, f"{RETIRED_WORKSPACE_UI}（{version}）"
     return version, f"/opencode-workspace/{version}/index.html", None
 
 

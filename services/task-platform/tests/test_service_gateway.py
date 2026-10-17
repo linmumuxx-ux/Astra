@@ -130,7 +130,7 @@ def _workspace_ui_tree(
     tmp_path: Path,
     *,
     installed: list[str],
-    upstream_tag: str | None = "v1.18.31",
+    upstream_tag: str | None = "v1.18.35",
     upstream_raw: str | None = None,
 ):
     frontend = tmp_path / "frontend"
@@ -151,56 +151,41 @@ def _workspace_ui_tree(
         (upstream / "UPSTREAM.json").write_text(
             json.dumps({"tag": upstream_tag}), encoding="utf-8"
         )
-    (tmp_path / ".env").write_text("", encoding="utf-8")
+    env_dir = tmp_path / "ops" / "env"
+    env_dir.mkdir(parents=True)
+    (env_dir / ".env").write_text("", encoding="utf-8")
     return frontend
 
 
 def test_running_opencode_version_requires_its_own_bundle(tmp_path, monkeypatch):
-    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.2.27", "1.18.31"])
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.35", installed=["1.18.35"])
     monkeypatch.setattr(service, "FRONTEND", frontend)
     with pytest.raises(RuntimeError, match="9.9.9"):
         service.ensure_workspace_ui_bundle("v9.9.9")
-    service.ensure_workspace_ui_bundle("1.2.27")
+    with pytest.raises(RuntimeError, match="1.2.27"):
+        service.ensure_workspace_ui_bundle("1.2.27")
+    service.ensure_workspace_ui_bundle("1.18.35")
 
 
-def test_validate_start_accepts_default_and_upstream_bundles(tmp_path, monkeypatch):
-    frontend = _workspace_ui_tree(
-        tmp_path, upstream_tag="v1.18.31", installed=["1.2.27", "1.18.31"]
-    )
+def test_validate_start_accepts_the_single_upstream_bundle(tmp_path, monkeypatch):
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.35", installed=["1.18.35"])
     monkeypatch.setattr(service, "ROOT", tmp_path)
     monkeypatch.setattr(service, "FRONTEND", frontend)
 
-    service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+    service.validate_start("dev", _settings())
 
 
 def test_validate_start_rejects_missing_upstream_bundle(tmp_path, monkeypatch):
-    # 根 index.html 与默认版本都存在，只有上游版本包缺失。
-    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.2.27"])
+    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.35", installed=["1.2.27"])
     monkeypatch.setattr(service, "ROOT", tmp_path)
     monkeypatch.setattr(service, "FRONTEND", frontend)
 
     with pytest.raises(RuntimeError) as excinfo:
-        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+        service.validate_start("dev", _settings())
 
     message = str(excinfo.value)
-    assert "1.18.31" in message
+    assert "1.18.35" in message
     assert "index.html" in message
-
-
-def test_validate_start_rejects_missing_default_bundle(tmp_path, monkeypatch):
-    # 上游版本包存在，只有默认版本（历史 RuntimeSession 回退）包缺失。
-    frontend = _workspace_ui_tree(tmp_path, upstream_tag="v1.18.31", installed=["1.18.31"])
-    monkeypatch.setattr(service, "ROOT", tmp_path)
-    monkeypatch.setattr(service, "FRONTEND", frontend)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
-
-    message = str(excinfo.value)
-    assert "1.2.27" in message
-    assert "index.html" in message
-    # 默认版本产物是仓库内提交的静态资源；提示必须给出恢复方式，
-    # 不能只建议仅构建上游版本的 workspace_ui build。
     assert "restore" in message.lower()
 
 
@@ -210,13 +195,13 @@ def test_validate_start_rejects_invalid_upstream_metadata(
 ):
     # 上游元数据缺失或损坏时必须显式失败，不能静默跳过固定上游 UI 校验。
     if upstream_raw is None:
-        frontend = _workspace_ui_tree(tmp_path, upstream_tag=None, installed=["1.2.27"])
+        frontend = _workspace_ui_tree(tmp_path, upstream_tag=None, installed=["1.18.35"])
     else:
-        frontend = _workspace_ui_tree(tmp_path, upstream_raw=upstream_raw, installed=["1.2.27"])
+        frontend = _workspace_ui_tree(tmp_path, upstream_raw=upstream_raw, installed=["1.18.35"])
     monkeypatch.setattr(service, "ROOT", tmp_path)
     monkeypatch.setattr(service, "FRONTEND", frontend)
 
     with pytest.raises(RuntimeError) as excinfo:
-        service.validate_start("dev", _settings(opencode_workspace_ui_default_version="1.2.27"))
+        service.validate_start("dev", _settings())
 
     assert "UPSTREAM.json" in str(excinfo.value)

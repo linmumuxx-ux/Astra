@@ -48,10 +48,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - name: Install and import Agent Service
+      - name: Install and test Agent Service
         run: |
           python -m pip install -r services/agent-service/requirements.txt
-          PYTHONPATH=services/agent-service python -c 'import agent_service'
+          python -m pip install pytest
+          PYTHONPATH=services/agent-service python -m pytest services/agent-service/tests
 
   web:
     runs-on: ubuntu-latest

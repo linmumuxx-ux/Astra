@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -96,26 +95,15 @@ class OpenCodeServerManager:
         or ``None`` when the check passes or is explicitly disabled. The
         disable switch lives in settings, never in a magic minimum version.
         """
-        if not version or not self.settings.opencode_server_version_check_enabled:
+        if not self.settings.opencode_server_version_check_enabled:
             return None
-        normalized = version.strip().removeprefix("v")
-        if normalized in self.settings.opencode_server_compatible_versions:
-            return None
-        if self._version_tuple(normalized) < self._version_tuple(
-            self.settings.opencode_server_min_version
-        ):
-            compatible = ", ".join(self.settings.opencode_server_compatible_versions)
-            return (
-                f"OpenCode {version} 低于已验证的最低版本 "
-                f"{self.settings.opencode_server_min_version}"
-                + (f"；显式兼容版本：{compatible}" if compatible else "")
-            )
+        expected = self.settings.opencode_server_version.strip().removeprefix("v")
+        if not version or not str(version).strip():
+            return f"OpenCode 未报告版本；唯一支持版本为 {expected}"
+        normalized = str(version).strip().removeprefix("v")
+        if normalized != expected:
+            return f"OpenCode {version} 不是唯一支持版本 {expected}"
         return None
-
-    @staticmethod
-    def _version_tuple(value: str) -> tuple[int, ...]:
-        numbers = [int(item) for item in re.findall(r"\d+", value)]
-        return tuple((numbers + [0, 0, 0])[:3])
 
 
 def main() -> int:

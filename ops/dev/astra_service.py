@@ -189,33 +189,19 @@ def ensure_workspace_ui_bundle(version: str | None) -> None:
 
 
 def missing_workspace_ui_bundles(settings: Any) -> list[Path]:
-    """返回启动所需但缺失的 OpenCode 版本化 Workspace UI 产物路径。
+    """返回启动所需但缺失的 Workspace UI。只要求 UPSTREAM.json 固定的那一个版本。"""
 
-    Runtime 实际引用 ``/opencode-workspace/<version>/index.html``，因此只校验配置的
-    默认版本与 UPSTREAM.json 固定版本，不额外维护版本清单。
-    """
-
-    versions: list[str] = []
-    for value in (
-        settings.opencode_workspace_ui_default_version,
-        upstream_workspace_ui_version(),
-    ):
-        version = str(value or "").strip().removeprefix("v")
-        if version and version not in versions:
-            versions.append(version)
-    bundles = FRONTEND / "public" / "opencode-workspace"
-    return [
-        bundles / version / "index.html"
-        for version in versions
-        if not (bundles / version / "index.html").is_file()
-    ]
+    del settings
+    version = upstream_workspace_ui_version()
+    bundle = FRONTEND / "public" / "opencode-workspace" / version / "index.html"
+    return [] if bundle.is_file() else [bundle]
 
 
 def validate_start(mode: str, settings: Any) -> None:
     if sys.version_info < (3, 11):
         raise RuntimeError("Astra requires Python 3.11+")
-    if not ((ROOT / ".env").is_file() or (ROOT / "ops" / "env" / ".env").is_file()):
-        raise RuntimeError("env file not found; expected ops/env/.env or .env")
+    if not (ROOT / "ops" / "env" / ".env").is_file():
+        raise RuntimeError("env file not found; expected ops/env/.env")
     if not (FRONTEND / "node_modules").is_dir():
         raise RuntimeError("web dependencies missing; run: cd web/nexus && npm ci")
     missing = missing_workspace_ui_bundles(settings)

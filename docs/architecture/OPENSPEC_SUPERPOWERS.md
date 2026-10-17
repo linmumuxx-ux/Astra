@@ -6,7 +6,7 @@ Nexus v1.0.1 继续使用仓库里已经提交的 OpenSpec 与 Superpowers，**c
 
 ## Nexus v1.0.1 盘点（只记录仓库里真实存在的文件）
 
-2026-10-13 在 `nexus/v1.0.1` 上核对 `.opencode/`，结果如下。
+2026-10-13 在仓库根目录 `.opencode/` 核对（当时分支记录为 Nexus v1.0.1）。Phase 2 的实现在 `services/task-platform` 与 `web/nexus`，不在名为 `nexus/` 的目录。结果如下。
 
 Superpowers skill（15 个，均在 `.opencode/skills/<name>/SKILL.md`）：
 
@@ -90,7 +90,7 @@ schema 提示语已同步更正，避免"按需生成"与实际依赖冲突。�
 
 ### 重新生成 CLI bundle（维护用）
 
-升级 OpenSpec 后，在一台装有 `esbuild`（`frontend/node_modules/.bin` 内已有）的机器上执行：
+升级 OpenSpec 后，在一台装有 `esbuild`（`web/nexus/node_modules/.bin` 内已有）的机器上执行：
 
 ```bash
 node tools/e2e/build_openspec_bundle.mjs
@@ -98,7 +98,7 @@ node tools/e2e/build_openspec_bundle.mjs
 
 脚本会把 OpenSpec 打包成单个自包含 `.mjs`，并内联两处运行时 `require`
 （`package.json` 版本、`cross-spawn`），同时屏蔽 CLI 的重复自动执行。
-OpenSpec 来源优先级：`ASTRA_OPENSPEC_PACKAGE` → `frontend/node_modules` → 全局 npm root。
+OpenSpec 来源优先级：`ASTRA_OPENSPEC_PACKAGE` → `web/nexus/node_modules` → 全局 npm root。
 普通开发者不需要运行此脚本，直接使用已提交的 bundle。
 
 ## Superpowers

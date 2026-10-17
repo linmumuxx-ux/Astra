@@ -3,14 +3,14 @@
 # shellcheck disable=SC1090
 # Usage: ops/deploy/install_nexus.sh [--env-file F] [--preflight-only] [--skip-web-build]
 #        [--with-llm-wiki] [--remote-worker HOST] [--no-systemd] [--yes]
-# Secrets come from env / .env and are never echoed.
+# Secrets come from the environment or ops/env/.env and are never echoed.
 set -Eeuo pipefail
 umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE=""; PREFLIGHT_ONLY=0; SKIP_WEB=0; WITH_WIKI=0; REMOTE_WORKER=""; USE_SYSTEMD=auto
 MIN_MEM_MB=3800; HARD_MIN_MEM_MB=1900; MIN_DISK_GB=10; MIN_CPUS=2
-OPENCODE_VERSION=1.18.33; OPENCODE_MIN=1.18.25
+OPENCODE_VERSION=1.18.35
 
 log()  { printf '\033[1;34m[nexus]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -44,7 +44,6 @@ load_env_file() {
   done < "$f"
 }
 [ -n "$ENV_FILE" ] && { [ -f "$ENV_FILE" ] || die "找不到 --env-file $ENV_FILE"; load_env_file "$ENV_FILE"; }
-load_env_file "$SCRIPT_DIR/.env"
 load_env_file "$SCRIPT_DIR/../env/.env"
 
 : "${NEXUS_REPO_URL:=https://github.com/linmumuxx-ux/Astra}"
@@ -61,6 +60,7 @@ PORTS=(6379 8000 8100 8110 8120 8201 8202 5174 4096 4097)
 [ "$WITH_WIKI" = 1 ] && PORTS+=("$LLM_WIKI_LOCAL_PORT")
 
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+oc_ver() { printf '%s' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 SUDO=""; [ "$(id -u)" = 0 ] || { have sudo && SUDO="sudo"; }
 
@@ -89,7 +89,7 @@ preflight() {
   if have redis-server || have docker; then ok "Redis 来源：$(have redis-server && echo redis-server || echo docker)"; else bad "需要 redis-server 或 docker"; fi
   have docker && ok "docker $(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" || note "未安装 docker（仅 llm_wiki 本机部署需要）"
   x="$( (opencode --version || "$HOME/.local/bin/opencode" --version) 2>/dev/null | tail -1 || true)"
-  if [ -n "$x" ] && ver_ge "$x" "$OPENCODE_MIN"; then ok "OpenCode $x"; else note "OpenCode ${x:-未安装}，将安装 opencode-ai@$OPENCODE_VERSION"; fi
+  if [ "$(oc_ver "$x")" = "$OPENCODE_VERSION" ]; then ok "OpenCode $OPENCODE_VERSION"; else note "OpenCode ${x:-未安装}，将安装 opencode-ai@$OPENCODE_VERSION"; fi
   for x in "${PORTS[@]}"; do
     if ss -ltnH "( sport = :$x )" 2>/dev/null | grep -q .; then
       if systemctl is-active --quiet "nexus-*" 2>/dev/null || [ -f "$NEXUS_STATE_DIR/installed" ]; then note "端口 $x 已占用（视为已部署的 Nexus 服务）"; else bad "端口 $x 已被占用"; fi
@@ -155,7 +155,7 @@ step_deps() {
   fi
   log "OpenCode CLI"
   local ocv; ocv="$( (opencode --version || "$HOME/.local/bin/opencode" --version) 2>/dev/null | tail -1 || true)"
-  if [ -z "$ocv" ] || ! ver_ge "$ocv" "$OPENCODE_MIN"; then npm i -g --prefix "$HOME/.local" "opencode-ai@$OPENCODE_VERSION" >/dev/null; fi
+  if [ "$(oc_ver "$ocv")" != "$OPENCODE_VERSION" ]; then npm i -g --prefix "$HOME/.local" "opencode-ai@$OPENCODE_VERSION" >/dev/null; fi
   export PATH="$HOME/.local/bin:$PATH"
   log "Python 虚拟环境（task platform / nexus api / agent service）"
   local py=python3
@@ -278,7 +278,7 @@ svc_detach() { # name cmd
    SERVICE_CTL_STATE_DIR="$NEXUS_STATE_DIR" "$py" "$NEXUS_ROOT/ops/dev/service_ctl.py" detach "$1" --log "$LOGS/$1.log" -- bash -c "$2")
 }
 
-py_start() { # service_ctl name: agent, task-mcp, nexus-api
+py_start() { # service_ctl name: agent, nexus-api
   local py="$NEXUS_ROOT/services/task-platform/.venv/bin/python"
   (set -a; . "$RUNENV"; . "$SECRETS"; set +a
    SERVICE_CTL_STATE_DIR="$NEXUS_STATE_DIR" "$py" "$NEXUS_ROOT/ops/dev/service_ctl.py" "$1" start)
@@ -295,11 +295,10 @@ step_services() {
   local R="$NEXUS_ROOT"
   start_service nexus-astra oneshot "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev restart" "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev stop"
   wait_http http://127.0.0.1:8100/api/health "Task API(8100)" 90
+  # Task MCP 与管理台由 astra_service dev 拉起，这里不再重复启动。
   if [ "$SYSTEMD" = 1 ]; then
-    start_service nexus-task-mcp simple "cd $R/services/task-platform && exec .venv/bin/astra-task-mcp"
     start_service nexus-agent-service simple "exec $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/agent_service.py"
   else
-    py_start task-mcp
     py_start agent
   fi
   "$R/services/task-platform/.venv/bin/python" "$NEXUS_ROOT/ops/dev/service_ctl.py" wait-http http://127.0.0.1:8000/health --timeout 120 --header "X-User-ID: nexus" \
@@ -316,9 +315,6 @@ step_services() {
     py_start nexus-api
   fi
   wait_http http://127.0.0.1:8120/api/v1/knowledge "Nexus API(8120)" 60
-  if [ -d "$R/web/nexus/dist" ]; then
-    start_service nexus-web simple "cd $R/web/nexus && exec npx vite preview --host $NEXUS_BIND_HOST --port 5174"
-  else warn "web/nexus/dist 不存在，跳过 Web（去掉 --skip-web-build 重跑）"; fi
 }
 
 step_gateway_route() {

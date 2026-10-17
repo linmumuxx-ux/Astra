@@ -441,9 +441,11 @@ class RuntimeService:
                 runtime_token = generate_runtime_context()
                 settings = get_settings()
                 health = await client.health()
-                server_version = str(
-                    health.get("version") or settings.opencode_workspace_ui_default_version
-                ).strip().removeprefix("v")
+                reported = health.get("version")
+                if isinstance(reported, str) and reported.strip():
+                    server_version = reported.strip().removeprefix("v")
+                else:
+                    server_version = "unknown"
                 new_snapshot["opencode_version"] = server_version
                 raw_model = environment.model_name or settings.opencode_model
                 if environment.mode == ExecutionMode.LINUX_REMOTE.value:
