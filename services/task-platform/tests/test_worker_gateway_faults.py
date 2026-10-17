@@ -22,9 +22,13 @@ from app.models import (
 )
 from app.worker_agent.connection import AgentConfig, WorkerConnectionManager
 from app.worker_agent.supervisor import RuntimeSupervisor
-from app.worker_agent.transport import WebSocketTransport, translate_transport_error
+from app.worker_agent.transport import (
+    WebSocketTransport,
+    WorkerTransportError,
+    translate_transport_error,
+)
 from app.worker_gateway.admin_key import ENV_NAME, provision_worker_gateway_admin_key
-from app.worker_gateway.bus import MemoryRouteBus, RedisRouteBus
+from app.worker_gateway.bus import _RESTORE_LUA, MemoryRouteBus, RedisRouteBus
 from app.worker_gateway.protocol import WorkerGatewayError, dump_message, envelope
 from app.worker_gateway.service import WorkerGateway, _SocketLease
 from tests.test_worker_gateway import (
@@ -538,7 +542,7 @@ def _restore_admin_env(previous: str | None) -> None:
 def test_startup_script_writes_admin_key_once(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("ASTRA_REDIS_URL=redis://127.0.0.1:6379/0\n", encoding="utf-8")
-    previous = os.environ.get(ENV_NAME)
+    previous = os.environ.pop(ENV_NAME, None)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             keys = list(pool.map(lambda _index: provision_worker_gateway_admin_key(env_file), (0, 1)))
@@ -549,7 +553,34 @@ def test_startup_script_writes_admin_key_once(tmp_path):
         assert text.count(f"{ENV_NAME}=") == 1
         assert (env_file.stat().st_mode & 0o777) == 0o600
         assert provision_worker_gateway_admin_key(env_file) == keys[0]
-        assert not env_file.with_name(env_file.name + ".gateway-admin.lock").exists()
+    finally:
+        _restore_admin_env(previous)
+
+
+def test_injected_admin_key_is_not_replaced(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("ASTRA_REDIS_URL=redis://127.0.0.1:6379/0\n", encoding="utf-8")
+    previous = os.environ.get(ENV_NAME)
+    os.environ[ENV_NAME] = "wgk_from_env"
+    try:
+        assert provision_worker_gateway_admin_key(env_file) == "wgk_from_env"
+        assert os.environ[ENV_NAME] == "wgk_from_env"
+        assert f"{ENV_NAME}=" not in env_file.read_text(encoding="utf-8")
+    finally:
+        _restore_admin_env(previous)
+
+
+def test_stale_admin_lock_file_does_not_block_generation(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    env_file.with_name(env_file.name + ".gateway-admin.lock").write_bytes(b"\0")
+    previous = os.environ.pop(ENV_NAME, None)
+    try:
+        started = time.monotonic()
+        key = provision_worker_gateway_admin_key(env_file)
+        assert time.monotonic() - started < 1
+        assert key is not None and key.startswith("wgk_")
+        assert f"{ENV_NAME}={key}" in env_file.read_text(encoding="utf-8")
     finally:
         _restore_admin_env(previous)
 
@@ -557,7 +588,7 @@ def test_startup_script_writes_admin_key_once(tmp_path):
 def test_admin_key_provision_survives_unwritable_parent(tmp_path):
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("x", encoding="utf-8")
-    previous = os.environ.get(ENV_NAME)
+    previous = os.environ.pop(ENV_NAME, None)
     try:
         assert provision_worker_gateway_admin_key(blocked / ".env") is None
     finally:
@@ -866,6 +897,161 @@ async def test_local_heartbeats_do_not_release_redis_capacity_and_unbind_deletes
         assert await bus.publish_command(worker_id, live_frame({"request_id": "c3"}, 4)) is False
         await bus.unbind(worker_id, queues)
         assert await bus._connection().exists(key) == 0
+    finally:
+        await bus.delete_prefix()
+        await bus.aclose()
+
+
+async def test_sweep_and_reenroll_close_only_the_matching_epoch(environment_id: int):
+    gateway = gateway_for(
+        MemoryRouteBus(),
+        worker_gateway_ping_seconds=60,
+        worker_gateway_ping_timeout_seconds=10,
+    )
+    enrolled, auth = await bring_online(gateway, environment_id)
+    matching = FakeWebSocket()
+    gateway.sockets[enrolled.worker_instance_id] = _SocketLease(auth.epoch, matching, deque(), 1)
+    gateway._close_local_socket(enrolled.worker_instance_id, auth.epoch)
+    await asyncio.sleep(0.05)
+    assert matching.close_code == 4000
+
+    newer = FakeWebSocket()
+    gateway.sockets[enrolled.worker_instance_id] = _SocketLease(auth.epoch + 5, newer, deque(), 1)
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerInstance)
+            .where(WorkerInstance.id == enrolled.worker_instance_id)
+            .values(last_heartbeat_at=utcnow() - timedelta(seconds=120))
+        )
+        await session.commit()
+    await gateway.sweep(now=utcnow())
+    await asyncio.sleep(0.05)
+    assert newer.close_code is None
+    assert gateway.sockets[enrolled.worker_instance_id].epoch == auth.epoch + 5
+
+    rotated_socket = FakeWebSocket()
+    gateway.sockets[enrolled.worker_instance_id] = _SocketLease(9, rotated_socket, deque(), 1)
+    rotated = await enroll(gateway, environment_id)
+    await asyncio.sleep(0.05)
+    assert rotated.rotated is True
+    assert rotated_socket.close_code is None
+    assert gateway.sockets[enrolled.worker_instance_id].websocket is rotated_socket
+
+
+class _HoldPublish(MemoryRouteBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hold = asyncio.Event()
+
+    async def publish_command(self, worker_instance_id: str, frame: dict) -> bool:
+        await self.hold.wait()
+        return await super().publish_command(worker_instance_id, frame)
+
+
+async def test_ack_arriving_before_publish_still_records_published(environment_id: int):
+    bus = _HoldPublish()
+    gateway = gateway_for(bus)
+    enrolled, auth = await bring_online(gateway, environment_id)
+    request_id = f"req-ack-{uuid4().hex}"
+    task = asyncio.create_task(
+        dispatch(gateway, enrolled.worker_instance_id, request_id, "ping")
+    )
+    row = None
+    for _ in range(50):
+        async with SessionLocal() as session:
+            row = await session.scalar(
+                select(WorkerCommand).where(WorkerCommand.request_id == request_id)
+            )
+        if row is not None and row.delivery_state == "uncertain":
+            break
+        await asyncio.sleep(0.02)
+    assert row is not None and row.delivery_state == "uncertain"
+    async with SessionLocal() as session:
+        acked = await gateway.apply_response(
+            session,
+            worker_instance_id=enrolled.worker_instance_id,
+            epoch=auth.epoch,
+            message=envelope(
+                request_id=request_id,
+                worker_instance_id=enrolled.worker_instance_id,
+                environment_id=environment_id,
+                session_id=None,
+                message_type="response",
+                payload={"stage": "ack", "ok": True, "result": None, "error_code": None},
+            ),
+        )
+    assert acked is True
+    bus.hold.set()
+    result = await asyncio.wait_for(task, 2)
+    assert result.delivered is True
+    stored = await load_command(request_id)
+    assert stored.status == "accepted"
+    assert stored.delivery_state == "published"
+
+
+class _HangSend(ScriptedTransport):
+    async def send(self, message: dict) -> None:
+        self.sent.append(message)
+        await asyncio.Event().wait()
+
+
+async def test_auth_send_timeout_closes_transport():
+    transport = _HangSend([])
+    manager = WorkerConnectionManager(
+        _agent_config(auth_timeout_seconds=0.05),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+    with pytest.raises(WorkerTransportError, match="auth_timeout"):
+        await manager.run_session(transport)
+    assert transport.closed is True
+
+
+class _DyingPull(RedisRouteBus):
+    async def _pull(self, *args, **kwargs) -> None:
+        raise RuntimeError("redis unavailable")
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
+)
+async def test_redis_pull_failure_closes_the_socket(environment_id: int):
+    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    bus = _DyingPull(REDIS_URL, prefix=prefix)
+    gateway = gateway_for(
+        bus,
+        worker_gateway_ping_seconds=30,
+        worker_gateway_dispatch_lease_seconds=60,
+    )
+    enrolled = await enroll(gateway, environment_id)
+    socket = FakeWebSocket()
+    task = asyncio.create_task(gateway.serve_socket(socket))
+    await socket.incoming.put(dump_message(auth_message(
+        enrolled.worker_instance_id, environment_id, enrolled.token
+    )))
+    try:
+        await asyncio.wait_for(task, 2)
+    finally:
+        await bus.delete_prefix()
+        await bus.aclose()
+    assert socket.close_code == 1011
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
+)
+async def test_restore_refreshes_queue_ttl():
+    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    bus = RedisRouteBus(REDIS_URL, prefix=prefix, owner_ttl_seconds=60)
+    worker_id = f"wrk_{uuid4().hex}"
+    try:
+        client = bus._connection()
+        list_key = bus._control_key(worker_id, 1)
+        held_key = bus._held_key(worker_id, "control", 1)
+        await client.eval(_RESTORE_LUA, 2, list_key, held_key, "frame", str(bus._queue_ttl()))
+        ttl = await client.ttl(list_key)
+        assert ttl > 60
     finally:
         await bus.delete_prefix()
         await bus.aclose()

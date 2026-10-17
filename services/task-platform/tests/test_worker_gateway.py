@@ -735,6 +735,7 @@ async def test_redis_owner_epoch_and_bounded_command_list():
         assert await other.publish_command(worker_id, live_frame({"request_id": "redis-1"}, 3)) is True
         frame = await asyncio.wait_for(queues.wait_frame(), 2)
         assert frame["request_id"] == "redis-1"
+        await queues.release_delivered(frame)
         assert await other.publish_command(worker_id, live_frame({"request_id": "redis-2"}, 3)) is True
         assert await other.publish_command(worker_id, live_frame({"request_id": "redis-3"}, 3)) is False
         assert await other.publish_event(worker_id, live_frame({"n": 1}, 3)) is True

@@ -187,8 +187,8 @@ class WorkerConnectionManager:
                     "agent_version": config.agent_version,
                 },
             )
-            await transport.send(auth.to_dict())
             try:
+                await asyncio.wait_for(transport.send(auth.to_dict()), config.auth_timeout_seconds)
                 reply = await asyncio.wait_for(self._recv(transport), config.auth_timeout_seconds)
             except TimeoutError as exc:
                 raise WorkerTransportError("auth_timeout") from exc

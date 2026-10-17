@@ -171,7 +171,7 @@ class WorkerGateway:
         await self._supersede_connections(session, worker_id, now, "token_rotated")
         await session.commit()
         await self.bus.clear_owner(worker_id, previous_epoch, None)
-        self._close_local_socket(worker_id)
+        self._close_local_socket(worker_id, previous_epoch)
         return EnrollResult(worker_id, environment_id, token, new_epoch, True)
 
     async def authenticate(self, session: AsyncSession, message: WorkerMessage, token: str) -> AuthOk:
@@ -395,11 +395,19 @@ class WorkerGateway:
             lease_before = now - timedelta(seconds=self.settings.worker_gateway_dispatch_lease_seconds)
             previous_state = command.delivery_state
             attempts = command.delivery_attempts + 1
+            worker_id = command.worker_instance_id
+            epoch = command.epoch
+            current_instance = (
+                select(WorkerInstance.id)
+                .where(WorkerInstance.id == worker_id, WorkerInstance.epoch == epoch)
+                .scalar_subquery()
+            )
             claim = await session.execute(
                 update(WorkerCommand)
                 .where(
                     WorkerCommand.id == command.id,
-                    WorkerCommand.epoch == command.epoch,
+                    WorkerCommand.epoch == epoch,
+                    WorkerCommand.worker_instance_id == current_instance,
                     WorkerCommand.status == "pending",
                     WorkerCommand.delivery_state == previous_state,
                     or_(
@@ -418,8 +426,6 @@ class WorkerGateway:
             if claim.rowcount != 1:
                 await session.rollback()
                 return False, "in_flight"
-            worker_id = command.worker_instance_id
-            epoch = command.epoch
             frame = self._command_frame(command)
             await session.commit()
         try:
@@ -444,7 +450,6 @@ class WorkerGateway:
                     WorkerCommand.id == command_id,
                     WorkerCommand.epoch == epoch,
                     WorkerCommand.delivery_attempts == attempts,
-                    WorkerCommand.status == "pending",
                 )
                 .values(delivery_state="published", updated_at=utcnow())
             )
@@ -601,7 +606,7 @@ class WorkerGateway:
                     if (worker_id, epoch) in wanted and status == "offline"
                 ]
         for worker_id, epoch in offlined:
-            self._close_local_socket(worker_id)
+            self._close_local_socket(worker_id, epoch)
             await self.bus.clear_owner(worker_id, epoch, None)
         return int(offline.rowcount or 0) + int(expired.rowcount or 0)
 
@@ -642,12 +647,18 @@ class WorkerGateway:
                 asyncio.create_task(self._dispatch_loop(auth, stop, websocket)),
                 asyncio.create_task(self._receive_loop(websocket, auth, lease, monitor, stop)),
             ]
+            if queues.consumer is not None:
+                watched.append(queues.consumer)
             done, _pending = await asyncio.wait(set(watched), return_when=asyncio.FIRST_COMPLETED)
-            finished = next(iter(done))
-            if not finished.cancelled():
-                error = finished.exception()
-                if error is not None:
-                    raise error
+            errors = [
+                task.exception()
+                for task in done
+                if not task.cancelled() and task.exception() is not None
+            ]
+            if errors:
+                raise errors[0]
+            if queues.consumer is not None and queues.consumer.done():
+                await self._try_close(websocket, 4000)
         except WorkerGatewayError as exc:
             await self._send_failure(websocket, exc)
             code = 1009 if exc.code == "frame_too_large" else 1008
@@ -855,12 +866,14 @@ class WorkerGateway:
                 dump_message(frame), max_bytes=self.settings.worker_gateway_max_frame_bytes
             )
             if not frame_acceptable(message, auth.epoch, time.time()):
+                await queues.release_delivered(frame)
                 continue
             if not await self.bus.touch_owner(auth.worker_instance_id, self.owner_id, auth.epoch):
                 stop.set()
                 await self._try_close(websocket, 4000)
                 return
             await websocket.send_text(dump_message(message))
+            await queues.release_delivered(frame)
 
     async def _supersede_connections(self, session: AsyncSession, worker_id: str, now, reason: str) -> None:
         await session.execute(
@@ -884,9 +897,9 @@ class WorkerGateway:
         if current is not None and current.epoch == epoch:
             del self.sockets[worker_instance_id]
 
-    def _close_local_socket(self, worker_instance_id: str) -> None:
+    def _close_local_socket(self, worker_instance_id: str, epoch: int) -> None:
         lease = self.sockets.get(worker_instance_id)
-        if lease is None:
+        if lease is None or lease.epoch != epoch:
             return
         lease.superseded = True
         asyncio.create_task(self._try_close(lease.websocket, 4000))

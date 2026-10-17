@@ -91,6 +91,11 @@ local held = tonumber(redis.call('GET', KEYS[2]) or '0')
 if held > 0 then
   redis.call('DECR', KEYS[2])
 end
+local ttl = tonumber(ARGV[2])
+redis.call('EXPIRE', KEYS[1], ttl)
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('EXPIRE', KEYS[2], ttl)
+end
 return 1
 """
 
@@ -191,6 +196,7 @@ class ConnectionQueues:
         self.epoch: int | None = None
         self.owner_id: str | None = None
         self.bus_pending = {"control": 0, "event": 0}
+        self.consumer: asyncio.Task[None] | None = None
         self._signal = asyncio.Event()
         self._lock = asyncio.Lock()
         self._on_delivered = on_delivered
@@ -239,10 +245,18 @@ class ConnectionQueues:
                     kind, frame = None, None
                     self._signal.clear()
             if kind is not None and frame is not None:
-                if self._on_delivered is not None:
-                    await self._on_delivered(kind, frame)
                 return frame
             await self._signal.wait()
+
+    async def release_delivered(self, frame: dict[str, Any]) -> None:
+        """套接字发送成功后再归还 Redis 容量。本地帧不占这份额度。"""
+
+        if self._on_delivered is None or not frame.get("_bus"):
+            return
+        kind = frame.get("_bus_kind")
+        if kind not in {"control", "event"}:
+            return
+        await self._on_delivered(kind, frame)
 
 
 class MemoryRouteBus:
@@ -523,6 +537,7 @@ class RedisRouteBus:
         task = asyncio.create_task(
             self._pull(worker_instance_id, queues, stop, epoch, owner_id)
         )
+        queues.consumer = task
         self._pulls[id(queues)] = (stop, task)
         return queues
 
@@ -691,13 +706,14 @@ class RedisRouteBus:
             return False
         payload = json.loads(item)
         payload["_bus"] = True
+        payload["_bus_kind"] = kind
         accepted = await (
             queues.put_control(payload) if kind == "control" else queues.put_event(payload)
         )
         if accepted:
             return True
         if kind == "control":
-            await client.eval(_RESTORE_LUA, 2, list_key, held_key, item)
+            await client.eval(_RESTORE_LUA, 2, list_key, held_key, item, str(self._queue_ttl()))
         else:
             await self._release_key(held_key, 1)
         return False

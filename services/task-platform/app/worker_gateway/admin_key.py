@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from pathlib import Path
 from secrets import token_urlsafe
 
@@ -28,31 +27,32 @@ def warn_if_admin_key_missing(key: str) -> None:
 
 
 def provision_worker_gateway_admin_key(env_path: Path) -> str | None:
-    """加锁生成一次。目录不可写或写入失败时返回已有值或 None，不抛异常。"""
+    """加锁生成一次。已经注入的环境变量优先，目录不可写时不抛异常。"""
 
-    existing = _read_key_safe(env_path)
-    if existing:
-        os.environ[ENV_NAME] = existing
-        return existing
+    injected = os.environ.get(ENV_NAME, "").strip()
+    if injected:
+        return injected
     try:
         env_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.warning("管理密钥目录不可写，拒绝在进程内生成：%s", exc)
-        return None
+        return _remember(_read_key_safe(env_path))
     lock_path = env_path.with_name(env_path.name + ".gateway-admin.lock")
-    fd = _acquire_lock(lock_path, env_path)
-    if fd is None:
-        existing = _read_key_safe(env_path)
-        if existing:
-            os.environ[ENV_NAME] = existing
-            return existing
-        logger.warning("管理密钥未能生成，API 将拒绝管理调用")
-        return None
     try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        logger.warning("管理密钥锁不可用：%s", exc)
+        return _remember(_read_key_safe(env_path))
+    try:
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        _lock_exclusive(fd)
+        injected = os.environ.get(ENV_NAME, "").strip()
+        if injected:
+            return injected
         existing = _read_key_safe(env_path)
         if existing:
-            os.environ[ENV_NAME] = existing
-            return existing
+            return _remember(existing)
         generated = f"wgk_{token_urlsafe(32)}"
         try:
             _atomic_upsert(env_path, generated)
@@ -60,33 +60,44 @@ def provision_worker_gateway_admin_key(env_path: Path) -> str | None:
             logger.warning("管理密钥写入失败，API 将拒绝管理调用：%s", exc)
             return None
         written = _read_key_safe(env_path)
-        chosen = written or generated
-        os.environ[ENV_NAME] = chosen
-        return chosen
+        return _remember(written or generated)
     finally:
-        os.close(fd)
         try:
-            os.unlink(lock_path)
+            _unlock(fd)
         except OSError:
-            pass
+            logger.debug("管理密钥锁释放失败", exc_info=True)
+        os.close(fd)
 
 
-def _acquire_lock(lock_path: Path, env_path: Path) -> int | None:
-    deadline = time.monotonic() + 2
-    while True:
-        existing = _read_key_safe(env_path)
-        if existing:
-            return None
-        try:
-            return os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                logger.warning("管理密钥锁等待超时")
-                return None
-            time.sleep(0.02)
-        except OSError as exc:
-            logger.warning("管理密钥锁不可用：%s", exc)
-            return None
+def _remember(value: str) -> str | None:
+    if not value:
+        return None
+    os.environ[ENV_NAME] = value
+    return value
+
+
+def _lock_exclusive(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _read_key(path: Path) -> str:
