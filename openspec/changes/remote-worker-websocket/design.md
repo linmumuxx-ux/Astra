@@ -1,6 +1,6 @@
 ## Context
 
-当前链路是 Task → Run → Employee → Worker → OpenCode Session。远程 Worker 的数据面仍是 SSH：
+当前链路是 Task → Run → Employee → Worker → OpenCode Session。下面这张表和 Migration Plan 里「未标成 `worker` 的环境继续走 SSH」都是阶段 1 之前的历史，不是阶段 4 的契约。阶段 4 之后，未标记的远程环境直接失败，不走 SSH。`main.py` 关闭隧道的调用只是进程退出时的清理钩子，不是创建隧道的地方。
 
 | 位置 | 现在的职责 | 目标阶段 |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 ## Migration Plan
 
 - 迁移 `0039_worker_gateway` 创建三张表，`down_revision` 为 `0038_gateway_request_lifecycle`。`worker_commands` 直接包含 `delivery_attempts`（默认 0）、`delivery_state`（默认 `unpublished`）、`last_dispatched_at` 和 `dispatched_epoch`。downgrade 删除这三张表。
-- 不回填历史执行环境。未标成 `worker` 的环境继续走 SSH。已迁移是环境上的显式标记，不是「有 `worker_instances` 行」。
+- 不回填历史执行环境。上一条「未标成 `worker` 的环境继续走 SSH」是阶段 1 的历史。阶段 4 之后该环境直接失败，不走 SSH。已迁移仍是环境上的显式标记，不是「有 `worker_instances` 行」。
 - 不修改 `fix-session-task-state` 的数据或语义。
 
 ## Open Questions
@@ -505,7 +505,11 @@ URL、方法和响应形状保持不变：
 
 **SSH 密码，选项 2。** `ssh_password` 继续存在环境行上，安装成功后不清空，不新增迁移。环境写入接口保持现在的行为：非空密码写入该列，空白更新保留原值（`routes.py:328-329`），响应里仍然只有 `has_ssh_password`。日志继续打码。
 
-日常路径不读这列。`connect()`、任务启动、健康检查、文件、Git、上传、目录准备和环境测试不抄 `ssh_password`，也不调用 `open_session`。`open_session` 只有在安装或故障维护已经拿到维护锁、并且员工无占用时才读取环境行上的密码。没有这把锁时，`open_session` 拒绝，并且不读取该列。维护请求体不另带密码。
+日常路径不读这列。`session_connection.py:44`、`:55` 和 `workspace_routes.py:386` 不再把 `ssh_password` 抄到环境对象。`connect()`、任务启动、健康检查、文件、Git、上传、目录准备和环境测试不调用 `open_session`。
+
+`open_session` 必须由调用方传入维护锁的 `operation_id`。它先核对这个操作仍属于该环境且 `state` 仍是 `RUNNING`，通过之后才读取 `ssh_password`。核对失败就拒绝，并且不读这列。漏掉的调用方因此安全失败。`run_remote` 走同一个参数。维护请求体不另带密码。`routes.py:328-329` 的空白更新保留旧密码，`remote_provisioning.py:111` 仍要求环境行上已经有密码，`bootstrap.py:116` 的种子仍可写入该列。
+
+`POST /api/employees/{id}/environment/{action}`（`environment_routes.py:15`，`main.py:90` 注册）除了数据库会话，还要使用与 Worker Gateway 相同的 `require_admin`（`worker_gateway/routes.py:52`）。没有管理密钥的请求返回 401，不打开 SSH。
 
 **OpenCode 端口。建议维持 4096，此项不再另做选项。** 各端口现在的用途：
 
@@ -529,25 +533,24 @@ URL、方法和响应形状保持不变：
 | --- | --- | --- |
 | `opencode_remote_server.py:48-70` `ensure_remote_mcp_tunnel` / `ensure_remote_gateway_tunnel` | 为 8201 / 8110 准备反向隧道，或在设置了 public URL 时直接返回该地址 | 删 |
 | `:73-109` `_ensure_service_tunnel` | 进程内字典 `_mcp_tunnels`，`open_reverse_tunnel` | 删。API 与 Celery 本来就不能共享这份字典 |
-| `:112-122` `close_remote_mcp_tunnels`；`main.py:67-71` 在进程退出时调用 | 关闭上述字典 | 删函数和这处调用 |
+| `:112-122` `close_remote_mcp_tunnels`；`main.py:67-71` | 进程退出时的清理钩子，不创建隧道 | 删函数和这处调用 |
 | `:155-159` | `worker` 只做 `WorkerOpenCodeClient.health()` | 保留。这里不启动、不杀掉 OpenCode |
 | `:160-180` | `ssh`：`open_session`、到 OpenCode 端口的 `open_tunnel`、两条反向隧道；健康失败则 `_require_workspace_config` + `_start_server` | 删 |
 | `:203-253` `_require_workspace_config`、`_start_server` | SSH 上检查配置，cwd 匹配就 `kill` 再 `nohup` | 删。显式重启不得复用这段脚本 |
 | `:335-359` `test_remote_server` | SSH 本地转发后做健康检查；Serve 不在也算通过 | 删 |
-| `ssh_client.py:222-243` `open_tunnel` | 把远端 `127.0.0.1:端口` 转到 Astra | 删。安装和故障维护用远程命令，不再把 OpenCode 转到主控 |
-| `ssh_client.py:245-277` `open_reverse_tunnel` | 反向转发 | 删 |
+| `ssh_client.py:98` `SSHTunnel`、`:153` `SSHReverseTunnel`、`:222-277` `open_tunnel` / `open_reverse_tunnel` | 本地转发和反向转发 | 删。LLM Wiki 的隧道是 `install_nexus.sh` 里的 `ssh -L`，不依赖这两个类 |
 | `ssh_client.py:200-220`、`:279-299` `connect` / `open_exec` / `run_command` | Paramiko 会话和远程命令 | 保留，只给安装和故障维护 |
-| `session_connection.py:44`、`:55` | 两个 resolver 无条件抄 `stored.ssh_password` | 改：日常解析不抄密码 |
+| `session_connection.py:44`、`:55` | 两个 resolver 无条件抄 `stored.ssh_password` | 删这两次拷贝 |
 | `:68-78` | LOCAL 启动；`worker` 的 `connect()` 在 `start=True` 时只做健康检查 | 保留 |
 | `:79-92` | `ssh` 的 `connect()`：`start=True` 走上面的 SSH 连接，否则 `open_session` + `open_tunnel` | 删。`LINUX_REMOTE` 不是 `worker` 时直接失败，不打开 SSH |
 | `:226` `_ensure_remote_workspace`，以及 `:264-267`、`:287-288` 的调用 | `ssh` 环境用 `run_remote` 准备目录 | 删这些调用。`worker` 已走 `:260-263`、`:285-286` 的 `prepare_workspace` |
-| `environment.py:67-80` `open_session` | 用环境行上的密码打开 SSH | 改：仅当安装或故障维护已持有维护锁且员工无占用时读取该列。其他调用拒绝，并且不读密码 |
+| `environment.py:67-80` `open_session` | 用环境行上的密码打开 SSH | 改：必须传入 `operation_id`，核对仍是 `RUNNING` 之后才读密码 |
 | `:82-102` `run_remote` | 任意调用方都能打开 SSH | 改：日常调用方删除后，只留维护入口 |
 | `:104-107`、`:131-196` | LOCAL 的 `test()` | 保留 |
 | `:198-256` `_test_remote` | `POST /api/employees/{id}/environment/test`（`routes.py:356`）用 SSH 测连接、二进制和 `test_remote_server` | 改：`worker` 在线时由 Agent 做本机健康检查和版本；离线时报告离线。这条接口不打开 SSH |
 | `workspace_files.py:95-107`、`:159` | `ssh` 的 SFTP 校验和上传。`worker` 已提前返回 | 删远程分支。LOCAL 保留 |
 | `workspace_changes.py:37-39`、`:159-174` | `ssh` 的 `run_remote` git 和 SFTP 读文件 | 删远程分支。LOCAL 保留 |
-| `workspace_routes.py:386-387` | 原生代理把 `ssh_password` 和 `worker_channel` 抄到临时环境 | 改：不抄密码。通道仍以环境行为准 |
+| `workspace_routes.py:386-387` | 原生代理把 `ssh_password` 和 `worker_channel` 抄到临时环境 | 删密码拷贝。通道仍以环境行为准 |
 | `workspace_routes.py:618-621` | `GET /repo` 在非 worker 时 `run_remote` | 删这段远程分支。LOCAL 与 `worker` 保留 |
 | `remote_provisioning.py:111` | 部署要求库里已有 host、用户名、密码 | 保留这三项都在环境行上。只有这次维护在锁内读取密码。安装成功后不清空 |
 | `:171` | 日志打码列表含密码 | 保留打码 |
@@ -577,7 +580,11 @@ URL、方法和响应形状保持不变：
 
 `remote_gateway_public_url` 和 `mcp_public_url` 只为跳过反向隧道而存在。隧道删除之后，安装和标记不再读这两个字段，地址只取上面这一对。
 
-可达探测不新做。安装结束、Worker 在线之后，调用现有 `mark_worker_channel`：Worker 只探测配置里的 Gateway 和 MCP，无占用时受控重载，生效配置（含项目级覆盖）与这两个地址一致才写成 `worker`。探测失败或生效配置不一致则保持未标记，远程执行直接失败，不打开 SSH。
+`settings.py:127` 的 `remote_gateway_local_url` 和 `:139` 的 `mcp_resource_server_url` 默认是 `127.0.0.1`。控制机上的图书馆 MCP 仍只听回环（`install_nexus.sh` 写入 `ASTRA_MCP_HOST=127.0.0.1`）。部署拒绝这两个配置地址里的回环主机名。Worker 要访问的是管理员配置的内网地址。Agent 的 systemd 单元写入 `ASTRA_REMOTE_GATEWAY_URL`、`ASTRA_MCP_RESOURCE_URL`，以及与该环境 `opencode_server_port` 一致的 `ASTRA_WORKER_OPENCODE_URL`（`http://127.0.0.1:<端口>`）。不改 Gateway 的路由、密钥、供应商和模型映射。
+
+可达探测仍是阶段 2 的那一组检查：只探测配置地址，无占用时受控重载，生效配置一致才写成 `worker`。这次检查在 deploy 自己已经写下的 `RUNNING` 操作里完成。`mark_worker_channel` 会再调用 `require_no_operation` 并另拿一把锁（`worker_channel.py:55`），所以 deploy 不调用它，也不先释放自己的锁再重取。探测失败或生效配置不一致则保持未标记，远程执行直接失败，不打开 SSH。
+
+安装仍在远端 SSH shell 里用 Node 探测 Gateway 的模型和 Key，不建隧道。Worker 上线后，经 Agent 核对 OpenCode 的 `/mcp` 里 `nexus-library` 为 `connected`。这两项原来在即将删除的 SSH 分支（`remote_provisioning.py:385-411`）。
 
 云端不对 Worker 开入站业务端口。OpenCode 只听 `127.0.0.1`。Worker 主动连接主控的 Worker Gateway；OpenCode 再从 Worker 所在网络出站访问 8110 和 8201。
 
@@ -592,9 +599,11 @@ WebSocket 断开只走现有的 `on_connection_lost()` 空操作。Agent 退避�
 1. 与 `reserve_operation` / `mark_worker_channel` 相同的维护锁：没有进行中的环境操作，占用谓词为假，也没有仍占住的 Session。
 2. 管理员这次操作本身就是安装或重启。任务启动失败、健康检查失败、套接字断开，都不是这道操作。
 
-Worker 在线时，这次重启是 Agent 本地指令，走与 `switch_channel` 相同的维护入口，普通指令接口返回 403 `maintenance_command`。有 `ASTRA_WORKER_OPENCODE_UNIT` 时用 `systemctl restart` 该单元；否则先确认监听进程的命令行含 `opencode` 和 `serve`，再 SIGTERM。不按进程名扫杀，不使用 `_start_server`。
+`RemoteProvisioner.run()` 今天总是先 `open_session`（`remote_provisioning.py:467`）。Worker 在线时，restart 改为下发给 Agent，不打开 SSH。只有 Worker 离线时，安装和重启才走 SSH，并用上面的 `operation_id` 读取密码。
 
-Worker 离线时，允许管理员走 SSH 做故障维护，入口仍是现有的 `POST /api/employees/{id}/environment/{action}`（`environment_routes.py:15`）。密码用环境行上已保存的值，只在维护锁内读取，请求体不另带，成功后也不清空。这次 SSH 可以安装或修复 Worker Agent 的 systemd 单元，也可以在管理员明确选择重启时重启 OpenCode。若 OpenCode 在 `127.0.0.1` 上仍然健康，而管理员这次只是修复 Agent，则不动 OpenCode。离线本身不构成重启 OpenCode 的理由。
+Worker 在线时的重启是 Agent 本地指令，走与 `switch_channel` 相同的维护入口，普通指令接口返回 403 `maintenance_command`。有 `ASTRA_WORKER_OPENCODE_UNIT` 时用 `systemctl restart` 该单元；否则先确认监听进程的命令行含 `opencode` 和 `serve`，再 SIGTERM。不按进程名扫杀，不使用 `_start_server`。
+
+deploy 在员工无占用时重载 OpenCode。迁移门里的受控重载（`channel_switch.py` 的 reload）会重启本机 OpenCode，所以 deploy 不承诺「只修 Agent、不动 OpenCode」。离线本身不构成日常执行去打开 SSH 的理由。
 
 这道维护不发送 Prompt，不创建 Session，不调用 `apply_session_state()`，不改 `Task.status`。代码里不存在「Worker 调用失败之后改调 `open_session`」的分支。
 
@@ -603,17 +612,17 @@ Worker 离线时，允许管理员走 SSH 做故障维护，入口仍是现有�
 一次管理员触发的 SSH 会话完成安装。密码留在环境行上，供以后的故障维护在锁内使用。日常执行不读这列：
 
 1. 环境行上已有 host、用户名、`ssh_password`、`workspace_root` 和 `opencode_server_port`。安装读取已保存的密码，不从请求体取密码，成功后也不清空。
-2. 在远端安装 OpenCode 1.18.35，systemd 单元执行 `opencode serve --hostname 127.0.0.1 --port <opencode_server_port>`。单元名写入 Agent 的 `ASTRA_WORKER_OPENCODE_UNIT`。
-3. 写入全局 `opencode.json` 的 `astra-gateway` provider 和图书馆 MCP，地址是上一节的内网配置。保留 Gateway Key 和 MCP Token。不写隧道回环地址。
-4. 用现有登记 `POST /api/worker-gateway/instances` 取得该环境自己的 `worker_instance_id` 和 token。再次登记仍是旋转 token、递增 epoch，不新建第二个身份。token 写到远端仅 root 可读的文件，不进日志。
-5. 安装 Worker Agent 的 systemd 单元。单元出站连接主控的 Worker Gateway，不在云端机器上监听业务端口。
-6. 启动单元。Worker 在线后跑阶段 2 的迁移门。通过才把 `worker_channel` 写成 `worker`。`ssh_password` 保持原值。未通过则环境保持不可执行，不打开 SSH 执行路径。
+2. 拒绝回环的 Gateway 与 MCP 配置。在远端安装 OpenCode 1.18.35，systemd 单元执行 `opencode serve --hostname 127.0.0.1 --port <opencode_server_port>`。单元名写入 Agent 的 `ASTRA_WORKER_OPENCODE_UNIT`。
+3. 写入全局 `opencode.json` 的 `astra-gateway` provider 和图书馆 MCP，地址是上一节的内网配置。保留 Gateway Key 和 MCP Token。不写隧道回环地址。SSH shell 里用 Node 探测 Gateway 的 Key 和模型。
+4. 用现有登记取得该环境自己的 `worker_instance_id` 和 token。再次登记仍是旋转 token、递增 epoch，不新建第二个身份。token 写到远端仅 root 可读的文件，不进日志。
+5. 安装 Worker Agent 的 systemd 单元。单元写入 `ASTRA_REMOTE_GATEWAY_URL`、`ASTRA_MCP_RESOURCE_URL` 和 `ASTRA_WORKER_OPENCODE_URL=http://127.0.0.1:<opencode_server_port>`。单元出站连接主控，不在云端机器上监听业务端口。脚本默认端口改为 4096：`install_nexus.sh` 的 `REMOTE_WORKER_OPENCODE_PORT`、`ops/env/.env.example`，以及 `DEPLOYMENT_GUIDE.md`、`docs/deploy/REMOTE_EMPLOYEES.md` 里的反向隧道和 4296 描述。
+6. 启动单元。仍在同一次 `RUNNING` 操作里做探测、重载、生效配置核对，通过才把 `worker_channel` 写成 `worker`，并经 Agent 核对 `/mcp` 已连接。`ssh_password` 保持原值。未通过则环境保持不可执行，不打开另一条 SSH 执行路径，也不释放锁之后再调用 `mark_worker_channel`。
 
 基础环境（系统包、Node、目录）仍由这次安装 SSH 负责。装完之后，健康检查和显式重启不再使用这次会话。
 
 #### 实现时要覆盖的测试
 
-落地时再写，本设计不附带代码。至少包括：`ensure_remote_mcp_tunnel`、`ensure_remote_gateway_tunnel`、`_ensure_service_tunnel`、`open_reverse_tunnel`、`close_remote_mcp_tunnels` 没有调用方；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 的启动、文件和 Git 仍不使用 SSH；在线健康检查和显式重启不调用 `open_session` 或 `run_remote`，也不读 `session_connection.py:44` 与 `:55` 的密码；Worker 调用失败不会落到 SSH；WebSocket 断开不增加重启计数、不调用 `systemctl`；员工被占用时拒绝维护重启；普通指令接口对维护重启返回 403 `maintenance_command`；安装写出的 Gateway / MCP 地址是配置中的内网地址，不是 `127.0.0.1:8110` 或 `127.0.0.1:8201`；探测失败不写成 `worker`；`lifecycle.py:636-639` 仍把 `LINUX_REMOTE` 映射为 `gateway_model`；OpenCode 仍只绑 `127.0.0.1` 和该环境的 `opencode_server_port`，默认仍是 4096；LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`；部署成功后 `ssh_password` 仍是原值；`connect()`、启动、健康检查、文件、Git、上传和环境测试不读取该列；`open_session` 在没有维护锁或员工被占用时拒绝且不读密码；通信失败不改 `Task.status`；重连不新建 Session、不重发。
+落地时再写，本设计不附带代码。至少包括：`ensure_remote_mcp_tunnel`、`ensure_remote_gateway_tunnel`、`_ensure_service_tunnel`、`open_reverse_tunnel`、`open_tunnel`、`SSHTunnel`、`SSHReverseTunnel`、`close_remote_mcp_tunnels` 没有调用方；`app` 与 `ops` 的运行时代码不 import `opencode_remote.py`；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 的启动、文件和 Git 仍不使用 SSH；没有管理密钥时维护接口返回 401；`open_session` 缺少 `operation_id` 或操作不是 `RUNNING` 时拒绝且不读 `ssh_password`；日常路径不读该列；部署的回环 Gateway 或 MCP 地址被拒绝；在线 restart 不调用 `open_session`，离线才走 SSH；deploy 在自己的操作里完成标记，不嵌套 `mark_worker_channel`；安装写出的地址不是回环隧道地址，Agent 单元带上两个内网变量和与环境端口一致的 `ASTRA_WORKER_OPENCODE_URL`；探测失败不写成 `worker`；`lifecycle.py:636-639` 仍把 `LINUX_REMOTE` 映射为 `gateway_model`；OpenCode 仍只绑 `127.0.0.1`；部署成功后 `ssh_password` 仍是原值；WebSocket 断开不重启 OpenCode；通信失败不改 `Task.status`；重连不新建 Session、不重发。另有一条安装到文件与上传的端到端测试：安装、登记、Worker 在线、迁移门、文件与上传。
 
 ### 阶段 5
 
