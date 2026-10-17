@@ -132,9 +132,9 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：A。不依赖 H。
 
-- [ ] I.1 按 design 的映射表写 `waiting_reason`。`UNCONFIRMED` 只记 `TRANSPORT_RECOVERY`，不改变 Task 状态。`TIMEOUT` 不触发平台 abort 或重试。retry 进行中保持 `RUNNING`。OpenCode 自己停住才写 `RETRY_EXHAUSTED`
+- [x] I.1 按 design 的映射表写 `waiting_reason`。`UNCONFIRMED` 只记 `TRANSPORT_RECOVERY`，不改变 Task 状态。`TIMEOUT` 不触发平台 abort 或重试。retry 进行中保持 `RUNNING`。OpenCode 自己停住才写 `RETRY_EXHAUSTED`
   - 验证：断线不改 Task。问题、权限、正常结束、retry 耗尽分别落到对应原因。没有待处理 HITL 且执行已停止，人工确认后才 `SUCCEEDED` 并释放。取消和确认失败同样要等执行停止
-- [ ] I.2 人工继续复用原 Worker、worktree 和 Session
+- [x] I.2 人工继续复用原 Worker、worktree 和 Session
   - 验证：不新建 Session，也不把未结束的 Task 派给另一个 Worker
 
 ## J. 复盘执行器，然后去掉产品入口

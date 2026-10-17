@@ -324,6 +324,7 @@ class TaskRead(RuntimeRead):
     confirmed_at: datetime | None
     failure_reason: str | None
     human_required_reason: str | None
+    waiting_reason: str | None = None
     human_intervention: dict[str, Any] | None
     execution_environment_snapshot: dict[str, Any] | None
     claimed_at: datetime | None

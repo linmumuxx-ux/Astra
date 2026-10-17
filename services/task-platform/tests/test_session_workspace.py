@@ -2063,7 +2063,7 @@ async def test_idle_without_reply_converges_after_grace(runtime):
     assert r.task.status == "WAITING"
 
 
-async def test_missing_anchor_does_not_stay_running_or_reuse_old_success(runtime):
+async def test_missing_anchor_keeps_task_status_and_records_transport_recovery(runtime):
     r = runtime
     r.native.sessions["ses_current"] = [
         {"info": {"id": "old", "role": "assistant", "finish": "stop", "time": {"completed": 1}},
@@ -2078,7 +2078,8 @@ async def test_missing_anchor_does_not_stay_running_or_reuse_old_success(runtime
     binding = await r.session.get(RuntimeSession, "ses_current")
     assert binding.status == "INTERRUPTED"
     assert binding.terminal_reason == "unconfirmed"
-    assert r.task.status == "WAITING"
+    assert r.task.status == "RUNNING"
+    assert r.task.waiting_reason == "TRANSPORT_RECOVERY"
     assert r.task.status != "SUCCEEDED"
 
 

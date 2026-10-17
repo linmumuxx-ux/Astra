@@ -173,7 +173,9 @@ async def resume_task(task_id: str, session=Depends(get_session)):
     if task.status != TaskStatus.WAITING.value:
         raise HTTPException(409, "只有等待中的任务可以恢复")
     try:
-        return await RuntimeService(session).start(task_id, restart=bool(task.current_session_id))
+        if task.current_session_id:
+            return await RuntimeService(session).continue_task(task_id)
+        return await RuntimeService(session).start(task_id)
     except Exception as exc:
         raise error_response(exc) from exc
 

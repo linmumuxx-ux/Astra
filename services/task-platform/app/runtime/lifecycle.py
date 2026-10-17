@@ -365,21 +365,35 @@ class RuntimeService:
         if _task_result_concluded(task):
             await self.session.commit()
             return
+        if state.status == RuntimeSessionStatus.UNKNOWN.value:
+            # 通信失败和 UNKNOWN 不写 waiting_reason，也不改 Task 状态。
+            await self.session.commit()
+            return
+        if state.terminal_reason == SessionTerminalReason.UNCONFIRMED.value:
+            task.waiting_reason = "TRANSPORT_RECOVERY"
+            await self.session.commit()
+            return
         previous_status = TaskStatus(task.status)
         previous_reason = task.human_required_reason
         if state.status == RuntimeSessionStatus.RUNNING.value:
             task.failure_reason = None
             task.execution_error = None
+            task.waiting_reason = None
             await self.project(task, TaskStatus.RUNNING)
             return
         if state.status == RuntimeSessionStatus.SUCCEEDED.value:
             detail = _ACCEPTANCE_REASON
             task.failure_reason = None
             task.execution_error = None
+            task.waiting_reason = "EXECUTION_RESULT_REVIEW"
         elif state.status == RuntimeSessionStatus.WAITING.value:
             detail = _QUESTION_REASON
             task.failure_reason = None
             task.execution_error = None
+            if state.hitl == "permission":
+                task.waiting_reason = "HITL_PERMISSION"
+            else:
+                task.waiting_reason = "HITL_QUESTION"
         elif state.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}:
             detail = _RECOVERY_REASON.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
             task.failure_reason = detail
@@ -389,8 +403,18 @@ class RuntimeService:
                 "source": "opencode_session",
                 "session_id": task.current_session_id,
             }
+            reason = state.terminal_reason
+            if reason == SessionTerminalReason.TIMEOUT.value:
+                task.waiting_reason = None
+            elif reason == SessionTerminalReason.ABORTED.value:
+                task.waiting_reason = "MANUAL_INTERVENTION"
+            elif reason in {
+                SessionTerminalReason.ASSISTANT_ERROR.value,
+                SessionTerminalReason.NO_REPLY.value,
+                SessionTerminalReason.INCOMPLETE.value,
+            }:
+                task.waiting_reason = "RETRY_EXHAUSTED"
         else:
-            # UNKNOWN keeps the business status. The caller records why it is unconfirmed.
             await self.session.commit()
             return
         task.human_required_reason = detail
@@ -1730,6 +1754,28 @@ class RuntimeService:
             grace_seconds=get_settings().opencode_no_reply_grace_seconds,
         )
         await self.apply_session_state(task, state)
+        return task
+
+    async def continue_task(self, task_id: str) -> Task:
+        """人工继续沿用原来的 Worker、worktree 和 Session。"""
+
+        task = await self.lock_task(task_id)
+        if task.status not in {TaskStatus.WAITING.value, TaskStatus.RUNNING.value}:
+            raise RuntimeStateError("只有未结束的任务可以继续")
+        if not task.current_session_id or not task.workspace or not task.employee_id:
+            raise RuntimeStateError("任务尚未绑定 Session，不能继续")
+        session_id = task.current_session_id
+        workspace = task.workspace
+        employee_id = task.employee_id
+        await self.session.commit()
+        task = await self.lock_task(task_id)
+        if (
+            task.current_session_id != session_id
+            or task.workspace != workspace
+            or task.employee_id != employee_id
+        ):
+            await self.session.rollback()
+            raise RuntimeStateError("任务绑定已变化")
         return task
 
     async def confirm_completion(self, task_id: str):

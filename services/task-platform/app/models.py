@@ -200,6 +200,7 @@ class Task(RuntimeProjection, Base):
     current_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     execution_environment_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
