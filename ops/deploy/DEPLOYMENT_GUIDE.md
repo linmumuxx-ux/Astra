@@ -13,7 +13,7 @@
 | Redis | 6379 | redis-server 或 `services/agent-service/docker-compose.yml` | AgentScope 存储与消息总线、Astra Celery/网关吊销表 |
 | Agent Service（AgentScope 2.0.10） | 8000 | `services/agent-service/agent_service.py` | 员工会话、私聊/邮箱/团队讨论 |
 | Astra Task API（backend） | 8100 | `ops/dev/astra_service.py dev start`（uvicorn） | 任务、Worker、网关控制面、数字图书馆 API |
-| Astra Gateway（API 中转数据面） | 8110 | 同上（`app.gateway.server`） | OpenAI 兼容 `/v1`，远程 Worker 经反向隧道使用 |
+| Astra Gateway（API 中转数据面） | 8110 | 同上（`app.gateway.server`） | OpenAI 兼容 `/v1`，远程 Worker 直连内网地址 |
 | Nexus API | 8120 | `uvicorn nexus_api.main:app` | Nexus 前端的 `/api/v1` |
 | Library MCP | 8201 | 同 astra_service（`nexus-library-mcp`，streamable-http） | 员工/OpenCode 查询数字图书馆 |
 | Task MCP | 8202 | 同 astra_service（`astra-task-mcp`） | 员工会话里的 `nexus_task_*` 工具 |
@@ -22,7 +22,7 @@
 | 本地 Worker OpenCode | 自定（如 4196） | Astra runtime 拉起 | 每个 Worker 一个端口 |
 | llm_wiki Web 版（远端） | 18080（网关）/ 19829（内部） | Docker 容器 `llm-wiki-web` | 只绑 127.0.0.1 |
 | llm_wiki 本机隧道 | 19828 | `ssh -L 19828:127.0.0.1:18080` | Astra 的 `ASTRA_LLM_WIKI_API_BASE_URL` |
-| 远程 Worker OpenCode | 4296（远端） | 一键部署写入 | 远端 127.0.0.1:8110/8201 由 Astra 反向隧道提供 |
+| 远程 Worker OpenCode | 环境端口，默认 4096（远端 127.0.0.1） | 一键部署写入 | Worker 直连内网 Gateway 8110 与图书馆 MCP 8201 |
 
 ---
 
@@ -69,7 +69,7 @@
 ### 2.4 远程 Worker SSH
 - root（或有 sudo 的用户）+ 密码，密码存于 Astra DB（API 只回 `has_ssh_password`）。
 - 远端需能访问 npm 源（默认 `https://registry.npmmirror.com`）安装 Node/OpenCode。
-- 网关 8110 与图书馆 MCP 8201 由 Astra 用 Paramiko 反向隧道映射到远端 127.0.0.1，**backend 进程退出则隧道断**，deploy/restart/dispatch 时会自动重建。
+- 网关 8110 与图书馆 MCP 8201 由远端 Worker 直连内网地址。部署拒绝 `127.0.0.1` / `localhost`。设置 `ASTRA_REMOTE_GATEWAY_LOCAL_URL`、`ASTRA_MCP_RESOURCE_SERVER_URL` 和 `ASTRA_WORKER_AGENT_GATEWAY_URL` 为 Worker 能访问的地址。OpenCode 仍只听远端 `127.0.0.1` 上的环境端口（默认 4096）。
 
 ### 2.5 密钥
 | 密钥 | 生成 | 说明 |
@@ -234,7 +234,7 @@ curl -X POST $B/nodes  -H 'Content-Type: application/json' -d '{"name":"deepseek
 curl -X POST $B/routes -H 'Content-Type: application/json' -d '{"model":"deepseek-flash","pool_id":"<pool>"}'
 curl -X POST $B/nodes/<node>/probe     # 直到 HEALTHY → ACTIVE
 ```
-远程 Worker 的模型写 `astra-gateway/deepseek-flash`，baseURL `http://127.0.0.1:8110/v1`（经反向隧道）。
+远程 Worker 的模型写 `astra-gateway/deepseek-flash`，baseURL 为内网 Gateway，例如 `http://10.0.0.8:8110/v1`。
 
 ### 5.9 llm_wiki Web 版部署与项目创建
 **主机选择**：首选 aarch64 + glibc ≥ 2.28 的 Linux 直接运行（`LLM_WIKI_DATA_DIR=/var/lib/llm-wiki ./start.sh` 或包内 `llm-wiki-web.service`）。x86_64 主机只能 qemu 仿真（实测可用但慢、吃内存）。CentOS 7 必须容器化。
@@ -278,7 +278,7 @@ curl -X POST $B/nodes/<node>/probe     # 直到 HEALTHY → ACTIVE
 8. Astra：在 `start_astra.sh` 加 `ASTRA_LLM_WIKI_*` 后重启，`POST /api/library/service/resync`。
 
 ### 5.10 远程 Worker
-1. 管理台/`POST /api/employees` 创建员工，`execution_environment`：`mode=LINUX_REMOTE`、`host`、`port=22`、`username=root`、`ssh_password`、`opencode_server_port=4296`、`workspace_root=/root/astra-p2-remote`、`model_name=astra-gateway/deepseek-flash`。
+1. 管理台/`POST /api/employees` 创建员工，`execution_environment`：`mode=LINUX_REMOTE`、`host`、`port=22`、`username=root`、`ssh_password`、`opencode_server_port=4096`、`workspace_root=/root/astra-p2-remote`、`model_name=astra-gateway/deepseek-flash`。
 2. `POST /api/employees/<id>/environment/deploy`（NDJSON 流，11 步：SSH、配置、依赖、Node、Git、OpenCode、工作区、全局配置、Serve 健康、网关鉴权+模型路由、图书馆 MCP）。
 3. `POST …/environment/restart` 可重复执行；部署会改写远端 `~/.config/opencode/opencode.json`（自动备份）。
 前提：`ASTRA_MCP_TRANSPORT=streamable-http` + `ASTRA_MCP_API_KEY`、`ASTRA_GATEWAY_MASTER_KEY` 已配置，网关路由 ACTIVE。
