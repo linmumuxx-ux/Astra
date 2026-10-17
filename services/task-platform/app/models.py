@@ -415,6 +415,12 @@ class KnowledgeItem(Base):
     updated_by: Mapped[str] = mapped_column(String(120))
     published_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    agentscope_kb_id: Mapped[str] = mapped_column(String(64), default="", server_default="", index=True)
+    agentscope_document_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    agentscope_sync_status: Mapped[str] = mapped_column(
+        String(16), default="not_synced", server_default="not_synced"
+    )
+    agentscope_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     reference_count: Mapped[int] = mapped_column(Integer, default=0)
     helpful_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

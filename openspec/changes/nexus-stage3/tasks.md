@@ -150,7 +150,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：E 和 G。
 
-- [ ] K.1 `knowledge_items` 记录 AgentScope knowledge base / document id 和同步状态。启动时传入 `knowledge_base_manager`
+- [x] K.1 `knowledge_items` 记录 AgentScope knowledge base / document id 和同步状态。启动时传入 `knowledge_base_manager`
   - 验证：已审核文档可被绑定员工检索，未绑定员工检索不到。个人记忆不写入图书馆
 
 ## L. 可见旧名

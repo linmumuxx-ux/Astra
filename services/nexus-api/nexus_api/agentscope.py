@@ -150,6 +150,19 @@ class AgentScopeClient:
             json={"chat_model_config": chat_model_config},
         )
 
+    async def replace_session_knowledge(
+        self,
+        agent_id: str,
+        session_id: str,
+        knowledge_base_ids: list[str],
+    ) -> None:
+        await self.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            params={"agent_id": agent_id},
+            json={"knowledge_config": {"knowledge_base_ids": knowledge_base_ids}},
+        )
+
     async def create_session(
         self,
         agent_id: str,
@@ -157,6 +170,7 @@ class AgentScopeClient:
         workspace_id: str | None = None,
         *,
         chat_model_config: dict[str, Any] | None = None,
+        knowledge_base_ids: list[str] | None = None,
     ) -> str:
         body: dict[str, Any] = {"agent_id": agent_id, "name": name}
         if workspace_id:
@@ -164,6 +178,9 @@ class AgentScopeClient:
         config = self.chat_model_config if chat_model_config is None else chat_model_config
         if config:
             body["chat_model_config"] = config
+        ids = [item for item in knowledge_base_ids or [] if item]
+        if ids:
+            body["knowledge_config"] = {"knowledge_base_ids": ids}
         response = await self.request(
             "POST",
             "/sessions/",

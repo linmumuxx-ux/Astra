@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.bootstrap import CATEGORY_KNOWLEDGE_SPACE, DEFAULT_EXPERIENCE_SPACE
 from app.config.settings import get_settings
+from app.library_kb import sync_published_item
 from app.library_schemas import (
     KnowledgeCreate,
     KnowledgeDetail,
@@ -756,6 +757,9 @@ class KnowledgeService:
             created_by=item.created_by,
             updated_by=item.updated_by,
             published_by=item.published_by,
+            agentscope_kb_id=item.agentscope_kb_id,
+            agentscope_document_id=item.agentscope_document_id,
+            agentscope_sync_status=item.agentscope_sync_status,
             created_at=item.created_at,
             sources=item.sources,
             evidence=item.evidence,
@@ -901,6 +905,7 @@ class KnowledgeService:
         await self.session.commit()
         for item in changed:
             await self._prepare_sync(item)
+            await self._map_agentscope(item)
         return {"published": published}
 
     async def delete_knowledge(self, knowledge_id: str, principal: LibraryPrincipal) -> dict[str, str]:
@@ -987,7 +992,12 @@ class KnowledgeService:
         )
         await self.session.commit()
         await self._prepare_sync(item)
+        await self._map_agentscope(item)
         return await self.get_detail(item.id, principal)
+
+    async def _map_agentscope(self, item: KnowledgeItem) -> None:
+        await sync_published_item(item)
+        await self.session.commit()
 
     async def reject(
         self,

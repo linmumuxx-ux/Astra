@@ -794,6 +794,12 @@ def create_app() -> FastAPI:
         except ModelRouteError as exc:
             raise AgentScopeError(exc.detail, exc.status_code) from exc
 
+    def bound_knowledge(employee: dict[str, Any] | None) -> list[str]:
+        raw = employee.get("knowledge") if employee else None
+        if not isinstance(raw, list):
+            return []
+        return [str(item) for item in raw if item]
+
     def session_ids(connection, employee: dict[str, Any]) -> list[str]:
         found: list[str] = []
         mailbox = employee.get("mailbox_session_id")
@@ -950,6 +956,7 @@ def create_app() -> FastAPI:
                     agent_id,
                     f"{employee['name']}的邮箱",
                     chat_model_config=config,
+                    knowledge_base_ids=bound_knowledge(employee),
                 )
             if agent_id and mailbox:
                 await client.set_permission_mode(agent_id, mailbox, UNATTENDED_PERMISSION)
@@ -1086,11 +1093,13 @@ def create_app() -> FastAPI:
         name: str,
         permission_mode: str | None = None,
         chat_model_config: dict[str, Any] | None = None,
+        knowledge_base_ids: list[str] | None = None,
     ) -> str:
         session_id = current or await client.create_session(
             agent_id,
             name,
             chat_model_config=chat_model_config,
+            knowledge_base_ids=knowledge_base_ids,
         )
         if permission_mode:
             await client.set_permission_mode(agent_id, session_id, permission_mode)
@@ -1255,6 +1264,7 @@ def create_app() -> FastAPI:
         employee = load_employee(connection, employee_id)
         await store_capability(connection, client, employee)
         employee = load_employee(connection, employee_id)
+        previous_knowledge = bound_knowledge(current)
         route_id = str(employee.get("model_route_id") or "")
         if route_id and route_id != previous_route and employee["agentscope_agent_id"] and client.configured:
             try:
@@ -1262,6 +1272,17 @@ def create_app() -> FastAPI:
                 for session_id in session_ids(connection, employee):
                     await client.replace_session_model(employee["agentscope_agent_id"], session_id, config)
             except (ModelRouteError, AgentScopeError) as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        knowledge_ids = bound_knowledge(employee)
+        if knowledge_ids != previous_knowledge and employee["agentscope_agent_id"] and client.configured:
+            try:
+                for session_id in session_ids(connection, employee):
+                    await client.replace_session_knowledge(
+                        employee["agentscope_agent_id"],
+                        session_id,
+                        knowledge_ids,
+                    )
+            except AgentScopeError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         return {
             "employee": employee,
@@ -1522,6 +1543,7 @@ def create_app() -> FastAPI:
                                 session_name,
                                 workspace_id,
                                 chat_model_config=await model_for(client, employee),
+                                knowledge_base_ids=bound_knowledge(employee),
                             )
                             await client.set_permission_mode(
                                 employee["agentscope_agent_id"],
@@ -1577,6 +1599,7 @@ def create_app() -> FastAPI:
                 row["name"],
                 workspace_id,
                 chat_model_config=await model_for(client, employee),
+                knowledge_base_ids=bound_knowledge(employee),
             )
         except AgentScopeError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -1775,6 +1798,7 @@ def create_app() -> FastAPI:
             agent_id,
             f"记录:{channel['name']}",
             chat_model_config=await model_for(client, record_employee) if record_employee else None,
+            knowledge_base_ids=bound_knowledge(record_employee),
         )
         connection.execute(
             """
@@ -1898,6 +1922,7 @@ def create_app() -> FastAPI:
                     channel["name"],
                     UNATTENDED_PERMISSION,
                     await model_for(client, employee),
+                    bound_knowledge(employee),
                 )
                 connection.execute(
                     """
@@ -2130,6 +2155,7 @@ def create_app() -> FastAPI:
                         employee["agentscope_agent_id"],
                         channel["name"] if channel is not None else employee["name"],
                         chat_model_config=await model_for(client, employee),
+                        knowledge_base_ids=bound_knowledge(employee),
                     )
                 except AgentScopeError as exc:
                     raise HTTPException(status_code=503, detail=exc.detail) from exc

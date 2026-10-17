@@ -212,6 +212,9 @@ class KnowledgeDetail(KnowledgeListItem):
     created_by: str
     updated_by: str
     published_by: str | None
+    agentscope_kb_id: str = ""
+    agentscope_document_id: str = ""
+    agentscope_sync_status: str = "not_synced"
     created_at: datetime
     sources: list[KnowledgeSourceRead] = Field(default_factory=list)
     evidence: list[ExperienceEvidenceRead] = Field(default_factory=list)

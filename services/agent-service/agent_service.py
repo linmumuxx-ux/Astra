@@ -294,7 +294,10 @@ def install_card_context_size() -> None:
 
 
 def attach_memory(workspace, factory=None) -> list:
-    """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。"""
+    """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。
+
+    个人记忆只留在这个 workspace，不写入图书馆。
+    """
 
     global _memory_error
     if factory is None:
@@ -339,6 +342,8 @@ def main() -> None:
     from agentscope.app._bus_ops import deliver_to_inbox
     from agentscope.app._service._toolkit import get_toolkit
     from agentscope.app.message_bus import MessageBusKeys, RedisMessageBus
+    from agentscope.app.rag.blob_store import LocalBlobStore
+    from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
     from agentscope.app.storage import RedisStorage
     from agentscope.app.workspace_manager import (
         IsolationPolicy,
@@ -346,6 +351,7 @@ def main() -> None:
     )
     from agentscope.message import HintBlock, Msg
     from agentscope.permission import PermissionBehavior, PermissionDecision
+    from agentscope.rag import QdrantStore
     from agentscope.tool import FunctionTool, MCPTool
 
     install_card_context_size()
@@ -380,6 +386,13 @@ def main() -> None:
     workspace_manager = LocalWorkspaceManager(
         basedir=workspace_dir,
         isolation=IsolationPolicy.PER_SESSION,
+    )
+    qdrant_path = os.environ.get("AGENTSCOPE_QDRANT_PATH", "services/agent-service/data/qdrant")
+    blob_dir = os.environ.get("AGENTSCOPE_BLOB_DIR", "services/agent-service/data/blobs")
+    os.makedirs(qdrant_path, exist_ok=True)
+    knowledge_base_manager = CollectionPerKbManager(
+        storage=storage,
+        vector_store=QdrantStore(path=qdrant_path),
     )
 
     async def extra_agent_tools(user_id: str, agent_id: str, session_id: str):
@@ -417,6 +430,8 @@ def main() -> None:
         storage=storage,
         message_bus=message_bus,
         workspace_manager=workspace_manager,
+        knowledge_base_manager=knowledge_base_manager,
+        blob_store=LocalBlobStore(blob_dir),
         extra_agent_tools=extra_agent_tools,
         extra_agent_middlewares=memory_middlewares,
     )
