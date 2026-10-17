@@ -70,15 +70,15 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B。按 design 的两种模式。
 
-- [ ] D.1 群记录 Session 上的纯写入：checkpoint 锁，运行中拒绝，不调用 `ChatService.run`。写完向其他人类成员推 SSE
+- [x] D.1 群记录 Session 上的纯写入：checkpoint 锁，运行中拒绝，不调用 `ChatService.run`。写完向其他人类成员推 SSE
   - 验证：写入后消息列表可见，且没有新的回复运行
-- [ ] D.2 人类群沿用 `channels`。成员保存 `last_delivered_message_id`。被 @ 时把积压和这条 @ 以原 id 经 `POST /chat/` 送进该员工 Session，然后推进游标
+- [x] D.2 人类群沿用 `channels`。成员保存 `last_delivered_message_id`。被 @ 时把积压和这条 @ 以原 id 经 `POST /chat/` 送进该员工 Session，然后推进游标
   - 验证：先说一件事且不 @，再 @ 并追问，重启后该员工上下文里仍有那件事。第一次写入没有推理
-- [ ] D.3 员工协作启用 `TeamCreate`、`TeamSay`、`TeamDelete`，以及只改 workspace 来源的 `AgentInvite` 子类。workspace 来自该员工的 mailbox Session，或新建。继续卸掉 `AgentCreate`。`contact_employee` 只做单向通知
+- [x] D.3 员工协作启用 `TeamCreate`、`TeamSay`、`TeamDelete`，以及只改 workspace 来源的 `AgentInvite` 子类。workspace 来自该员工的 mailbox Session，或新建。继续卸掉 `AgentCreate`。`contact_employee` 只做单向通知
   - 验证：两个 UID 的私聊 workspace 与两个团队的 workspace 互不相同。邀请后员工定义还在。解散团队不删员工
-- [ ] D.4 群时间线按块合并：人类消息按 id 只显示一次；TeamSay 用 HintBlock id 显示为 A→B 或 A→全体，隐藏接收方副本；按 `(created_at, session, id)` 做带游标的 k 路合并
+- [x] D.4 群时间线按块合并：人类消息按 id 只显示一次；TeamSay 用 HintBlock id 显示为 A→B 或 A→全体，隐藏接收方副本；按 `(created_at, session, id)` 做带游标的 k 路合并
   - 验证：广播、定向和分页不重复、不丢
-- [ ] D.5 E2E-07：A 的当前 Session 当 leader，邀请 B，B 用 `TeamSay` 回到 A 并唤醒 A。不创建数字任务
+- [x] D.5 E2E-07：A 的当前 Session 当 leader，邀请 B，B 用 `TeamSay` 回到 A 并唤醒 A。不创建数字任务
   - 验证：一条 A→B→A 的跟踪。`contact_employee` 的回信不会出现在 A 的上下文里
 
 ## E. 压缩与长期记忆

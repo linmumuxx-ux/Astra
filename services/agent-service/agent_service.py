@@ -9,7 +9,16 @@ import asyncio
 import os
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+
+class RecordMessageBody(BaseModel):
+    session_id: str
+    message_id: str
+    name: str = "user"
+    text: str = ""
+    user_id: str = "nexus"
+    metadata: dict = Field(default_factory=dict)
 
 
 class TaskHintBody(BaseModel):
@@ -72,6 +81,32 @@ async def finish_event(event_id: str | int | None, *, delivered: bool) -> None:
             _seen_events.pop(next(iter(_seen_events)))
 
 
+def register_record_message(app, storage, message_bus, keys, msg_cls) -> None:
+    @app.post("/nexus/record-message")
+    async def record_message(body: RecordMessageBody) -> dict[str, bool]:
+        if not body.session_id.strip() or not body.message_id.strip():
+            raise HTTPException(status_code=422, detail="缺少记录会话或消息")
+        message = msg_cls(
+            id=body.message_id,
+            name=body.name or "user",
+            role="user",
+            content=[{"type": "text", "text": body.text}],
+            metadata=body.metadata,
+        )
+        try:
+            await write_record_message(
+                storage,
+                message_bus,
+                message,
+                user_id=body.user_id or "nexus",
+                session_id=body.session_id,
+                keys=keys,
+            )
+        except RecordRunning as exc:
+            raise HTTPException(status_code=409, detail="会话正在运行，没有写入") from exc
+        return {"ok": True}
+
+
 def register_task_hint(app, deliver) -> None:
     """注册真实唤醒路由。Request 必须在模块全局里，延迟注解才能解析。"""
 
@@ -108,19 +143,15 @@ def allow_nexus_task_mcp(mcp_tool_class, decision_class, behavior_class) -> None
     mcp_tool_class.check_permissions = check_permissions
 
 
-# 官方 get_toolkit 会无条件挂上任务规划和 Agent Team。Nexus 的员工是对等同事，
-# 这些工具会把小模型从 contact_employee 上带走。启动时从组装结果里卸掉，不改安装包。
-HIDDEN_AGENT_TOOLS = (
+# 任务规划和临时 Agent 会把岗位员工带偏。团队协作留下 TeamCreate、TeamSay、
+# TeamDelete 和 AgentInvite。AgentCreate 会造出 source=team 的临时 Agent，继续卸掉。
+REMOVED_AGENT_TOOLS = (
     "TaskCreate",
     "TaskGet",
     "TaskList",
     "TaskUpdate",
     "ToolStop",
     "AgentCreate",
-    "AgentInvite",
-    "TeamCreate",
-    "TeamDelete",
-    "TeamSay",
     "ScheduleCreate",
     "ScheduleDelete",
     "ScheduleList",
@@ -128,10 +159,56 @@ HIDDEN_AGENT_TOOLS = (
 )
 
 
-def without_team_and_task_tools(get_toolkit):
+class RecordRunning(RuntimeError):
+    """记录 Session 上已有运行，纯写入直接拒绝。"""
+
+
+def select_invite_session(sessions, mailbox_session_id: str | None):
+    """只借用该员工自己的邮箱 Session。没有邮箱就新建 workspace。"""
+
+    if not mailbox_session_id:
+        return None
+    for session in sessions:
+        if getattr(session, "id", None) == mailbox_session_id:
+            return session
+    return None
+
+
+class MailboxSessionView:
+    """挡住 list_sessions 的第一条。那条通常是别人的私聊或其他团队。"""
+
+    def __init__(self, inner, lookup) -> None:
+        self._inner = inner
+        self._lookup = lookup
+
+    async def list_sessions(self, user_id: str, agent_id: str):
+        sessions = await self._inner.list_sessions(user_id, agent_id)
+        mailbox_id = await self._lookup(agent_id)
+        chosen = select_invite_session(sessions, mailbox_id)
+        return [chosen] if chosen is not None else []
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def retarget_agent_invites(toolkit, lookup) -> None:
+    groups = getattr(toolkit, "tool_groups", None) or []
+    for group in groups:
+        for tool in getattr(group, "tools", []) or []:
+            if getattr(tool, "name", "") != "AgentInvite":
+                continue
+            storage = getattr(tool, "_storage", None)
+            if isinstance(storage, MailboxSessionView):
+                continue
+            tool._storage = MailboxSessionView(storage, lookup)
+
+
+def without_team_and_task_tools(get_toolkit, mailbox_lookup=None):
     async def assembled(**kwargs):
         toolkit = await get_toolkit(**kwargs)
-        await toolkit.remove_tool(list(HIDDEN_AGENT_TOOLS))
+        await toolkit.remove_tool(list(REMOVED_AGENT_TOOLS))
+        if mailbox_lookup is not None:
+            retarget_agent_invites(toolkit, mailbox_lookup)
         groups = getattr(toolkit, "tool_groups", None)
         if groups is not None:
             toolkit.tool_groups = [
@@ -142,6 +219,19 @@ def without_team_and_task_tools(get_toolkit):
     return assembled
 
 
+async def write_record_message(storage, message_bus, message, *, user_id: str, session_id: str, keys) -> None:
+    """checkpoint 锁下只 upsert。不调用 ChatService.run，也不占用运行锁。"""
+
+    if await message_bus.is_locked(keys.session_lock(session_id)):
+        raise RecordRunning(session_id)
+    async with message_bus.acquire_lock(keys.session_event_checkpoint_lock(session_id)):
+        await storage.upsert_message(user_id, session_id, message)
+    await message_bus.publish(
+        keys.session_events(session_id),
+        {"type": "record", "message_id": str(getattr(message, "id", "") or "")},
+    )
+
+
 def main() -> None:
     import agentscope.app._service._chat as chat_service
     import agentscope.app._service._realtime as realtime_service
@@ -150,18 +240,31 @@ def main() -> None:
     from agentscope.app import create_app
     from agentscope.app._bus_ops import deliver_to_inbox
     from agentscope.app._service._toolkit import get_toolkit
-    from agentscope.app.message_bus import RedisMessageBus
+    from agentscope.app.message_bus import MessageBusKeys, RedisMessageBus
     from agentscope.app.storage import RedisStorage
     from agentscope.app.workspace_manager import (
         IsolationPolicy,
         LocalWorkspaceManager,
     )
-    from agentscope.message import HintBlock
+    from agentscope.message import HintBlock, Msg
     from agentscope.permission import PermissionBehavior, PermissionDecision
     from agentscope.tool import FunctionTool, MCPTool
 
     allow_nexus_task_mcp(MCPTool, PermissionDecision, PermissionBehavior)
-    peer_toolkit = without_team_and_task_tools(get_toolkit)
+
+    async def mailbox_lookup(agent_id: str) -> str | None:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{nexus_api}/api/v1/internal/mailbox",
+                params={"agent_id": agent_id},
+            )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        session_id = response.json().get("session_id")
+        return str(session_id) if session_id else None
+
+    peer_toolkit = without_team_and_task_tools(get_toolkit, mailbox_lookup)
     chat_service.get_toolkit = peer_toolkit
     realtime_service.get_toolkit = peer_toolkit
 
@@ -232,6 +335,7 @@ def main() -> None:
         )
 
     register_task_hint(app, deliver)
+    register_record_message(app, storage, message_bus, MessageBusKeys, Msg)
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 

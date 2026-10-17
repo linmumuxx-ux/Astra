@@ -806,8 +806,6 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             assert log_seen
             assert "contact_employee" in ops_tool_list, ops_tool_list
             hidden_names = (
-                "TeamCreate",
-                "TeamSay",
                 "TaskCreate",
                 "TaskGet",
                 "TaskList",

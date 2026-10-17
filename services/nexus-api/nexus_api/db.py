@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT NOT NULL,
+    record_agent_id TEXT NOT NULL DEFAULT '',
+    record_session_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -59,7 +61,14 @@ CREATE TABLE IF NOT EXISTS channel_members (
     channel_id TEXT NOT NULL,
     employee_id TEXT NOT NULL,
     agentscope_session_id TEXT,
+    last_delivered_message_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (channel_id, employee_id)
+);
+CREATE TABLE IF NOT EXISTS channel_humans (
+    channel_id TEXT NOT NULL,
+    user_uid TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (channel_id, user_uid)
 );
 CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
@@ -110,6 +119,15 @@ def init_db(path: Path) -> None:
         attachment_columns = {row[1] for row in connection.execute("PRAGMA table_info(attachments)")}
         if "owner_uid" not in attachment_columns:
             connection.execute("ALTER TABLE attachments ADD COLUMN owner_uid TEXT NOT NULL DEFAULT ''")
+        channel_columns = {row[1] for row in connection.execute("PRAGMA table_info(channels)")}
+        if "record_session_id" not in channel_columns:
+            connection.execute("ALTER TABLE channels ADD COLUMN record_agent_id TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE channels ADD COLUMN record_session_id TEXT NOT NULL DEFAULT ''")
+        member_columns = {row[1] for row in connection.execute("PRAGMA table_info(channel_members)")}
+        if "last_delivered_message_id" not in member_columns:
+            connection.execute(
+                "ALTER TABLE channel_members ADD COLUMN last_delivered_message_id TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def new_id(prefix: str) -> str:

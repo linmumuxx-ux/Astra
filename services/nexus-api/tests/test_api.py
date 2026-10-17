@@ -626,7 +626,10 @@ def test_channel_peer_contact_creates_session_caps_and_keeps_identity(tmp_path, 
         assert [item["employee_id"] for item in sent.json()["triggered"]] == [ops["id"]]
         assert len(calls) == 1
         assert calls[0]["agent_id"] == ops["agentscope_agent_id"]
-        assert any("LOG-TOKEN-88" in block.get("text", "") for block in calls[0]["input"]["content"])
+        delivered = calls[0]["input"]
+        assert isinstance(delivered, list)
+        assert delivered[-1]["id"]
+        assert any("LOG-TOKEN-88" in block.get("text", "") for block in delivered[-1]["content"])
         ops_session = sent.json()["triggered"][0]["session_id"]
         eng_session = f"session-{eng['agentscope_agent_id']}-故障协同"
         replies[eng_session] = "我是自动化工程师"
@@ -1052,7 +1055,10 @@ def test_peer_toolkit_drops_team_and_task_tools_but_keeps_contact():
         return Toolkit()
 
     toolkit = asyncio.run(module.without_team_and_task_tools(original)())
-    assert "TeamCreate" in toolkit.removed
+    assert "AgentCreate" in toolkit.removed
+    assert "TeamCreate" not in toolkit.removed
+    assert "TeamSay" not in toolkit.removed
+    assert "AgentInvite" not in toolkit.removed
     assert "TaskGet" in toolkit.removed
     assert "ToolStop" in toolkit.removed
     assert "ScheduleCreate" in toolkit.removed
