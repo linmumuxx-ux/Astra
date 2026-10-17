@@ -110,11 +110,17 @@ def _cancel_active(task: Task, now: datetime | None = None) -> bool:
     return deadline > (now or datetime.now(UTC))
 
 
-def _set_cancel_token(task: Task, token: str | None, *, hold_seconds: int = 0) -> None:
+def _set_cancel_token(
+    task: Task, token: str | None, *, hold_seconds: int = 0, close_task: bool = True
+) -> None:
     data = _suspension(task)
     if token:
         deadline = datetime.now(UTC) + timedelta(seconds=hold_seconds)
-        data[_CANCEL_TOKEN] = {"id": token, "until": deadline.isoformat()}
+        data[_CANCEL_TOKEN] = {
+            "id": token,
+            "until": deadline.isoformat(),
+            "close": close_task,
+        }
     else:
         data.pop(_CANCEL_TOKEN, None)
     task.suspension = data or None
@@ -126,8 +132,73 @@ def _same_observed_turn(task: Task, observed: tuple) -> bool:
         task.current_session_id == session_id
         and task.last_message_id == anchor
         and task.pending_message_id == pending
-        and         task.turn_started_at == started
+        and task.turn_started_at == started
     )
+
+
+def _prompt_data(task: Task) -> dict:
+    return dict(task.pending_prompt) if isinstance(task.pending_prompt, dict) else {}
+
+
+def _pending_in_flight(task: Task) -> bool:
+    return bool(_prompt_data(task).get("in_flight"))
+
+
+def _arm_in_flight(prompt: dict) -> dict:
+    armed = dict(prompt)
+    armed["in_flight"] = True
+    armed["in_flight_since"] = datetime.now(UTC).isoformat()
+    return armed
+
+
+def _without_in_flight(task: Task) -> None:
+    data = _prompt_data(task)
+    data.pop("in_flight", None)
+    data.pop("in_flight_since", None)
+    task.pending_prompt = data or None
+
+
+def _in_flight_expired(task: Task, now: datetime | None = None) -> bool:
+    raw = _prompt_data(task).get("in_flight_since")
+    if not raw:
+        return True
+    try:
+        started = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return True
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    limit = get_settings().opencode_control_timeout_seconds
+    return (now or datetime.now(UTC)) - started >= timedelta(seconds=limit)
+
+
+def _message_visible(messages: list[dict] | None, message_id: str | None) -> bool:
+    if not messages or not message_id:
+        return False
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("info"), dict)
+        and item["info"].get("id") == message_id
+        for item in messages
+    )
+
+
+def _submission_still_unproven(
+    task: Task, messages: list[dict] | None, *, forced: bool = False
+) -> bool:
+    """An in-flight POST can still start after the Session looks idle."""
+    if forced or not task.pending_message_id or not _pending_in_flight(task):
+        return False
+    if _message_visible(messages, task.pending_message_id):
+        return False
+    return not _in_flight_expired(task)
+
+
+def _cancel_closes_task(task: Task) -> bool:
+    record = _cancel_record(task)
+    if not record or "close" not in record:
+        return True
+    return bool(record.get("close"))
 
 
 _QUESTION_REASON = "请在 Workspace 回答问题或权限请求"
@@ -786,13 +857,17 @@ class RuntimeService:
             employee.current_task_count = 1
             employee.status = EmployeeStatus.WORKING
         task.last_message_id = outbound_id
+        started = datetime.now(UTC)
+        prompt = _arm_in_flight({"action": native_action, "body": body})
+        task.pending_prompt = prompt
+        task.turn_started_at = started
         reserved = await self.session.execute(
             update(Task)
             .where(Task.id == task.id, Task.pending_message_id.is_(None))
             .values(
                 pending_message_id=outbound_id,
-                turn_started_at=datetime.now(UTC),
-                pending_prompt={"action": native_action, "body": body},
+                turn_started_at=started,
+                pending_prompt=prompt,
             )
         )
         if reserved.rowcount != 1:
@@ -813,19 +888,15 @@ class RuntimeService:
                     body=body,
                 )
         except Exception as exc:
-            task = await self.lock_task(task_id)
-            if task.pending_message_id != outbound_id:
-                await self.session.rollback()
-                raise
-            if type(exc) is OpenCodeExecutionError or isinstance(exc, OpenCodeSessionNotFound):
-                task.pending_message_id = None
-                task.pending_prompt = None
-            task.runtime_connection = "UNAVAILABLE"
-            task.runtime_error = str(exc)
-            await self.session.commit()
+            await self._settle_failed_submission(task_id, outbound_id, exc)
             raise
 
         task = await self.lock_task(task_id)
+        if _cancel_active(task) and not _task_result_concluded(task):
+            _without_in_flight(task)
+            await self.session.commit()
+            await self._complete_cancel(task_id, submission_id=outbound_id)
+            raise RuntimeStateError("任务正在取消，不能提交新输入")
         # A background refresh may have already confirmed this exact message and
         # cleared pending. Only an actual control operation invalidates the
         # submission; session identity and the bound RuntimeSession are the
@@ -886,53 +957,67 @@ class RuntimeService:
         )
 
     async def retry_submission(self, task_id):
-        task = await self.session.get(Task, task_id)
-        if not task:
-            raise RuntimeStateError("任务不存在")
+        task = await self.lock_task(task_id)
         if _task_result_concluded(task):
+            await self.session.rollback()
             raise RuntimeStateError("任务已结束，不能重试输入")
         if _cancel_active(task):
+            await self.session.rollback()
             raise RuntimeStateError("任务正在取消，不能提交新输入")
         if not task.pending_message_id or not task.pending_prompt:
+            await self.session.rollback()
             raise RuntimeStateError("没有待确认输入")
         pending_id = task.pending_message_id
-        pending_prompt = dict(task.pending_prompt)
+        pending_prompt = _arm_in_flight(_prompt_data(task))
+        task.pending_prompt = pending_prompt
         session_id = task.current_session_id
         workspace = task.workspace
         environment = await resolve_environment(self.session, task)
         await self.session.commit()
 
         async with connect(environment, start=True) as client:
-            messages = await client.messages(Path(workspace), session_id)
-            acknowledged = any(item["info"]["id"] == pending_id for item in messages)
-            sent_now = False
-            if not acknowledged:
-                await client.request(
-                    "POST",
-                    f"/session/{session_id}/{pending_prompt['action']}",
-                    directory=Path(workspace),
-                    body=pending_prompt["body"],
+            try:
+                messages = await client.messages(Path(workspace), session_id)
+                acknowledged = any(item["info"]["id"] == pending_id for item in messages)
+                sent_now = False
+                if not acknowledged:
+                    await client.request(
+                        "POST",
+                        f"/session/{session_id}/{pending_prompt['action']}",
+                        directory=Path(workspace),
+                        body=pending_prompt["body"],
+                    )
+                    sent_now = True
+            except Exception as exc:
+                # start() owns definitive restart failures and still needs the
+                # reservation. Only a cancel in progress settles the attempt here.
+                current = await self.session.get(Task, task_id)
+                canceling = bool(
+                    current and (_cancel_active(current) or current.status == TaskStatus.CANCELED)
                 )
-                sent_now = True
+                if canceling:
+                    await self._settle_failed_submission(task_id, pending_id, exc)
+                else:
+                    task = await self.lock_task(task_id)
+                    if task.pending_message_id == pending_id:
+                        _without_in_flight(task)
+                        await self.session.commit()
+                    else:
+                        await self.session.rollback()
+                raise
 
             # Revalidate after the network write. stop/delete/restart may have
             # invalidated this reservation while the request was in flight.
             task = await self.lock_task(task_id)
+            if _cancel_active(task) and not _task_result_concluded(task):
+                _without_in_flight(task)
+                await self.session.commit()
+                await self._complete_cancel(task_id, submission_id=pending_id)
+                raise RuntimeStateError("任务正在取消，不能提交新输入")
             # A background refresh ACK clears pending without invalidating the
             # submission. Only a session switch, an interrupted bound Session, or
             # a different reservation is a real control-operation failure.
             background_acked = task.pending_message_id is None
-            if _cancel_active(task):
-                await self.session.rollback()
-                if sent_now or acknowledged:
-                    try:
-                        await client.abort(Path(workspace), session_id)
-                    except Exception:
-                        logger.exception(
-                            "Failed to abort submission blocked by cancel for task %s",
-                            task_id,
-                        )
-                raise RuntimeStateError("任务正在取消，不能提交新输入")
             stale = await self._submission_invalidated(
                 task, submitted_session=session_id, pending_id=pending_id
             )
@@ -987,6 +1072,157 @@ class RuntimeService:
             logger.exception("Failed to collect final usage for Session %s", session_id)
             return None, None
 
+    async def _settle_failed_submission(self, task_id: str, outbound_id: str, exc: Exception) -> None:
+        """Record a finished attempt, then abort if this task is already being canceled."""
+        task = await self.lock_task(task_id)
+        canceling = _cancel_active(task) or task.status == TaskStatus.CANCELED
+        if task.pending_message_id == outbound_id:
+            definitive = type(exc) is OpenCodeExecutionError or isinstance(exc, OpenCodeSessionNotFound)
+            if definitive:
+                task.pending_message_id = None
+                task.pending_prompt = None
+            else:
+                # The HTTP call returned. Keep the reservation until cancel can prove
+                # the prompt will not keep running, but it is no longer in flight.
+                _without_in_flight(task)
+            task.runtime_connection = "UNAVAILABLE"
+            task.runtime_error = str(exc)
+            await self.session.commit()
+        else:
+            await self.session.rollback()
+        if not canceling:
+            return
+        try:
+            await self._complete_cancel(task_id, submission_id=outbound_id)
+        except RuntimeStateError:
+            logger.exception("In-flight submission for task %s stayed busy during cancel", task_id)
+
+    async def _write_canceled_task(
+        self,
+        task: Task,
+        *,
+        cancel_task: bool,
+        usage_messages: list[dict] | None,
+        native_session_count: int | None,
+        forced_offline_cancel: bool,
+        stop_error: Exception | None,
+    ) -> Task:
+        runtime_session = await self._runtime_session(task)
+        if usage_messages is not None:
+            await self._update_session_usage(
+                task, usage_messages, native_session_count=native_session_count
+            )
+        if runtime_session and (
+            runtime_session.status not in _TERMINAL_SESSION_STATUSES
+            or task.pending_message_id or task.pending_prompt
+        ):
+            runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
+            runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
+            runtime_session.finished_at = datetime.now(UTC)
+        if forced_offline_cancel and cancel_task:
+            await TaskService(self.session).add_event(
+                task,
+                "RUNTIME_OFFLINE_CANCELED",
+                "runtime",
+                "Runtime 已不可执行，按明确取消意图收敛任务",
+                {"error": str(stop_error) if stop_error else "session missing"},
+                commit=False,
+            )
+        _set_cancel_token(task, None)
+        task.pending_message_id = None
+        task.pending_prompt = None
+        task.runtime_error = None
+        await self.project(
+            task,
+            TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
+            detail="任务已终止" if cancel_task else "当前回复已停止，可在 Workspace 继续",
+        )
+        return task
+
+    async def _stop_native(
+        self, environment, workspace: str, session_id: str
+    ) -> tuple[list[dict] | None, int | None, bool]:
+        """Abort and wait. Returns usage, session count, and whether the runtime is gone."""
+        async with connect(environment, start=True) as client:
+            directory = Path(workspace)
+            await client.abort(directory, session_id)
+            try:
+                watched = await session_tree(client, directory, session_id)
+            except OpenCodeSessionNotFound:
+                watched = set()
+            for watched_id in sorted(watched or {session_id}):
+                await self._wait_for_session_stop(
+                    client,
+                    directory,
+                    watched_id,
+                    message="执行尚未停止，未取消任务，也未释放 Worker",
+                )
+            usage, count = await self._collect_final_usage(client, directory, session_id)
+            return usage, count, False
+
+    async def _complete_cancel(self, task_id: str, *, submission_id: str | None = None) -> Task:
+        """Abort a submission whose result is known, then close the task if it is still ours."""
+        await self.session.rollback()
+        task = await self.lock_task(task_id)
+        if (
+            task.status == TaskStatus.CANCELED
+            and submission_id
+            and task.pending_message_id not in {None, submission_id}
+        ):
+            await self.session.rollback()
+            return task
+        session_id = task.current_session_id
+        workspace = task.workspace
+        pending_id = task.pending_message_id
+        anchor = task.last_message_id
+        cancel_task = _cancel_closes_task(task)
+        environment = await resolve_environment(self.session, task) if session_id else None
+        await self.session.commit()
+
+        forced = False
+        usage_messages: list[dict] | None = None
+        native_count: int | None = None
+        if session_id and environment:
+            try:
+                usage_messages, native_count, _ = await self._stop_native(
+                    environment, workspace, session_id
+                )
+            except RuntimeStateError:
+                raise
+            except OpenCodeSessionNotFound:
+                forced = True
+            except Exception:
+                if (
+                    environment.mode == ExecutionMode.LOCAL
+                    and not self._local_port_in_use(environment.opencode_server_port)
+                ):
+                    forced = True
+                else:
+                    logger.exception("Cancel reconcile could not reach Session %s", session_id)
+                    raise
+
+        task = await self.lock_task(task_id)
+        if _task_result_concluded(task) or not _cancel_active(task):
+            await self.session.rollback()
+            return task
+        if session_id and task.current_session_id != session_id:
+            await self.session.rollback()
+            return task
+        if task.last_message_id != anchor or task.pending_message_id not in {None, pending_id}:
+            await self.session.rollback()
+            return task
+        if _submission_still_unproven(task, usage_messages, forced=forced):
+            await self.session.rollback()
+            return task
+        return await self._write_canceled_task(
+            task,
+            cancel_task=cancel_task,
+            usage_messages=usage_messages,
+            native_session_count=native_count,
+            forced_offline_cancel=forced,
+            stop_error=None,
+        )
+
     async def _release_cancel_token(self, task_id: str, token: str) -> None:
         """Drop this cancel reservation after the stop attempt leaves the critical section."""
         await self.session.rollback()
@@ -1022,7 +1258,7 @@ class RuntimeService:
         )
         token = token_hex(16)
         hold = get_settings().opencode_restart_abort_timeout_seconds + 300
-        _set_cancel_token(task, token, hold_seconds=hold)
+        _set_cancel_token(task, token, hold_seconds=hold, close_task=cancel_task)
         environment = await resolve_environment(self.session, task) if session_id else None
         await self.session.commit()
 
@@ -1034,23 +1270,9 @@ class RuntimeService:
         try:
             if session_id and environment:
                 try:
-                    async with connect(environment, start=True) as client:
-                        directory = Path(workspace)
-                        await client.abort(directory, session_id)
-                        try:
-                            watched = await session_tree(client, directory, session_id)
-                        except OpenCodeSessionNotFound:
-                            watched = set()
-                        for watched_id in sorted(watched or {session_id}):
-                            await self._wait_for_session_stop(
-                                client,
-                                directory,
-                                watched_id,
-                                message="执行尚未停止，未取消任务，也未释放 Worker",
-                            )
-                        usage_messages, native_session_count = await self._collect_final_usage(
-                            client, directory, session_id
-                        )
+                    usage_messages, native_session_count, _ = await self._stop_native(
+                        environment, workspace, session_id
+                    )
                 except RuntimeStateError:
                     raise
                 except OpenCodeSessionNotFound:
@@ -1084,38 +1306,23 @@ class RuntimeService:
                 await self._abandon_cancel(task, token)
                 token_held = False
                 raise RuntimeStateError("取消期间已有新的输入，未取消任务，也未释放 Worker")
-            runtime_session = await self._runtime_session(task)
             if _task_result_concluded(task):
                 await self._abandon_cancel(task, token)
                 token_held = False
                 raise RuntimeStateError("任务已结束")
-            if usage_messages is not None:
-                await self._update_session_usage(
-                    task, usage_messages, native_session_count=native_session_count
-                )
-            if runtime_session and (
-                runtime_session.status not in _TERMINAL_SESSION_STATUSES
-                or task.pending_message_id or task.pending_prompt
-            ):
-                runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
-                runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
-                runtime_session.finished_at = datetime.now(UTC)
-            if forced_offline_cancel and cancel_task:
-                await TaskService(self.session).add_event(
-                    task,
-                    "RUNTIME_OFFLINE_CANCELED",
-                    "runtime",
-                    "Runtime 已不可执行，按明确取消意图收敛任务",
-                    {"error": str(stop_error) if stop_error else "session missing"},
-                    commit=False,
-                )
-            _set_cancel_token(task, None)
-            task.pending_message_id = None
-            task.pending_prompt = None
-            task.runtime_error = None
-            await self.project(
-                task, TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
-                detail="任务已终止" if cancel_task else "当前回复已停止，可在 Workspace 继续",
+            if _submission_still_unproven(task, usage_messages, forced=forced_offline_cancel):
+                # The reserved POST has not reached OpenCode yet. Closing now would
+                # drop the reservation while that request can still start execution.
+                await self.session.rollback()
+                token_held = False
+                raise RuntimeStateError("取消中，在途提交结果未明，未关闭任务，也未释放 Worker")
+            task = await self._write_canceled_task(
+                task,
+                cancel_task=cancel_task,
+                usage_messages=usage_messages,
+                native_session_count=native_session_count,
+                forced_offline_cancel=forced_offline_cancel,
+                stop_error=stop_error,
             )
             token_held = False
             return task
@@ -1157,6 +1364,10 @@ class RuntimeService:
             permissions = await client.permissions(directory)
         except OpenCodeSessionNotFound:
             task = await self.lock_task(task_id)
+            if task.current_session_id == session_id and _cancel_active(task):
+                pending_id = task.pending_message_id
+                await self.session.rollback()
+                return await self._complete_cancel(task_id, submission_id=pending_id)
             if task.current_session_id == session_id:
                 runtime_session = await self._runtime_session(task)
                 if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
@@ -1186,7 +1397,8 @@ class RuntimeService:
             and not task_snapshot.pending_message_id
             and binding is not None
         )
-        if settled and binding.status == RuntimeSessionStatus.SUCCEEDED.value and (
+        canceling = _cancel_active(task_snapshot)
+        if not canceling and settled and binding.status == RuntimeSessionStatus.SUCCEEDED.value and (
             task_snapshot.status in {TaskStatus.RUNNING, TaskStatus.WAITING}
         ):
             # A stored success still has to correct a stale business projection.
@@ -1210,10 +1422,13 @@ class RuntimeService:
                     ),
                 )
             return task_snapshot
-        confirmed_terminal = binding and binding.terminal_reason != SessionTerminalReason.UNCONFIRMED.value
-        if settled and confirmed_terminal and task_snapshot.status == TaskStatus.WAITING and (
+        confirmed_terminal = (
+            binding and binding.terminal_reason != SessionTerminalReason.UNCONFIRMED.value
+        )
+        waiting_for_terminal = task_snapshot.status == TaskStatus.WAITING and binding and (
             binding.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}
-        ):
+        )
+        if not canceling and settled and confirmed_terminal and waiting_for_terminal:
             # unconfirmed is not a settled fact: a later transcript can still
             # show that this same round actually finished.
             task_snapshot.runtime_connection = "CONNECTED"
@@ -1235,7 +1450,12 @@ class RuntimeService:
             if (datetime.now(UTC) - started).total_seconds() >= get_settings().opencode_timeout_seconds:
                 await client.abort(directory, session_id)
                 timed_out = True
-        if status in {"busy", "retry"} and not task_snapshot.pending_message_id and not timed_out:
+        if (
+            not canceling
+            and status in {"busy", "retry"}
+            and not task_snapshot.pending_message_id
+            and not timed_out
+        ):
             task = await self.lock_task(task_id)
             if (task.current_session_id != session_id or task.last_message_id != observed_anchor
                     or task.turn_started_at != observed_turn or _task_result_concluded(task)):
@@ -1274,6 +1494,13 @@ class RuntimeService:
         await self._update_session_usage(
             task, usage_messages, native_session_count=len(allowed_sessions)
         )
+        if _cancel_active(task):
+            if _submission_still_unproven(task, messages):
+                await self.session.commit()
+                return task
+            pending_id = task.pending_message_id
+            await self.session.rollback()
+            return await self._complete_cancel(task_id, submission_id=pending_id)
         if task.pending_message_id:
             if any(item["info"]["id"] == task.pending_message_id for item in messages):
                 task.pending_message_id = None

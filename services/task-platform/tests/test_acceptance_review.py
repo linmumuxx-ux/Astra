@@ -1,6 +1,7 @@
 """Codex 复审：历史成功投影、等待原因通知、unconfirmed 恢复、取消与新输入互斥。"""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -210,3 +211,181 @@ async def test_cancel_does_not_release_worker_after_a_concurrent_new_turn(runtim
         assert r.task.status != "CANCELED"
         assert r.task.pending_message_id
         assert employee.current_task_count == 1
+
+
+def _cancel_token(seconds: int = 300) -> dict:
+    return {
+        "cancel_token": {
+            "id": "tok-inflight",
+            "until": (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat(),
+            "close": True,
+        }
+    }
+
+
+def _left_running_after_close(native, task, employee) -> bool:
+    return native.state == "busy" and task.status == "CANCELED" and employee.current_task_count == 0
+
+
+async def _delay_prompt_until_released(native, release: asyncio.Event, started: asyncio.Event):
+    original = native.request
+
+    async def delayed(method, path, **kwargs):
+        if method == "POST" and path.endswith("/prompt_async"):
+            started.set()
+            await release.wait()
+            await original(method, path, **kwargs)
+            raise ConnectionError("ACK lost")
+        return await original(method, path, **kwargs)
+
+    native.request = delayed
+
+
+async def test_delayed_send_after_cancel_does_not_leave_native_busy(runtime):
+    r = runtime
+    started, release = asyncio.Event(), asyncio.Event()
+    await _delay_prompt_until_released(r.native, release, started)
+    sending = asyncio.create_task(
+        r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    )
+    await asyncio.wait_for(started.wait(), 2)
+    employee = await r.session.get(DigitalEmployee, "E1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.pending_message_id
+    assert employee.current_task_count == 1
+
+    with pytest.raises(RuntimeStateError, match="取消中"):
+        await r.service.stop("T1")
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.status != "CANCELED"
+    assert r.task.pending_message_id
+    assert employee.current_task_count == 1
+    assert not _left_running_after_close(r.native, r.task, employee)
+
+    release.set()
+    with pytest.raises(ConnectionError, match="ACK lost"):
+        await sending
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert not _left_running_after_close(r.native, r.task, employee)
+    assert r.task.status == "CANCELED"
+    assert r.task.pending_message_id is None
+    assert employee.current_task_count == 0
+    assert r.native.state != "busy"
+
+
+async def test_delayed_retry_after_cancel_does_not_leave_native_busy(runtime):
+    r = runtime
+    pending_id = "msg_retrylate01"
+    r.task.status = "RUNNING"
+    r.task.last_message_id = pending_id
+    r.task.pending_message_id = pending_id
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    employee = await r.session.get(DigitalEmployee, "E1")
+    employee.current_task_count = 1
+    employee.status = "WORKING"
+    await r.session.commit()
+
+    started, release = asyncio.Event(), asyncio.Event()
+    await _delay_prompt_until_released(r.native, release, started)
+    retrying = asyncio.create_task(r.service.retry_submission("T1"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    with pytest.raises(RuntimeStateError, match="取消中"):
+        await r.service.stop("T1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.status == "RUNNING"
+    assert r.task.pending_message_id == pending_id
+    assert employee.current_task_count == 1
+
+    release.set()
+    with pytest.raises(ConnectionError, match="ACK lost"):
+        await retrying
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert not _left_running_after_close(r.native, r.task, employee)
+    assert r.task.status == "CANCELED"
+    assert r.task.pending_message_id is None
+    assert employee.current_task_count == 0
+    assert r.native.state != "busy"
+
+
+async def test_refresh_finishes_cancel_when_inflight_sender_is_gone(runtime):
+    r = runtime
+    pending_id = "msg_crash01"
+    employee = await r.session.get(DigitalEmployee, "E1")
+    employee.current_task_count = 1
+    employee.status = "WORKING"
+    r.task.status = "RUNNING"
+    r.task.last_message_id = pending_id
+    r.task.pending_message_id = pending_id
+    r.task.suspension = _cancel_token()
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "go"}]},
+        "in_flight": True,
+        "in_flight_since": datetime.now(UTC).isoformat(),
+    }
+    r.native.state = "idle"
+    r.native.sessions["ses_current"] = []
+    await r.session.commit()
+
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.status == "RUNNING"
+    assert employee.current_task_count == 1
+
+    r.task.pending_prompt = {
+        **r.task.pending_prompt,
+        "in_flight_since": (datetime.now(UTC) - timedelta(seconds=120)).isoformat(),
+    }
+    await r.session.commit()
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.status == "CANCELED"
+    assert r.task.pending_message_id is None
+    assert employee.current_task_count == 0
+    assert r.native.state != "busy"
+
+
+async def test_refresh_finishes_cancel_when_inflight_message_landed(runtime):
+    r = runtime
+    pending_id = "msg_crash02"
+    employee = await r.session.get(DigitalEmployee, "E1")
+    employee.current_task_count = 1
+    employee.status = "WORKING"
+    r.task.status = "RUNNING"
+    r.task.last_message_id = pending_id
+    r.task.pending_message_id = pending_id
+    r.task.suspension = _cancel_token()
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "go"}]},
+        "in_flight": True,
+        "in_flight_since": datetime.now(UTC).isoformat(),
+    }
+    r.native.state = "busy"
+    r.native.sessions["ses_current"] = [
+        {
+            "info": {"id": pending_id, "role": "user"},
+            "parts": [{"type": "text", "text": "go"}],
+        }
+    ]
+    await r.session.commit()
+
+    await r.service.refresh("T1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert not _left_running_after_close(r.native, r.task, employee)
+    assert r.task.status == "CANCELED"
+    assert employee.current_task_count == 0
+    assert r.native.state != "busy"
