@@ -21,7 +21,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 - [x] 0.3 本地 OpenCode 锁目录改为 `/tmp/nexus-employee-serve`。systemd 单元默认名改为 `nexus-opencode-{id}.service`
 - [x] 0.4 本分支默认端口和数据库名与 v0.9 错开：Task API、Nexus API、Agent Service、MCP、Task MCP、Web、网关、助手 OpenCode，以及数据库名 `nexus`
 - [x] 0.5 冒烟：默认值里不再出现会和 v0.9 共用的 Celery 任务名、Redis 前缀、临时目录和数据库名
-  - 验证：`pytest` 覆盖上述默认值。不要求在这台机器上同时拉起 v0.9
+  - 验证：`ops/deploy/check_parallel.py` 覆盖数据库名和用户、Redis 前缀和库号、Celery 队列、systemd 单元名、`/opt` 与 `/etc` 路径、端口、锁目录。说明见 `ops/deploy/PARALLEL.md`。不要求在这台机器上同时拉起 v0.9
 
 ## A. S3-10 缺口
 
@@ -93,7 +93,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B 和 D。公司 SDK 不在本批。
 
-- [x] F.1 入站事件、出站、ACK、身份映射。幂等键 `provider + event_id`。AgentScope 接受输入之后才向 Adapter 返回成功。每个员工自己的机器人映射；未绑定则 IM 不可用，Web 仍可用
+- [x] F.1 入站事件、出站、ACK。幂等键 `provider + event_id`。AgentScope 接受输入之后才向 Adapter 返回成功。每个员工自己的机器人映射；未绑定则 IM 不可用，Web 仍可用。身份映射接口不在本阶段，入站直接收 `sender_uid`
 - [x] F.2 同一 UID、同一员工复用 B 的绑定。外部群使用独立协作绑定，不因机器人相同而合并
 - [x] F.3 `contact_human`：员工发起 → outbox → ACK → 人类回复进入同一 Session。同一会话串行投递。ACK 丢失时按 `delivery_id` 重投，不第二次推理
   - 验证：模拟 Adapter 走完主动联系和丢 ACK。重复入站事件不产生第二次回复
@@ -173,3 +173,15 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
                     E ─> K
                     G ─> K
 ```
+
+## 仍未做
+
+已勾条目里的实现都在。下面这些没有做：
+
+- 身份映射接口。入站直接收 `sender_uid`，由公司 Adapter 解析。
+- P95。`tools/perf/workspace_open.py` 可以测冷启动和热启动，没有一次实测数字，不宣称达标。
+- 续看时不显示开头，只是外观。
+- 短期凭据、请求头白名单、协议协商。
+- 同机切换和回滚脚本。并行部署用 `ops/deploy/check_parallel.py`。
+- `environment.py` 仍保留 `run_remote`。业务路径没有调用方。
+- `worker-channel` 规格仍写 OpenCode 列默认 4096。运行默认是 14096，不改回 4096。

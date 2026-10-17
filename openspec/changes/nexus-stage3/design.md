@@ -242,10 +242,13 @@ API 对应关系：
 
 缺口：
 
-1. `remote-worker-websocket/tasks.md` 的 5.1–5.3 仍未勾完：确认没有残留业务 SSH 调用、进程重启和超时下的 Task/Session 一致性、CLI fallback 与状态机未被改写。`environment.py` 仍保留 `open_session` / `run_remote`，需要在批次 A 确认业务路径没有调用方。
-2. 健康展示还没有把 Worker 离线、OpenCode 可用、仓库就绪、能力已装上、执行中、等待人工分开。`WorkerInstance.status` 只有 online/offline，环境状态仍是 `AVAILABLE` 一类。离线不能显示成可用。
-3. 规格中的短期凭据、`headers_allowlist` 和独立协议协商不做，见简化矩阵。
-4. S3-09 的首屏计时还没有基线。通道本身不缺。
+1. 短期凭据、`headers_allowlist` 和独立协议协商不做，见简化矩阵。
+2. 首屏脚本在 `tools/perf/workspace_open.py`。没有一次实测 P95，不宣称达标。
+3. `environment.py` 仍保留 `run_remote`。日常 Workspace、健康检查和 Session 不调用它。
+4. 身份映射接口不做。入站直接收 `sender_uid`。
+5. 规格 `worker-channel` 仍写 OpenCode 列默认 4096。运行默认已是 14096。
+
+5.1–5.3、通道健康拆分和 Workspace 代理已落地。代理指令带上绑定的 `session_id`，响应体不进 WebSocket 帧。
 
 ## Risks / Trade-offs
 
