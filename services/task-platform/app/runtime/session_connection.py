@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import shlex
 import shutil
 from contextlib import asynccontextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.domain import ExecutionMode
 from app.executors.opencode_local_server import LocalOpenCodeServerExecutor
-from app.executors.opencode_remote_server import RemoteOpenCodeServerConnection
 from app.executors.opencode_server import OpenCodeServerClient
 from app.models import OpenCodeExecutionEnvironment, Task
-from app.runtime.environment import ExecutionEnvironmentRuntime, environment_from_snapshot
+from app.runtime.environment import environment_from_snapshot
 from app.runtime.worker_channel import read_worker_channel
 from app.runtime.worker_client import WorkerOpenCodeClient
 
@@ -76,20 +74,7 @@ async def connect(environment, *, start: bool = False):
             await client.health()
         yield client
         return
-    runtime = ExecutionEnvironmentRuntime(settings)
-    if start:
-        async with RemoteOpenCodeServerConnection(environment, settings, runtime) as client:
-            yield client
-        return
-    ssh = await runtime.open_session(environment)
-    tunnel = None
-    try:
-        tunnel = await ssh.open_tunnel(remote_host="127.0.0.1", remote_port=environment.opencode_server_port)
-        yield OpenCodeServerClient(settings, base_url=tunnel.base_url)
-    finally:
-        if tunnel:
-            await tunnel.close()
-        await ssh.close()
+    raise RuntimeError("远程环境尚未安装 Worker")
 
 
 async def _local_git(args: list[str]) -> tuple[int, str, str]:
@@ -180,54 +165,6 @@ async def _ensure_local_task_worktree(root: Path, target: Path) -> None:
         raise RuntimeError(error.decode(errors="replace"))
 
 
-async def _ensure_remote_workspace(
-    runtime, environment, *, root: str, target: str, reuse_existing: bool = False
-) -> None:
-    quoted_root, quoted_target = shlex.quote(root), shlex.quote(target)
-    parent = shlex.quote(str(PurePosixPath(target).parent))
-    command = (
-        "set -e; "
-        f"root={quoted_root}; target={quoted_target}; created=0; "
-        'test -d "$root" || { echo "Workspace 不存在" >&2; exit 1; }; '
-        'test ! -L "$target" || { echo "任务工作区不能是符号链接" >&2; exit 1; }; '
-        'common() { (cd "$1" && common_dir=$(git rev-parse --git-common-dir) '
-        '&& cd "$common_dir" && pwd -P); }; '
-        'if test -e "$target"; then '
-        'test -d "$target" || { echo "任务工作区不是目录" >&2; exit 1; }; '
-        'else '
-        + ('echo "任务工作区不存在，请显式重新执行" >&2; exit 1; ' if reuse_existing else (
-            f"mkdir -p {parent}; "
-            'if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then '
-            'git -C "$root" worktree add --detach "$target" HEAD; '
-            'else mkdir "$target"; fi; created=1; '
-        ))
-        + 'fi; '
-        'if git -C "$target" rev-parse --show-toplevel >/dev/null 2>&1; then '
-        'top=$(git -C "$target" rev-parse --show-toplevel); '
-        'test "$(cd "$top" && pwd -P)" = "$(cd "$target" && pwd -P)" '
-        '|| { echo "任务工作区不是目录根" >&2; exit 1; }; '
-        'fi; '
-        'if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then '
-        'test "$(common "$root")" = "$(common "$target")" '
-        '|| { echo "任务工作区不属于当前仓库" >&2; exit 1; }; '
-        'git -C "$root" worktree list --porcelain '
-        '| grep -Fx -- "worktree $(cd "$target" && pwd -P)" >/dev/null '
-        '|| { echo "任务工作区未注册" >&2; exit 1; }; '
-        'fi; '
-        'if test "$created" = 1 || '
-        '{ test ! -e "$target/opencode.json" && test ! -e "$target/opencode.jsonc" '
-        '&& test ! -e "$target/.opencode/opencode.json" '
-        '&& test ! -e "$target/.opencode/opencode.jsonc"; }; then '
-        'for name in opencode.json opencode.jsonc .opencode/opencode.json .opencode/opencode.jsonc; do '
-        'if test -f "$root/$name"; then '
-        'mkdir -p "$(dirname "$target/$name")"; cp "$root/$name" "$target/$name"; fi; '
-        'done; fi'
-    )
-    code, _, error = await runtime.run_remote(environment, command)
-    if code:
-        raise RuntimeError(error or "任务工作区准备失败")
-
-
 def _inherit_local_config(root: Path, target: Path, *, created: bool = False) -> None:
     """Copy project-owned config for a fresh worktree; preserve existing task config."""
     names = (Path("opencode.json"), Path("opencode.jsonc"),
@@ -251,8 +188,6 @@ async def prepare_workspace(task: Task, environment, *, reuse_existing: bool = T
         if local
         else environment.workspace_root
     )
-    runtime = None if local else ExecutionEnvironmentRuntime(settings)
-    # Reuse the bound workspace only after proving it is still usable.
     if reuse_existing and task.workspace:
         if local:
             await _assert_reusable_local_workspace(Path(root), task.workspace)
@@ -262,9 +197,7 @@ async def prepare_workspace(task: Task, environment, *, reuse_existing: bool = T
                 environment, root=root, target=task.workspace, reuse_existing=True
             )
         else:
-            await _ensure_remote_workspace(
-                runtime, environment, root=root, target=task.workspace, reuse_existing=True
-            )
+            raise RuntimeError("远程环境尚未安装 Worker")
         return task.workspace
     target_name = task.id if reuse_existing else f"{task.id}-env-{environment.id}"
     target = str(Path(root).parent / ".astra-tasks" / environment.employee_id / target_name)
@@ -285,7 +218,7 @@ async def prepare_workspace(task: Task, environment, *, reuse_existing: bool = T
     elif await _worker_channel(environment) == "worker":
         await _prepare_worker_workspace(environment, root=root, target=target, reuse_existing=False)
     else:
-        await _ensure_remote_workspace(runtime, environment, root=root, target=target)
+        raise RuntimeError("远程环境尚未安装 Worker")
     return target
 
 

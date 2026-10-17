@@ -64,11 +64,9 @@ async def lifespan(_: FastAPI):
         if orchestrator:
             await orchestrator.stop()
             set_orchestrator(None)
-        from app.executors.opencode_remote_server import close_remote_mcp_tunnels
         from app.worker_gateway.service import get_gateway
 
         await get_gateway().aclose()
-        await close_remote_mcp_tunnels()
 
 
 app = FastAPI(

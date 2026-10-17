@@ -577,10 +577,8 @@ async def retry_submission(
 @router.get("/repo")
 async def task_repo(task_id: str, session=Depends(get_session)):
     import asyncio
-    import shlex
 
     from app.domain import ExecutionMode
-    from app.runtime.environment import ExecutionEnvironmentRuntime
 
     task = await require_task(task_id, session)
     if not task.workspace:
@@ -615,11 +613,7 @@ async def task_repo(task_id: str, session=Depends(get_session)):
             )
             output, _ = await proc.communicate()
             return output.decode().strip() if proc.returncode == 0 else ""
-        code, output, _ = await ExecutionEnvironmentRuntime().run_remote(
-            environment,
-            shlex.join(["git", "-C", task.workspace, *args]),
-        )
-        return output.strip() if code == 0 else ""
+        raise RuntimeError("远程环境尚未安装 Worker")
 
     commit = await git("rev-parse", "HEAD")
     branch = await git("branch", "--show-current")

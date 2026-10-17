@@ -8,8 +8,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
 from app.domain import ExecutionMode
-from app.runtime.environment import ExecutionEnvironmentRuntime
-from app.runtime.ssh_client import _run_blocking
 
 MAX_UPLOAD = 20 * 1024 * 1024
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -91,21 +89,8 @@ async def validate_path(environment, workspace: str, value: str) -> str:
         target = (root / relative).resolve(strict=False)
         if not target.is_relative_to(root):
             raise PermissionError("符号链接指向任务 Workspace 之外")
-    else:
-        ssh = await ExecutionEnvironmentRuntime().open_session(environment)
-        try:
-
-            def validate():
-                with ssh._client.open_sftp() as sftp:
-                    root = sftp.normalize(workspace)
-                    target = sftp.normalize(f"{workspace}/{relative}")
-                    if target != root and not target.startswith(root.rstrip("/") + "/"):
-                        raise PermissionError("符号链接指向任务 Workspace 之外")
-
-            await _run_blocking(validate)
-        finally:
-            await ssh.close()
-    return relative
+        return relative
+    raise RuntimeError("远程环境尚未安装 Worker")
 
 
 async def upload(environment, workspace: str, filename: str, content: bytes) -> str:
@@ -156,25 +141,7 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
 
         await asyncio.to_thread(write)
     else:
-        ssh = await ExecutionEnvironmentRuntime().open_session(environment)
-        try:
-
-            def write():
-                with ssh._client.open_sftp() as sftp:
-                    root = sftp.normalize(workspace)
-                    folder = f"{root}/uploads"
-                    try:
-                        sftp.mkdir(folder)
-                    except OSError:
-                        pass
-                    if sftp.normalize(folder) != folder:
-                        raise PermissionError("上传目录越界")
-                    with sftp.open(f"{root}/{relative}", "wx") as stream:
-                        stream.write(content)
-
-            await _run_blocking(write)
-        finally:
-            await ssh.close()
+        raise RuntimeError("远程环境尚未安装 Worker")
     if environment.mode == ExecutionMode.LOCAL:
         return str(Path(workspace) / relative)
     return f"{workspace}/{relative}"

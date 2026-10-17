@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import difflib
-import shlex
 from pathlib import Path
 
 from sqlalchemy import select
 
-from app.config.settings import get_settings
 from app.domain import ExecutionMode
 from app.models import RuntimeSession
-from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.session_connection import resolve_environment
-from app.runtime.ssh_client import _run_blocking
 from app.runtime.workspace_files import MAX_UPLOAD, validate_path
 
 
@@ -34,10 +30,7 @@ async def _git(environment, workspace: str, *args: str) -> tuple[int, str]:
         )
         output, _ = await process.communicate()
         return process.returncode, output.decode("utf-8", errors="replace")
-    code, output, _ = await ExecutionEnvironmentRuntime(get_settings()).run_remote(
-        environment, shlex.join(command)
-    )
-    return code, output
+    raise RuntimeError("远程环境尚未安装 Worker")
 
 
 async def workspace_head_commit(environment, workspace: str) -> str | None:
@@ -156,22 +149,7 @@ async def _working_text(environment, workspace: str, file: str) -> str:
             raise ValueError("Diff 文件不能超过 20 MB")
         data = await asyncio.to_thread(target.read_bytes)
     else:
-        ssh = await ExecutionEnvironmentRuntime(get_settings()).open_session(environment)
-        try:
-            def read():
-                with ssh._client.open_sftp() as sftp:
-                    target = f"{workspace}/{relative}"
-                    try:
-                        size = sftp.stat(target).st_size
-                    except FileNotFoundError:
-                        return b""
-                    if size > MAX_UPLOAD:
-                        raise ValueError("Diff 文件不能超过 20 MB")
-                    with sftp.open(target, "rb") as stream:
-                        return stream.read(MAX_UPLOAD + 1)
-            data = await _run_blocking(read)
-        finally:
-            await ssh.close()
+        raise RuntimeError("远程环境尚未安装 Worker")
     if len(data) > MAX_UPLOAD:
         raise ValueError("Diff 文件不能超过 20 MB")
     return data.decode("utf-8", errors="replace")

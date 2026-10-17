@@ -1,6 +1,5 @@
 import asyncio
 import json
-import shlex
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,64 +195,28 @@ class ExecutionEnvironmentRuntime:
         return checks
 
     async def _test_remote(self, environment: OpenCodeExecutionEnvironment) -> list[CheckItem]:
-        code, stdout, stderr = await self.run_remote(environment, "true", timeout=20)
-        connected = code == 0
-        checks = [
+        """Worker-local health. This check does not open SSH or read the password."""
+
+        from app.database import SessionLocal
+        from app.runtime.worker_channel import read_worker_channel
+        from app.runtime.worker_client import WorkerOpenCodeClient
+
+        async with SessionLocal() as session:
+            channel = await read_worker_channel(session, environment.id)
+        if channel != "worker":
+            return [CheckItem("OpenCode Server", False, "远程环境尚未安装 Worker")]
+        try:
+            health = await WorkerOpenCodeClient(self.settings, environment_id=environment.id).health()
+        except Exception as exc:
+            return [CheckItem("OpenCode Server", False, f"Worker 离线或 OpenCode 不可用：{exc}")]
+        version = health.get("version") if isinstance(health, dict) else None
+        return [
             CheckItem(
-                "SSH 连接",
-                connected,
-                "连接成功" if connected else (stderr.strip() or stdout.strip() or f"退出码 {code}"),
+                "OpenCode Server",
+                True,
+                f"健康：{environment.opencode_server_port} · {version}",
             )
         ]
-        if not connected:
-            checks.extend(
-                [
-                    CheckItem("Workspace 可用", False, "未执行：SSH 连接失败"),
-                    CheckItem("Agent 命令存在", False, "未执行：SSH 连接失败"),
-                    CheckItem("Agent 命令可启动", False, "未执行：SSH 连接失败"),
-                ]
-            )
-            return checks
-
-        root = shlex.quote(environment.workspace_root)
-        code, _, stderr = await self.run_remote(
-            environment, f"test -d {root} && test -w {root}", timeout=20
-        )
-        checks.append(
-            CheckItem(
-                "Workspace 可用",
-                code == 0,
-                f"可写：{environment.workspace_root}" if code == 0 else (stderr.strip() or f"退出码 {code}"),
-            )
-        )
-        binary = shlex.quote(environment.opencode_path)
-        exists_command = (
-            f"test -x {binary}" if "/" in environment.opencode_path else f"command -v {binary} >/dev/null"
-        )
-        code, _, stderr = await self.run_remote(environment, exists_command, timeout=20)
-        checks.append(
-            CheckItem(
-                "Agent 命令存在",
-                code == 0,
-                f"已找到 {environment.opencode_path}"
-                if code == 0
-                else (stderr.strip() or "远程 Agent 命令不存在"),
-            )
-        )
-        if code == 0:
-            code, stdout, stderr = await self.run_remote(environment, f"{binary} --version", timeout=20)
-            detail = stdout.strip() or stderr.strip() or f"退出码 {code}"
-            checks.append(CheckItem("Agent 命令可启动", code == 0, detail[:500]))
-        else:
-            checks.append(CheckItem("Agent 命令可启动", False, "未执行：Agent 命令不存在"))
-        if code == 0 and self.settings.executor_type == "opencode_server":
-            from app.executors.opencode_remote_server import test_remote_server
-
-            server_ok, server_detail = await test_remote_server(environment, self.settings, self)
-            checks.append(CheckItem("OpenCode Server", server_ok, server_detail[:500]))
-        elif self.settings.executor_type == "opencode_server":
-            checks.append(CheckItem("OpenCode Server", False, "未执行：Agent 命令不可启动"))
-        return checks
 
 
 def checks_status(checks: list[CheckItem]) -> EnvironmentStatus:
