@@ -463,11 +463,9 @@ URL、方法和响应形状保持不变：
 
 重连仍不新建 Session，也不重发 Prompt。本阶段的指令不是 Prompt。
 
-#### 模型前缀（本阶段不实现）
+#### 模型映射（已取消）
 
-`lifecycle.py:635-639` 在 `LINUX_REMOTE` 上总是调用 `gateway_model`。`opencode_model.py` 会去掉 provider，只留最后一段，再加成 `astra-gateway/<id>`。因此 `opencode/deepseek-v4.1-flash-free` 会变成 `astra-gateway/deepseek-v4.1-flash-free`，已迁移环境要给这个免费模型挂一个网关路由才能启动。`direct_model` 会保留已经带斜杠的字符串。
-
-这是构造 Prompt 时选模型字符串，不是 Gateway 的路由、密钥或供应商配置。建议单独改，不放进阶段 3 的文件指令，也不放到阶段 4：阶段 4 是隧道和安装期 SSH。改法限定为 `worker_channel=worker` 且原始模型以 `opencode/` 开头时走 `direct_model`。`ssh` 环境、裸模型 id、以及已经是 `astra-gateway/` 的值仍走 `gateway_model`。
+公司网关已由用户验证可用。阶段 3 不给 `opencode/*` 增加 `direct_model` 路径，也不改 `LINUX_REMOTE` 的模型映射或 Gateway 的路由、密钥和供应商配置。部署保持现有动作：把网关 provider 写入 `opencode.jsonc`（`remote_provisioning.py` 与通道切换里的 `astra-gateway` 配置）。免费模型的验证由用户在本机完成。
 
 #### 实现时要覆盖的测试
 
