@@ -391,7 +391,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     assert any("serve --hostname 127.0.0.1 --port 4096" in text for text in texts)
     assert any(GATEWAY in text and "astra-gateway" in text for text in texts)
     wheels = [path for path in files if path.endswith(".whl")]
-    assert wheels == ["/opt/astra/worker/astra_worker_agent-0.4.0-py3-none-any.whl"]
+    assert wheels == ["/opt/nexus/worker/astra_worker_agent-0.4.0-py3-none-any.whl"]
     with zipfile.ZipFile(io.BytesIO(files[wheels[0]])) as archive:
         packed = set(archive.namelist())
     assert "app/worker_agent/__main__.py" in packed
@@ -399,12 +399,12 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     assert "app/config/settings.py" not in packed
     assert "app/worker_gateway/service.py" not in packed
     install = next(command for command in commands if "pip install" in command)
-    assert install.startswith("python3 -m venv /opt/astra/worker/venv && ")
+    assert install.startswith("python3 -m venv /opt/nexus/worker/venv && ")
     assert f"{AGENT_PYTHON} -m pip install" in install
     assert "--force-reinstall" in install
     assert wheels[0] in install
-    worker_unit = f"astra-worker-{environment_id}.service"
-    opencode_unit = f"astra-opencode-{environment_id}.service"
+    worker_unit = f"nexus-worker-{environment_id}.service"
+    opencode_unit = f"nexus-opencode-{environment_id}.service"
     unit = files[f"/etc/systemd/system/{worker_unit}"].decode()
     assert f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n" in unit
     assert "/usr/bin/python3" not in unit

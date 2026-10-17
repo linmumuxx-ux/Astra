@@ -34,14 +34,14 @@ BACKEND = ROOT / "services" / "task-platform"
 FRONTEND = ROOT / "web" / "nexus"
 
 BACKEND_HOST = os.getenv("ASTRA_SERVICE_BACKEND_HOST", "0.0.0.0")
-BACKEND_PORT = int(os.getenv("ASTRA_SERVICE_BACKEND_PORT", "8100"))
+BACKEND_PORT = int(os.getenv("ASTRA_SERVICE_BACKEND_PORT", "18100"))
 FRONTEND_HOST = os.getenv("ASTRA_SERVICE_FRONTEND_HOST", "0.0.0.0")
-FRONTEND_PORT = int(os.getenv("ASTRA_SERVICE_FRONTEND_PORT", "5174"))
+FRONTEND_PORT = int(os.getenv("ASTRA_SERVICE_FRONTEND_PORT", "15174"))
 # API 中转数据面是独立 ASGI 进程（app.gateway.server:app）。默认只监听 loopback，
 # 由同机 nginx 反代 /v1；模型长连接绝不进入主 Backend。
 GATEWAY_HOST = os.getenv("ASTRA_SERVICE_GATEWAY_HOST", "127.0.0.1")
-GATEWAY_PORT = int(os.getenv("ASTRA_SERVICE_GATEWAY_PORT", "8110"))
-TASK_MCP_PORT = int(os.getenv("ASTRA_TASK_MCP_PORT", "8202"))
+GATEWAY_PORT = int(os.getenv("ASTRA_SERVICE_GATEWAY_PORT", "18110"))
+TASK_MCP_PORT = int(os.getenv("ASTRA_TASK_MCP_PORT", "18202"))
 
 
 def parse_args() -> argparse.Namespace:

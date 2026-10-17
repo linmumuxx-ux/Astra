@@ -16,11 +16,11 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：无。早于任何同机验证。不改 `ASTRA_*` 变量名，只改会撞车的默认值。
 
-- [ ] 0.1 Celery 应用和任务名改为 `nexus.*`（dispatch、task-review、task-wake、scout、heartbeat）。v0.9 仍消费 `astra.*` 时两边互不领取
-- [ ] 0.2 Redis 键前缀改为 `nexus:`。默认库号离开 0。测试使用 db 15
-- [ ] 0.3 本地 OpenCode 锁目录改为 `/tmp/nexus-employee-serve`。systemd 单元默认名改为 `nexus-opencode.service`
-- [ ] 0.4 本分支默认端口和数据库名与 v0.9 错开：Task API、Nexus API、Agent Service、MCP、Task MCP、Web、网关、助手 OpenCode，以及数据库名 `nexus`
-- [ ] 0.5 冒烟：默认值里不再出现会和 v0.9 共用的 Celery 任务名、Redis 前缀、临时目录和数据库名
+- [x] 0.1 Celery 应用和任务名改为 `nexus.*`（dispatch、task-review、task-wake、scout、heartbeat）。v0.9 仍消费 `astra.*` 时两边互不领取
+- [x] 0.2 Redis 键前缀改为 `nexus:`。默认库号离开 0。测试使用 db 15
+- [x] 0.3 本地 OpenCode 锁目录改为 `/tmp/nexus-employee-serve`。systemd 单元默认名改为 `nexus-opencode-{id}.service`
+- [x] 0.4 本分支默认端口和数据库名与 v0.9 错开：Task API、Nexus API、Agent Service、MCP、Task MCP、Web、网关、助手 OpenCode，以及数据库名 `nexus`
+- [x] 0.5 冒烟：默认值里不再出现会和 v0.9 共用的 Celery 任务名、Redis 前缀、临时目录和数据库名
   - 验证：`pytest` 覆盖上述默认值。不要求在这台机器上同时拉起 v0.9
 
 ## A. S3-10 缺口

@@ -35,10 +35,10 @@ export default defineConfig({
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
   server: {
-    port: 5174,
+    port: 15174,
     proxy: {
-      "/api/v1": "http://127.0.0.1:8120",
-      "/api": "http://127.0.0.1:8100",
+      "/api/v1": "http://127.0.0.1:18120",
+      "/api": "http://127.0.0.1:18100",
       "/v1": "http://127.0.0.1:8110",
     },
   },

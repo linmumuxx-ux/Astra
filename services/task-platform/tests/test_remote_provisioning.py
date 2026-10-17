@@ -614,7 +614,7 @@ async def test_failed_venv_does_not_rotate_the_worker_token(monkeypatch):
     assert not any(isinstance(item, str) and item.endswith(".env") for item in calls)
     pip = next(item for item in calls if isinstance(item, tuple) and "pip install" in item[1])
     assert pip[0] == 300
-    assert pip[1].startswith("/usr/bin/python3.12 -m venv /opt/astra/worker/venv && ")
+    assert pip[1].startswith("/usr/bin/python3.12 -m venv /opt/nexus/worker/venv && ")
     assert "-i https://pypi.example.invalid/simple " in pip[1]
 
 

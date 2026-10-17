@@ -34,7 +34,9 @@ from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
 
 PROVIDER_ID = "astra-gateway"
-AGENT_VENV = "/opt/astra/worker/venv"
+AGENT_VENV = "/opt/nexus/worker/venv"
+WORKER_INSTALL_DIR = "/opt/nexus/worker"
+WORKER_SECRET_DIR = "/etc/nexus"
 AGENT_PYTHON = f"{AGENT_VENV}/bin/python"
 
 
@@ -453,9 +455,9 @@ class RemoteProvisioner:
         gateway_url, mcp_url = self._direct_endpoints()
         agent_gateway = require_direct_url(self.settings.worker_agent_gateway_url, "Worker Gateway")
         port = int(self.environment.opencode_server_port)
-        opencode_unit = f"astra-opencode-{self.environment.id}.service"
-        worker_unit = f"astra-worker-{self.environment.id}.service"
-        token_path = f"/etc/astra/worker-{self.environment.id}.env"
+        opencode_unit = f"nexus-opencode-{self.environment.id}.service"
+        worker_unit = f"nexus-worker-{self.environment.id}.service"
+        token_path = f"{WORKER_SECRET_DIR}/worker-{self.environment.id}.env"
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
         opencode_unit_text = (
@@ -474,9 +476,9 @@ class RemoteProvisioner:
             "[Install]\nWantedBy=multi-user.target\n"
         )
         wheel_name, wheel_bytes = agent_wheel()
-        wheel_path = f"/opt/astra/worker/{wheel_name}"
-        await self._command("install -d -m 755 /opt/astra/worker")
-        await self._command("install -d -m 700 /etc/astra /etc/systemd/system")
+        wheel_path = f"{WORKER_INSTALL_DIR}/{wheel_name}"
+        await self._command(f"install -d -m 755 {WORKER_INSTALL_DIR}")
+        await self._command(f"install -d -m 700 {WORKER_SECRET_DIR} /etc/systemd/system")
         await self.ssh.write_file(wheel_path, wheel_bytes, mode=0o644)
         interpreter = shlex.quote(self._agent_interpreter())
         index = (self.settings.remote_pip_index_url or "").strip()
@@ -486,7 +488,7 @@ class RemoteProvisioner:
             f"{pip_index}{shlex.quote(wheel_path)}"
         )
         await self._command(
-            f"{interpreter} -m venv /opt/astra/worker/venv && {pip}",
+            f"{interpreter} -m venv {AGENT_VENV} && {pip}",
             timeout=300,
         )
         from app.worker_gateway.service import get_gateway
@@ -568,9 +570,10 @@ class RemoteProvisioner:
 
     async def _restart_offline(self, emit):
         await self.step(emit, "重启 OpenCode Serve", "running")
-        unit = f"astra-opencode-{self.environment.id}.service"
+        unit = f"nexus-opencode-{self.environment.id}.service"
+        worker_unit = f"nexus-worker-{self.environment.id}.service"
         await self._command(
-            f"systemctl restart {shlex.quote(unit)} astra-worker-{self.environment.id}.service"
+            f"systemctl restart {shlex.quote(unit)} {shlex.quote(worker_unit)}"
         )
         await self.step(emit, "重启 OpenCode Serve", "passed", "已通过 SSH 重启单元")
 

@@ -167,13 +167,14 @@ def main() -> None:
 
     host = os.environ.get("AGENTSCOPE_REDIS_HOST", "localhost")
     port = int(os.environ.get("AGENTSCOPE_REDIS_PORT", "6379"))
+    redis_db = int(os.environ.get("AGENTSCOPE_REDIS_DB", "1"))
     password = os.environ.get("AGENTSCOPE_REDIS_PASSWORD") or None
-    nexus_api = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:8120").rstrip("/")
+    nexus_api = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:18120").rstrip("/")
     workspace_dir = os.environ.get("AGENTSCOPE_WORKSPACE_DIR", "services/agent-service/data/workspaces")
     os.makedirs(workspace_dir, exist_ok=True)
 
-    storage = RedisStorage(host=host, port=port, password=password)
-    message_bus = RedisMessageBus(host=host, port=port, password=password)
+    storage = RedisStorage(host=host, port=port, db=redis_db, password=password)
+    message_bus = RedisMessageBus(host=host, port=port, db=redis_db, password=password)
     workspace_manager = LocalWorkspaceManager(
         basedir=workspace_dir,
         isolation=IsolationPolicy.PER_SESSION,
@@ -217,7 +218,7 @@ def main() -> None:
         extra_agent_tools=extra_agent_tools,
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
-    listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
+    listen_port = int(os.environ.get("AGENTSCOPE_PORT", "18000"))
 
     async def deliver(user_id: str, agent_id: str, session_id: str, hint: str) -> None:
         await deliver_task_hint(

@@ -610,7 +610,7 @@ async def test_evidence_read_race_cannot_write_old_round(factory, monkeypatch):
 def test_review_is_registered_in_real_beat_and_control_worker():
     from app.runtime.celery_app import celery
 
-    entry = celery.conf.beat_schedule["astra-task-review"]
+    entry = celery.conf.beat_schedule["nexus-task-review"]
     assert entry["task"] in celery.tasks
     assert celery.conf.task_routes[entry["task"]]["queue"] == "control"
 

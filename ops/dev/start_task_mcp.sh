@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Task MCP on ASTRA_TASK_MCP_PORT (default 8202).
+# Task MCP on ASTRA_TASK_MCP_PORT (default 18202).
 # usage: ops/dev/start_task_mcp.sh [start|stop|status]
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$ROOT/ops/dev/load_env.sh"
 ACTION="${1:-start}"
 export ASTRA_TASK_MCP_HOST="${ASTRA_TASK_MCP_HOST:-127.0.0.1}"
-export ASTRA_TASK_MCP_PORT="${ASTRA_TASK_MCP_PORT:-8202}"
+export ASTRA_TASK_MCP_PORT="${ASTRA_TASK_MCP_PORT:-18202}"
 PY="$ROOT/services/task-platform/.venv/bin/python"
 case "$ACTION" in
   start|stop|status)

@@ -50,13 +50,13 @@ def pytest_sessionfinish(session, exitstatus):
                 client.delete(*keys)
             if cursor == 0:
                 break
-        members = client.smembers("astra:gateway:revoked_keys")
+        members = client.smembers("nexus:gateway:revoked_keys")
         stale = []
         for member in members:
             text = member.decode() if isinstance(member, bytes) else str(member)
             if text.startswith(SESSION_REVOKED_MEMBER_PREFIX) or _OLD_REVOKED_MEMBER.fullmatch(text):
                 stale.append(member)
         if stale:
-            client.srem("astra:gateway:revoked_keys", *stale)
+            client.srem("nexus:gateway:revoked_keys", *stale)
     finally:
         client.close()

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
 from app.domain import EnvironmentStatus, ExecutionMode
+from app.executors.opencode_local_server import SERVE_LOCK_DIR
 from app.executors.process import (
     local_command,
     process_group_options,
@@ -116,7 +117,7 @@ class ExecutionEnvironmentRuntime:
         actual = Path(str((paths or {}).get("directory") or "")).resolve()
         if actual != expected:
             return CheckItem("OpenCode Server", False, "Serve 的启动 Workspace 与员工配置不一致")
-        owner_path = Path(tempfile.gettempdir()) / "astra-employee-serve" / f"{port}.json"
+        owner_path = Path(tempfile.gettempdir()) / SERVE_LOCK_DIR / f"{port}.json"
         if owner_path.is_file():
             try:
                 owner = json.loads(owner_path.read_text(encoding="utf-8"))

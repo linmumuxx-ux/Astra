@@ -18,11 +18,12 @@ from app.runtime.opencode_workspace import discover_workspace_config
 
 # Only terminate processes started by this worker, never an unknown port owner.
 _processes: dict[int, subprocess.Popen] = {}
+SERVE_LOCK_DIR = "nexus-employee-serve"
 
 
 @asynccontextmanager
 async def port_lock(port: int, timeout: float):
-    directory = Path(tempfile.gettempdir()) / "astra-employee-serve"
+    directory = Path(tempfile.gettempdir()) / SERVE_LOCK_DIR
     directory.mkdir(mode=0o700, exist_ok=True)
     handle = (directory / f"{port}.lock").open("a+b")
     handle.write(b"0")
@@ -137,7 +138,7 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                 # The workspace owns its OpenCode config; Astra must never inject
                 # one through OPENCODE_CONFIG or it would shadow company providers.
                 environment.pop("OPENCODE_CONFIG", None)
-                log_path = self.workspace / ".astra-opencode-server.log"
+                log_path = self.workspace / ".nexus-opencode-server.log"
                 with log_path.open("ab") as log:
                     process = subprocess.Popen(
                         command,
