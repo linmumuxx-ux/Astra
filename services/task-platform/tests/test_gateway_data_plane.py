@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -32,7 +33,8 @@ from app.gateway.errors import (
     QUOTA_EXCEEDED,
     RUNTIME_UNAVAILABLE,
 )
-from app.gateway.models import GatewayKey, GatewayRequest, utcnow
+from app.gateway.health_summary import GatewayOpsService, window_metrics
+from app.gateway.models import GatewayKey, GatewayRequest, GatewayRuntimeEvent, utcnow
 from app.gateway.probe import ProbeOutcome
 from app.gateway.proxy import GatewayProxy
 from app.gateway.runtime import (
@@ -45,7 +47,7 @@ from app.gateway.runtime import (
 )
 from app.gateway.scheduler import REASON_SCHEDULING
 from app.gateway.security import CredentialCipher, gateway_key_digest
-from app.gateway.server import GatewayDataPlane, RequestRecord, create_gateway_app
+from app.gateway.server import GatewayDataPlane, RequestRecord, StreamUsageCollector, create_gateway_app
 
 RAW_KEY = "agw_" + uuid4().hex
 KEY_DIGEST = gateway_key_digest(RAW_KEY)
@@ -255,6 +257,9 @@ def build_plane(
     probe_check_interval: float = 3600,
     lease_ttl: int = 900,
     seed_snapshot_health: bool = True,
+    max_retries: int = 1,
+    proxy: GatewayProxy | None = None,
+    circuit_open_seconds: int = 30,
 ) -> SimpleNamespace:
     store = store or InMemoryRuntimeStore()
     # 数据面启动不再用配置视图播种健康；测试显式模拟「Redis 已有连接作用域运行态」。
@@ -262,7 +267,7 @@ def build_plane(
         for node in config.nodes.values():
             asyncio.run(store.seed_health(node.runtime_scope, node.health_state))
     state = GatewayConfigState(config)
-    proxy = GatewayProxy(transport=httpx.MockTransport(upstream.handler))
+    proxy = proxy or GatewayProxy(transport=httpx.MockTransport(upstream.handler))
     plane = GatewayDataPlane(
         config_state=state,
         runtime=store,
@@ -279,6 +284,8 @@ def build_plane(
         timezone="Asia/Shanghai",
         probe_client=probe_client,
         probe_check_interval=probe_check_interval,
+        max_retries=max_retries,
+        circuit_open_seconds=circuit_open_seconds,
     )
     return SimpleNamespace(plane=plane, store=store, state=state, cipher=cipher)
 
@@ -809,6 +816,42 @@ def test_retry_only_when_request_not_sent(cipher, upstream):
     assert latest.node_id == NODE_B
 
 
+class GatedProxy(GatewayProxy):
+    """卡住 ``send``，让测试在请求仍进行时读到已经落库的到达行。"""
+
+    def __init__(self, upstream: MockUpstream) -> None:
+        super().__init__(transport=httpx.MockTransport(upstream.handler))
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+        self.entered.set()
+        await self.release.wait()
+        return await super().send(request, stream=stream)
+
+
+class SequencedProxy(GatewayProxy):
+    """让两个请求都通过调度后再按顺序失败，用来验证熔断事件去重。"""
+
+    def __init__(self, upstream: MockUpstream) -> None:
+        super().__init__(transport=httpx.MockTransport(upstream.handler))
+        self.first = asyncio.Event()
+        self.second = asyncio.Event()
+        self.release_first = asyncio.Event()
+        self.release_second = asyncio.Event()
+        self._seen = 0
+
+    async def send(self, request: httpx.Request, *, stream: bool) -> httpx.Response:
+        self._seen += 1
+        if self._seen == 1:
+            self.first.set()
+            await self.release_first.wait()
+        else:
+            self.second.set()
+            await self.release_second.wait()
+        return await super().send(request, stream=stream)
+
+
 def test_no_retry_after_downstream_responded(cipher, upstream):
     upstream.response_status = 500
     kv = build_plane(upstream, config=build_config(cipher), cipher=cipher)
@@ -824,6 +867,250 @@ def test_no_retry_after_downstream_responded(cipher, upstream):
     rows = asyncio.run(_fetch_logs())
     latest = next(row for row in rows if row.model == MODEL)
     assert latest.retry_count == 0
+
+
+def test_connect_failure_without_another_attempt_does_not_count_as_retry(cipher, upstream):
+    upstream.fail_hosts = {"node-a.test"}
+    nodes = [node_dict(NODE_A, host="node-a.test", cipher=cipher)]
+    kv = build_plane(
+        upstream,
+        config=build_config(cipher, nodes=nodes),
+        cipher=cipher,
+        max_retries=0,
+    )
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": MODEL, "messages": []},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 502
+    assert len(upstream.requests) == 1
+    rows = asyncio.run(_fetch_logs())
+    latest = next(row for row in rows if row.model == MODEL and row.status_code == 502)
+    assert latest.retry_count == 0
+
+
+def test_passive_circuit_open_and_recover_are_recorded_once(cipher, upstream):
+    node_id = f"gn_{uuid4().hex[:8]}"
+    host = f"{node_id}.test"
+    upstream.fail_hosts = {host}
+    nodes = [node_dict(node_id, host=host, cipher=cipher)]
+    proxy = SequencedProxy(upstream)
+    kv = build_plane(
+        upstream,
+        config=build_config(cipher, nodes=nodes),
+        cipher=cipher,
+        max_retries=0,
+        proxy=proxy,
+        circuit_open_seconds=1,
+    )
+
+    async def post(client: httpx.AsyncClient) -> httpx.Response:
+        return await client.post(
+            "/v1/chat/completions",
+            json={"model": MODEL, "messages": []},
+            headers=auth_headers(),
+        )
+
+    async def scenario():
+        app = create_gateway_app(kv.plane)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as client:
+            first_task = asyncio.create_task(post(client))
+            await asyncio.wait_for(proxy.first.wait(), 5)
+            second_task = asyncio.create_task(post(client))
+            await asyncio.wait_for(proxy.second.wait(), 5)
+            proxy.release_first.set()
+            first = await first_task
+            assert first.status_code == 502
+            proxy.release_second.set()
+            second = await second_task
+            assert second.status_code == 502
+            await asyncio.sleep(1.1)
+            upstream.fail_hosts.clear()
+            recovered = await post(client)
+            again = await post(client)
+            assert recovered.status_code == 200
+            assert again.status_code == 200
+
+    asyncio.run(scenario())
+
+    async def load():
+        async with SessionLocal() as session:
+            rows = await session.scalars(
+                select(GatewayRuntimeEvent).where(GatewayRuntimeEvent.node_id == node_id)
+            )
+            return list(rows)
+
+    rows = asyncio.run(load())
+    assert [row.kind for row in rows if row.kind == "circuit_open"] == ["circuit_open"]
+    assert [row.kind for row in rows if row.kind == "circuit_closed"] == ["circuit_closed"]
+
+
+def test_sse_collector_records_first_nonempty_content_across_split_frames():
+    collector = StreamUsageCollector()
+    assert collector.feed(b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n') is False
+    assert collector.saw_content is False
+    assert collector.feed(b'data: {"choices":[{"delta":{"content":""}}]}\n') is False
+    line = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n'
+    assert collector.feed(line[:20]) is False
+    assert collector.feed(line[20:]) is True
+    assert collector.feed(b'data: {"choices":[{"delta":{"content":"more"}}]}\n') is False
+
+
+def _latest_stream(model: str) -> GatewayRequest:
+    rows = asyncio.run(_fetch_logs(50))
+    return next(row for row in rows if row.streaming and row.model == model)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expect_ttft"),
+    [
+        ([b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'], False),
+        ([b'data: {"choices":[{"delta":{"content":""}}]}\n\n'], False),
+        ([b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'], True),
+    ],
+)
+def test_ttft_follows_real_sse_content_frames(cipher, upstream, chunks, expect_ttft):
+    model = f"ttft-{uuid4().hex[:8]}"
+    upstream.stream_chunks = chunks
+    upstream.stream_usage = None
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": [], "stream": True},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 200, response.text
+    logged = _latest_stream(model)
+    assert (logged.ttft_ms is not None) is expect_ttft
+
+
+def test_ttft_when_one_content_frame_is_split_across_chunks(cipher, upstream):
+    model = f"split-{uuid4().hex[:8]}"
+    line = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+    upstream.stream_chunks = [line[:17], line[17:]]
+    upstream.stream_usage = None
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": [], "stream": True},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 200, response.text
+    assert _latest_stream(model).ttft_ms is not None
+
+
+def test_stream_429_is_an_upstream_status(cipher, upstream):
+    model = f"s429-{uuid4().hex[:8]}"
+    upstream.response_status = 429
+    upstream.stream_chunks = [b'data: {"choices":[{"delta":{"content":"no"}}]}\n\n']
+    upstream.stream_usage = None
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    kv = build_plane(upstream, config=config, cipher=cipher)
+    with TestClient(create_gateway_app(kv.plane)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": model, "messages": [], "stream": True},
+            headers=auth_headers(),
+        )
+    assert response.status_code == 429
+    logged = _latest_stream(model)
+    assert logged.error_code == "UPSTREAM_429"
+    assert logged.ttft_ms is not None
+
+
+def test_arrival_row_counts_in_qps_before_the_upstream_returns(cipher, upstream):
+    model = f"inflight-{uuid4().hex[:8]}"
+    node = node_dict(NODE_A, host="node-a.test", cipher=cipher, models=(model,))
+    config = GatewayConfig.from_snapshot(
+        _snapshot(
+            nodes=[node],
+            routes=[{"id": f"gr-{model}", "model": model, "pool_id": POOL_ID, "enabled": True, "weight": 1}],
+            keys=[key_dict(allowed_models=[model])],
+        )
+    )
+    proxy = GatedProxy(upstream)
+    kv = build_plane(upstream, config=config, cipher=cipher, proxy=proxy)
+    started = utcnow()
+
+    async def scenario():
+        app = create_gateway_app(kv.plane)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://gateway") as client:
+            task = asyncio.create_task(
+                client.post(
+                    "/v1/chat/completions",
+                    json={"model": model, "messages": []},
+                    headers=auth_headers(),
+                )
+            )
+            await asyncio.wait_for(proxy.entered.wait(), 5)
+            async with SessionLocal() as session:
+                rows = list(
+                    await session.scalars(
+                        select(GatewayRequest).where(
+                            GatewayRequest.finished_at.is_(None),
+                            GatewayRequest.started_at >= started,
+                        )
+                    )
+                )
+                assert len(rows) == 1
+                assert rows[0].finished_at is None
+                request_id = rows[0].id
+                facts = await GatewayOpsService(
+                    session,
+                    runtime=kv.store,
+                    timezone="Asia/Shanghai",
+                    probe_interval_seconds=300,
+                )._facts(horizon=timedelta(minutes=5))
+            mine = [
+                sample
+                for sample in facts.samples
+                if sample.finished_at is None and sample.started_at >= started
+            ]
+            assert len(mine) == 1
+            assert mine[0].finished_at is None
+            assert window_metrics(mine, facts.now).qps_requests == 1
+            proxy.release.set()
+            response = await task
+            assert response.status_code == 200
+        async with SessionLocal() as session:
+            done = list(
+                await session.scalars(select(GatewayRequest).where(GatewayRequest.model == model))
+            )
+        assert len(done) == 1
+        assert done[0].finished_at is not None
+        assert done[0].id == request_id
+        assert done[0].status_code == 200
+
+    asyncio.run(scenario())
 
 
 def test_runtime_unavailable_rejects_new_requests(cipher, upstream):

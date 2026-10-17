@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from app.gateway.config import NodeConfig
 from app.gateway.models import (
@@ -17,7 +19,15 @@ from app.gateway.models import (
     HEALTH_UNKNOWN,
     SCHEDULING_ACTIVE,
 )
-from app.gateway.runtime import CIRCUIT_OPEN, TokenUsage
+from app.gateway.runtime import (
+    CIRCUIT_OPEN,
+    SCOPE_NODE,
+    RuntimeStore,
+    TokenUsage,
+    node_runtime_scope,
+    usage_buckets,
+)
+from app.models import utcnow
 
 # 不可调度原因，用于无节点时区分无路由、无健康节点、池满载与额度超限。
 REASON_CONFIG_DISABLED = "CONFIG_DISABLED"
@@ -95,6 +105,43 @@ def node_block_reason(
     if node_quota_state(node, hourly, daily) == QUOTA_STOP:
         return REASON_QUOTA_EXCEEDED
     return None
+
+
+@dataclass(frozen=True)
+class NodeSchedule:
+    """一次调度读取：熔断和健康在连接作用域，并发和用量在节点 ID。"""
+
+    scope: str
+    active: int
+    circuit: str
+    health: str
+    hourly: TokenUsage
+    daily: TokenUsage
+
+
+async def read_node_schedule(
+    runtime: RuntimeStore,
+    node: Any,
+    *,
+    timezone: str,
+    now: datetime | None = None,
+) -> NodeSchedule:
+    """数据面挑选节点与运行总览共用的运行态读取。
+
+    健康缺失即为 UNKNOWN，不回退配置表上的健康投影。调用方再用
+    ``node_block_reason`` 判断能否承接流量。
+    """
+
+    buckets = usage_buckets(now or utcnow(), timezone)
+    scope = node_runtime_scope(node)
+    return NodeSchedule(
+        scope=scope,
+        active=int(await runtime.active(SCOPE_NODE, node.id)),
+        circuit=await runtime.circuit(scope),
+        health=await runtime.health(scope) or HEALTH_UNKNOWN,
+        hourly=await runtime.usage(SCOPE_NODE, node.id, "hour", buckets["hour"]),
+        daily=await runtime.usage(SCOPE_NODE, node.id, "day", buckets["day"]),
+    )
 
 
 def effective_weight(

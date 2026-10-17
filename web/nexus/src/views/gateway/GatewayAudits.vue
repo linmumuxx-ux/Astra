@@ -69,6 +69,8 @@ function openLogs(row: GatewayAuditEvent) {
     to: new Date(at + 5 * 60 * 1000).toISOString(),
   }
   if (row.resource_type === 'node' && row.resource_id) query.node_id = row.resource_id
+  if (row.resource_type === 'pool' && row.resource_id) query.pool_id = row.resource_id
+  if (row.resource_type === 'key' && row.resource_id) query.key_id = row.resource_id
   const model = row.after.model ?? row.before.model
   if (typeof model === 'string') query.model = model
   void router.push({ path: '/gateway/logs', query })

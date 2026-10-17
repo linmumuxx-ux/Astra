@@ -99,7 +99,13 @@ def gateway_ops(
     session: Annotated[AsyncSession, Depends(get_session)],
     runtime: Annotated[RuntimeStore, Depends(gateway_runtime)],
 ) -> GatewayOpsService:
-    return GatewayOpsService(session, runtime=runtime)
+    settings = get_settings()
+    return GatewayOpsService(
+        session,
+        runtime=runtime,
+        timezone=settings.timezone,
+        probe_interval_seconds=settings.gateway_probe_interval_seconds,
+    )
 
 
 def gateway_observability(

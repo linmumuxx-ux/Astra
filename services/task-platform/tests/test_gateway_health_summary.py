@@ -6,13 +6,16 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.gateway_routes import gateway_runtime
 from app.database import SessionLocal, init_database
+from app.gateway.config import GatewayConfig, GatewayConfigState
 from app.gateway.health import record_health_transition
 from app.gateway.health_summary import (
+    GatewayOpsService,
     HealthFacts,
     NodeFact,
     RequestSample,
@@ -24,14 +27,20 @@ from app.gateway.health_summary import (
 from app.gateway.models import (
     HEALTH_HEALTHY,
     HEALTH_UNHEALTHY,
+    GatewayAuditEvent,
     GatewayNode,
     GatewayPool,
     GatewayRequest,
     GatewayRoute,
 )
 from app.gateway.observability import percentile
-from app.gateway.runtime import InMemoryRuntimeStore
+from app.gateway.proxy import GatewayProxy
+from app.gateway.runtime import SCOPE_NODE, InMemoryRuntimeStore, node_runtime_scope, usage_buckets
+from app.gateway.scheduler import REASON_CIRCUIT_OPEN, REASON_HEALTH_UNKNOWN, REASON_QUOTA_EXCEEDED
+from app.gateway.security import CredentialCipher
+from app.gateway.server import GatewayDataPlane
 from app.main import app
+from app.models import utcnow
 
 NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 
@@ -52,7 +61,6 @@ def _node(**overrides) -> NodeFact:
         enabled=True,
         scheduling="ACTIVE",
         health="HEALTHY",
-        circuit_open=False,
         max_concurrency=4,
         active=1,
         last_checked_at=NOW - timedelta(seconds=30),
@@ -195,7 +203,7 @@ def test_retry_then_success_is_not_a_failure():
     ]
     summary = judge_health(_facts(samples=samples))
     assert summary.metrics.error_rate == 0
-    assert summary.metrics.retry_rate == 1
+    assert summary.metrics.retry_rate == 2
     assert summary.metrics.error_failures == 0
     assert summary.status == "normal"
 
@@ -318,13 +326,59 @@ def test_window_p95_is_not_the_average_of_bucket_p95s():
     assert trend.ttft_p95_ms != averaged
 
 
-def test_upstream_429_is_final_status_only():
-    samples = [_sample(status_code=429) for _ in range(4)]
+def test_upstream_429_excludes_gateway_local_rejections():
+    samples = [_sample(status_code=429, error_code="UPSTREAM_429") for _ in range(4)]
+    samples.append(_sample(status_code=429, error_code="KEY_CONCURRENCY_EXCEEDED"))
     samples.append(_sample(status_code=200, retry_count=1))
     metrics = window_metrics(samples, NOW)
-    assert metrics.upstream_429_rate == pytest.approx(4 / 5)
-    assert metrics.error_rate == pytest.approx(4 / 5)
-    assert metrics.retry_rate == pytest.approx(1 / 5)
+    assert metrics.upstream_429_rate == pytest.approx(4 / 6)
+    assert metrics.error_rate == pytest.approx(5 / 6)
+    assert metrics.retry_rate == round(1 / 6, 6)
+
+
+def test_unset_probe_interval_uses_the_global_default():
+    summary = judge_health(
+        _facts(
+            nodes=[_node(probe_interval_seconds=None, last_checked_at=NOW - timedelta(seconds=200))],
+            default_probe_interval=300,
+        )
+    )
+    assert summary.stale is False
+    assert summary.status == "normal"
+
+
+def test_disabled_pool_failures_do_not_penalize_global_health():
+    failures = [
+        _sample(
+            model="old",
+            pool_id="pool-off",
+            status_code=500,
+            finished_at=NOW - timedelta(seconds=10 + index),
+        )
+        for index in range(24)
+    ]
+    summary = judge_health(
+        _facts(
+            samples=failures,
+            nodes=[
+                _node(),
+                _node(
+                    id="node-off",
+                    pool_id="pool-off",
+                    pool_name="legacy",
+                    models=("old",),
+                    health="UNHEALTHY",
+                ),
+            ],
+            routes=[
+                _route(),
+                _route(model="old", pool_id="pool-off", pool_name="legacy", pool_enabled=False),
+            ],
+        )
+    )
+    assert summary.metrics.error_rate == 1
+    assert summary.status == "normal"
+    assert "legacy" not in summary.impact_summary
 
 
 def test_in_flight_requests_are_outside_the_error_denominator():
@@ -474,3 +528,134 @@ def test_request_time_range_filter():
         assert old_id not in ids
     finally:
         app.dependency_overrides.pop(gateway_runtime, None)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("circuit", REASON_CIRCUIT_OPEN),
+        ("health", REASON_HEALTH_UNKNOWN),
+        ("quota", REASON_QUOTA_EXCEEDED),
+    ],
+)
+def test_health_summary_uses_the_scheduler_exclusion(case: str, expected: str):
+    """同一份配置和运行态：调度挑不出节点时，总览不能把这条路由显示成正常。"""
+
+    suffix = uuid4().hex[:8]
+    pool_id = f"pool-{suffix}"
+    node_id = f"node-{suffix}"
+    model = f"sched-{suffix}"
+    pool_name = f"chat-{suffix}"
+
+    async def scenario():
+        runtime = InMemoryRuntimeStore()
+        node_payload = {
+            "id": node_id,
+            "name": f"node-{suffix}",
+            "pool_id": pool_id,
+            "base_url": "http://sched.example",
+            "api_key_encrypted": None,
+            "auth_type": "NONE",
+            "auth_header": "",
+            "health_path": "",
+            "probe_interval_seconds": 60,
+            "models": [model],
+            "weight": 1,
+            "max_concurrency": 4,
+            "hourly_token_limit": 10 if case == "quota" else None,
+            "daily_token_limit": None,
+            "quota_policy": "STOP",
+            "config_state": "ENABLED",
+            "scheduling_state": "ACTIVE",
+            "health_state": HEALTH_HEALTHY,
+        }
+        async with SessionLocal() as session:
+            session.add(GatewayPool(id=pool_id, name=pool_name, enabled=True))
+            node = GatewayNode(**node_payload, last_checked_at=datetime.now(UTC))
+            session.add(node)
+            session.add(GatewayRoute(id=f"route-{suffix}", model=model, pool_id=pool_id, enabled=True))
+            await session.commit()
+            scope = node_runtime_scope(node)
+        if case == "circuit":
+            await runtime.seed_health(scope, HEALTH_HEALTHY)
+            await runtime.set_circuit_open(scope, 120)
+        elif case == "health":
+            await runtime.seed_health(node_id, HEALTH_HEALTHY)
+        else:
+            await runtime.seed_health(scope, HEALTH_HEALTHY)
+            buckets = usage_buckets(utcnow(), "Asia/Shanghai")
+            await runtime.record_usage(
+                SCOPE_NODE,
+                node_id,
+                "hour",
+                buckets["hour"],
+                total_tokens=10,
+                known=True,
+            )
+        config = GatewayConfig.from_snapshot(
+            {
+                "pools": [{"id": pool_id, "name": pool_name, "weight": 1, "enabled": True}],
+                "nodes": [node_payload],
+                "routes": [{"id": f"route-{suffix}", "model": model, "pool_id": pool_id, "enabled": True}],
+                "keys": [],
+            }
+        )
+        plane = GatewayDataPlane(
+            config_state=GatewayConfigState(config),
+            runtime=runtime,
+            proxy=GatewayProxy(transport=httpx.MockTransport(lambda request: httpx.Response(200))),
+            cipher=CredentialCipher(None),
+            session_factory=SessionLocal,
+            timezone="Asia/Shanghai",
+        )
+        try:
+            picked, _lease, reasons = await plane._pick_node_from_runtime(
+                config=config,
+                model=model,
+                pool=config.pools[pool_id],
+                exclude=set(),
+            )
+            assert picked is None
+            assert reasons.get(expected) == 1
+            async with SessionLocal() as session:
+                summary = await GatewayOpsService(
+                    session,
+                    runtime=runtime,
+                    timezone="Asia/Shanghai",
+                    probe_interval_seconds=300,
+                ).health_summary()
+        finally:
+            await plane.proxy.close()
+        impact = next(item for item in summary.impact if item.model == model)
+        assert impact.state == "down"
+        assert impact.text == f"{pool_name} 不可用"
+        assert summary.status != "normal"
+        return impact
+
+    asyncio.run(scenario())
+
+
+def test_key_audit_event_keeps_key_filter():
+    key_id = f"gk-{uuid4().hex[:8]}"
+
+    async def scenario():
+        async with SessionLocal() as session:
+            session.add(
+                GatewayAuditEvent(
+                    actor="ops",
+                    action="update",
+                    resource_type="key",
+                    resource_id=key_id,
+                    result="SUCCESS",
+                )
+            )
+            await session.commit()
+            events = await GatewayOpsService(
+                session, runtime=InMemoryRuntimeStore(), probe_interval_seconds=300
+            ).ops_events()
+        matched = [item for item in events if item.resource_id == key_id]
+        assert matched
+        assert matched[0].key_id == key_id
+        assert matched[0].pool_id is None
+
+    asyncio.run(scenario())

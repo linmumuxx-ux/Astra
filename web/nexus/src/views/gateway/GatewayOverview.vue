@@ -237,8 +237,8 @@ const secondaryCards = computed(() => {
   const current = metrics.value
   return [
     { id: 'tokens', label: 'Token 吞吐', value: current?.token_throughput == null ? '暂无数据' : `${current.token_throughput.toFixed(2)} /s`, hint: '近 5 分钟已知 total token / 300 秒' },
-    { id: 'retry', label: '重试率', value: percentText(current?.retry_rate ?? null), hint: '最终成功前发生过重试的请求占比' },
-    { id: '429', label: '上游 429', value: percentText(current?.upstream_429_rate ?? null), hint: '最终响应为 429 的占比' },
+    { id: 'retry', label: '重试率', value: percentText(current?.retry_rate ?? null), hint: '额外上游尝试次数 / 已完成请求' },
+    { id: '429', label: '上游 429', value: percentText(current?.upstream_429_rate ?? null), hint: '上游返回 429 的占比，不含网关本地拒绝' },
     { id: 'stream', label: '流中断率', value: percentText(current?.stream_interrupt_rate ?? null), hint: '流式请求中的中断占比' },
     { id: 'usage', label: '未知用量', value: percentText(current?.unknown_usage_share ?? null), hint: '未返回 usage 的已完成请求占比' },
     {
@@ -316,35 +316,96 @@ function openEventLogs(event: GatewayOpsEvent) {
       node_id: event.node_id ?? undefined,
       model: event.model ?? undefined,
       pool_id: event.pool_id ?? undefined,
+      key_id: event.key_id ?? undefined,
       from: start.toISOString(),
       to: end.toISOString(),
     },
   })
 }
 
+function emptyMetrics(): GatewayHealthSummary['metrics'] {
+  return {
+    qps: null,
+    qps_requests: 0,
+    error_rate: null,
+    error_samples: 0,
+    error_failures: 0,
+    error_rate_applies: false,
+    retry_rate: null,
+    upstream_429_rate: null,
+    stream_interrupt_rate: null,
+    ttft_p95_ms: null,
+    output_tps_p95: null,
+    connect_p95_ms: null,
+    ttfb_p95_ms: null,
+    duration_p95_ms: null,
+    unknown_usage_share: null,
+    token_throughput: null,
+    known_total_tokens: null,
+    active: null,
+    capacity_limit: null,
+    capacity_occupancy: null,
+    peak_concurrency: null,
+    queue: null,
+  }
+}
+
+function unavailableHealth(reason: string): GatewayHealthSummary {
+  const now = new Date().toISOString()
+  return {
+    status: 'unknown',
+    stale: true,
+    reasons: [reason],
+    impact: [],
+    impact_summary: '健康摘要不可用',
+    window: { qps_seconds: 60, error_seconds: 300, start: now, end: now },
+    generated_at: now,
+    metrics: emptyMetrics(),
+    ignored_pools: [],
+  }
+}
+
+function isAbort(reason: unknown): boolean {
+  return reason instanceof Error && reason.name === 'AbortError'
+}
+
+let loadSeq = 0
+let activeLoad: AbortController | null = null
+
 async function load(silent: boolean) {
-  const scroll = window.scrollY
+  const seq = ++loadSeq
+  activeLoad?.abort()
+  const controller = new AbortController()
+  activeLoad = controller
   if (!silent) loading.value = true
-  error.value = ''
+  const signal = controller.signal
+  const stale = () => seq !== loadSeq || signal.aborted
   try {
-    const [health, nodeRows, eventRows, trendValue] = await Promise.all([
-      gatewayApi.healthSummary(),
-      gatewayApi.nodeMetrics(),
-      gatewayApi.opsEvents(40),
-      gatewayApi.trends(trendWindow.value, groupBy.value),
-    ])
-    summary.value = health
-    rows.value = nodeRows
-    events.value = eventRows
-    trend.value = trendValue
-    if (!trendValue.series.some((item) => item.key === seriesKey.value)) seriesKey.value = 'all'
-  } catch (reason) {
-    error.value = errorMessage(reason, '总览加载失败')
-  } finally {
-    loading.value = false
-    if (silent) {
-      requestAnimationFrame(() => window.scrollTo({ top: scroll }))
+    try {
+      const health = await gatewayApi.healthSummary(signal)
+      if (stale()) return
+      summary.value = health
+      error.value = ''
+    } catch (reason) {
+      if (stale() || isAbort(reason)) return
+      summary.value = unavailableHealth('健康摘要加载失败')
+      error.value = errorMessage(reason, '健康摘要加载失败')
     }
+    if (stale()) return
+    const [nodeRows, eventRows, trendValue] = await Promise.allSettled([
+      gatewayApi.nodeMetrics(signal),
+      gatewayApi.opsEvents(40, signal),
+      gatewayApi.trends(trendWindow.value, groupBy.value, signal),
+    ])
+    if (stale()) return
+    if (nodeRows.status === 'fulfilled') rows.value = nodeRows.value
+    if (eventRows.status === 'fulfilled') events.value = eventRows.value
+    if (trendValue.status === 'fulfilled') {
+      trend.value = trendValue.value
+      if (!trendValue.value.series.some((item) => item.key === seriesKey.value)) seriesKey.value = 'all'
+    }
+  } finally {
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -353,7 +414,11 @@ onMounted(() => {
   void load(false)
   timer = window.setInterval(() => { void load(true) }, 30_000)
 })
-onBeforeUnmount(() => window.clearInterval(timer))
+onBeforeUnmount(() => {
+  window.clearInterval(timer)
+  loadSeq += 1
+  activeLoad?.abort()
+})
 </script>
 
 <style scoped>

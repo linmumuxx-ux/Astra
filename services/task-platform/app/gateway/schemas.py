@@ -424,6 +424,7 @@ class OpsEventRead(BaseModel):
     node_id: str | None = None
     model: str | None = None
     pool_id: str | None = None
+    key_id: str | None = None
     created_at: datetime
 
 

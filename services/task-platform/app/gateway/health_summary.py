@@ -6,13 +6,14 @@
 健康判断看服务影响，不看 QPS 上限：
 
 - 生效路由：路由启用且所属资源池启用。禁用池、以及启用但没有生效路由的空闲池不参与。
-- 路由可服务：至少有一个可调度节点支持该模型。可调度 = 配置启用、调度 ACTIVE、
-  健康 HEALTHY/DEGRADED、熔断未打开、并发未满。
+- 路由可服务：至少有一个可调度节点支持该模型。可调度与数据面相同，调用
+  ``node_block_reason``（配置、调度、运行态健康、连接作用域熔断、模型、并发、额度）。
 - 最终失败：已完成请求里，流中断、缺少状态码，或状态码不在 200–399。
-  重试后最终成功不算失败。``retry_count > 0`` 单独计入重试率（日志没有逐次尝试行）。
-- 错误率影响健康需要近 5 分钟已完成样本 ≥ 20，且至少两个连续的 1 分钟桶各自样本 ≥ 5
-  且失败率 > 2%。最近 1 分钟样本 ≥ 5 且失败率 ≤ 2% 则恢复，不再因错误率降级。
+  重试后最终成功不算失败。重试率是额外上游尝试次数之和 / 已完成请求。
+- 错误率影响健康只统计生效路由上的请求。需要近 5 分钟已完成样本 ≥ 20，且至少两个
+  连续的 1 分钟桶各自样本 ≥ 5 且失败率 > 2%。最近 1 分钟样本 ≥ 5 且失败率 ≤ 2% 则恢复。
 - 探测超过 ``max(180s, 3 × 探测间隔)`` 未更新，或运行态采集失败，状态为 unknown。
+  节点未配置间隔时用全局 ``gateway_probe_interval_seconds``。
 """
 
 from __future__ import annotations
@@ -24,10 +25,13 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.gateway.config import NodeConfig
 from app.gateway.models import (
+    CONFIG_DISABLED,
     CONFIG_ENABLED,
     HEALTH_DEGRADED,
     HEALTH_HEALTHY,
+    HEALTH_UNKNOWN,
     SCHEDULING_ACTIVE,
     GatewayAuditEvent,
     GatewayHealthCheck,
@@ -38,7 +42,17 @@ from app.gateway.models import (
     GatewayRuntimeEvent,
 )
 from app.gateway.observability import percentile
-from app.gateway.runtime import CIRCUIT_OPEN, RuntimeStore
+from app.gateway.runtime import CIRCUIT_CLOSED, CIRCUIT_OPEN, RuntimeStore, TokenUsage
+from app.gateway.scheduler import (
+    REASON_CIRCUIT_OPEN,
+    REASON_HEALTH_CHECKING,
+    REASON_HEALTH_UNHEALTHY,
+    REASON_HEALTH_UNKNOWN,
+    REASON_NODE_FULL,
+    REASON_QUOTA_EXCEEDED,
+    node_block_reason,
+    read_node_schedule,
+)
 from app.gateway.schemas import (
     HealthImpact,
     HealthSummary,
@@ -63,15 +77,23 @@ BUCKET_MIN_SAMPLE = 5
 SUSTAINED_BUCKETS = 2
 STALE_FLOOR_SECONDS = 180
 PROBE_INTERVAL_MULTIPLIER = 3
-DEFAULT_PROBE_INTERVAL_SECONDS = 60
+DEFAULT_PROBE_INTERVAL_SECONDS = 300
 OPS_EVENT_LIMIT = 80
+WEAKENING_REASONS = frozenset(
+    {
+        REASON_HEALTH_UNKNOWN,
+        REASON_HEALTH_CHECKING,
+        REASON_HEALTH_UNHEALTHY,
+        REASON_CIRCUIT_OPEN,
+        REASON_NODE_FULL,
+        REASON_QUOTA_EXCEEDED,
+    }
+)
 
 STATUS_NORMAL = "normal"
 STATUS_DEGRADED = "degraded"
 STATUS_DOWN = "down"
 STATUS_UNKNOWN = "unknown"
-
-SCHEDULABLE_HEALTH = (HEALTH_HEALTHY, HEALTH_DEGRADED)
 
 
 @dataclass(frozen=True)
@@ -92,6 +114,7 @@ class RequestSample:
     node_id: str | None
     model: str | None
     pool_id: str | None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,11 +127,20 @@ class NodeFact:
     enabled: bool
     scheduling: str
     health: str
-    circuit_open: bool
     max_concurrency: int
     active: int
     last_checked_at: datetime | None
     probe_interval_seconds: int | None
+    circuit: str = CIRCUIT_CLOSED
+    hourly_token_limit: int | None = None
+    daily_token_limit: int | None = None
+    quota_policy: str = "STOP"
+    hourly_used: int = 0
+    daily_used: int = 0
+
+    @property
+    def circuit_open(self) -> bool:
+        return self.circuit == CIRCUIT_OPEN
 
 
 @dataclass(frozen=True)
@@ -128,6 +160,7 @@ class HealthFacts:
     samples: list[RequestSample]
     collection_ok: bool
     instances_stale: bool = False
+    default_probe_interval: int = DEFAULT_PROBE_INTERVAL_SECONDS
 
 
 def is_final_failure(sample: RequestSample) -> bool:
@@ -159,8 +192,8 @@ def _aware(value: datetime | None) -> datetime | None:
     return value
 
 
-def probe_stale(node: NodeFact, now: datetime) -> bool:
-    interval = node.probe_interval_seconds or DEFAULT_PROBE_INTERVAL_SECONDS
+def probe_stale(node: NodeFact, now: datetime, default_interval: int) -> bool:
+    interval = node.probe_interval_seconds or default_interval
     threshold = max(STALE_FLOOR_SECONDS, PROBE_INTERVAL_MULTIPLIER * interval)
     checked = _aware(node.last_checked_at)
     if checked is None:
@@ -172,18 +205,45 @@ def _supports(node: NodeFact, model: str) -> bool:
     return model in node.models
 
 
+def _config(node: NodeFact) -> NodeConfig:
+    return NodeConfig(
+        id=node.id,
+        name=node.name,
+        pool_id=node.pool_id,
+        base_url="",
+        api_key_encrypted=None,
+        auth_type="NONE",
+        auth_header="",
+        connect_timeout_seconds=None,
+        request_timeout_seconds=None,
+        health_path="",
+        probe_interval_seconds=node.probe_interval_seconds,
+        models=node.models,
+        weight=1,
+        max_concurrency=node.max_concurrency,
+        hourly_token_limit=node.hourly_token_limit,
+        daily_token_limit=node.daily_token_limit,
+        quota_policy=node.quota_policy,
+        config_state=CONFIG_ENABLED if node.enabled else CONFIG_DISABLED,
+        scheduling_state=node.scheduling,
+        health_state=HEALTH_UNKNOWN,
+    )
+
+
+def _block(node: NodeFact, model: str) -> str | None:
+    return node_block_reason(
+        _config(node),
+        model=model,
+        active=node.active,
+        circuit=node.circuit,
+        hourly=TokenUsage(total_tokens=node.hourly_used),
+        daily=TokenUsage(total_tokens=node.daily_used),
+        health_state=node.health,
+    )
+
+
 def _schedulable(node: NodeFact, model: str) -> bool:
-    if not node.enabled or node.scheduling != SCHEDULING_ACTIVE:
-        return False
-    if node.health not in SCHEDULABLE_HEALTH:
-        return False
-    if node.circuit_open:
-        return False
-    if not _supports(node, model):
-        return False
-    if node.max_concurrency > 0 and node.active >= node.max_concurrency:
-        return False
-    return True
+    return _block(node, model) is None
 
 
 def _effective_routes(facts: HealthFacts) -> list[RouteFact]:
@@ -251,8 +311,12 @@ def window_metrics(samples: list[RequestSample], now: datetime) -> OverviewMetri
         if _aware(sample.started_at) is not None and qps_start <= _aware(sample.started_at) <= now
     ]
     failures = sum(1 for sample in finished if is_final_failure(sample))
-    retries = sum(1 for sample in finished if sample.retry_count > 0)
-    limited = sum(1 for sample in finished if sample.status_code == 429)
+    retries = sum(sample.retry_count for sample in finished)
+    limited = sum(
+        1
+        for sample in finished
+        if sample.status_code == 429 and str(sample.error_code or "").startswith("UPSTREAM_")
+    )
     streaming = [sample for sample in finished if sample.streaming]
     interrupted = sum(1 for sample in streaming if sample.stream_interrupted)
     unknown = sum(1 for sample in finished if not sample.usage_known)
@@ -405,7 +469,8 @@ def judge_health(facts: HealthFacts) -> HealthSummary:
         weakened = [
             node
             for node in supporting
-            if node.health not in SCHEDULABLE_HEALTH or node.circuit_open
+            if node.scheduling == SCHEDULING_ACTIVE
+            and _block(node, route.model) in WEAKENING_REASONS
         ]
         if schedulable and weakened:
             state = "degraded"
@@ -429,9 +494,15 @@ def judge_health(facts: HealthFacts) -> HealthSummary:
         )
 
     summary = _impact_summary(impacts)
-    stale_probes = any(probe_stale(node, facts.now) for node in required_nodes)
+    stale_probes = any(
+        probe_stale(node, facts.now, facts.default_probe_interval) for node in required_nodes
+    )
     stale = stale_probes or facts.instances_stale
-    penalty = _error_penalty(facts.samples, facts.now)
+    effective_models = {route.model for route in effective}
+    penalty = _error_penalty(
+        [sample for sample in facts.samples if sample.model in effective_models],
+        facts.now,
+    )
     capacity_left = _remaining_capacity(facts.nodes, servable_nodes)
     reasons: list[str] = []
 
@@ -686,13 +757,23 @@ def _sample_from_row(row: Any) -> RequestSample:
         node_id=row.node_id,
         model=row.model,
         pool_id=row.pool_id,
+        error_code=row.error_code,
     )
 
 
 class GatewayOpsService:
-    def __init__(self, session: AsyncSession, *, runtime: RuntimeStore | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        runtime: RuntimeStore | None = None,
+        timezone: str = "Asia/Shanghai",
+        probe_interval_seconds: int = DEFAULT_PROBE_INTERVAL_SECONDS,
+    ) -> None:
         self._session = session
         self._runtime = runtime
+        self._timezone = timezone
+        self._probe_interval = probe_interval_seconds
 
     async def _load_samples(self, since: datetime) -> list[RequestSample]:
         rows = (
@@ -716,38 +797,46 @@ class GatewayOpsService:
         pool_enabled = {pool.id: pool.enabled for pool in pools}
         collection_ok = True
         instances_stale = False
-        active: dict[str, int] = {}
-        circuit_open: dict[str, bool] = {}
+        schedules = {}
         if self._runtime is None:
             collection_ok = False
         else:
             try:
                 for node in nodes:
-                    active[node.id] = int(await self._runtime.active("node", node.id))
-                    circuit_open[node.id] = await self._runtime.circuit(node.id) == CIRCUIT_OPEN
+                    schedules[node.id] = await read_node_schedule(
+                        self._runtime, node, timezone=self._timezone, now=now
+                    )
                 instances = await self._runtime.list_instances()
                 if instances and all(item.get("status") != "ACTIVE" for item in instances):
                     instances_stale = True
             except Exception:  # noqa: BLE001 - 采集失败必须变成 unknown，不能当成 0
                 collection_ok = False
-        node_facts = [
-            NodeFact(
-                id=node.id,
-                name=node.name,
-                pool_id=node.pool_id,
-                pool_name=pool_names.get(node.pool_id or ""),
-                models=tuple(node.models or []),
-                enabled=node.config_state == CONFIG_ENABLED,
-                scheduling=node.scheduling_state,
-                health=node.health_state,
-                circuit_open=circuit_open.get(node.id, False),
-                max_concurrency=int(node.max_concurrency or 0),
-                active=active.get(node.id, 0),
-                last_checked_at=node.last_checked_at,
-                probe_interval_seconds=node.probe_interval_seconds,
+                schedules = {}
+        node_facts = []
+        for node in nodes:
+            schedule = schedules.get(node.id) if collection_ok else None
+            node_facts.append(
+                NodeFact(
+                    id=node.id,
+                    name=node.name,
+                    pool_id=node.pool_id,
+                    pool_name=pool_names.get(node.pool_id or ""),
+                    models=tuple(node.models or []),
+                    enabled=node.config_state == CONFIG_ENABLED,
+                    scheduling=node.scheduling_state,
+                    health=schedule.health if schedule is not None else HEALTH_UNKNOWN,
+                    max_concurrency=int(node.max_concurrency or 0),
+                    active=schedule.active if schedule is not None else 0,
+                    last_checked_at=node.last_checked_at,
+                    probe_interval_seconds=node.probe_interval_seconds,
+                    circuit=schedule.circuit if schedule is not None else CIRCUIT_CLOSED,
+                    hourly_token_limit=node.hourly_token_limit,
+                    daily_token_limit=node.daily_token_limit,
+                    quota_policy=node.quota_policy or "STOP",
+                    hourly_used=schedule.hourly.billable_total if schedule is not None else 0,
+                    daily_used=schedule.daily.billable_total if schedule is not None else 0,
+                )
             )
-            for node in nodes
-        ]
         route_facts = []
         for route in routes:
             enabled = pool_enabled.get(route.pool_id, False)
@@ -768,6 +857,7 @@ class GatewayOpsService:
             samples=samples,
             collection_ok=collection_ok,
             instances_stale=instances_stale,
+            default_probe_interval=self._probe_interval,
         )
 
     async def health_summary(self) -> HealthSummary:
@@ -840,6 +930,7 @@ class GatewayOpsService:
                     node_id=node_id,
                     model=model if isinstance(model, str) else None,
                     pool_id=row.resource_id if row.resource_type == "pool" else None,
+                    key_id=row.resource_id if row.resource_type == "key" else None,
                     created_at=row.created_at,
                 )
             )

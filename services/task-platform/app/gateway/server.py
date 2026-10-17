@@ -61,16 +61,18 @@ from app.gateway.errors import (
 from app.gateway.health import probe_success, record_background_probe
 from app.gateway.models import (
     CONFIG_ENABLED,
-    HEALTH_UNKNOWN,
     PROBE_TYPES,
     GatewayKey,
     GatewayRequest,
+    GatewayRuntimeEvent,
     utcnow,
 )
 from app.gateway.probe import GatewayProbeClient, HttpGatewayProbeClient
 from app.gateway.proxy import GatewayProxy, NotSentDownstream, build_upstream_headers
 from app.gateway.runtime import (
+    CIRCUIT_CLOSED,
     CIRCUIT_HALF_OPEN,
+    CIRCUIT_OPEN,
     SCOPE_KEY,
     SCOPE_NODE,
     RedisRuntimeStore,
@@ -85,6 +87,7 @@ from app.gateway.scheduler import (
     effective_weight,
     node_block_reason,
     order_candidates,
+    read_node_schedule,
 )
 from app.gateway.security import CredentialCipher, CredentialError, gateway_key_digest
 
@@ -130,7 +133,7 @@ class RequestRecord:
     total_tokens: int | None = None
     output_tps: float | None = None
 
-    def to_row(self) -> GatewayRequest:
+    def to_row(self, *, finished: bool) -> GatewayRequest:
         return GatewayRequest(
             id=self.id,
             key_id=self.key_id,
@@ -152,22 +155,27 @@ class RequestRecord:
             total_tokens=self.total_tokens,
             output_tps=self.output_tps,
             started_at=self.started_at,
-            finished_at=utcnow(),
+            finished_at=utcnow() if finished else None,
         )
 
 
 class StreamUsageCollector:
-    """增量解析 SSE ``data:`` 行，提取结尾 usage，不缓存完整响应。"""
+    """增量解析 SSE ``data:`` 行，提取结尾 usage 与首个非空内容，不缓存完整响应。"""
 
     def __init__(self) -> None:
         self._buffer = ""
         self.usage: dict[str, Any] | None = None
+        self.saw_content = False
 
-    def feed(self, chunk: bytes) -> None:
+    def feed(self, chunk: bytes) -> bool:
+        """喂入一块字节。返回本块是否第一次拼出非空内容 token。"""
+
+        before = self.saw_content
         self._buffer += chunk.decode("utf-8", errors="ignore")
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             self._consume(line.strip())
+        return self.saw_content and not before
 
     def _consume(self, line: str) -> None:
         if not line.startswith("data:"):
@@ -179,8 +187,12 @@ class StreamUsageCollector:
             body = json.loads(payload)
         except ValueError:
             return
-        if isinstance(body, dict) and isinstance(body.get("usage"), dict):
+        if not isinstance(body, dict):
+            return
+        if isinstance(body.get("usage"), dict):
             self.usage = body["usage"]
+        if not self.saw_content and _frame_has_content(body):
+            self.saw_content = True
 
 
 def default_instance_id(configured: str | None) -> str:
@@ -191,6 +203,49 @@ def default_instance_id(configured: str | None) -> str:
 
 def elapsed_ms(started: datetime) -> int:
     return int((utcnow() - started).total_seconds() * 1000)
+
+
+def _frame_has_content(body: Mapping[str, Any]) -> bool:
+    """首个非空内容 token。role-only、空字符串和不完整帧都不算。"""
+
+    choices = body.get("choices")
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for key in ("delta", "message"):
+            part = choice.get(key)
+            if not isinstance(part, dict):
+                continue
+            content = part.get("content")
+            if isinstance(content, str) and content:
+                return True
+    return False
+
+
+_REQUEST_COLUMNS = (
+    "key_id",
+    "owner_id",
+    "model",
+    "pool_id",
+    "node_id",
+    "streaming",
+    "retry_count",
+    "status_code",
+    "error_code",
+    "stream_interrupted",
+    "connect_ms",
+    "ttfb_ms",
+    "ttft_ms",
+    "duration_ms",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "output_tps",
+    "started_at",
+    "finished_at",
+)
 
 
 class GatewayDataPlane:
@@ -495,6 +550,8 @@ class GatewayDataPlane:
         started = utcnow()
         record = RequestRecord(id=uuid4().hex, started_at=started)
         self._counters["requests"] += 1
+        # 到达即落一行。日志若只在完成时插入，超过 60 秒的请求和进行中的请求都不会进入当前 QPS。
+        await self._persist(record, finished=False)
         key: KeyConfig | None = None
         key_lease: str | None = None
         deferred = False
@@ -577,11 +634,11 @@ class GatewayDataPlane:
                 except NotSentDownstream as exc:
                     await self._safe_release(SCOPE_NODE, node.id, node_lease)
                     await self._record_node_failure(node_scope)
-                    record.retry_count = attempt + 1
                     error = self.proxy.classify(exc)
                     record.error_code = error.code
                     tried.add(node.id)
                     if attempt < self._max_retries:
+                        record.retry_count = attempt + 1
                         continue
                     raise error from exc
                 except GatewayDataPlaneError:
@@ -607,7 +664,7 @@ class GatewayDataPlane:
                 if key_lease is not None and key is not None:
                     await self._safe_release(SCOPE_KEY, key.id, key_lease)
                     self._counters["active"] = max(0, self._counters["active"] - 1)
-                await self._persist(record)
+                await self._persist(record, finished=True)
 
     # ── 鉴权与路由 ─────────────────────────────────────────────────────
 
@@ -687,7 +744,6 @@ class GatewayDataPlane:
     async def _pick_node_from_runtime(
         self, *, config: GatewayConfig, model: str, pool: PoolConfig, exclude: set[str]
     ) -> tuple[NodeConfig | None, str | None, dict[str, int]]:
-        buckets = usage_buckets(utcnow(), self._timezone)
         reasons: dict[str, int] = {}
         candidates: list[Candidate] = []
         for node in config.nodes.values():
@@ -695,30 +751,33 @@ class GatewayDataPlane:
                 continue
             # 健康/熔断按「请求使用的连接指纹」作用域读取：旧实例或旧连接的探测结果
             # 落在别的键，无法授权当前配置；缺失运行态即为 UNKNOWN，绝不回退快照。
-            scope = node.runtime_scope
-            active = await self.runtime.active(SCOPE_NODE, node.id)
-            circuit = await self.runtime.circuit(scope)
-            live_health = await self.runtime.health(scope) or HEALTH_UNKNOWN
-            hourly = await self.runtime.usage(SCOPE_NODE, node.id, "hour", buckets["hour"])
-            daily = await self.runtime.usage(SCOPE_NODE, node.id, "day", buckets["day"])
+            schedule = await read_node_schedule(self.runtime, node, timezone=self._timezone)
             reason = node_block_reason(
                 node,
                 model=model,
-                active=active,
-                circuit=circuit,
-                hourly=hourly,
-                daily=daily,
-                health_state=live_health,
+                active=schedule.active,
+                circuit=schedule.circuit,
+                hourly=schedule.hourly,
+                daily=schedule.daily,
+                health_state=schedule.health,
             )
             if reason is not None:
                 reasons[reason] = reasons.get(reason, 0) + 1
                 continue
-            if circuit == CIRCUIT_HALF_OPEN and not await self.runtime.try_circuit_trial(scope):
+            if schedule.circuit == CIRCUIT_HALF_OPEN and not await self.runtime.try_circuit_trial(
+                schedule.scope
+            ):
                 # OPEN 到期后只放行少量试探；试探名额用尽时按熔断打开处理。
                 reasons[REASON_CIRCUIT_OPEN] = reasons.get(REASON_CIRCUIT_OPEN, 0) + 1
                 continue
             candidates.append(
-                Candidate(node, active, effective_weight(node, hourly, daily, health_state=live_health))
+                Candidate(
+                    node,
+                    schedule.active,
+                    effective_weight(
+                        node, schedule.hourly, schedule.daily, health_state=schedule.health
+                    ),
+                )
             )
         for candidate in order_candidates(candidates):
             acquired = await self.runtime.acquire(
@@ -831,17 +890,47 @@ class GatewayDataPlane:
         if not node_scope:
             return
         try:
+            previous = await self.runtime.circuit(node_scope)
             await self.runtime.set_circuit_closed(node_scope)
         except Exception:  # noqa: BLE001
-            pass
+            return
+        if previous != CIRCUIT_CLOSED:
+            await self._write_circuit_event(node_scope, previous, CIRCUIT_CLOSED, "circuit_closed")
 
     async def _record_node_failure(self, node_scope: str | None) -> None:
         if not node_scope:
             return
         try:
+            previous = await self.runtime.circuit(node_scope)
             await self.runtime.set_circuit_open(node_scope, self._circuit_open_seconds)
             await self.runtime.mark_degraded(node_scope)
         except Exception:  # noqa: BLE001
+            return
+        if previous != CIRCUIT_OPEN:
+            await self._write_circuit_event(node_scope, previous, CIRCUIT_OPEN, "circuit_open")
+
+    async def _write_circuit_event(
+        self, node_scope: str, previous: str, current: str, kind: str
+    ) -> None:
+        """只在熔断状态变化时记一条。已经打开或已经关闭时不再为每次失败重复写。"""
+
+        node_id = node_scope.split("#", 1)[0]
+        label = "熔断打开" if kind == "circuit_open" else "熔断恢复"
+        try:
+            async with self._session_factory() as session:
+                session.add(
+                    GatewayRuntimeEvent(
+                        source="runtime",
+                        kind=kind,
+                        node_id=node_id,
+                        summary=f"{node_id} {label}",
+                        previous=previous,
+                        current=current,
+                        detail={"scope": node_scope},
+                    )
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001 - 事件落库失败不改变已经写入的熔断状态
             pass
 
     # ── 租约续租 ───────────────────────────────────────────────────────
@@ -911,9 +1000,9 @@ class GatewayDataPlane:
         disconnect_code: str | None = None
         try:
             async for chunk in upstream.aiter_bytes():
-                if record.ttft_ms is None and self._chunk_has_content(chunk):
+                saw_content = collector.feed(chunk)
+                if record.ttft_ms is None and saw_content:
                     record.ttft_ms = elapsed_ms(record.started_at)
-                collector.feed(chunk)
                 yield chunk
             completed = True
         except httpx.HTTPError:
@@ -958,6 +1047,8 @@ class GatewayDataPlane:
             record.stream_interrupted = True
             record.error_code = record.error_code or disconnect_code or CLIENT_DISCONNECTED
             self._counters["errors"] += 1
+        elif upstream.status_code < 200 or upstream.status_code >= 400:
+            record.error_code = record.error_code or f"UPSTREAM_{upstream.status_code}"
         await self._cancel_renewals(renewals)
         try:
             await upstream.aclose()
@@ -971,24 +1062,27 @@ class GatewayDataPlane:
         await self._safe_release(SCOPE_NODE, node_id, node_lease)
         await self._safe_release(SCOPE_KEY, key.id, key_lease)
         self._counters["active"] = max(0, self._counters["active"] - 1)
-        await self._persist(record)
-
-    @staticmethod
-    def _chunk_has_content(chunk: bytes) -> bool:
-        return b'"content"' in chunk or b'"delta"' in chunk
+        await self._persist(record, finished=True)
 
     # ── 日志 ───────────────────────────────────────────────────────────
 
-    async def _persist(self, record: RequestRecord) -> None:
+    async def _persist(self, record: RequestRecord, *, finished: bool) -> None:
         try:
             async with self._session_factory() as session:
-                row = record.to_row()
-                session.add(row)
+                incoming = record.to_row(finished=finished)
+                existing = await session.get(GatewayRequest, record.id)
+                if existing is None:
+                    session.add(incoming)
+                    stored = incoming
+                else:
+                    for name in _REQUEST_COLUMNS:
+                        setattr(existing, name, getattr(incoming, name))
+                    stored = existing
                 # 调用日志能看到 Key，但密钥页的「最近使用」只读 gateway_keys.last_used_at。
-                # 鉴权通过后的请求（含失败）都算使用；未识别的 Key 不写。
-                if record.key_id:
+                # 只有完成的请求才更新最近使用；到达时的未完成行还没有结束时间。
+                if finished and record.key_id:
                     key = await session.get(GatewayKey, record.key_id)
-                    used_at = row.finished_at
+                    used_at = stored.finished_at
                     if key is not None and used_at is not None and (
                         key.last_used_at is None or key.last_used_at < used_at
                     ):

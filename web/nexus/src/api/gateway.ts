@@ -380,6 +380,7 @@ export interface GatewayOpsEvent {
   node_id: string | null
   model: string | null
   pool_id: string | null
+  key_id: string | null
   created_at: string
 }
 
@@ -407,6 +408,7 @@ function queryString(params: object): string {
 interface RequestOptions {
   method?: string
   body?: unknown
+  signal?: AbortSignal
 }
 
 async function gatewayRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -416,6 +418,7 @@ async function gatewayRequest<T>(path: string, options: RequestOptions = {}): Pr
     method: options.method ?? 'GET',
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    signal: options.signal,
   })
   if (response.status === 204) return undefined as T
   const payload = await response.json().catch(() => ({ detail: response.statusText }))
@@ -493,10 +496,19 @@ export const gatewayApi = {
     gatewayRequest<GatewayHealthCheck[]>(
       `/api/gateway/nodes/${nodeId}/health-checks${queryString({ limit })}`,
     ),
-  healthSummary: () => gatewayRequest<GatewayHealthSummary>('/api/gateway/health-summary'),
-  nodeMetrics: () => gatewayRequest<GatewayNodeMetric[]>('/api/gateway/node-metrics'),
-  trends: (window: '1h' | '15m' = '1h', groupBy: 'none' | 'model' | 'node' = 'none') =>
-    gatewayRequest<GatewayTrend>(`/api/gateway/trends${queryString({ window, group_by: groupBy })}`),
-  opsEvents: (limit = 50) =>
-    gatewayRequest<GatewayOpsEvent[]>(`/api/gateway/ops-events${queryString({ limit })}`),
+  healthSummary: (signal?: AbortSignal) =>
+    gatewayRequest<GatewayHealthSummary>('/api/gateway/health-summary', { signal }),
+  nodeMetrics: (signal?: AbortSignal) =>
+    gatewayRequest<GatewayNodeMetric[]>('/api/gateway/node-metrics', { signal }),
+  trends: (
+    window: '1h' | '15m' = '1h',
+    groupBy: 'none' | 'model' | 'node' = 'none',
+    signal?: AbortSignal,
+  ) =>
+    gatewayRequest<GatewayTrend>(
+      `/api/gateway/trends${queryString({ window, group_by: groupBy })}`,
+      { signal },
+    ),
+  opsEvents: (limit = 50, signal?: AbortSignal) =>
+    gatewayRequest<GatewayOpsEvent[]>(`/api/gateway/ops-events${queryString({ limit })}`, { signal }),
 }
