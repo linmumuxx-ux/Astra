@@ -162,12 +162,7 @@ async def accept_inbound(
     )
     connection.commit()
     if finished.rowcount != 1:
-        return {
-            "accepted": True,
-            "duplicate": True,
-            "session_id": session_id,
-            "employee_id": employee_id,
-        }
+        raise ImError("这个事件正在处理", 409)
     return {"accepted": True, "duplicate": False, "session_id": session_id, "employee_id": employee_id}
 
 

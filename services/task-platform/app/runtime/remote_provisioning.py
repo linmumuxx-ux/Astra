@@ -524,10 +524,12 @@ class RemoteProvisioner:
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
         opencode_config = self.config_path or f"/etc/nexus/opencode/{self.environment.id}/opencode.jsonc"
+        opencode_dir = str(Path(opencode_config).parent)
         opencode_unit_text = (
             "[Unit]\nDescription=Nexus OpenCode\nAfter=network-online.target\n"
             "[Service]\n"
             f"Environment=OPENCODE_CONFIG={opencode_config}\n"
+            f"Environment=OPENCODE_CONFIG_DIR={opencode_dir}\n"
             f"ExecStart={self.target_binary} serve --hostname 127.0.0.1 --port {port}\n"
             "Restart=on-failure\n"
             "[Install]\nWantedBy=multi-user.target\n"
@@ -572,6 +574,7 @@ class RemoteProvisioner:
                 f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
                 f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
                 f"OPENCODE_CONFIG={opencode_config}",
+                f"OPENCODE_CONFIG_DIR={opencode_dir}",
                 f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
                 f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
             ]

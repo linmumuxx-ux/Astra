@@ -412,6 +412,11 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     unit = files[f"/etc/systemd/system/{worker_unit}"].decode()
     assert f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n" in unit
     assert "/usr/bin/python3" not in unit
+    skill_dir = f"/etc/nexus/opencode/{environment_id}"
+    opencode = files[f"/etc/systemd/system/{opencode_unit}"].decode()
+    worker_env = files[f"/etc/nexus/worker-{environment_id}.env"].decode()
+    assert f"Environment=OPENCODE_CONFIG_DIR={skill_dir}\n" in opencode
+    assert f"OPENCODE_CONFIG_DIR={skill_dir}\n" in worker_env
     restart = next(command for command in commands if "systemctl daemon-reload" in command)
     assert restart == (
         "systemctl daemon-reload && "

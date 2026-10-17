@@ -7,11 +7,12 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.db import connect, init_db
-from nexus_api.im import accept_inbound, bind_bot, claim_outbox, contact_human
+from nexus_api.im import ImError, accept_inbound, bind_bot, claim_outbox, contact_human
 from nexus_api.main import capture_im_reply, create_app
 
 
@@ -557,18 +558,19 @@ def test_stolen_event_claim_does_not_record_the_first_handler(tmp_path):
         )
         connection.commit()
 
-    result = asyncio.run(
-        accept_inbound(
-            connection,
-            provider="mock",
-            event_id="evt-steal",
-            bot_id="bot-1",
-            sender_uid="u1",
-            text="再来",
-            accept=accept,
+    with pytest.raises(ImError) as caught:
+        asyncio.run(
+            accept_inbound(
+                connection,
+                provider="mock",
+                event_id="evt-steal",
+                bot_id="bot-1",
+                sender_uid="u1",
+                text="再来",
+                accept=accept,
+            )
         )
-    )
-    assert result["duplicate"] is True
+    assert caught.value.status_code == 409
     row = connection.execute(
         "SELECT accepted, claim_token FROM im_events WHERE provider = 'mock' AND event_id = 'evt-steal'"
     ).fetchone()
@@ -619,3 +621,42 @@ def test_silent_im_turn_does_not_repeat_the_previous_reply(tmp_path):
         )
     )
     assert claim_outbox(connection) is None
+
+
+def test_late_assistant_message_is_still_enqueued(tmp_path):
+    path = tmp_path / "im.sqlite3"
+    init_db(path)
+    connection = connect(path)
+    calls = {"n": 0}
+
+    class _Late:
+        configured = True
+
+        def stream_session(self, _agent_id, _session_id, after=None):
+            return _EmptyStream()
+
+        async def list_session_messages(self, _agent_id, _session_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return []
+            return [
+                {
+                    "id": "r2",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "晚到的回复"}],
+                }
+            ]
+
+    asyncio.run(
+        capture_im_reply(
+            connection,
+            _Late(),
+            {"id": "E1", "agentscope_agent_id": "agent-1"},
+            "ses",
+            "u1",
+        )
+    )
+    claimed = claim_outbox(connection)
+    assert claimed is not None
+    assert claimed["body"] == "晚到的回复"
+    assert calls["n"] == 2

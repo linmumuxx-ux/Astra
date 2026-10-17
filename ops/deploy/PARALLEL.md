@@ -8,6 +8,8 @@ python ops/deploy/check_parallel.py
 
 脚本只读取本仓库的默认值和部署脚本里的路径，不启动 v0.9，也不在同一台机器上做并行验收。有重叠时退出码为 1。
 
+和 v0.9 共用同一个 OS 用户时，v0.9 的用户全局 OpenCode 配置会叠加进 Nexus。推荐每个产品使用专用的 OS 用户。不要改 `XDG_CONFIG_HOME`。
+
 | 项 | v0.9 | Nexus |
 |---|---|---|
 | 数据库名 / 用户 | `astra` / `astra` | `nexus` / `nexus` |

@@ -2578,6 +2578,26 @@ def team_peers(views: list[dict[str, Any]], leader_session_id: str) -> list[tupl
     return found
 
 
+REPLY_LOOKUP_DELAYS = (0.2, 0.5, 1.0, 2.0)
+
+
+async def assistant_reply_text(client, agent_id: str, session_id: str, reply_id: str) -> str:
+    """REPLY_END 到达时，这条助手消息可能还没写入。按固定间隔再查几次。"""
+
+    pauses = (0.0, *REPLY_LOOKUP_DELAYS)
+    for delay in pauses:
+        if delay:
+            await asyncio.sleep(delay)
+        messages = await client.list_session_messages(agent_id, session_id)
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            if str(message.get("id") or "") != reply_id:
+                continue
+            return block_text(message.get("content"))
+    return ""
+
+
 async def capture_im_reply(
     connection,
     client,
@@ -2609,15 +2629,7 @@ async def capture_im_reply(
                     reply_id = str(terminal.get("reply_id") or "")
                     if reply_id and reply_id in known:
                         continue
-                    messages = await client.list_session_messages(agent_id, session_id)
-                    body = ""
-                    for message in messages:
-                        if not isinstance(message, dict) or message.get("role") != "assistant":
-                            continue
-                        if str(message.get("id") or "") != reply_id:
-                            continue
-                        body = block_text(message.get("content"))
-                        break
+                    body = await assistant_reply_text(client, agent_id, session_id, reply_id)
                     if body.strip():
                         contact_human(
                             connection,
