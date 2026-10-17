@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.api.workspace_routes import persist_attachments, router, task_repo
 from app.config.settings import get_settings
@@ -364,3 +365,44 @@ async def test_upload_helper_is_what_the_route_calls(monkeypatch):
     # upload() imports the helper inside the function.
     path = await upload(_SecretEnv(), "/ws", "a.txt", b"hi")
     assert path == "/ws/uploads/abc-a.txt"
+
+
+async def test_repo_route_turns_uninstalled_worker_into_503():
+    await init_database()
+    async with SessionLocal() as session:
+        employee = DigitalEmployee(id=f"emp-{uuid4().hex[:8]}", name="远程员工", role="执行")
+        session.add(employee)
+        await session.flush()
+        environment = OpenCodeExecutionEnvironment(
+            employee_id=employee.id,
+            mode="LINUX_REMOTE",
+            name="云执行机",
+            opencode_path="opencode",
+            workspace_root="/work",
+            worker_channel="ssh",
+        )
+        session.add(environment)
+        await session.flush()
+        task = Task(
+            id=f"T-{uuid4().hex[:8]}",
+            title="repo",
+            task_type="ISSUE",
+            status="RUNNING",
+            employee_id=employee.id,
+            workspace="/work/task",
+            execution_environment_snapshot={
+                "environment_id": environment.id,
+                "mode": "LINUX_REMOTE",
+                "name": "云执行机",
+                "opencode_path": "opencode",
+                "workspace_root": "/work",
+            },
+        )
+        session.add(task)
+        await session.commit()
+        task_id = task.id
+    async with SessionLocal() as session:
+        with pytest.raises(HTTPException) as error:
+            await task_repo(task_id, session)
+    assert error.value.status_code == 503
+    assert "不可连接" in error.value.detail

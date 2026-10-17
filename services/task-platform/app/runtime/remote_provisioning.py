@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import io
 import json
 import re
 import shlex
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -29,6 +34,8 @@ from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
 
 PROVIDER_ID = "astra-gateway"
+AGENT_VENV = "/opt/astra/worker/venv"
+AGENT_PYTHON = f"{AGENT_VENV}/bin/python"
 
 
 def operation_active(environment: OpenCodeExecutionEnvironment | None) -> bool:
@@ -139,6 +146,54 @@ async def reserve_operation(employee_id: str, action: str, session):
     return environment, operation
 
 
+def _wheel_digest(data: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
+    return "sha256=" + encoded.decode("ascii")
+
+
+def agent_wheel() -> tuple[str, bytes]:
+    """Worker Agent 代码包。依赖只声明 httpx 与 websockets。"""
+
+    version = "0.4.0"
+    dist = f"astra_worker_agent-{version}"
+    app_root = Path(__file__).resolve().parents[1]
+    names = [
+        "app/__init__.py",
+        "app/worker_gateway/__init__.py",
+        "app/worker_gateway/protocol.py",
+        "app/worker_gateway/heartbeat.py",
+    ]
+    names.extend(
+        f"app/worker_agent/{path.name}" for path in sorted((app_root / "worker_agent").glob("*.py"))
+    )
+    files = [(name, (app_root.parent / name).read_bytes()) for name in names]
+    info = f"{dist}.dist-info"
+    metadata = (
+        "Metadata-Version: 2.1\n"
+        "Name: astra-worker-agent\n"
+        f"Version: {version}\n"
+        "Summary: Astra Worker Agent\n"
+        "Requires-Python: >=3.11\n"
+        "Requires-Dist: httpx>=0.27,<1\n"
+        "Requires-Dist: websockets>=12\n"
+    ).encode()
+    wheel_meta = (
+        b"Wheel-Version: 1.0\n"
+        b"Generator: astra-provision\n"
+        b"Root-Is-Purelib: true\n"
+        b"Tag: py3-none-any\n"
+    )
+    files.extend([(f"{info}/METADATA", metadata), (f"{info}/WHEEL", wheel_meta)])
+    record = "".join(f"{name},{_wheel_digest(data)},{len(data)}\n" for name, data in files)
+    record += f"{info}/RECORD,,\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files:
+            archive.writestr(name, data)
+        archive.writestr(f"{info}/RECORD", record.encode())
+    return f"{dist}-py3-none-any.whl", buffer.getvalue()
+
+
 def managed_config(*, config_path, model, models, gateway_url, gateway_key, mcp_url, mcp_key):
     mcp = {"type": "remote", "url": mcp_url, "enabled": True, "oauth": False}
     if mcp_key:
@@ -201,9 +256,11 @@ class RemoteProvisioner:
 
     async def _native_idle(self):
         port = int(self.environment.opencode_server_port)
+        query = urlencode({"directory": self.environment.workspace_root})
+        url = f"http://127.0.0.1:{port}/session/status?{query}"
         script = (
             "import json,urllib.request\n"
-            f"url='http://127.0.0.1:{port}/session/status'\n"
+            f"url={json.dumps(url)}\n"
             "try:\n"
             "    print(urllib.request.urlopen(url, timeout=3).read().decode())\n"
             "except Exception:\n"
@@ -396,8 +453,10 @@ class RemoteProvisioner:
             enrolled = await get_gateway().enroll(session, self.environment.id)
         port = int(self.environment.opencode_server_port)
         opencode_unit = f"astra-opencode-{self.environment.id}.service"
+        worker_unit = f"astra-worker-{self.environment.id}.service"
         token_path = f"/etc/astra/worker-{self.environment.id}.env"
         opencode_url = f"http://127.0.0.1:{port}"
+        timeout = int(self.settings.opencode_control_timeout_seconds)
         env = "\n".join(
             [
                 f"ASTRA_WORKER_TOKEN={enrolled.token}",
@@ -409,6 +468,7 @@ class RemoteProvisioner:
                 f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
                 f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
                 f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
+                f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
             ]
         ) + "\n"
         opencode_unit_text = (
@@ -422,24 +482,34 @@ class RemoteProvisioner:
             "[Unit]\nDescription=Astra Worker Agent\nAfter=network-online.target\n"
             "[Service]\n"
             f"EnvironmentFile={token_path}\n"
-            "ExecStart=/usr/bin/python3 -m app.worker_agent\n"
+            f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n"
             "Restart=on-failure\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
+        wheel_name, wheel_bytes = agent_wheel()
+        wheel_path = f"/opt/astra/worker/{wheel_name}"
+        await self._command("install -d -m 755 /opt/astra/worker")
         await self._command("install -d -m 700 /etc/astra /etc/systemd/system")
+        await self.ssh.write_file(wheel_path, wheel_bytes, mode=0o644)
+        await self._command(
+            "python3 -m venv /opt/astra/worker/venv && "
+            f"{AGENT_PYTHON} -m pip install --disable-pip-version-check --upgrade --force-reinstall "
+            f"{shlex.quote(wheel_path)}"
+        )
         await self.ssh.write_file(token_path, env.encode(), mode=0o600)
         await self.ssh.write_file(
             f"/etc/systemd/system/{opencode_unit}", opencode_unit_text.encode(), mode=0o644
         )
         await self.ssh.write_file(
-            f"/etc/systemd/system/astra-worker-{self.environment.id}.service",
+            f"/etc/systemd/system/{worker_unit}",
             agent_unit_text.encode(),
             mode=0o644,
         )
         await self._command(
             "systemctl daemon-reload && "
-            f"systemctl enable --now {shlex.quote(opencode_unit)} "
-            f"astra-worker-{self.environment.id}.service"
+            f"systemctl enable {shlex.quote(opencode_unit)} {shlex.quote(worker_unit)} && "
+            f"systemctl start {shlex.quote(opencode_unit)} && "
+            f"systemctl restart {shlex.quote(worker_unit)}"
         )
         self.secrets.append(enrolled.token)
         await self.step(emit, "安装 Worker Agent", "passed", enrolled.worker_instance_id)

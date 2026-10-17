@@ -15,10 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Task, WorkerCommand, WorkerInstance, utcnow
 from app.runtime.submission import get_attempt, mark_body_fetched
 from app.worker_gateway.http_limit import release_http_slot
-from app.worker_gateway.protocol import WorkerGatewayError
+from app.worker_gateway.protocol import MAX_CHUNK_BYTES, WorkerGatewayError
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
-MAX_CHUNK_BYTES = 256 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILE_TEXT_BYTES = ((MAX_FILE_BYTES + 2) // 3) * 4
 FILE_RESULT_COMMANDS = frozenset({"read_file", "git_readonly"})

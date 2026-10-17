@@ -585,52 +585,55 @@ async def task_repo(task_id: str, session=Depends(get_session)):
         raise HTTPException(409, "Workspace 尚未准备")
     environment = await resolve_environment(session, task)
     await session.commit()
-    await validate_path(environment, task.workspace, ".")
-    from app.runtime.worker_files import WorkerFileError, environment_uses_worker, worker_git
+    try:
+        await validate_path(environment, task.workspace, ".")
+        from app.runtime.worker_files import WorkerFileError, environment_uses_worker, worker_git
 
-    worker = await environment_uses_worker(environment)
-    status_overflow = False
+        worker = await environment_uses_worker(environment)
+        status_overflow = False
 
-    async def git(*args):
-        nonlocal status_overflow
-        if worker:
-            try:
-                code, output = await worker_git(environment, task.workspace, args)
-            except WorkerFileError as exc:
-                if args[:1] == ("status",) and exc.code == "too_large":
-                    status_overflow = True
-                    return ""
-                raise
-            return output.strip() if code == 0 else ""
-        if environment.mode == ExecutionMode.LOCAL:
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                "-C",
-                task.workspace,
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            output, _ = await proc.communicate()
-            return output.decode().strip() if proc.returncode == 0 else ""
-        raise RuntimeError("远程环境尚未安装 Worker")
+        async def git(*args):
+            nonlocal status_overflow
+            if worker:
+                try:
+                    code, output = await worker_git(environment, task.workspace, args)
+                except WorkerFileError as exc:
+                    if args[:1] == ("status",) and exc.code == "too_large":
+                        status_overflow = True
+                        return ""
+                    raise
+                return output.strip() if code == 0 else ""
+            if environment.mode == ExecutionMode.LOCAL:
+                proc = await asyncio.create_subprocess_exec(
+                    "git",
+                    "-C",
+                    task.workspace,
+                    *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                output, _ = await proc.communicate()
+                return output.decode().strip() if proc.returncode == 0 else ""
+            raise RuntimeError("远程环境尚未安装 Worker")
 
-    commit = await git("rev-parse", "HEAD")
-    branch = await git("branch", "--show-current")
-    changes = await git("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
-    origin = await git("config", "--get", "remote.origin.url")
-    common_dir = await git("rev-parse", "--path-format=absolute", "--git-common-dir")
-    name = (
-        origin.rstrip("/").split("/")[-1].removesuffix(".git")
-        if origin
-        else Path(common_dir).parent.name if common_dir else Path(task.workspace).name
-    )
-    task_changes = await collect_workspace_changes(session, task)
-    return {
-        "name": name,
-        "branch": branch,
-        "commit": commit,
-        "dirty": status_overflow or bool(changes),
-        "changes": sum(bool(entry) for entry in changes.split("\0")),
-        "task_changes": task_changes,
-    }
+        commit = await git("rev-parse", "HEAD")
+        branch = await git("branch", "--show-current")
+        changes = await git("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
+        origin = await git("config", "--get", "remote.origin.url")
+        common_dir = await git("rev-parse", "--path-format=absolute", "--git-common-dir")
+        name = (
+            origin.rstrip("/").split("/")[-1].removesuffix(".git")
+            if origin
+            else Path(common_dir).parent.name if common_dir else Path(task.workspace).name
+        )
+        task_changes = await collect_workspace_changes(session, task)
+        return {
+            "name": name,
+            "branch": branch,
+            "commit": commit,
+            "dirty": status_overflow or bool(changes),
+            "changes": sum(bool(entry) for entry in changes.split("\0")),
+            "task_changes": task_changes,
+        }
+    except Exception as exc:
+        raise error_response(exc) from exc

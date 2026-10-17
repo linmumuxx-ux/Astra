@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.worker_gateway.bus import ConnectionQueues, build_route_bus
 from app.worker_gateway.data_channel import DataChannel, http_frame_data, side_effect_http
+from app.worker_gateway.heartbeat import HeartbeatMonitor
 from app.worker_gateway.http_limit import release_http_slot, reserve_http_slot
 from app.worker_gateway.protocol import (
     WorkerGatewayError,
@@ -87,31 +88,6 @@ class DispatchResult:
     delivered: bool
     replayed: bool
     error_code: str | None
-
-
-@dataclass
-class HeartbeatMonitor:
-    limit: int
-    misses: int = 0
-    pending: dict[str, asyncio.Event] = field(default_factory=dict)
-
-    def track(self, request_id: str) -> asyncio.Event:
-        event = asyncio.Event()
-        self.pending[request_id] = event
-        return event
-
-    def resolve(self, request_id: str) -> bool:
-        event = self.pending.pop(request_id, None)
-        if event is None:
-            return False
-        event.set()
-        self.misses = 0
-        return True
-
-    def timeout(self, request_id: str) -> bool:
-        self.pending.pop(request_id, None)
-        self.misses += 1
-        return self.misses >= self.limit
 
 
 @dataclass

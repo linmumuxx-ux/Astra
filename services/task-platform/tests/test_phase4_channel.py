@@ -1,7 +1,11 @@
 """Phase 4: worker-only remote execution, intranet addresses, and install mark."""
 
 import asyncio
+import io
 import json
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,7 +20,7 @@ from app.gateway.security import gateway_key_digest
 from app.models import DigitalEmployee, OpenCodeExecutionEnvironment
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.opencode_model import gateway_model
-from app.runtime.remote_provisioning import RemoteProvisioner, reserve_operation
+from app.runtime.remote_provisioning import AGENT_PYTHON, RemoteProvisioner, agent_wheel, reserve_operation
 from app.runtime.worker_channel import complete_worker_mark, read_worker_channel
 from app.runtime.workspace_files import upload, validate_path
 from app.worker_agent.connection import handle_command
@@ -223,6 +227,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
         environment, operation = await reserve_operation(employee_id, "deploy", db)
 
     files: dict[str, bytes] = {}
+    commands: list[str] = []
     seen: list[str] = []
     holder: dict = {}
 
@@ -248,6 +253,9 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
 
     class SSH:
         async def run_command(self, command):
+            commands.append(command)
+            if "pip install" in command:
+                assert any(path.endswith(".whl") for path in files)
             if "session/status" in command:
                 return 0, "", ""
             if "$HOME" in command:
@@ -256,7 +264,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
                 return 0, "0\n", ""
             if command.startswith("node ") or " node " in f" {command}":
                 return 0, "模型中转认证与模型路由正常\n", ""
-            if "systemctl enable" in command:
+            if "systemctl restart" in command:
                 await bring_installed_worker_online()
                 return 0, "", ""
             return 0, "", ""
@@ -370,12 +378,43 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     assert events[-1]["success"] is True, events[-1]
     assert ssh_calls == ["ssh"]
     assert seen[:2] == ["switch_channel", "http"]
-    texts = [value.decode() for value in files.values()]
+    texts = []
+    for value in files.values():
+        try:
+            texts.append(value.decode())
+        except UnicodeDecodeError:
+            continue
     assert any(f"ASTRA_REMOTE_GATEWAY_URL={GATEWAY}" in text for text in texts)
     assert any(f"ASTRA_MCP_RESOURCE_URL={MCP}" in text for text in texts)
     assert any("ASTRA_WORKER_OPENCODE_URL=http://127.0.0.1:4096" in text for text in texts)
     assert any("serve --hostname 127.0.0.1 --port 4096" in text for text in texts)
     assert any(GATEWAY in text and "astra-gateway" in text for text in texts)
+    wheels = [path for path in files if path.endswith(".whl")]
+    assert wheels == ["/opt/astra/worker/astra_worker_agent-0.4.0-py3-none-any.whl"]
+    with zipfile.ZipFile(io.BytesIO(files[wheels[0]])) as archive:
+        packed = set(archive.namelist())
+    assert "app/worker_agent/__main__.py" in packed
+    assert "app/worker_gateway/heartbeat.py" in packed
+    assert "app/config/settings.py" not in packed
+    assert "app/worker_gateway/service.py" not in packed
+    install = next(command for command in commands if "pip install" in command)
+    assert install.startswith("python3 -m venv /opt/astra/worker/venv && ")
+    assert f"{AGENT_PYTHON} -m pip install" in install
+    assert "--force-reinstall" in install
+    assert wheels[0] in install
+    worker_unit = f"astra-worker-{environment_id}.service"
+    opencode_unit = f"astra-opencode-{environment_id}.service"
+    unit = files[f"/etc/systemd/system/{worker_unit}"].decode()
+    assert f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n" in unit
+    assert "/usr/bin/python3" not in unit
+    restart = next(command for command in commands if "systemctl daemon-reload" in command)
+    assert restart == (
+        "systemctl daemon-reload && "
+        f"systemctl enable {opencode_unit} {worker_unit} && "
+        f"systemctl start {opencode_unit} && "
+        f"systemctl restart {worker_unit}"
+    )
+    assert commands.index(install) < commands.index(restart)
     async with SessionLocal() as db:
         stored = await db.get(OpenCodeExecutionEnvironment, environment_id)
         assert stored.worker_channel == "worker"
@@ -422,19 +461,63 @@ def test_linux_remote_model_stays_on_the_gateway():
     assert "effective_model = gateway_model(raw_model)" in source
 
 
+def repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "ops" / "deploy" / "install_nexus.sh").is_file():
+            return parent
+    raise AssertionError("找不到仓库根目录")
+
+
 def test_remote_port_default_is_4096_and_llm_wiki_tunnel_stays():
-    script = Path("/workspace/ops/deploy/install_nexus.sh").read_text(encoding="utf-8")
+    root = repo_root()
+    script = (root / "ops/deploy/install_nexus.sh").read_text(encoding="utf-8")
     assert "REMOTE_WORKER_OPENCODE_PORT:=4096" in script
     assert "4296" not in script
     assert "ssh -N -i" in script
-    example = Path("/workspace/ops/env/.env.example").read_text(encoding="utf-8")
+    example = (root / "ops/env/.env.example").read_text(encoding="utf-8")
     assert "REMOTE_WORKER_OPENCODE_PORT=4096" in example
     assert "4296" not in example
-    guide = Path("/workspace/ops/deploy/DEPLOYMENT_GUIDE.md").read_text(encoding="utf-8")
-    employees = Path("/workspace/docs/deploy/REMOTE_EMPLOYEES.md").read_text(encoding="utf-8")
+    guide = (root / "ops/deploy/DEPLOYMENT_GUIDE.md").read_text(encoding="utf-8")
+    employees = (root / "docs/deploy/REMOTE_EMPLOYEES.md").read_text(encoding="utf-8")
     assert "4296" not in guide
     assert "4296" not in employees
-    assert "llm_wiki_api_base_url" in Path("app/llm_wiki.py").read_text(encoding="utf-8")
+    platform = Path(__file__).resolve().parents[1]
+    assert "llm_wiki_api_base_url" in (platform / "app/llm_wiki.py").read_text(encoding="utf-8")
+
+
+def test_agent_wheel_imports_without_the_backend(tmp_path):
+    filename, payload = agent_wheel()
+    wheel = tmp_path / filename
+    wheel.write_bytes(payload)
+    target = tmp_path / "site"
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--target",
+            str(target),
+            str(wheel),
+        ],
+        stdout=subprocess.DEVNULL,
+    )
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import app.worker_agent.connection\n"
+        "import app.worker_agent.local_opencode\n"
+        "import app.worker_agent.__main__\n"
+        "banned = [\n"
+        "    'sqlalchemy', 'fastapi', 'pydantic_settings',\n"
+        "    'app.config.settings', 'app.worker_gateway.service',\n"
+        "    'app.worker_gateway.data_channel',\n"
+        "]\n"
+        "loaded = [name for name in banned if name in sys.modules]\n"
+        "assert not loaded, loaded\n"
+    )
+    subprocess.check_call([sys.executable, "-c", script, str(target)])
 
 
 async def authenticate_existing(gateway, environment_id):

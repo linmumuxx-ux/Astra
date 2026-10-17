@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import httpx
 
-from app.worker_gateway.data_channel import MAX_CHUNK_BYTES
+from app.worker_gateway.protocol import MAX_CHUNK_BYTES
 
 _PASS_HEADERS = {"x-next-cursor", "link", "x-has-more", "content-type"}
 

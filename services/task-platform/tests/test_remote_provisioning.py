@@ -332,7 +332,7 @@ async def test_native_busy_refuses_maintenance_before_install():
     worker = RemoteProvisioner(env, op)
 
     async def run_command(command, timeout=30):
-        assert "session/status" in command
+        assert "session/status?directory=%2Fsrv%2Fproject" in command
         return 0, '{"ses_busy": {"type": "busy"}}', ""
 
     worker.ssh = type("SSH", (), {"run_command": staticmethod(run_command)})()

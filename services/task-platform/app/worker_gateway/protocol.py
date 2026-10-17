@@ -9,6 +9,7 @@ from typing import Any
 
 MESSAGE_TYPES = frozenset({"command", "response", "event", "heartbeat"})
 COMMAND_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+MAX_CHUNK_BYTES = 256 * 1024
 
 
 class WorkerGatewayError(Exception):

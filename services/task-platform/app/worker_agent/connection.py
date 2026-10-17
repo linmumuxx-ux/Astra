@@ -24,6 +24,7 @@ from app.worker_agent.files import (
 )
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import WorkerTransportError
+from app.worker_gateway.heartbeat import HeartbeatMonitor
 from app.worker_gateway.protocol import (
     WorkerGatewayError,
     WorkerMessage,
@@ -32,7 +33,6 @@ from app.worker_gateway.protocol import (
     frame_acceptable,
     parse_message,
 )
-from app.worker_gateway.service import HeartbeatMonitor
 
 Connect = Callable[[], Awaitable["FrameTransport"]]
 
