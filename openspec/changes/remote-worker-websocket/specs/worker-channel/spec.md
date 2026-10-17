@@ -23,7 +23,7 @@ The system MUST increment the epoch when a connection authenticates. After a new
 - **THEN** the Worker remains online at the newer epoch
 
 ### Requirement: Commands are durable and idempotent
-The system MUST store a command before publishing it. The same `request_id` MUST return the stored command and MUST NOT publish it again. An offline Worker MUST persist the command as failed with `offline`. A full control queue MUST leave the command pending.
+The system MUST store a command before publishing it. The same `request_id` with the same Worker, command name, and payload MUST return the stored command and MUST NOT publish it again. A conflicting Worker, name, or payload MUST be rejected. An offline Worker MUST persist the command as failed with `offline`. A full control queue MUST leave the command pending. Idempotent commands MUST be retried by the current owner after the dispatch lease expires. A side-effect command such as `prompt` MUST NOT be published again while its result is unknown.
 
 #### Scenario: Duplicate request is not delivered twice
 - **WHEN** a caller submits a request id that is already stored
@@ -34,7 +34,7 @@ The system MUST store a command before publishing it. The same `request_id` MUST
 - **THEN** the command row is already pending
 
 ### Requirement: Routing has one owner
-The process holding the socket MUST be the only owner for that epoch. Another memory bus MUST NOT observe that owner. Redis clients using the same prefix MUST observe it. Clearing an older epoch or a different owner MUST leave the current lease in place. Control frames MUST be delivered before queued events, and a full event queue MUST drop events instead of blocking control.
+The process holding the socket MUST be the only owner for that epoch. Registration MUST reject an older epoch. Another memory bus MUST NOT observe that owner. Redis clients using the same prefix MUST observe it. Clearing an older epoch or a different owner MUST leave the current lease in place. Publish, consume, and send MUST fence on the target epoch. A consumer that loses ownership MUST stop. Control frames MUST be delivered before queued events, and a full event queue MUST drop events instead of blocking control.
 
 #### Scenario: Separate memory buses do not share ownership
 - **WHEN** one memory bus records an owner

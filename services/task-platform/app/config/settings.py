@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     worker_gateway_heartbeat_misses: int = Field(default=2, ge=1, le=10)
     worker_gateway_command_timeout_seconds: int = Field(default=30, ge=1, le=600)
     worker_gateway_auth_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    worker_gateway_dispatch_lease_seconds: int = Field(default=10, ge=1, le=600)
+    # 空值时由启动流程生成并写入 ops/env/.env。管理接口校验这把密钥，WebSocket 不使用它。
+    worker_gateway_admin_key: str = ""
     scout_interval: int = 30
     dispatcher_interval: int = 5
     heartbeat_interval: int = 10

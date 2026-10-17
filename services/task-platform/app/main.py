@@ -39,8 +39,10 @@ async def lifespan(_: FastAPI):
     else:
         async with SessionLocal() as session:
             await bootstrap_employees(session, settings.resolved_config_dir)
+    from app.worker_gateway.admin_key import ensure_worker_gateway_admin_key
     from app.worker_gateway.service import sweep_worker_gateway
 
+    ensure_worker_gateway_admin_key(settings)
     supervisor = asyncio.create_task(supervise_sessions())
     worker_sweep = asyncio.create_task(sweep_worker_gateway())
     # 平台助手是增强能力：启动失败不得影响核心任务执行链。

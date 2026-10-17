@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+import time
 from datetime import timedelta
 from uuid import uuid4
 
@@ -35,6 +36,11 @@ from app.worker_gateway.protocol import WorkerGatewayError, dump_message, envelo
 from app.worker_gateway.service import HeartbeatMonitor, WorkerGateway
 
 REDIS_URL = os.environ.get("ASTRA_TEST_REDIS_URL")
+ADMIN_HEADERS = {"X-Astra-Worker-Gateway-Key": "wgk_test"}
+
+
+def live_frame(frame: dict, epoch: int, ttl: int = 120) -> dict:
+    return {**frame, "epoch": epoch, "expires_at": int(time.time()) + ttl}
 
 
 class FakeWebSocket:
@@ -145,8 +151,11 @@ async def bring_online(gateway: WorkerGateway, environment_id: int):
     auth = await authenticate(
         gateway, environment_id, enrolled.worker_instance_id, enrolled.token, "auth-online"
     )
-    await gateway.bus.set_owner(auth.worker_instance_id, gateway.owner_id, auth.epoch)
-    gateway.bus.bind(auth.worker_instance_id)
+    assert await gateway.bus.set_owner(auth.worker_instance_id, gateway.owner_id, auth.epoch) is True
+    queues = await gateway.bus.bind(
+        auth.worker_instance_id, epoch=auth.epoch, owner_id=gateway.owner_id
+    )
+    assert queues is not None
     return enrolled, auth
 
 
@@ -526,14 +535,17 @@ def test_disconnect_does_not_restart_opencode_and_reconnect_uses_new_epoch():
             payload={"ok": True, "epoch": epoch},
         ).to_dict()
 
-    command = envelope(
+    command_message = envelope(
         request_id="req-agent",
         worker_instance_id="wrk_agent",
         environment_id=7,
         session_id=None,
         message_type="command",
         payload={"name": "ping", "data": {}},
-    ).to_dict()
+    )
+    command_message.epoch = 1
+    command_message.expires_at = int(time.time()) + 120
+    command = command_message.to_dict()
     transports = [ScriptedTransport([reply(1), command]), ScriptedTransport([reply(2)])]
 
     async def scenario():
@@ -599,10 +611,19 @@ def test_worker_gateway_routes_are_mounted_and_reject_unknown_workers():
         assert health.json()["requested_bus"] == get_settings().worker_gateway_bus
         assert health.json()["warning"] == warning
         assert health.json()["owner_id"].startswith("gw_")
-        missing = client.post("/api/worker-gateway/instances", json={"environment_id": 9_999_999})
+        denied = client.post("/api/worker-gateway/instances", json={"environment_id": 9_999_999})
+        assert denied.status_code == 401
+        missing = client.post(
+            "/api/worker-gateway/instances",
+            json={"environment_id": 9_999_999},
+            headers=ADMIN_HEADERS,
+        )
         assert missing.status_code == 404
         assert missing.json()["detail"]["code"] == "unknown_environment"
-        assert client.get("/api/worker-gateway/commands/missing-command").status_code == 404
+        assert client.get("/api/worker-gateway/commands/missing-command").status_code == 401
+        assert client.get(
+            "/api/worker-gateway/commands/missing-command", headers=ADMIN_HEADERS
+        ).status_code == 404
         with client.websocket_connect("/api/worker-gateway/connect") as websocket:
             websocket.send_json({
                 "request_id": "auth-missing",
@@ -623,11 +644,18 @@ async def test_http_enroll_returns_token_once(environment_id: int):
 
     mini.include_router(router)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=mini), base_url="http://astra") as client:
-        created = await client.post("/api/worker-gateway/instances", json={"environment_id": environment_id})
+        created = await client.post(
+            "/api/worker-gateway/instances",
+            json={"environment_id": environment_id},
+            headers=ADMIN_HEADERS,
+        )
         assert created.status_code == 201, created.text
         body = created.json()
         assert body["token"].startswith("wtk_")
-        visible = await client.get(f"/api/worker-gateway/instances/{body['worker_instance_id']}")
+        visible = await client.get(
+            f"/api/worker-gateway/instances/{body['worker_instance_id']}",
+            headers=ADMIN_HEADERS,
+        )
         assert visible.status_code == 200
         assert "token" not in visible.json()
         assert "token_digest" not in visible.json()
@@ -674,13 +702,15 @@ async def _assert_response_and_expiry(bus) -> None:
 
 async def test_memory_response_route_matches_owner_expiry():
     bus = MemoryRouteBus(owner_ttl_seconds=1, result_ttl_seconds=1, control_limit=1, event_limit=1)
-    queues = bus.bind("wrk-bound")
-    assert await bus.publish_command("wrk-bound", {"request_id": "c1"}) is True
+    assert await bus.set_owner("wrk-bound", "gw", 1) is True
+    queues = await bus.bind("wrk-bound", epoch=1, owner_id="gw")
+    assert queues is not None
+    assert await bus.publish_command("wrk-bound", live_frame({"request_id": "c1"}, 1)) is True
     assert (await queues.wait_frame())["request_id"] == "c1"
-    assert await bus.publish_command("wrk-bound", {"request_id": "c2"}) is True
-    assert await bus.publish_command("wrk-bound", {"request_id": "c3"}) is False
-    assert await bus.publish_event("wrk-bound", {"n": 1}) is True
-    assert await bus.publish_event("wrk-bound", {"n": 2}) is False
+    assert await bus.publish_command("wrk-bound", live_frame({"request_id": "c2"}, 1)) is True
+    assert await bus.publish_command("wrk-bound", live_frame({"request_id": "c3"}, 1)) is False
+    assert await bus.publish_event("wrk-bound", live_frame({"n": 1}, 1)) is True
+    assert await bus.publish_event("wrk-bound", live_frame({"n": 2}, 1)) is False
     await _assert_response_and_expiry(bus)
 
 
@@ -694,22 +724,28 @@ async def test_redis_owner_epoch_and_bounded_command_list():
     other = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=1, event_limit=1)
     worker_id = f"wrk_{uuid4().hex}"
     try:
-        await owner.set_owner(worker_id, "gw-owner", 3)
+        assert await owner.set_owner(worker_id, "gw-owner", 3) is True
+        assert await other.set_owner(worker_id, "gw-late", 2) is False
         assert await other.get_owner(worker_id) == ("gw-owner", 3)
         assert await other.clear_owner(worker_id, 2, None) is False
         assert await other.clear_owner(worker_id, 3, "gw-other") is False
         assert await other.touch_owner(worker_id, "gw-other", 3) is False
-        queues = owner.bind(worker_id)
-        assert await other.publish_command(worker_id, {"request_id": "redis-1"}) is True
+        queues = await owner.bind(worker_id, epoch=3, owner_id="gw-owner")
+        assert queues is not None
+        assert await other.publish_command(worker_id, live_frame({"request_id": "redis-1"}, 3)) is True
         frame = await asyncio.wait_for(queues.wait_frame(), 2)
         assert frame["request_id"] == "redis-1"
-        assert await other.publish_command(worker_id, {"request_id": "redis-2"}) is True
-        assert await other.publish_command(worker_id, {"request_id": "redis-3"}) is False
-        assert await other.publish_event(worker_id, {"n": 1}) is True
-        assert await other.publish_event(worker_id, {"n": 2}) is False
+        assert await other.publish_command(worker_id, live_frame({"request_id": "redis-2"}, 3)) is True
+        assert await other.publish_command(worker_id, live_frame({"request_id": "redis-3"}, 3)) is False
+        assert await other.publish_event(worker_id, live_frame({"n": 1}, 3)) is True
+        assert await other.publish_event(worker_id, live_frame({"n": 2}, 3)) is False
         race_id = f"wrk_{uuid4().hex}"
+        assert await other.set_owner(race_id, "gw-owner", 1) is True
         raced = await asyncio.gather(
-            *[other.publish_command(race_id, {"request_id": f"race-{i}"}) for i in range(16)]
+            *[
+                other.publish_command(race_id, live_frame({"request_id": f"race-{i}"}, 1))
+                for i in range(16)
+            ]
         )
         assert sum(raced) == 1
         await other.publish_response("redis-result", {"ok": True, "stage": "result"})

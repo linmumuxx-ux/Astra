@@ -93,6 +93,7 @@
 | ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS | 建议 | — | 设 30，避免探测过慢 |
 | ASTRA_REDIS_URL | 是 | redis://localhost:6379/0 | Celery、API 中转，以及 Worker Gateway 的默认连接总线 |
 | ASTRA_WORKER_GATEWAY_BUS | 否 | auto | `auto` 在 `ASTRA_REDIS_URL` 非空时用 Redis，使 API 与 Celery 共用一个连接所有者。URL 为空时退回 memory，启动日志和 `/api/worker-gateway/health` 的 `warning` 为「仅单进程可用」。需要单进程或强制 Redis 时分别设 `memory`、`redis` |
+| ASTRA_WORKER_GATEWAY_ADMIN_KEY | 否 | 启动时生成 | Worker Gateway 登记、查询和下发的内部密钥，请求头 `X-Astra-Worker-Gateway-Key`。留空时进程启动写入 `ops/env/.env`。WebSocket 使用 Worker token，健康检查不需要这把密钥 |
 | ASTRA_OUTBOX_INTERVAL / ASTRA_OUTBOX_RETRY_SECONDS | 否 | — | 唤醒 outbox 轮询（验证用 2 / 5） |
 | ASTRA_OPENCODE_MODEL | 是 | — | `deepseek/deepseek-flash`（provider/model） |
 | ASTRA_OPENCODE_SERVER_PORT / ASTRA_ASSISTANT_OPENCODE_PORT | 否 | 4096 / 4097 | 平台/助手 OpenCode |

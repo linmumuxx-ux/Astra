@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
+import hmac
+from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket
+from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.settings import get_settings
 from app.database import get_session
 from app.models import WorkerCommand, WorkerInstance
 from app.worker_gateway.protocol import WorkerGatewayError
 from app.worker_gateway.service import get_gateway
+
+ADMIN_HEADER = "X-Astra-Worker-Gateway-Key"
 
 router = APIRouter(prefix="/api/worker-gateway")
 
@@ -37,6 +41,17 @@ class CommandBody(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = Field(default=None, max_length=160)
     timeout_seconds: int | None = Field(default=None, ge=1, le=600)
+
+
+async def require_admin(
+    key: Annotated[str | None, Header(alias=ADMIN_HEADER)] = None,
+) -> None:
+    expected = get_settings().worker_gateway_admin_key.strip()
+    if not expected or key is None or not hmac.compare_digest(key, expected):
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "unauthorized", "message": "管理接口需要内部服务密钥"},
+        )
 
 
 def _raise(exc: WorkerGatewayError) -> NoReturn:
@@ -88,7 +103,11 @@ async def health() -> dict[str, Any]:
 
 
 @router.post("/instances", status_code=201)
-async def enroll_instance(body: EnrollBody, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def enroll_instance(
+    body: EnrollBody,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin),
+) -> dict[str, Any]:
     try:
         result = await get_gateway().enroll(session, body.environment_id)
     except WorkerGatewayError as exc:
@@ -104,7 +123,9 @@ async def enroll_instance(body: EnrollBody, session: AsyncSession = Depends(get_
 
 @router.get("/instances/{worker_instance_id}")
 async def get_instance(
-    worker_instance_id: str, session: AsyncSession = Depends(get_session)
+    worker_instance_id: str,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin),
 ) -> dict[str, Any]:
     instance = await session.get(WorkerInstance, worker_instance_id)
     if instance is None:
@@ -117,6 +138,7 @@ async def create_command(
     worker_instance_id: str,
     body: CommandBody,
     session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin),
 ) -> dict[str, Any]:
     try:
         result = await get_gateway().dispatch(
@@ -139,7 +161,11 @@ async def create_command(
 
 
 @router.get("/commands/{request_id}")
-async def get_command(request_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def get_command(
+    request_id: str,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin),
+) -> dict[str, Any]:
     command = await session.scalar(select(WorkerCommand).where(WorkerCommand.request_id == request_id))
     if command is None:
         raise HTTPException(status_code=404, detail={"code": "unknown_command", "message": "指令不存在"})

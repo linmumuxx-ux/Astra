@@ -15,7 +15,33 @@ from typing import Any
 
 SINGLE_PROCESS_WARNING = "仅单进程可用"
 
+_SET_OWNER_LUA = """
+local current = redis.call('GET', KEYS[1])
+local new_owner = ARGV[1]
+local new_epoch = tonumber(ARGV[2])
+if current then
+  local owner, epoch_text = string.match(current, '^(.-)|(%d+)$')
+  local epoch = tonumber(epoch_text)
+  if epoch > new_epoch then
+    return 0
+  end
+  if epoch == new_epoch and owner ~= new_owner then
+    return 0
+  end
+end
+redis.call('SET', KEYS[1], new_owner .. '|' .. ARGV[2], 'EX', ARGV[3])
+return 1
+"""
+
 _PUSH_LUA = """
+local current = redis.call('GET', KEYS[3])
+if not current then
+  return -1
+end
+local owner, epoch = string.match(current, '^(.-)|(%d+)$')
+if epoch ~= ARGV[3] then
+  return -1
+end
 local limit = tonumber(ARGV[1])
 local held = tonumber(redis.call('GET', KEYS[2]) or '0')
 if held + redis.call('LLEN', KEYS[1]) >= limit then
@@ -26,6 +52,14 @@ return 1
 """
 
 _PULL_LUA = """
+local current = redis.call('GET', KEYS[3])
+if not current then
+  return -1
+end
+local owner, epoch = string.match(current, '^(.-)|(%d+)$')
+if epoch ~= ARGV[2] or owner ~= ARGV[3] then
+  return -1
+end
 local item = redis.call('LPOP', KEYS[1])
 if not item then
   return 0
@@ -111,6 +145,21 @@ def _ttl_seconds(seconds: float) -> int:
     return max(1, int(seconds))
 
 
+def frame_epoch(frame: dict[str, Any]) -> int | None:
+    value = frame.get("epoch")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def frame_is_current(frame: dict[str, Any], now: float | None = None) -> bool:
+    epoch = frame_epoch(frame)
+    expires_at = frame.get("expires_at")
+    if epoch is None or isinstance(expires_at, bool) or not isinstance(expires_at, int):
+        return False
+    return expires_at > int(time.time() if now is None else now)
+
+
 class ConnectionQueues:
     """控制帧优先于事件帧。事件队列满时丢弃事件并计数，不阻塞控制帧。"""
 
@@ -123,6 +172,8 @@ class ConnectionQueues:
         self.control: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=control_limit)
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=event_limit)
         self.dropped_events = 0
+        self.epoch: int | None = None
+        self.owner_id: str | None = None
         self._signal = asyncio.Event()
         self._lock = asyncio.Lock()
         self._on_delivered = on_delivered
@@ -205,10 +256,17 @@ class MemoryRouteBus:
             return None
         return current
 
-    async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> None:
+    async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> bool:
         if "|" in owner_id:
             raise ValueError("owner_id 不能包含 |")
+        current = self._live_owner(worker_instance_id)
+        if current is not None:
+            if current[1] > epoch:
+                return False
+            if current[1] == epoch and current[0] != owner_id:
+                return False
         self._remember_owner(worker_instance_id, owner_id, epoch)
+        return True
 
     async def get_owner(self, worker_instance_id: str) -> tuple[str, int] | None:
         current = self._live_owner(worker_instance_id)
@@ -234,8 +292,18 @@ class MemoryRouteBus:
         del self.owners[worker_instance_id]
         return True
 
-    def bind(self, worker_instance_id: str) -> ConnectionQueues:
+    async def bind(
+        self, worker_instance_id: str, *, epoch: int, owner_id: str
+    ) -> ConnectionQueues | None:
+        current = self._live_owner(worker_instance_id)
+        if current is None or current[0] != owner_id or current[1] != epoch:
+            return None
+        previous = self.bound.get(worker_instance_id)
+        if previous is not None and previous.epoch is not None and previous.epoch > epoch:
+            return None
         queues = ConnectionQueues(self.control_limit, self.event_limit)
+        queues.epoch = epoch
+        queues.owner_id = owner_id
         self.bound[worker_instance_id] = queues
         return queues
 
@@ -243,14 +311,26 @@ class MemoryRouteBus:
         if self.bound.get(worker_instance_id) is queues:
             del self.bound[worker_instance_id]
 
-    async def publish_command(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
+    def _queues_for(self, worker_instance_id: str, frame: dict[str, Any]) -> ConnectionQueues | None:
+        epoch = frame_epoch(frame)
+        if epoch is None or not frame_is_current(frame):
+            return None
+        current = self._live_owner(worker_instance_id)
+        if current is None or current[1] != epoch:
+            return None
         queues = self.bound.get(worker_instance_id)
+        if queues is None or queues.epoch != epoch:
+            return None
+        return queues
+
+    async def publish_command(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
+        queues = self._queues_for(worker_instance_id, frame)
         if queues is None:
             return False
         return await queues.put_control(frame)
 
     async def publish_event(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
-        queues = self.bound.get(worker_instance_id)
+        queues = self._queues_for(worker_instance_id, frame)
         if queues is None:
             return False
         return await queues.put_event(frame)
@@ -309,7 +389,7 @@ class RedisRouteBus:
         self._client: Any | None = None
         self.bound: dict[str, ConnectionQueues] = {}
         self._pulls: dict[int, tuple[asyncio.Event, asyncio.Task[None]]] = {}
-        self._last_touch: dict[str, float] = {}
+        self._bind_lock = asyncio.Lock()
 
     def _connection(self) -> Any:
         if self._client is None:
@@ -321,26 +401,30 @@ class RedisRouteBus:
     def _owner_key(self, worker_instance_id: str) -> str:
         return f"{self.prefix}:owner:{worker_instance_id}"
 
-    def _control_key(self, worker_instance_id: str) -> str:
-        return f"{self.prefix}:control:{worker_instance_id}"
+    def _control_key(self, worker_instance_id: str, epoch: int) -> str:
+        return f"{self.prefix}:control:{worker_instance_id}:{epoch}"
 
-    def _event_key(self, worker_instance_id: str) -> str:
-        return f"{self.prefix}:events:{worker_instance_id}"
+    def _event_key(self, worker_instance_id: str, epoch: int) -> str:
+        return f"{self.prefix}:events:{worker_instance_id}:{epoch}"
 
-    def _held_key(self, worker_instance_id: str, kind: str) -> str:
-        return f"{self.prefix}:{kind}-held:{worker_instance_id}"
+    def _held_key(self, worker_instance_id: str, kind: str, epoch: int) -> str:
+        return f"{self.prefix}:{kind}-held:{worker_instance_id}:{epoch}"
 
     def _result_key(self, request_id: str) -> str:
         return f"{self.prefix}:result:{request_id}"
 
-    async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> None:
+    async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> bool:
         if "|" in owner_id:
             raise ValueError("owner_id 不能包含 |")
-        await self._connection().set(
+        result = await self._connection().eval(
+            _SET_OWNER_LUA,
+            1,
             self._owner_key(worker_instance_id),
-            f"{owner_id}|{epoch}",
-            ex=_ttl_seconds(self.owner_ttl_seconds),
+            owner_id,
+            str(epoch),
+            str(_ttl_seconds(self.owner_ttl_seconds)),
         )
+        return int(result) == 1
 
     async def get_owner(self, worker_instance_id: str) -> tuple[str, int] | None:
         raw = await self._connection().get(self._owner_key(worker_instance_id))
@@ -372,43 +456,74 @@ class RedisRouteBus:
         )
         return int(result) == 1
 
-    def bind(self, worker_instance_id: str) -> ConnectionQueues:
+    async def bind(
+        self, worker_instance_id: str, *, epoch: int, owner_id: str
+    ) -> ConnectionQueues | None:
+        async with self._bind_lock:
+            current = await self.get_owner(worker_instance_id)
+            if current != (owner_id, epoch):
+                return None
+            previous = self.bound.get(worker_instance_id)
+            if previous is not None and previous.epoch is not None and previous.epoch > epoch:
+                return None
+            queues = self._start_pull(worker_instance_id, epoch, owner_id)
+            return queues
+
+    def _start_pull(self, worker_instance_id: str, epoch: int, owner_id: str) -> ConnectionQueues:
         queues = ConnectionQueues(
             self.control_limit,
             self.event_limit,
-            on_delivered=lambda kind: self._release(worker_instance_id, kind, 1),
+            on_delivered=lambda kind: self._release(worker_instance_id, kind, epoch, 1),
         )
+        queues.epoch = epoch
+        queues.owner_id = owner_id
         self.bound[worker_instance_id] = queues
         stop = asyncio.Event()
-        task = asyncio.create_task(self._pull(worker_instance_id, queues, stop))
+        task = asyncio.create_task(
+            self._pull(worker_instance_id, queues, stop, epoch, owner_id)
+        )
         self._pulls[id(queues)] = (stop, task)
         return queues
 
     async def unbind(self, worker_instance_id: str, queues: ConnectionQueues) -> None:
-        if self.bound.get(worker_instance_id) is queues:
-            del self.bound[worker_instance_id]
+        async with self._bind_lock:
+            if self.bound.get(worker_instance_id) is queues:
+                del self.bound[worker_instance_id]
         pull = self._pulls.pop(id(queues), None)
         if pull is not None:
             pull[0].set()
             pull[1].cancel()
             await asyncio.gather(pull[1], return_exceptions=True)
-        await self._release(worker_instance_id, "control", queues.control.qsize())
-        await self._release(worker_instance_id, "event", queues.events.qsize())
+        epoch = queues.epoch
+        if epoch is None:
+            return
+        await self._release(worker_instance_id, "control", epoch, queues.control.qsize())
+        await self._release(worker_instance_id, "event", epoch, queues.events.qsize())
 
     async def publish_command(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
+        epoch = frame_epoch(frame)
+        if epoch is None or not frame_is_current(frame):
+            return False
         return await self._push(
-            self._control_key(worker_instance_id),
-            self._held_key(worker_instance_id, "control"),
+            self._control_key(worker_instance_id, epoch),
+            self._held_key(worker_instance_id, "control", epoch),
+            self._owner_key(worker_instance_id),
             frame,
             self.control_limit,
+            epoch,
         )
 
     async def publish_event(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
+        epoch = frame_epoch(frame)
+        if epoch is None or not frame_is_current(frame):
+            return False
         return await self._push(
-            self._event_key(worker_instance_id),
-            self._held_key(worker_instance_id, "event"),
+            self._event_key(worker_instance_id, epoch),
+            self._held_key(worker_instance_id, "event", epoch),
+            self._owner_key(worker_instance_id),
             frame,
             self.event_limit,
+            epoch,
         )
 
     async def publish_response(self, request_id: str, frame: dict[str, Any]) -> None:
@@ -433,35 +548,64 @@ class RedisRouteBus:
             return None
         return json.loads(popped[1])
 
-    async def _push(self, list_key: str, held_key: str, frame: dict[str, Any], limit: int) -> bool:
+    async def _push(
+        self,
+        list_key: str,
+        held_key: str,
+        owner_key: str,
+        frame: dict[str, Any],
+        limit: int,
+        epoch: int,
+    ) -> bool:
         result = await self._connection().eval(
-            _PUSH_LUA, 2, list_key, held_key, str(limit), json.dumps(frame)
+            _PUSH_LUA,
+            3,
+            list_key,
+            held_key,
+            owner_key,
+            str(limit),
+            json.dumps(frame),
+            str(epoch),
         )
         return int(result) == 1
 
-    async def _release(self, worker_instance_id: str, kind: str, count: int) -> None:
+    async def _release(self, worker_instance_id: str, kind: str, epoch: int, count: int) -> None:
         if count <= 0:
             return
         await self._connection().eval(
-            _RELEASE_LUA, 1, self._held_key(worker_instance_id, kind), str(count)
+            _RELEASE_LUA, 1, self._held_key(worker_instance_id, kind, epoch), str(count)
         )
 
     async def _pull(
-        self, worker_instance_id: str, queues: ConnectionQueues, stop: asyncio.Event
+        self,
+        worker_instance_id: str,
+        queues: ConnectionQueues,
+        stop: asyncio.Event,
+        epoch: int,
+        owner_id: str,
     ) -> None:
         client = self._connection()
-        control_key = self._control_key(worker_instance_id)
-        event_key = self._event_key(worker_instance_id)
-        control_held = self._held_key(worker_instance_id, "control")
-        event_held = self._held_key(worker_instance_id, "event")
+        owner_key = self._owner_key(worker_instance_id)
+        control_key = self._control_key(worker_instance_id, epoch)
+        event_key = self._event_key(worker_instance_id, epoch)
+        control_held = self._held_key(worker_instance_id, "control", epoch)
+        event_held = self._held_key(worker_instance_id, "event", epoch)
         ttl = str(_ttl_seconds(self.owner_ttl_seconds))
         while not stop.is_set():
-            await self._maybe_touch(worker_instance_id)
-            moved = await self._transfer(client, queues, control_key, control_held, ttl, "control")
+            if not await self.touch_owner(worker_instance_id, owner_id, epoch):
+                return
+            moved = await self._transfer(
+                client, queues, control_key, control_held, owner_key, ttl, epoch, owner_id, "control"
+            )
+            if moved is None:
+                return
             if queues.control.qsize() == 0:
-                moved = await self._transfer(
-                    client, queues, event_key, event_held, ttl, "event"
-                ) or moved
+                event_moved = await self._transfer(
+                    client, queues, event_key, event_held, owner_key, ttl, epoch, owner_id, "event"
+                )
+                if event_moved is None:
+                    return
+                moved = event_moved or moved
             if queues.control.qsize():
                 await client.expire(control_held, int(ttl))
             if queues.events.qsize():
@@ -475,15 +619,22 @@ class RedisRouteBus:
         queues: ConnectionQueues,
         list_key: str,
         held_key: str,
+        owner_key: str,
         ttl: str,
+        epoch: int,
+        owner_id: str,
         kind: str,
-    ) -> bool:
+    ) -> bool | None:
         if kind == "control" and queues.control.full():
             return False
         if kind == "event" and queues.events.full():
             return False
-        item = await client.eval(_PULL_LUA, 2, list_key, held_key, ttl)
-        if not item:
+        item = await client.eval(
+            _PULL_LUA, 3, list_key, held_key, owner_key, ttl, str(epoch), owner_id
+        )
+        if item == -1:
+            return None
+        if item == 0 or item is None:
             return False
         payload = json.loads(item)
         accepted = await (
@@ -499,16 +650,6 @@ class RedisRouteBus:
 
     async def _release_key(self, held_key: str, count: int) -> None:
         await self._connection().eval(_RELEASE_LUA, 1, held_key, str(count))
-
-    async def _maybe_touch(self, worker_instance_id: str) -> None:
-        now = time.monotonic()
-        if now - self._last_touch.get(worker_instance_id, 0) < self.owner_ttl_seconds / 3:
-            return
-        self._last_touch[worker_instance_id] = now
-        client = self._connection()
-        key = self._owner_key(worker_instance_id)
-        if await client.exists(key):
-            await client.expire(key, _ttl_seconds(self.owner_ttl_seconds))
 
     async def delete_prefix(self) -> None:
         client = self._connection()

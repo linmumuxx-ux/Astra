@@ -10,6 +10,7 @@ TEST_DB = TEMP_ROOT / f"astra-test-{os.getpid()}.db"
 TEST_WORKSPACES = TEMP_ROOT / f"astra-workspaces-{os.getpid()}"
 os.environ["ASTRA_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB.as_posix()}"
 os.environ["ASTRA_SEED_DEMO"] = "false"
+os.environ["ASTRA_WORKER_GATEWAY_ADMIN_KEY"] = "wgk_test"
 os.environ["ASTRA_LLM_WIKI_ENABLED"] = "false"
 os.environ["ASTRA_WORKSPACE_ROOT"] = str(TEST_WORKSPACES)
 

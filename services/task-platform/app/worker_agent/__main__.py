@@ -10,6 +10,7 @@ import os
 
 from app.worker_agent.connection import WorkerConnectionManager, load_agent_config
 from app.worker_agent.supervisor import RuntimeSupervisor
+from app.worker_agent.transport import connect_websocket
 
 
 async def _main() -> None:
@@ -17,30 +18,9 @@ async def _main() -> None:
     manager = WorkerConnectionManager(config, supervisor=RuntimeSupervisor())
 
     async def connect():
-        import websockets
-
-        socket = await websockets.connect(config.gateway_url, max_size=config.max_frame_bytes)
-        return _WebSocketTransport(socket)
+        return await connect_websocket(config.gateway_url, max_size=config.max_frame_bytes)
 
     await manager.run(connect, asyncio.Event())
-
-
-class _WebSocketTransport:
-    def __init__(self, socket) -> None:
-        self.socket = socket
-
-    async def send(self, message: dict) -> None:
-        import json
-
-        await self.socket.send(json.dumps(message, separators=(",", ":")))
-
-    async def recv(self) -> dict:
-        import json
-
-        return json.loads(await self.socket.recv())
-
-    async def close(self) -> None:
-        await self.socket.close()
 
 
 if __name__ == "__main__":

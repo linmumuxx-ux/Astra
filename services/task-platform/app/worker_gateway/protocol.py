@@ -25,9 +25,11 @@ class WorkerMessage:
     session_id: str | None
     type: str
     payload: dict[str, Any]
+    epoch: int | None = None
+    expires_at: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "request_id": self.request_id,
             "worker_instance_id": self.worker_instance_id,
             "environment_id": self.environment_id,
@@ -35,6 +37,11 @@ class WorkerMessage:
             "type": self.type,
             "payload": self.payload,
         }
+        if self.epoch is not None:
+            data["epoch"] = self.epoch
+        if self.expires_at is not None:
+            data["expires_at"] = self.expires_at
+        return data
 
 
 def dump_message(message: WorkerMessage | dict[str, Any]) -> str:
@@ -70,6 +77,12 @@ def parse_message(raw: str, *, max_bytes: int) -> WorkerMessage:
         raise WorkerGatewayError("invalid_message", "session_id 无效")
     if not isinstance(data["payload"], dict):
         raise WorkerGatewayError("invalid_message", "payload 必须是对象")
+    epoch = data.get("epoch")
+    if epoch is not None and (isinstance(epoch, bool) or not isinstance(epoch, int)):
+        raise WorkerGatewayError("invalid_message", "epoch 无效")
+    expires_at = data.get("expires_at")
+    if expires_at is not None and (isinstance(expires_at, bool) or not isinstance(expires_at, int)):
+        raise WorkerGatewayError("invalid_message", "expires_at 无效")
     return WorkerMessage(
         request_id=data["request_id"],
         worker_instance_id=data["worker_instance_id"],
@@ -77,6 +90,8 @@ def parse_message(raw: str, *, max_bytes: int) -> WorkerMessage:
         session_id=session_id,
         type=data["type"],
         payload=data["payload"],
+        epoch=epoch,
+        expires_at=expires_at,
     )
 
 
@@ -97,6 +112,14 @@ def envelope(
         type=message_type,
         payload=payload,
     )
+
+
+def frame_acceptable(message: WorkerMessage, epoch: int, now: float) -> bool:
+    """指令和心跳在执行或发出前必须对准当前 epoch，并且还没过有效期。"""
+
+    if message.epoch != epoch or message.expires_at is None:
+        return False
+    return message.expires_at > int(now)
 
 
 def validate_command_name(name: str) -> None:
