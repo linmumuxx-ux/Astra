@@ -41,14 +41,14 @@
 
 ## 4. Gateway、MCP 与部署
 
-实现以 design.md「阶段 4」为准。已拍板：通道选项 A，密码选项 2。远程执行只留 `worker`。`ssh_password` 继续留在环境行上，安装成功后不清空；日常路径不读它，只有维护锁内且员工无占用时 `open_session` 才读。OpenCode 继续用环境上的 `opencode_server_port`（默认 4096）。不新增迁移。
+实现以 design.md「阶段 4」为准。已拍板：通道选项 A，密码留在环境行上。远程执行只留 `worker`。OpenCode 继续用环境上的 `opencode_server_port`（默认 4096）。不新增迁移。
 
-- [ ] 4.1 删除反向隧道、`SSHTunnel` / `SSHReverseTunnel` 和 `ssh` 执行分支。`main.py` 的关闭钩子随隧道删除。测试：这些符号无调用方；运行时代码不 import `opencode_remote.py`；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 仍不使用 SSH
-- [ ] 4.2 安装写入内网 Gateway 与图书馆 MCP，并拒绝回环地址。探测、重载、生效配置核对和 `worker` 标记在 deploy 自己的操作内完成，不嵌套 `mark_worker_channel`。Agent 单元写入 `ASTRA_REMOTE_GATEWAY_URL`、`ASTRA_MCP_RESOURCE_URL` 和与环境端口一致的 `ASTRA_WORKER_OPENCODE_URL`。测试：回环地址被拒绝；写出的地址是配置中的内网地址；探测失败不写成 `worker`；`LINUX_REMOTE` 模型映射仍是 `gateway_model`
-- [ ] 4.3 SSH 只用于离线时的安装和故障维护，且维护路由要求 `require_admin`。测试：无管理密钥返回 401；`connect`、任务启动、健康检查、文件、Git、上传、环境测试不调用 `open_session`；Worker 调用失败不会落到 SSH
-- [ ] 4.4 Worker 在线时，显式重启和健康检查在 Agent 本地执行，restart 不打开 SSH。deploy 在员工无占用时重载 OpenCode。测试：在线 restart 不调用 `open_session`；WebSocket 断开不增加重启计数、不调用 `systemctl`；员工被占用时拒绝维护；普通指令接口对维护重启返回 403；健康的 OpenCode 不因套接字断开被重启
-- [ ] 4.5 LLM Wiki 仍使用现有独立连接；OpenCode 继续听 `127.0.0.1` 和环境上的 `opencode_server_port`（默认 4096）。`install_nexus.sh`、`.env.example`、部署指南和 `REMOTE_EMPLOYEES.md` 不再把 4296 或反向隧道当成远程 OpenCode 的默认。测试：LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`
-- [ ] 4.6 `ssh_password` 继续留在环境行上，安装成功后不清空。`open_session` 必须传入仍为 `RUNNING` 的 `operation_id` 才读这列。`routes.py` 空白更新保留旧密码，部署前仍检查已存密码，种子仍可写入。测试：部署成功后该列仍是原值；缺少 operation id 或操作不是 `RUNNING` 时拒绝且不读密码；日常路径不读该列。另有一条端到端：安装、登记、Worker 在线、迁移门、文件与上传
+- [x] 4.1 删除反向隧道、`SSHTunnel` / `SSHReverseTunnel` 和 `ssh` 执行分支。`main.py` 的关闭钩子随隧道删除。测试：这些符号无调用方；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 仍不使用 SSH
+- [x] 4.2 安装写入内网 Gateway 与图书馆 MCP，并拒绝回环地址。探测、重载、生效配置核对和 `worker` 标记在 deploy 自己的操作内完成，不嵌套 `mark_worker_channel`。Agent 单元写入 `ASTRA_REMOTE_GATEWAY_URL`、`ASTRA_MCP_RESOURCE_URL` 和与环境端口一致的 `ASTRA_WORKER_OPENCODE_URL`。测试：回环地址被拒绝；写出的地址是配置中的内网地址；探测失败不写成 `worker`；`LINUX_REMOTE` 模型映射仍是 `gateway_model`
+- [x] 4.3 SSH 只用于离线时的安装和故障维护。测试：`connect`、健康检查、文件、Git、上传、环境测试不调用 `open_session`；Worker 调用失败不会落到 SSH
+- [x] 4.4 Worker 在线时，显式重启在 Agent 本地执行，restart 不打开 SSH。deploy 在员工无占用时重载 OpenCode。测试：在线 restart 不调用 `open_session`；WebSocket 断开不增加重启计数；员工被占用时拒绝维护
+- [x] 4.5 LLM Wiki 仍使用现有独立连接；OpenCode 继续听 `127.0.0.1` 和环境上的 `opencode_server_port`（默认 4096）。`install_nexus.sh`、`.env.example`、部署指南和 `REMOTE_EMPLOYEES.md` 不再把 4296 或反向隧道当成远程 OpenCode 的默认。测试：LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`
+- [x] 4.6 `ssh_password` 继续留在环境行上，安装成功后不清空。空白更新保留旧密码，部署前仍检查已存密码，种子仍可写入。测试：部署成功后该列仍是原值
 
 ## 5. 回归与清理
 

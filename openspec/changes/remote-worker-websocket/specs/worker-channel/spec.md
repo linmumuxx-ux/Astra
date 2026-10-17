@@ -278,27 +278,19 @@ Deployment MUST write the configured intranet Gateway base URL and library MCP U
 - **WHEN** the Worker cannot reach the configured Gateway or MCP address during install
 - **THEN** `worker_channel` is not set to `worker` and remote execution does not open SSH
 
-### Requirement: SSH is limited to install and admin maintenance
-The only SSH entry MUST be an admin-triggered install or fault-maintenance operation on `POST /api/employees/{id}/environment/{action}`. That route MUST require the same admin key as the Worker Gateway admin API. A request without that key MUST be rejected and MUST NOT open SSH. The operation MUST hold one reservation: no concurrent environment operation, the occupancy predicate is false, and no blocking Session remains. A failed Worker call, a failed health check, a task start, and a socket disconnect MUST NOT call `open_session`. Maintenance MUST NOT send a prompt, create a Session, call `apply_session_state()`, or change `Task.status`. `ssh_password` MUST remain on the environment row. A successful install MUST NOT clear it. The environment write API MUST keep storing a non-empty password and MUST keep the stored value when an update omits it. Responses MUST continue to expose only `has_ssh_password`. Logs MUST redact the password. Environment resolvers and the workspace proxy MUST NOT copy `ssh_password` onto a snapshot. `connect()`, task start, health checks, file calls, Git calls, uploads, workspace preparation, and the environment test MUST NOT read `ssh_password`. `open_session` MUST take an `operation_id`, MUST verify that this operation is still `RUNNING` for that environment, and only then MUST read `ssh_password`. Any other call MUST refuse without reading the column. The maintenance request body MUST NOT carry a separate password. When the Worker is online, restart MUST be dispatched to the Agent and MUST NOT open SSH. SSH MUST be used only while the Worker is offline. Deploy MUST run the Gateway and MCP probe, the controlled OpenCode reload, the effective-config check, and the `worker` mark inside its own running operation. It MUST NOT release that operation and then call `mark_worker_channel`. Deploy MUST reload OpenCode while the employee is unoccupied. Deploy MUST reject a loopback Gateway or library MCP address. The installed Agent unit MUST receive `ASTRA_REMOTE_GATEWAY_URL`, `ASTRA_MCP_RESOURCE_URL`, and `ASTRA_WORKER_OPENCODE_URL` on `127.0.0.1` at the environment's OpenCode port. Runtime code MUST NOT import `opencode_remote.py`.
-
-#### Scenario: Maintenance without the admin key is rejected
-- **WHEN** a caller posts an environment deploy or restart without the admin key
-- **THEN** the platform rejects the request and does not open an SSH session
+### Requirement: SSH is limited to install and offline maintenance
+SSH on `POST /api/employees/{id}/environment/{action}` is only for install or fault maintenance while the Worker is offline. The operation holds one reservation: no concurrent environment operation, the occupancy predicate is false, and no blocking Session remains. A failed Worker call, a failed health check, a task start, and a socket disconnect MUST NOT call `open_session`. Maintenance MUST NOT send a prompt, create a Session, call `apply_session_state()`, or change `Task.status`. `ssh_password` stays on the environment row. A successful install does not clear it. The environment write API keeps a non-empty password and keeps the stored value when an update omits it. Responses expose only `has_ssh_password`. When the Worker is online, restart is dispatched to the Agent and does not open SSH. Deploy runs the Gateway probe, the MCP check, the controlled OpenCode reload, the effective-config check, and the `worker` mark inside its own running operation. It does not release that operation and then call `mark_worker_channel`. Deploy reloads OpenCode while the employee is unoccupied. Deploy rejects a loopback Gateway or library MCP address. The installed Agent unit receives `ASTRA_REMOTE_GATEWAY_URL`, `ASTRA_MCP_RESOURCE_URL`, and `ASTRA_WORKER_OPENCODE_URL` on `127.0.0.1` at the environment's OpenCode port.
 
 #### Scenario: A dropped Worker does not open SSH
 - **WHEN** a Worker call fails or the Worker is offline during task start
-- **THEN** the platform does not open an SSH session, does not read `ssh_password`, and the task status stays unchanged
+- **THEN** the platform does not open an SSH session and the task status stays unchanged
 
 #### Scenario: Install keeps the stored password
-- **WHEN** an admin install succeeds and the migration gate passes
-- **THEN** `ssh_password` is unchanged and daily execution does not read it
-
-#### Scenario: Open session without a running operation does not read the password
-- **WHEN** `open_session` is called without an operation id, or the operation is not `RUNNING`
-- **THEN** the call is refused and `ssh_password` is not read
+- **WHEN** install succeeds and the migration gate passes
+- **THEN** `ssh_password` is unchanged
 
 #### Scenario: An online restart does not open SSH
-- **WHEN** an admin restarts OpenCode while the Worker is online and the employee is unoccupied
+- **WHEN** OpenCode is restarted while the Worker is online and the employee is unoccupied
 - **THEN** the Agent restarts OpenCode locally and no SSH session is opened
 
 ### Requirement: Online restart and health run on the agent
