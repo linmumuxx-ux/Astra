@@ -76,9 +76,15 @@ def _command_body(command: WorkerCommand, *, delivered: bool, replayed: bool, er
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     gateway = get_gateway()
-    return {"status": "ok", "bus": gateway.settings.worker_gateway_bus, "owner_id": gateway.owner_id}
+    return {
+        "status": "ok",
+        "bus": gateway.bus_mode,
+        "requested_bus": gateway.settings.worker_gateway_bus,
+        "owner_id": gateway.owner_id,
+        "warning": gateway.bus_warning,
+    }
 
 
 @router.post("/instances", status_code=201)

@@ -44,6 +44,17 @@ The process holding the socket MUST be the only owner for that epoch. Another me
 - **WHEN** the current lease is epoch 2 and a caller clears epoch 1
 - **THEN** the epoch 2 lease remains
 
+### Requirement: Configured Redis is the default bus
+When the bus setting is `auto` and the Redis URL is non-empty, the gateway MUST use the Redis bus. When that URL is empty, the gateway MUST use the memory bus and its health payload MUST include the warning `仅单进程可用`. An explicit `memory` or `redis` setting MUST override the automatic choice. Redis queue admission MUST reject a frame once the list length plus frames already pulled but not delivered reaches the limit, and the check plus enqueue MUST be one atomic operation.
+
+#### Scenario: Automatic Redis
+- **WHEN** the bus setting is `auto` and a Redis URL is configured
+- **THEN** the health payload reports `redis` and has no single-process warning
+
+#### Scenario: Bounded Redis admission
+- **WHEN** one command is already queued and the control limit is 1
+- **THEN** the next command is rejected even if a consumer has moved the queued command out of the Redis list and not yet delivered it
+
 ### Requirement: Disconnect does not restart OpenCode
 The Worker Agent MUST reconnect with backoff after a socket failure and MUST NOT count that failure as an OpenCode process restart.
 

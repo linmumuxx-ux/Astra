@@ -24,7 +24,13 @@ from app.worker_agent.connection import (
     reconnect_delay,
 )
 from app.worker_agent.supervisor import RuntimeSupervisor
-from app.worker_gateway.bus import ConnectionQueues, MemoryRouteBus, RedisRouteBus
+from app.worker_gateway.bus import (
+    SINGLE_PROCESS_WARNING,
+    ConnectionQueues,
+    MemoryRouteBus,
+    RedisRouteBus,
+    resolve_worker_gateway_bus,
+)
 from app.worker_gateway.protocol import WorkerGatewayError, dump_message, envelope, parse_message
 from app.worker_gateway.service import HeartbeatMonitor, WorkerGateway
 
@@ -586,7 +592,12 @@ def test_worker_gateway_routes_are_mounted_and_reject_unknown_workers():
     with TestClient(app) as client:
         health = client.get("/api/worker-gateway/health")
         assert health.status_code == 200
-        assert health.json()["bus"] == "memory"
+        mode, warning = resolve_worker_gateway_bus(
+            get_settings().worker_gateway_bus, get_settings().redis_url
+        )
+        assert health.json()["bus"] == mode
+        assert health.json()["requested_bus"] == get_settings().worker_gateway_bus
+        assert health.json()["warning"] == warning
         assert health.json()["owner_id"].startswith("gw_")
         missing = client.post("/api/worker-gateway/instances", json={"environment_id": 9_999_999})
         assert missing.status_code == 404
@@ -622,6 +633,57 @@ async def test_http_enroll_returns_token_once(environment_id: int):
         assert "token_digest" not in visible.json()
 
 
+def test_bus_auto_uses_redis_url_and_memory_override_warns():
+    assert resolve_worker_gateway_bus("auto", "redis://127.0.0.1:6379/0") == ("redis", None)
+    assert resolve_worker_gateway_bus("auto", "  ") == ("memory", SINGLE_PROCESS_WARNING)
+    assert resolve_worker_gateway_bus("memory", "redis://127.0.0.1:6379/0") == (
+        "memory",
+        SINGLE_PROCESS_WARNING,
+    )
+    assert resolve_worker_gateway_bus("redis", "") == ("redis", None)
+    memory_gateway = WorkerGateway(
+        settings=get_settings().model_copy(update={"worker_gateway_bus": "memory"})
+    )
+    assert memory_gateway.bus_mode == "memory"
+    assert memory_gateway.bus_warning == SINGLE_PROCESS_WARNING
+    redis_gateway = WorkerGateway(
+        settings=get_settings().model_copy(
+            update={"worker_gateway_bus": "auto", "redis_url": "redis://127.0.0.1:6379/15"}
+        )
+    )
+    assert redis_gateway.bus_mode == "redis"
+    assert redis_gateway.bus_warning is None
+
+
+async def _assert_response_and_expiry(bus) -> None:
+    await bus.set_owner("wrk-expire", "gw-a", 2)
+    await bus.publish_response("expire-me", {"ok": True})
+    await asyncio.sleep(0.4)
+    assert await bus.touch_owner("wrk-expire", "gw-a", 2) is True
+    assert await bus.touch_owner("wrk-expire", "gw-b", 2) is False
+    await asyncio.sleep(0.4)
+    assert await bus.get_owner("wrk-expire") == ("gw-a", 2)
+    await asyncio.sleep(1.2)
+    assert await bus.get_owner("wrk-expire") is None
+    assert await bus.wait_response("expire-me", 0.2) is None
+    pending = asyncio.create_task(bus.wait_response("late", 2))
+    await asyncio.sleep(0.1)
+    await bus.publish_response("late", {"stage": "result", "ok": True})
+    assert await pending == {"stage": "result", "ok": True}
+
+
+async def test_memory_response_route_matches_owner_expiry():
+    bus = MemoryRouteBus(owner_ttl_seconds=1, result_ttl_seconds=1, control_limit=1, event_limit=1)
+    queues = bus.bind("wrk-bound")
+    assert await bus.publish_command("wrk-bound", {"request_id": "c1"}) is True
+    assert (await queues.wait_frame())["request_id"] == "c1"
+    assert await bus.publish_command("wrk-bound", {"request_id": "c2"}) is True
+    assert await bus.publish_command("wrk-bound", {"request_id": "c3"}) is False
+    assert await bus.publish_event("wrk-bound", {"n": 1}) is True
+    assert await bus.publish_event("wrk-bound", {"n": 2}) is False
+    await _assert_response_and_expiry(bus)
+
+
 @pytest.mark.skipif(
     not REDIS_URL,
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
@@ -636,14 +698,42 @@ async def test_redis_owner_epoch_and_bounded_command_list():
         assert await other.get_owner(worker_id) == ("gw-owner", 3)
         assert await other.clear_owner(worker_id, 2, None) is False
         assert await other.clear_owner(worker_id, 3, "gw-other") is False
+        assert await other.touch_owner(worker_id, "gw-other", 3) is False
         queues = owner.bind(worker_id)
         assert await other.publish_command(worker_id, {"request_id": "redis-1"}) is True
         frame = await asyncio.wait_for(queues.wait_frame(), 2)
         assert frame["request_id"] == "redis-1"
         assert await other.publish_command(worker_id, {"request_id": "redis-2"}) is True
         assert await other.publish_command(worker_id, {"request_id": "redis-3"}) is False
+        assert await other.publish_event(worker_id, {"n": 1}) is True
+        assert await other.publish_event(worker_id, {"n": 2}) is False
+        race_id = f"wrk_{uuid4().hex}"
+        raced = await asyncio.gather(
+            *[other.publish_command(race_id, {"request_id": f"race-{i}"}) for i in range(16)]
+        )
+        assert sum(raced) == 1
+        await other.publish_response("redis-result", {"ok": True, "stage": "result"})
+        assert await owner.wait_response("redis-result", 2) == {"ok": True, "stage": "result"}
         assert await owner.clear_owner(worker_id, 3, "gw-owner") is True
         assert await other.get_owner(worker_id) is None
     finally:
+        await owner.delete_prefix()
+        await other.delete_prefix()
         await owner.aclose()
         await other.aclose()
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
+)
+async def test_redis_lease_and_result_expire_like_memory():
+    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    bus = RedisRouteBus(
+        REDIS_URL, prefix=prefix, owner_ttl_seconds=1, result_ttl_seconds=1
+    )
+    try:
+        await _assert_response_and_expiry(bus)
+    finally:
+        await bus.delete_prefix()
+        await bus.aclose()

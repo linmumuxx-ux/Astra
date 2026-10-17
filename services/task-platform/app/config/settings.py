@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5174"])
 
     redis_url: str = "redis://localhost:6379/0"
-    # memory：单进程开发与测试。API 与 Celery 分进程时必须设为 redis，
-    # 否则各进程会各自看不到连接所有者。
-    worker_gateway_bus: Literal["memory", "redis"] = "memory"
+    # auto：redis_url 非空时用 Redis 共享连接所有者；URL 为空才退回 memory。
+    # memory / redis 可显式覆盖。memory 会在健康接口提示仅单进程可用。
+    worker_gateway_bus: Literal["auto", "memory", "redis"] = "auto"
     worker_gateway_ping_seconds: int = Field(default=20, ge=1, le=300)
     worker_gateway_ping_timeout_seconds: int = Field(default=10, ge=1, le=300)
     worker_gateway_reconnect_min_seconds: float = Field(default=1, ge=0.1, le=60)

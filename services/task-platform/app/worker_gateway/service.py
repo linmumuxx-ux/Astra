@@ -113,12 +113,19 @@ class WorkerGateway:
     def __init__(self, *, settings: Settings | None = None, bus=None, owner_id: str | None = None) -> None:
         self.settings = settings or get_settings()
         self.owner_id = owner_id or f"gw_{uuid4().hex[:12]}"
-        self.bus = bus or build_route_bus(
-            self.settings.worker_gateway_bus,
-            self.settings.redis_url,
-            control_limit=self.settings.worker_gateway_control_queue_size,
-            event_limit=self.settings.worker_gateway_event_queue_size,
-        )
+        if bus is None:
+            self.bus, self.bus_mode, self.bus_warning = build_route_bus(
+                self.settings.worker_gateway_bus,
+                self.settings.redis_url,
+                control_limit=self.settings.worker_gateway_control_queue_size,
+                event_limit=self.settings.worker_gateway_event_queue_size,
+            )
+            if self.bus_warning:
+                logger.warning("Worker Gateway 当前总线是 memory，%s", self.bus_warning)
+        else:
+            self.bus = bus
+            self.bus_mode = getattr(bus, "mode", "memory")
+            self.bus_warning = "仅单进程可用" if self.bus_mode == "memory" else None
         self.sockets: dict[str, _SocketLease] = {}
 
     async def enroll(self, session: AsyncSession, environment_id: int) -> EnrollResult:
@@ -491,11 +498,19 @@ class WorkerGateway:
                     message=message,
                 )
             if applied:
+                if message.payload.get("stage") == "result":
+                    await self._route_response(message)
                 continue
             async with SessionLocal() as session:
                 current = await self.epoch_is_current(session, auth.worker_instance_id, auth.epoch)
             if not current:
                 raise ConnectionError("epoch_stale")
+
+    async def _route_response(self, message: WorkerMessage) -> None:
+        try:
+            await self.bus.publish_response(message.request_id, message.to_dict())
+        except Exception:
+            logger.warning("worker response route failed", exc_info=True)
 
     async def _on_heartbeat(self, auth: AuthOk, message: WorkerMessage, monitor: HeartbeatMonitor) -> None:
         if message.payload.get("kind") == "pong":
@@ -533,6 +548,10 @@ class WorkerGateway:
             await asyncio.sleep(interval)
             if stop.is_set():
                 return
+            try:
+                await self.bus.touch_owner(auth.worker_instance_id, self.owner_id, auth.epoch)
+            except Exception:
+                logger.warning("worker owner lease refresh failed", exc_info=True)
             request_id = f"hb_{uuid4().hex}"
             event = monitor.track(request_id)
             frame = envelope(

@@ -33,7 +33,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 5. 指令先 `commit`，再发布。相同 `request_id` 返回原行，不第二次投递。离线时把该行记为 `failed/offline`，避免换 epoch 后补投。队列满则保持 `pending`。
 6. 响应的 epoch 取套接字注册时的值，不取消息里自报的值。`command.epoch`、套接字 epoch 和实例当前 epoch 三者一致才写入结果。ACK 只能把 `pending` 变成 `accepted`，不能把终态改回去。
 7. 在线事实在 `worker_instances`。RouteBus 只保存「哪个进程持有哪个 epoch 的套接字」以及有界控制/事件队列。控制帧优先，事件队列满则丢弃并计数。
-8. `MemoryRouteBus` 与 `RedisRouteBus` 使用同一组方法。默认 `ASTRA_WORKER_GATEWAY_BUS=memory`，供单进程开发和测试。API 与 Celery 分进程部署必须设为 `redis`，前缀 `astra:worker-gateway:`，避免和 API 中转的 Redis 键混用。清除租约时必须同时匹配 epoch；指定 owner 时还要匹配 owner。
+8. `MemoryRouteBus` 与 `RedisRouteBus` 使用同一组方法：owner/epoch/`clear_owner`、`touch_owner`、有界控制/事件队列、响应路由和过期。默认 `ASTRA_WORKER_GATEWAY_BUS=auto`。`ASTRA_REDIS_URL` 非空时用 Redis；URL 为空时用 memory，启动日志和健康接口提示「仅单进程可用」。`memory` 与 `redis` 可显式覆盖。键前缀 `astra:worker-gateway:`，避免和 API 中转的 Redis 键混用。清除租约时必须同时匹配 epoch；指定 owner 时还要匹配 owner。租约和未取走的响应会过期。Redis 队列深度是列表长度加上已取出未送达的数量，容量检查和入队在同一段 Lua 中完成。
 9. 心跳默认 20 秒，超时 10 秒，连续 2 次失败关闭套接字。重连退避 1–30 秒再加不超过 1 秒的抖动，结果不超过 30 秒。超过 `ping + ping_timeout` 没有心跳的在线实例由 sweep 标为离线。
 10. Worker Agent 的 `on_connection_lost()` 不调用 `on_process_exit()`。阶段 1 不启动 OpenCode。Agent 只处理 `ping`、`echo`、`status`。
 11. OpenCode 监听端口仍以环境上的 `opencode_server_port`（默认 4096）为准。需求文本中的 4296 不在阶段 1 改列默认值。
@@ -41,7 +41,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 ## Risks / Trade-offs
 
 - 阶段 1 之后，任务执行、文件、Git、Gateway 和 MCP 仍依赖 SSH。这是先建通道、后切换调用方的顺序，不是遗漏切换。
-- 默认内存总线时，另一个进程看不到套接字所有者。分进程部署必须打开 Redis 总线。阶段 1 还没有 Celery 任务去投递指令。
+- `ASTRA_REDIS_URL` 为空或显式 `ASTRA_WORKER_GATEWAY_BUS=memory` 时，另一个进程看不到套接字所有者。健康接口会提示仅单进程可用。阶段 1 还没有 Celery 任务去投递指令。
 - 非所有者进程轮换 token 后，旧套接字要到下一次心跳或响应才因 epoch 不符而关闭。迟到响应在关闭前已经被 epoch 检查拒绝。
 - 连接行会随重连增长。阶段 1 不裁剪历史连接。
 - 指令超时只到期 `pending/accepted`。阶段 2 的 Session 指令需要调用方传入更长的 `timeout_seconds`。
@@ -55,7 +55,6 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 ## Open Questions
 
 - 阶段 4 是否把新安装的 Worker 本机 OpenCode 改到 127.0.0.1:4296，还是继续使用环境上的 4096。阶段 1 不改。
-- 生产环境何时把 `ASTRA_WORKER_GATEWAY_BUS` 设为 `redis`。代码和跳过条件已经准备好，本机测试没有默认 Redis。
 
 ## 后续阶段
 
