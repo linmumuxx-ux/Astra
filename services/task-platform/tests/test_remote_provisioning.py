@@ -28,8 +28,12 @@ from app.runtime.remote_provisioning import (
 
 @pytest.fixture(autouse=True)
 def isolated_settings(monkeypatch):
-    monkeypatch.setattr(get_settings(), "assistant_enabled", False)
-    monkeypatch.setattr(get_settings(), "mcp_transport", "streamable-http")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "assistant_enabled", False)
+    monkeypatch.setattr(settings, "mcp_transport", "streamable-http")
+    monkeypatch.setattr(settings, "remote_gateway_local_url", "http://10.0.0.8:8110")
+    monkeypatch.setattr(settings, "mcp_resource_server_url", "http://10.0.0.8:8201/mcp")
+    monkeypatch.setattr(settings, "worker_agent_gateway_url", "ws://10.0.0.8:8100/api/worker-gateway/connect")
 
 
 async def employee(**overrides):
@@ -323,40 +327,17 @@ def test_api_streams_progress_and_final_result_without_secrets(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_native_busy_refuses_maintenance_before_install(monkeypatch):
-    from app.runtime import remote_provisioning as module
-
+async def test_native_busy_refuses_maintenance_before_install():
     env, op = await reserve(await employee())
     worker = RemoteProvisioner(env, op)
 
-    class Tunnel:
-        base_url = "http://test"
-        closed = False
+    async def run_command(command, timeout=30):
+        assert "session/status" in command
+        return 0, '{"ses_busy": {"type": "busy"}}', ""
 
-        async def close(self):
-            self.closed = True
-
-    tunnel = Tunnel()
-
-    class SSH:
-        async def open_tunnel(self, **_kwargs):
-            return tunnel
-
-    class Client:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def health(self):
-            return {"healthy": True}
-
-        async def request(self, *_args, **_kwargs):
-            return {"ses_busy": {"type": "busy"}}
-
-    worker.ssh = SSH()
-    monkeypatch.setattr(module, "OpenCodeServerClient", Client)
+    worker.ssh = type("SSH", (), {"run_command": staticmethod(run_command)})()
     with pytest.raises(RuntimeError, match="正在执行"):
         await worker._native_idle()
-    assert tunnel.closed
     await worker._finish(False, "busy")
 
 
@@ -412,21 +393,22 @@ async def test_failed_deploy_revokes_only_its_new_key(monkeypatch):
     assert revoked == ["new-key"]
 
 
-@pytest.mark.asyncio
-async def test_port_conflict_is_returned_without_reporting_success():
-    from app.executors.opencode_remote_server import RemoteOpenCodeServerConnection
+def test_deleted_tunnel_helpers_have_no_callers():
+    from pathlib import Path
 
-    env, op = await reserve(await employee())
-
-    class SSH:
-        async def run_command(self, command):
-            assert "old_cwd" in command and "old_args" in command
-            assert "ss -ltnH" not in command  # CentOS 7 ss does not support -H.
-            return 1, "", "端口冲突：4096 已被占用"
-
-    with pytest.raises(RuntimeError, match="端口冲突"):
-        await RemoteOpenCodeServerConnection(env, get_settings(), None)._start_server(SSH())
-    await RemoteProvisioner(env, op)._finish(False, "port conflict")
+    root = Path("app")
+    banned = (
+        "ensure_remote_mcp_tunnel",
+        "ensure_remote_gateway_tunnel",
+        "close_remote_mcp_tunnels",
+        "open_reverse_tunnel",
+        "SSHReverseTunnel",
+        "SSHTunnel",
+    )
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for name in banned:
+            assert name not in text, f"{path} still mentions {name}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required for npm installation metadata")

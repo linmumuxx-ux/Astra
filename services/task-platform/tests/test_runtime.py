@@ -1,8 +1,6 @@
 import io
 import os
-import socket
 import sys
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -535,52 +533,9 @@ async def test_paramiko_exec_channel_closes_stdin_and_streams_output():
     assert exit_code == 0
 
 
-async def test_ssh_tunnel_forwards_local_loopback_traffic():
-    class FakeTransport:
-        def is_active(self):
-            return True
-
-        def open_channel(self, kind, destination, source):
-            assert kind == "direct-tcpip"
-            assert destination == ("127.0.0.1", 4096)
-            assert source[0] == "127.0.0.1"
-            handler_side, echo_side = socket.socketpair()
-
-            def echo() -> None:
-                try:
-                    while payload := echo_side.recv(65536):
-                        echo_side.sendall(payload)
-                finally:
-                    echo_side.close()
-
-            threading.Thread(target=echo, daemon=True).start()
-            return handler_side
-
-    class FakeClient:
-        def __init__(self):
-            self.transport = FakeTransport()
-
-        def get_transport(self):
-            return self.transport
-
-        def close(self):
-            return None
-
-    ssh = SSHSession(
-        host="example.internal",
-        port=22,
-        username="nexus",
-        password="secret",
-    )
-    ssh._client = FakeClient()
-    tunnel = await ssh.open_tunnel(remote_port=4096)
-    client = socket.create_connection(("127.0.0.1", tunnel.local_port), timeout=2)
-    try:
-        client.sendall(b"GET /global/health HTTP/1.0\r\n\r\n")
-        assert client.recv(65536) == b"GET /global/health HTTP/1.0\r\n\r\n"
-    finally:
-        client.close()
-        await tunnel.close()
+def test_ssh_session_has_no_forwarding_tunnel():
+    assert not hasattr(SSHSession, "open_tunnel")
+    assert not hasattr(SSHSession, "open_reverse_tunnel")
 
 
 def test_windows_batch_command_keeps_batch_path_and_arguments_separate():

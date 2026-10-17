@@ -129,9 +129,9 @@ async def test_worker_channel_does_not_open_ssh_or_read_the_password(monkeypatch
     assert "-c" not in calls[1][1]
 
     ssh = SimpleNamespace(mode=ExecutionMode.LINUX_REMOTE, worker_channel="ssh", id=None)
-    with pytest.raises(AssertionError, match="ssh opened"):
+    with pytest.raises(RuntimeError, match="尚未安装 Worker"):
         await validate_path(ssh, "/ws", "a.txt")
-    with pytest.raises(AssertionError, match="ssh remote"):
+    with pytest.raises(RuntimeError, match="尚未安装 Worker"):
         await _git(ssh, "/ws", "rev-parse", "HEAD")
 
 

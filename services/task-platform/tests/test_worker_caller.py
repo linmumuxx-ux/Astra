@@ -56,36 +56,21 @@ async def test_worker_connect_does_not_open_ssh(environment_id, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ssh_connect_still_opens_a_session(environment_id, monkeypatch):
+async def test_unmarked_connect_does_not_open_ssh(environment_id, monkeypatch):
     await _mark(environment_id, "ssh")
-    seen = {}
-
-    class Tunnel:
-        base_url = "http://127.0.0.1:9"
-
-        async def close(self):
-            return None
-
-    class SSH:
-        async def open_tunnel(self, **kwargs):
-            seen["tunnel"] = kwargs
-            return Tunnel()
-
-        async def close(self):
-            return None
+    called = False
 
     async def opened(self, environment):
-        seen["host"] = environment.host
-        return SSH()
+        nonlocal called
+        called = True
+        raise AssertionError(environment.host)
 
     monkeypatch.setattr(ExecutionEnvironmentRuntime, "open_session", opened)
     environment = await _load(environment_id)
-    environment.host = "worker.example"
-    environment.username = "dev"
-    environment.ssh_password = "secret"
-    async with connect(environment, start=False) as client:
-        assert client.base_url == "http://127.0.0.1:9"
-    assert seen["tunnel"]["remote_port"] == environment.opencode_server_port
+    with pytest.raises(RuntimeError, match="尚未安装 Worker"):
+        async with connect(environment, start=False):
+            pass
+    assert called is False
 
 
 @pytest.mark.asyncio

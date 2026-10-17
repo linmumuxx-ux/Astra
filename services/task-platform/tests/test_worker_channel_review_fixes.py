@@ -548,11 +548,9 @@ def test_channel_admin_route_and_cli_call_mark(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_worker_provisioning_writes_intranet_urls(environment_id, monkeypatch):
-    async def tunnel(*_args, **_kwargs):
-        raise AssertionError("worker 环境不应打开隧道")
-
-    monkeypatch.setattr("app.runtime.remote_provisioning.ensure_remote_gateway_tunnel", tunnel)
-    monkeypatch.setattr("app.runtime.remote_provisioning.ensure_remote_mcp_tunnel", tunnel)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "remote_gateway_local_url", "http://10.0.0.8:8110")
+    monkeypatch.setattr(settings, "mcp_resource_server_url", "http://10.0.0.8:8201/mcp")
     async with SessionLocal() as session:
         environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
         environment.worker_channel = "worker"
@@ -560,9 +558,11 @@ async def test_worker_provisioning_writes_intranet_urls(environment_id, monkeypa
         await session.refresh(environment)
     provisioner = RemoteProvisioner(environment, {"id": "op"})
     gateway_url, mcp_url = await provisioner._channel_endpoints()
-    settings = get_settings()
-    assert gateway_url == settings.remote_gateway_local_url
-    assert mcp_url == settings.mcp_resource_server_url
+    assert gateway_url == "http://10.0.0.8:8110"
+    assert mcp_url == "http://10.0.0.8:8201/mcp"
+    monkeypatch.setattr(settings, "remote_gateway_local_url", "http://127.0.0.1:8110")
+    with pytest.raises(RuntimeError, match="内网"):
+        provisioner._direct_endpoints()
 
 
 @pytest.mark.asyncio

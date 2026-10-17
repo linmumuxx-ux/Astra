@@ -25,7 +25,7 @@ from app.models import (
 )
 from app.runtime.environment import environment_snapshot
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
-from app.runtime.session_connection import _ensure_remote_workspace, prepare_workspace
+from app.runtime.session_connection import prepare_workspace
 from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
 from app.runtime.workspace_files import (
     materialize_task_attachments,
@@ -33,6 +33,7 @@ from app.runtime.workspace_files import (
     upload,
     validate_path,
 )
+from app.worker_agent.workspace import prepare_workspace_local
 
 
 class NativeServer:
@@ -1995,7 +1996,7 @@ async def test_task_worktree_inherits_project_config_and_preserves_its_own(tmp_p
 
 @pytest.mark.parametrize("invalid", ["plain", "nested", "symlink", "foreign", "missing"])
 async def test_remote_worktree_shell_rejects_invalid_reuse(tmp_path, invalid):
-    """Execute the remote shell locally against real Git, without claiming SSH coverage."""
+    """The Agent prepares the task directory locally. Invalid reuse still fails."""
     root = tmp_path / "project"
     root.mkdir()
     _init_repo(root)
@@ -2010,16 +2011,8 @@ async def test_remote_worktree_shell_rejects_invalid_reuse(tmp_path, invalid):
     elif invalid == "foreign":
         target.mkdir()
         _init_repo(target)
-    class ShellRuntime:
-        async def run_remote(self, environment, command):
-            process = await asyncio.create_subprocess_exec(
-                "bash", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await process.communicate()
-            return process.returncode, out.decode(), err.decode()
     with pytest.raises(RuntimeError):
-        await _ensure_remote_workspace(ShellRuntime(), None, root=str(root), target=str(target),
-                                       reuse_existing=True)
+        prepare_workspace_local(str(root), str(target), reuse_existing=True)
 
 
 async def test_remote_worktree_shell_reuses_absolute_common_dir_and_config(tmp_path):
@@ -2028,16 +2021,8 @@ async def test_remote_worktree_shell_reuses_absolute_common_dir_and_config(tmp_p
     _init_repo(root)
     (root / "opencode.json").write_text('{"model":"company/model"}')
     target = tmp_path / "task"
-    class ShellRuntime:
-        async def run_remote(self, environment, command):
-            process = await asyncio.create_subprocess_exec(
-                "bash", "-c", command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await process.communicate()
-            return process.returncode, out.decode(), err.decode()
-    runtime = ShellRuntime()
-    await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target))
-    await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target), reuse_existing=True)
+    prepare_workspace_local(str(root), str(target))
+    prepare_workspace_local(str(root), str(target), reuse_existing=True)
     assert (target / "opencode.json").read_text() == (root / "opencode.json").read_text()
 
 

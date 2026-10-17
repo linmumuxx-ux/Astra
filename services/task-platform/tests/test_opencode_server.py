@@ -8,12 +8,10 @@ from app.config.settings import Settings
 from app.executors.opencode_remote_server import (
     RemoteOpenCodeServerConnection,
     RemoteOpenCodeServerExecutor,
-    close_remote_mcp_tunnels,
 )
 from app.executors.opencode_server import (
     OpenCodeServerClient,
     OpenCodeServerExecutor,
-    OpenCodeServerUnavailable,
 )
 from app.models import OpenCodeExecutionEnvironment, Task
 from app.runtime.opencode_server import OpenCodeServerManager
@@ -335,69 +333,6 @@ async def test_server_timeout_aborts_and_fails_instead_of_requesting_human(tmp_p
     assert client.aborted == ["ses_main"]
 
 
-class FakeTunnel:
-    base_url = "http://127.0.0.1:45123"
-
-    def __init__(self):
-        self.closed = False
-
-    async def close(self):
-        self.closed = True
-
-
-class FakeReverseTunnel:
-    def __init__(self):
-        self.closed = False
-
-    async def close(self):
-        self.closed = True
-
-
-class FakeSSHSession:
-    def __init__(self):
-        self.tunnel = FakeTunnel()
-        self.tunnel_target: tuple[str, int] | None = None
-        self.reverse = None
-        self.reverse_tunnel = FakeReverseTunnel()
-        self.commands: list[str] = []
-        self.closed = False
-
-    def is_active(self):
-        return not self.closed
-
-    async def open_tunnel(self, *, remote_host: str, remote_port: int):
-        self.tunnel_target = (remote_host, remote_port)
-        return self.tunnel
-
-    async def open_reverse_tunnel(self, *, remote_port: int, local_host: str = "127.0.0.1", local_port: int):
-        self.reverse = (remote_port, local_host, local_port)
-        return self.reverse_tunnel
-
-    async def run_command(self, command: str):
-        self.commands.append(command)
-        return 0, "", ""
-
-    async def close(self):
-        self.closed = True
-
-
-class FakeRemoteRuntime:
-    def __init__(self, session: FakeSSHSession):
-        self.session = session
-        self.sessions = [session]
-
-    async def open_session(self, _environment):
-        if len(self.sessions) == 1:
-            # First call belongs to the short-lived OpenCode tunnel.
-            self.sessions.append(FakeSSHSession())
-            return self.session
-        return self.sessions[1]
-
-    @property
-    def mcp_session(self):
-        return self.sessions[1]
-
-
 def remote_environment() -> OpenCodeExecutionEnvironment:
     return OpenCodeExecutionEnvironment(
         employee_id="remote-agent",
@@ -414,83 +349,24 @@ def remote_environment() -> OpenCodeExecutionEnvironment:
     )
 
 
-async def test_remote_server_connection_starts_private_loopback_server():
-    await close_remote_mcp_tunnels()
-    ssh = FakeSSHSession()
+async def test_unmarked_remote_connection_does_not_open_ssh():
+    opened = False
 
-    class StartingClient:
-        def __init__(self):
-            self.health_calls = 0
+    class Runtime:
+        async def open_session(self, _environment):
+            nonlocal opened
+            opened = True
+            raise AssertionError("ssh")
 
-        async def health(self):
-            self.health_calls += 1
-            if self.health_calls == 1:
-                raise OpenCodeServerUnavailable("connection refused")
-            return {"healthy": True, "version": "1.18.25"}
-
-    client = StartingClient()
-    runtime = FakeRemoteRuntime(ssh)
-    connection = RemoteOpenCodeServerConnection(
-        remote_environment(),
-        settings(),
-        runtime,
-        client_factory=lambda base_url: client,
-    )
-
-    async with connection as opened:
-        assert opened is client
-
-    assert ssh.tunnel_target == ("127.0.0.1", 4196)
-    assert len(ssh.commands) == 2
-    assert "opencode.json" in ssh.commands[0]
-    assert "serve --hostname 127.0.0.1 --port 4196" in ssh.commands[1]
-    # The workspace owns its config; Astra never injects OPENCODE_CONFIG.
-    assert "OPENCODE_CONFIG" not in ssh.commands[1]
-    assert "cd '/srv/projects/NEXUS 工作区'" in ssh.commands[1]
-    assert runtime.mcp_session.reverse is not None
-    assert runtime.mcp_session.reverse_tunnel.closed is False
-    assert ssh.tunnel.closed is True
-    assert ssh.closed is True
-    await close_remote_mcp_tunnels()
-    assert runtime.mcp_session.reverse_tunnel.closed is True
-    assert runtime.mcp_session.closed is True
-
-
-async def test_remote_server_refuses_to_start_without_workspace_config():
-    await close_remote_mcp_tunnels()
-    ssh = FakeSSHSession()
-
-    async def run_command(command: str):
-        ssh.commands.append(command)
-        if "test -f" in command:
-            return 1, "", ""
-        return 0, "", ""
-
-    ssh.run_command = run_command
-
-    class UnavailableClient:
-        def __init__(self, *args, **kwargs):
+    with pytest.raises(RuntimeError, match="尚未安装 Worker"):
+        async with RemoteOpenCodeServerConnection(remote_environment(), settings(), Runtime()):
             pass
-
-        async def health(self):
-            raise OpenCodeServerUnavailable("connection refused")
-
-    runtime = FakeRemoteRuntime(ssh)
-    connection = RemoteOpenCodeServerConnection(
-        remote_environment(),
-        settings(),
-        runtime,
-        client_factory=lambda base_url: UnavailableClient(),
-    )
-    with pytest.raises(RuntimeError, match="未提供 OpenCode 配置"):
-        async with connection:
-            pass
-    assert all("OPENCODE_CONFIG" not in command for command in ssh.commands)
-    await close_remote_mcp_tunnels()
+    assert opened is False
 
 
 async def test_remote_executor_uses_remote_posix_workspace_and_structured_events(tmp_path: Path):
-    await close_remote_mcp_tunnels()
+    from contextlib import asynccontextmanager
+
     client = FakeServerClient(
         [
             raw_event("server.connected"),
@@ -507,54 +383,23 @@ async def test_remote_executor_uses_remote_posix_workspace_and_structured_events
         ],
         session_id="ses_remote",
     )
-    ssh = FakeSSHSession()
-    runtime = FakeRemoteRuntime(ssh)
-    executor = RemoteOpenCodeServerExecutor(
-        remote_environment(),
-        settings(),
-        runtime,
-        client_factory=lambda base_url: client,
-    )
+    executor = RemoteOpenCodeServerExecutor(remote_environment(), settings())
 
+    @asynccontextmanager
+    async def connection():
+        yield client
+
+    executor.connection = connection
     result = await executor.start(task(id="ASTRA-REMOTE-SERVER"), tmp_path)
 
     assert result.status == "SUCCEEDED"
     assert result.session_id == "ses_remote"
     assert client.directories
     assert all(directory == PurePosixPath("/srv/projects/NEXUS 工作区") for directory in client.directories)
-    assert ssh.commands == []
-    assert ssh.tunnel_target == ("127.0.0.1", 4196)
-    assert ssh.tunnel.closed is True
-    assert ssh.closed is True
-    assert runtime.mcp_session.reverse_tunnel.closed is False
-    await close_remote_mcp_tunnels()
 
 
 async def _append(items: list[Any], value: Any) -> None:
     items.append(value)
-
-
-async def test_remote_environment_probe_does_not_start_absent_server(monkeypatch):
-    from app.executors import opencode_remote_server as remote
-
-    ssh = FakeSSHSession()
-
-    class UnavailableClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def health(self):
-            raise OpenCodeServerUnavailable("connection refused")
-
-    monkeypatch.setattr(remote, "OpenCodeServerClient", UnavailableClient)
-    passed, detail = await remote.test_remote_server(
-        remote_environment(),
-        settings(),
-        FakeRemoteRuntime(ssh),
-    )
-    assert passed and "未启动" in detail
-    assert ssh.commands == []
-    assert ssh.closed and ssh.tunnel.closed
 
 
 async def test_messages_page_uses_native_opaque_cursor(monkeypatch):
