@@ -167,58 +167,84 @@ Authorization to fetch or execute a command MUST come from the database epoch an
 - **THEN** the final update does not succeed, the waiter does not receive that body, and the task status stays unchanged
 
 ### Requirement: Migrated file, Git, and upload work runs on the Worker
-For an environment marked `worker`, path checks, read-only Git, worktree file reads, and uploads MUST be Worker commands and MUST NOT call `open_session` or `run_remote`. The commands are `validate_path`, `git_readonly`, `read_file`, and `upload_file`. An environment marked `ssh` MUST keep the existing SFTP and remote-command path until phase 4. Directory and worktree preparation stays the phase 2 `prepare_workspace` command. The Worker Agent MUST NOT treat these commands as Task or Session transitions.
+For an environment marked `worker`, path checks, read-only Git, worktree file reads, and uploads MUST be Worker commands and MUST NOT call `open_session` or `run_remote`. The commands are `validate_path`, `git_readonly`, `read_file`, and `upload_file`. An environment marked `ssh` MUST keep the existing SFTP and remote-command path until phase 4. Directory and worktree preparation stays the phase 2 `prepare_workspace` command. The Worker Agent MUST NOT treat these commands as Task or Session transitions. Migrated file, Git, and upload calls MUST NOT read the SSH password copied by `session_connection.py` at the environment resolvers.
 
-`validate_path` carries `workspace` and `path` and returns `{relative}`. `git_readonly` carries `workspace`, a closed `operation` name, and only the revision, baseline, or path that operation uses. Its result is `{code, size, sha256}`. `read_file` carries `workspace` and `path` and returns `{size, sha256, missing}`. `upload_file` carries `workspace`, `filename`, `size`, and `sha256`, and returns `{path}` in the existing `{workspace}/uploads/{id}-{filename}` shape. A missing worktree file MUST return `missing=true` and an empty body. A non-zero Git status on `GET /repo` MUST still become an empty string.
+`validate_path` carries `workspace` and `path` and returns `{relative}`. It MUST open the parent with `O_PATH`. `ENOENT` on the final component MUST return `{relative}` so a deleted file in a diff is not a path error. `EXDEV` or `ELOOP` MUST be `symlink_escape`. `ENOSYS`, or `EPERM` caused by seccomp, MUST be `io`. `git_readonly` carries `workspace`, a closed `operation` name, and only the revision, baseline, or path that operation uses. Its result is `{code, size, sha256}`. `read_file` carries `workspace` and `path` and returns `{size, sha256, missing}`. `upload_file` carries `workspace`, `filename`, `size`, and `sha256`, and returns `{path}` in the existing `{workspace}/uploads/{id}-{filename}` shape. A missing worktree file on `read_file` MUST return `missing=true` and an empty body. A non-zero Git status on `GET /repo` MUST still become an empty string, except that `too_large` from `status_porcelain` MUST set `dirty` to true.
 
-`git_readonly` MUST build argv only for `head`, `inside_work_tree`, `git_common_dir`, `branch`, `status_porcelain`, `origin_url`, `rev_list`, `diff_name_status_range`, `diff_numstat`, `ls_files_others`, `show_file`, `diff_patch`, and `diff_name_status_file`, using the flags already used by the SSH implementation. A revision MUST be `HEAD` or 4 to 64 hexadecimal characters. The command MUST run with `child_environ()` and the existing remote-command timeout. Any other operation MUST fail as `unsupported_operation`.
+`git_readonly` MUST build argv only for `head`, `inside_work_tree`, `git_common_dir`, `branch`, `status_porcelain`, `origin_url`, `rev_list`, `diff_name_status_range`, `diff_numstat`, `ls_files_others`, `show_file`, `diff_patch`, and `diff_name_status_file`, using the flags already used by the SSH implementation, plus a fixed `-c core.fsmonitor=false`. A caller-supplied `-c` MUST be rejected. A revision MUST be `HEAD` or 4 to 64 hexadecimal characters. The command MUST run with `child_environ()`. The Agent MUST kill git at the command deadline and return `code=124` with empty output. Any other operation MUST fail as `unsupported_operation`. Git MAY resolve paths again after the command starts; that window is the same one SSH already has.
 
-File API routes `/file`, `/file/content`, `/file/status`, and `/find/file` MUST run `validate_path` and then the existing OpenCode `http` exchange. They MUST NOT be reimplemented in the Agent. `/find` and `/find/symbol` keep their current lexical check.
+These four commands MUST run on an Agent task table guarded by a semaphore of 4. They MUST NOT run inside the socket read loop, MUST NOT consume an OpenCode HTTP slot, and MUST NOT take a database slot. Closing the socket MUST cancel that table the same way in-flight HTTP tasks are cancelled.
+
+File API routes `/file`, `/file/content`, `/file/status`, and `/find/file` MUST run `validate_path` and then the existing OpenCode `http` exchange. They MUST NOT be reimplemented in the Agent. OpenCode MAY resolve the path again after `validate_path`; that window is the same one SSH already has. `/find` and `/find/symbol` keep their current lexical check.
 
 #### Scenario: Migrated browsing does not open SSH
 - **WHEN** a worker-channel environment lists files, reads a diff, or loads the task repo
-- **THEN** the platform dispatches Worker commands and does not open an SSH session
+- **THEN** the platform dispatches Worker commands and does not open an SSH session or read the copied SSH password
 
 #### Scenario: SSH environments keep the old path
 - **WHEN** the environment is still marked `ssh`
 - **THEN** file and Git calls use the existing SFTP and remote-command path
 
+#### Scenario: A deleted file still has a diff
+- **WHEN** a diff lists a file whose final path component is missing
+- **THEN** `validate_path` returns the relative path and the diff result includes that file
+
+#### Scenario: Porcelain over the size cap marks the repo dirty
+- **WHEN** `status_porcelain` fails as `too_large` while loading the task repo
+- **THEN** the repo response sets `dirty` to true
+
 ### Requirement: File bytes use the existing data channel
-WebSocket command results MUST stay within the configured frame limit and MUST NOT contain file bytes or Git stdout. Non-empty Git stdout and file contents MUST use `GET /api/worker-gateway/data/{request_id}/request` and `PUT /api/worker-gateway/data/{request_id}/response`. Empty Git stdout MUST NOT start a PUT. OpenCode `http` bodies MUST remain capped at 8 MiB. `upload_file` request bodies and `read_file` or `git_readonly` responses MUST keep the 256 KiB chunk size and MAY assemble up to 20 MiB. The `upload_file` GET on that same request URL MUST return the raw bytes with `application/octet-stream` and `X-Astra-Sha256`. The JSON body used by `http` MUST stay unchanged. These commands MUST NOT consume an OpenCode HTTP slot. No third transport and no new data route are added.
+WebSocket command results MUST stay within the configured frame limit and MUST NOT contain file bytes or Git stdout. Non-empty Git stdout and file contents MUST use `GET /api/worker-gateway/data/{request_id}/request` and `PUT /api/worker-gateway/data/{request_id}/response`. Empty Git stdout MUST NOT start a PUT. OpenCode `http` bodies MUST remain capped at 8 MiB. Chunk size stays 256 KiB. No third transport and no new data route are added.
+
+`read_file` and `git_readonly` responses MUST place base64 of the raw bytes into the existing UTF-8 text chunks. `size`, `sha256`, and the 20 MiB cap MUST be computed on those raw bytes. The text-chunk assembly limit MUST fit the base64 of 20 MiB and MUST NOT be applied to the string produced by utf-8 replacement. Nexus MUST base64-decode the chunks and then decode the raw bytes as utf-8 with replacement, matching the current SSH stdout and diff-file decoding. The `upload_file` GET on that same request URL MUST return the raw bytes with `application/octet-stream` and `X-Astra-Sha256`. The JSON body used by `http` MUST stay unchanged.
 
 #### Scenario: A large upload stays off the socket
 - **WHEN** a browser uploads a file on a migrated environment
 - **THEN** the WebSocket carries the command descriptor and checksum, and the Worker reads the bytes from the existing data-channel GET
 
+#### Scenario: A binary git blob keeps its checksum
+- **WHEN** `show_file` returns bytes that are not valid utf-8
+- **THEN** the data channel stores base64 of those bytes, `sha256` matches the raw bytes, and Nexus applies utf-8 replacement only after decoding the base64
+
 ### Requirement: Worker file access keeps the current limits
-The Worker MUST resolve the workspace with `realpath` under the configured workspace root or the existing `.astra-tasks` sibling, then open relative paths with `openat2` using `RESOLVE_BENEATH` and `RESOLVE_NO_MAGICLINKS`. If that syscall is unavailable the command MUST fail closed. Writes MUST use `O_CREAT`, `O_EXCL`, and `O_NOFOLLOW` with mode `0600`, and the final rename MUST use `RENAME_NOREPLACE`. The `uploads` directory MUST be opened with `O_DIRECTORY` and `O_NOFOLLOW`. Lexical checks MUST reject NUL, backslash, `..`, and a case-sensitive `.git` path component before the open. The Worker MUST repeat those checks and MUST NOT trust the caller.
+The Worker MUST open the workspace with `openat2` from a directory fd of the configured workspace root or the existing `.astra-tasks` sibling, using `RESOLVE_BENEATH` and `RESOLVE_NO_MAGICLINKS`. It MUST NOT realpath the workspace and then open that string. `read_file` and `upload_file` MUST use that `openat2` open as their atomic file open. Writes MUST use `O_CREAT`, `O_EXCL`, and `O_NOFOLLOW` with mode `0600`, and the final rename MUST use `RENAME_NOREPLACE`. The `uploads` directory MUST be opened with `O_DIRECTORY` and `O_NOFOLLOW`. Lexical checks MUST reject NUL, backslash, `..`, and a case-sensitive `.git` path component before the open. The Worker MUST repeat those checks and MUST NOT trust the caller.
 
-The implementation MUST NOT widen any current remote limit: the 20 MiB upload and per-file diff caps, the single-component upload name, the exclusive create, the in-workspace symlink rule, the fixed Git flags, or the returned posix path. A checksum mismatch MUST NOT create a file. Git stdout above 20 MiB MUST fail as `too_large`. The browser write surface MUST remain `POST /files/{filename}` and `data:` prompt attachments.
+`RESOLVE_BENEATH` MUST reject an absolute symlink even when its target is inside the workspace. A relative symlink that stays inside the workspace MUST remain readable. The implementation MUST NOT widen any current remote limit: the 20 MiB upload and per-file diff caps on raw bytes, the single-component upload name, the exclusive create, the fixed Git flags, or the returned posix path. A checksum mismatch MUST NOT create a file. Git stdout above 20 MiB of raw bytes MUST fail as `too_large`. The browser write surface MUST remain `POST /files/{filename}` and `data:` prompt attachments.
 
-A local partial file named `uploads/.partial-{request_id}` MUST be removed on command failure, on interpreter exit, and on the next Agent start. A failed or conflicting upload MUST delete only its own staged object. After the partial file is renamed, a failed epoch compare-and-set MUST unlink that new final name and MUST NOT wake the waiter.
+A local partial file named `uploads/.partial-{request_id}` MUST be removed when the command fails before rename. The startup sweep MUST only visit `{allowed-root}/*/uploads/.partial-*` and `{parent-of-allowed-root}/.astra-tasks/*/uploads/.partial-*`, and MUST NOT follow symlinks. A failed or conflicting upload MUST delete only its own staged object. After rename, a failed epoch compare-and-set MUST leave the mode-`0600` random-named file in place and MUST NOT wake the waiter. The Gateway MUST wake the waiter only when that update's rowcount is 1.
+
+On socket close the Agent MUST cancel the upload task. Inside the blocking function, which cannot be cancelled while it is running in a worker thread, the Agent MUST check its epoch once before creating the partial file and once before rename. A changed epoch MUST NOT create or rename the file.
 
 #### Scenario: A symlink cannot leave the workspace
 - **WHEN** a requested path resolves through a symlink outside the workspace
 - **THEN** the command fails with `symlink_escape` and does not return the outside content
 
+#### Scenario: An absolute in-workspace symlink is rejected
+- **WHEN** a path component is an absolute symlink whose target is inside the workspace
+- **THEN** the command fails and does not return that target
+
 #### Scenario: A bad checksum writes nothing
 - **WHEN** the fetched upload bytes do not match the command checksum
 - **THEN** the Worker creates no file and reports `checksum_mismatch`
 
+#### Scenario: A failed compare-and-set leaves the renamed file
+- **WHEN** the upload has been renamed and the final command update does not match one row
+- **THEN** the mode-`0600` file remains, the waiter is not woken, and the task status stays unchanged
+
 ### Requirement: Browser workspace responses stay the same
-The platform MUST keep these URLs and response shapes: `GET /api/tasks/{id}/workspace`; `POST /api/tasks/{id}/files/{filename}` returning `{"path": path}` and 413 above 20 MB; the existing OpenCode proxy methods and filters; `GET` diff as the current JSON list and raw diff as `text/x-diff`; event streams as `text/event-stream` with the current cache headers and `data:` lines; `GET /api/tasks/{id}/repo` returning `name`, `branch`, `commit`, `dirty`, `changes`, and `task_changes`. Prompt `data:` parts MUST still be rewritten to a file URI.
+The platform MUST keep these URLs and response shapes: `GET /api/tasks/{id}/workspace`; `POST /api/tasks/{id}/files/{filename}` returning `{"path": path}` and 413 above 20 MB; the existing OpenCode proxy methods and filters; `GET` diff as the current JSON list and raw diff as `text/x-diff`; event streams as `text/event-stream` with the current cache headers and `data:` lines; `GET /api/tasks/{id}/repo` returning `name`, `branch`, `commit`, `dirty`, `changes`, and `task_changes`. Prompt `data:` parts MUST still be rewritten to a file URI. `dirty` MUST be true when `status_porcelain` is `too_large`.
 
 #### Scenario: Diff response shape is unchanged
 - **WHEN** a browser requests the task diff on a migrated environment
 - **THEN** the response is the existing JSON list or `text/x-diff` body
 
 ### Requirement: File command failure does not change task status
-Read commands MAY be dispatched again after the same-epoch lease expires, and a newer epoch MAY run them again. `upload_file` MUST NOT be published again after it leaves `unpublished`, and the Agent MUST NOT create the file after its epoch ends. A failed compare-and-set MUST NOT report success. No file or Git command failure may assign `Task.status` or call `apply_session_state()`. `workspace_head_commit` MUST still return no commit on failure, and workspace change collection MUST still return an empty object. A migrated environment MUST NOT open SSH when one of these commands fails. Reconnect MUST NOT create a Session or resend a prompt because of these commands.
+Read commands MAY be dispatched again after the same-epoch lease expires, and a newer epoch MAY run them again. `upload_file` MUST NOT be published again after it leaves `unpublished`. Closing the socket MUST cancel an in-flight upload. The blocking upload MUST check the epoch before creating its partial file and again before rename, and MUST NOT create or rename after that epoch has changed. A failed compare-and-set MUST NOT report success and MUST NOT require the Agent to delete a file that was already renamed. No file or Git command failure may assign `Task.status` or call `apply_session_state()`. `workspace_head_commit` MUST still return no commit on failure, and workspace change collection MUST still return an empty object. A migrated environment MUST NOT open SSH when one of these commands fails. Reconnect MUST NOT create a Session or resend a prompt because of these commands.
 
 #### Scenario: An offline read leaves the task status
 - **WHEN** the Worker is offline during a repo or diff read
 - **THEN** the command is failed with `offline`, the browser receives the existing error, and the task status is unchanged
 
 #### Scenario: A dropped upload is not sent again
-- **WHEN** the Worker epoch changes after an upload was published and before the file is created
+- **WHEN** the Worker socket closes or its epoch changes before the partial file is created
 - **THEN** no file is created, the upload is not dispatched again, and the task status is unchanged
