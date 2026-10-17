@@ -104,6 +104,9 @@ class OpenCodeExecutionEnvironment(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     employee: Mapped[DigitalEmployee] = relationship(back_populates="execution_environment")
+    worker_instance: Mapped["WorkerInstance | None"] = relationship(
+        back_populates="environment", uselist=False, cascade="all, delete-orphan"
+    )
 
     @property
     def has_ssh_password(self) -> bool:
@@ -523,3 +526,76 @@ class KnowledgeAudit(Base):
     actor_role: Mapped[str] = mapped_column(String(32))
     detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+
+class WorkerInstance(Base):
+    """云端 Worker Agent 的实例身份。绑定执行环境，不使用数字员工 ID。"""
+
+    __tablename__ = "worker_instances"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    environment_id: Mapped[int] = mapped_column(
+        ForeignKey("opencode_execution_environments.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    token_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="offline", index=True)
+    epoch: Mapped[int] = mapped_column(Integer, default=0)
+    agent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    connected_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    environment: Mapped[OpenCodeExecutionEnvironment] = relationship(back_populates="worker_instance")
+    connections: Mapped[list["WorkerConnection"]] = relationship(
+        back_populates="worker", cascade="all, delete-orphan"
+    )
+    commands: Mapped[list["WorkerCommand"]] = relationship(
+        back_populates="worker", cascade="all, delete-orphan"
+    )
+
+
+class WorkerConnection(Base):
+    """一次 WebSocket 注册。新 epoch 使旧连接失效。"""
+
+    __tablename__ = "worker_connections"
+    __table_args__ = (Index("ix_worker_connections_worker_state", "worker_instance_id", "state"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    worker_instance_id: Mapped[str] = mapped_column(
+        ForeignKey("worker_instances.id", ondelete="CASCADE"), index=True
+    )
+    epoch: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    close_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+    worker: Mapped[WorkerInstance] = relationship(back_populates="connections")
+
+
+class WorkerCommand(Base):
+    """已持久化的控制指令。投递前先落库，旧 epoch 的结果不能覆盖新状态。"""
+
+    __tablename__ = "worker_commands"
+    __table_args__ = (Index("ix_worker_commands_status_deadline", "status", "deadline_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    worker_instance_id: Mapped[str] = mapped_column(
+        ForeignKey("worker_instances.id", ondelete="CASCADE"), index=True
+    )
+    environment_id: Mapped[int] = mapped_column(Integer, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    name: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    epoch: Mapped[int] = mapped_column(Integer)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deadline_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+    worker: Mapped[WorkerInstance] = relationship(back_populates="commands")

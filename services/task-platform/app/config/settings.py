@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5174"])
 
     redis_url: str = "redis://localhost:6379/0"
+    # memory：单进程开发与测试。API 与 Celery 分进程时必须设为 redis，
+    # 否则各进程会各自看不到连接所有者。
+    worker_gateway_bus: Literal["memory", "redis"] = "memory"
+    worker_gateway_ping_seconds: int = Field(default=20, ge=1, le=300)
+    worker_gateway_ping_timeout_seconds: int = Field(default=10, ge=1, le=300)
+    worker_gateway_reconnect_min_seconds: float = Field(default=1, ge=0.1, le=60)
+    worker_gateway_reconnect_max_seconds: float = Field(default=30, ge=1, le=300)
+    worker_gateway_max_frame_bytes: int = Field(default=262144, ge=1024, le=1048576)
+    worker_gateway_control_queue_size: int = Field(default=64, ge=1, le=10000)
+    worker_gateway_event_queue_size: int = Field(default=64, ge=1, le=10000)
+    worker_gateway_heartbeat_misses: int = Field(default=2, ge=1, le=10)
+    worker_gateway_command_timeout_seconds: int = Field(default=30, ge=1, le=600)
+    worker_gateway_auth_timeout_seconds: int = Field(default=10, ge=1, le=60)
     scout_interval: int = 30
     dispatcher_interval: int = 5
     heartbeat_interval: int = 10

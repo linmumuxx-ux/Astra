@@ -1,0 +1,52 @@
+## ADDED Requirements
+
+### Requirement: Worker identity is independent of the employee
+The system MUST bind one Worker instance to one execution environment and MUST identify it with `worker_instance_id`. The system MUST NOT use the digital employee id as that identity. Enrollment MUST return the token once and store only its digest.
+
+#### Scenario: Enrollment hides the token
+- **WHEN** an operator enrolls an execution environment and later reads the Worker
+- **THEN** the enrollment response contains the token and the stored row and later reads do not
+
+#### Scenario: Re-enrollment keeps the instance
+- **WHEN** the same environment is enrolled again
+- **THEN** the instance id is unchanged, the previous token no longer authenticates, and the epoch increases
+
+### Requirement: One connection epoch is current
+The system MUST increment the epoch when a connection authenticates. After a newer epoch is stored, a disconnect or response from an older epoch MUST NOT change the Worker status or command result.
+
+#### Scenario: Stale response is ignored
+- **WHEN** a command was stored for an older epoch and that epoch later sends its result
+- **THEN** the command status stays unchanged
+
+#### Scenario: Old disconnect keeps the new connection
+- **WHEN** the old connection closes after a newer epoch is online
+- **THEN** the Worker remains online at the newer epoch
+
+### Requirement: Commands are durable and idempotent
+The system MUST store a command before publishing it. The same `request_id` MUST return the stored command and MUST NOT publish it again. An offline Worker MUST persist the command as failed with `offline`. A full control queue MUST leave the command pending.
+
+#### Scenario: Duplicate request is not delivered twice
+- **WHEN** a caller submits a request id that is already stored
+- **THEN** the original command is returned and the route publishes once
+
+#### Scenario: Publish sees the stored row
+- **WHEN** the route publishes a new command
+- **THEN** the command row is already pending
+
+### Requirement: Routing has one owner
+The process holding the socket MUST be the only owner for that epoch. Another memory bus MUST NOT observe that owner. Redis clients using the same prefix MUST observe it. Clearing an older epoch or a different owner MUST leave the current lease in place. Control frames MUST be delivered before queued events, and a full event queue MUST drop events instead of blocking control.
+
+#### Scenario: Separate memory buses do not share ownership
+- **WHEN** one memory bus records an owner
+- **THEN** a second memory bus does not return that owner
+
+#### Scenario: Stale lease clear is ignored
+- **WHEN** the current lease is epoch 2 and a caller clears epoch 1
+- **THEN** the epoch 2 lease remains
+
+### Requirement: Disconnect does not restart OpenCode
+The Worker Agent MUST reconnect with backoff after a socket failure and MUST NOT count that failure as an OpenCode process restart.
+
+#### Scenario: Reconnect keeps the restart count
+- **WHEN** the socket closes and the agent connects again
+- **THEN** the new session receives a new epoch and the process restart count stays unchanged

@@ -22,6 +22,7 @@ from app.gateway.service import GatewayError
 from app.library_service import LibraryError
 from app.runtime.recovery import supervise_sessions
 from app.seed import seed_demo_data
+from app.worker_gateway.routes import router as worker_gateway_router
 
 settings = get_settings()
 
@@ -38,7 +39,10 @@ async def lifespan(_: FastAPI):
     else:
         async with SessionLocal() as session:
             await bootstrap_employees(session, settings.resolved_config_dir)
+    from app.worker_gateway.service import sweep_worker_gateway
+
     supervisor = asyncio.create_task(supervise_sessions())
+    worker_sweep = asyncio.create_task(sweep_worker_gateway())
     # 平台助手是增强能力：启动失败不得影响核心任务执行链。
     # 已注入 Orchestrator（测试 / 嵌入式部署）时保持原有实例。
     if settings.assistant_enabled and get_orchestrator() is None:
@@ -52,13 +56,16 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         supervisor.cancel()
-        await asyncio.gather(supervisor, return_exceptions=True)
+        worker_sweep.cancel()
+        await asyncio.gather(supervisor, worker_sweep, return_exceptions=True)
         orchestrator = get_orchestrator()
         if orchestrator:
             await orchestrator.stop()
             set_orchestrator(None)
         from app.executors.opencode_remote_server import close_remote_mcp_tunnels
+        from app.worker_gateway.service import get_gateway
 
+        await get_gateway().aclose()
         await close_remote_mcp_tunnels()
 
 
@@ -77,6 +84,7 @@ app.add_middleware(
 )
 app.include_router(router)
 app.include_router(worker_router)
+app.include_router(worker_gateway_router)
 app.include_router(environment_router)
 app.include_router(workspace_router)
 app.include_router(library_router)
