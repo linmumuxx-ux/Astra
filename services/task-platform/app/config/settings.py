@@ -389,7 +389,7 @@ class Settings(BaseSettings):
                 f"mysql://{self.database_host}:{self.database_port}/"
                 f"{self.database_name}?charset={self.database_charset}"
             )
-        return str(self.resolved_data_dir / "astra.db")
+        return str(self.resolved_data_dir / "nexus.db")
 
     @property
     def redis_description(self) -> str:
