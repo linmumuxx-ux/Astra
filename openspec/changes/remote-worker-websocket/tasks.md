@@ -16,21 +16,21 @@
 
 ## 2. OpenCode API、SSE 与 Session 恢复
 
-实现以 design.md「阶段 2 契约」为准。本轮只锁定契约，下列项仍未实现。
+实现以 design.md「阶段 2 契约」为准。2.8 的受控重载和生效配置核对仍未做。重连对账仍走现有 `refresh()` 的单次消息读取；沿 `x-next-cursor` 翻完整页只在人工重试。
 
-- [ ] 2.1 抽出远程 OpenCode 传输。已标记 `worker` 的环境走 Gateway；`workspace_routes` 直连 `client.base_url` 的请求纳入同一传输
-- [ ] 2.2 OpenCode SSE 用带 seq 的 WebSocket 帧上报，Nexus 转成现有浏览器事件流。超过帧上限只发 `astra.event_gap` 并 refresh
-- [ ] 2.3 断线重连后核对原生 Session、完整分页消息、问题和权限；不新建 Session，不重发最后一条 Prompt
-- [ ] 2.4 通信中断、执行超时和 OpenCode 异常分开记录；投影仍只走 `apply_session_state()`
-- [ ] 2.5 保留 `pending_message_id` / `pending_prompt`（含 `in_flight`）和 `pending_attempt`
-- [ ] 2.6 事件日志保留最近 N 条。消费者游标有租约。未读达到 N 时发 pause_events，收回后 resume_events，没有消费者时 stop_events。缺口 refresh 按 Task 合并。http 与 SSE 在独立任务中执行
-- [ ] 2.7 HTTP 承载请求体和响应体：WebSocket 只发就绪通知，Worker GET 请求、PUT 响应。请求体 TTL 盖过 deadline。每次上传用独立 upload_id。完成记录带上 `x-next-cursor` 等响应头。取消使用独立 request_id。最终 CAS 带 WorkerInstance.epoch 子查询
+- [x] 2.1 抽出远程 OpenCode 传输。已标记 `worker` 的环境走 Gateway；`workspace_routes` 直连 `client.base_url` 的请求纳入同一传输
+- [x] 2.2 OpenCode SSE 用带 seq 的 WebSocket 帧上报，Nexus 转成现有浏览器事件流。超过帧上限只发 `astra.event_gap` 并 refresh
+- [x] 2.3 断线重连后核对原生 Session、完整分页消息、问题和权限；不新建 Session，不重发最后一条 Prompt
+- [x] 2.4 通信中断、执行超时和 OpenCode 异常分开记录；投影仍只走 `apply_session_state()`
+- [x] 2.5 保留 `pending_message_id` / `pending_prompt`（含 `in_flight`）和 `pending_attempt`
+- [x] 2.6 事件日志保留最近 N 条。消费者游标有租约。未读达到 N 时发 pause_events，收回后 resume_events，没有消费者时 stop_events。缺口 refresh 按 Task 合并。http 与 SSE 在独立任务中执行
+- [x] 2.7 HTTP 承载请求体和响应体：WebSocket 只发就绪通知，Worker GET 请求、PUT 响应。请求体 TTL 盖过 deadline。每次上传用独立 upload_id。完成记录带上 `x-next-cursor` 等响应头。取消使用独立 request_id。最终 CAS 带 WorkerInstance.epoch 子查询
 - [ ] 2.8 显式 `worker_channel`，连接时按 environment_id 读环境行，不读快照。切换是受占用约束的维护操作：只探测配置地址，受控重载后核对生效配置。已迁移环境的 workspace 准备改成 Agent 指令。文件和 Git 浏览在阶段 3 前仍走 SSH
-- [ ] 2.9 拆开首次发送和人工重试。保存 attempt 到 request_id 的映射和 body_fetched_at。只有从未拉取请求体才证明未发送；拉取后视为结果未知，等本地上限加落库余量，再由人确认才可重发。epoch 结束后不得开始本地 POST。恢复、重连、调度、心跳、超时永不调用人工重试
-- [ ] 2.10 先修占用被提前释放的 bug。谓词只作用于已认领或已绑定的 Task。人工释放只用于 CANCELED 或取消进行中，记录操作人、原因、Session 和 attempt；新 attempt、重启或新 Session 时清除。RUNNING/WAITING 不因该时间戳释放
-- [ ] 2.11 幂等身份包含 session_id。相同 request_id 在 Worker、指令名、payload、session_id 不一致时返回 409
-- [ ] 2.12 有副作用的指令用原生消息核对决定能否重发。OpenCode 1.18.35 不按 messageID 去重。不新增 Agent 落盘去重账本
-- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖十项，包括认领后和上传中途的 epoch 切换、拉取证据和过期事件游标
+- [x] 2.9 拆开首次发送和人工重试。保存 attempt 到 request_id 的映射和 body_fetched_at。只有从未拉取请求体才证明未发送；拉取后视为结果未知，等本地上限加落库余量，再由人确认才可重发。epoch 结束后不得开始本地 POST。恢复、重连、调度、心跳、超时永不调用人工重试
+- [x] 2.10 先修占用被提前释放的 bug。谓词只作用于已认领或已绑定的 Task。人工释放只用于 CANCELED 或取消进行中，记录操作人、原因、Session 和 attempt；新 attempt、重启或新 Session 时清除。RUNNING/WAITING 不因该时间戳释放
+- [x] 2.11 幂等身份包含 session_id。相同 request_id 在 Worker、指令名、payload、session_id 不一致时返回 409
+- [x] 2.12 有副作用的指令用原生消息核对决定能否重发。OpenCode 1.18.35 不按 messageID 去重。不新增 Agent 落盘去重账本
+- [x] 2.13 按 design.md「阶段 2 故障测试」覆盖十项，包括认领后和上传中途的 epoch 切换、拉取证据和过期事件游标
 
 ## 3. Workspace、文件与 Git
 
