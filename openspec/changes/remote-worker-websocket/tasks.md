@@ -52,6 +52,6 @@
 
 ## 5. 回归与清理
 
-- [ ] 5.1 确认阶段 4 已删除的反向隧道和 ssh 执行分支没有残留调用方。不改 CLI fallback 模块
-- [ ] 5.2 回归进程重启、网络超时和 Task/Session 一致性。epoch 乱序、双 owner、发布后崩溃、消费者崩溃和 ACK 丢失放在阶段 1/2
-- [ ] 5.3 确认 CLI fallback、AgentScope 和状态机语义未被改写
+- [x] 5.1 确认阶段 4 已删除的反向隧道和 ssh 执行分支没有残留调用方。不改 CLI fallback 模块
+- [x] 5.2 回归进程重启、网络超时和 Task/Session 一致性。epoch 乱序、双 owner、发布后崩溃、消费者崩溃和 ACK 丢失放在阶段 1/2
+- [x] 5.3 确认 CLI fallback、AgentScope 和状态机语义未被改写
