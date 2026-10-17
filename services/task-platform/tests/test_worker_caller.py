@@ -16,6 +16,7 @@ from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.session_connection import connect
 from app.runtime.worker_client import WorkerOpenCodeClient
 from app.worker_agent.connection import handle_command
+from app.worker_agent.local_opencode import gateway_http_base
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_gateway.data_channel import DataChannel
 from app.worker_gateway.protocol import envelope, parse_message
@@ -220,3 +221,11 @@ async def _load(environment_id: int) -> OpenCodeExecutionEnvironment:
             worker_channel=stored.worker_channel,
             status=stored.status,
         )
+
+
+def test_gateway_http_base_is_the_origin():
+    assert (
+        gateway_http_base("ws://127.0.0.1:8877/api/worker-gateway/connect")
+        == "http://127.0.0.1:8877"
+    )
+    assert gateway_http_base("wss://worker.example/connect") == "https://worker.example"

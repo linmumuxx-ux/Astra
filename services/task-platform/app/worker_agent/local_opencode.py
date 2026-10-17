@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -14,13 +15,11 @@ _PASS_HEADERS = {"x-next-cursor", "link", "x-has-more", "content-type"}
 
 
 def gateway_http_base(gateway_url: str) -> str:
-    if gateway_url.startswith("wss://"):
-        http = "https://" + gateway_url.removeprefix("wss://")
-    else:
-        http = "http://" + gateway_url.removeprefix("ws://")
-    if http.endswith("/connect"):
-        http = http[: -len("/connect")]
-    return http.rstrip("/")
+    """Origin of the Gateway. The connect path is not part of the data-channel URL."""
+
+    parts = urlsplit(gateway_url)
+    scheme = "https" if parts.scheme == "wss" else "http"
+    return f"{scheme}://{parts.netloc}"
 
 
 def bind_local_opencode(manager, *, timeout: float = 60) -> None:
