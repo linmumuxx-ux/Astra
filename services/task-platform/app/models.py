@@ -169,6 +169,8 @@ class Task(RuntimeProjection, Base):
     repository_id: Mapped[str | None] = mapped_column(
         ForeignKey("code_repositories.id"), nullable=True, index=True
     )
+    related_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     turn_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     pending_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)

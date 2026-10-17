@@ -14,12 +14,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
 from app.domain import EmployeeStatus, EnvironmentStatus
 from app.gateway.security import CredentialCipher
-from app.models import CodeRepository, DigitalEmployee, GitCredential, OpenCodeExecutionEnvironment
+from app.models import CodeRepository, DigitalEmployee, GitCredential, OpenCodeExecutionEnvironment, Task
 
 Runner = Callable[[list[str], dict[str, str]], tuple[int, str, str]]
 
@@ -100,6 +101,22 @@ def clone_repository(
         raise CloneError(message or "git clone 失败")
 
 
+def read_base_commit(workspace: str) -> str:
+    """读取已有仓库的 HEAD。不是仓库时返回空字符串，不执行 git init。"""
+
+    if not workspace:
+        return ""
+    completed = subprocess.run(
+        ["git", "-C", workspace, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
 def fresh_workspace(source: str, employee_id: str) -> str:
     if source.startswith("/"):
         parent = source.rsplit("/", 1)[0] or "/"
@@ -116,6 +133,50 @@ def collect_skill_files(names: list[str], source: Path) -> list[dict[str, str]]:
         if path.is_file():
             files.append({"name": name, "body": path.read_text(encoding="utf-8")})
     return files
+
+
+def dependency_order(tasks: list[Task]) -> list[Task]:
+    ids = {task.id for task in tasks}
+    children: dict[str, list[Task]] = {task.id: [] for task in tasks}
+    indegree = {task.id: 0 for task in tasks}
+    for task in tasks:
+        parent = task.related_task_id
+        if parent and parent in ids:
+            children[parent].append(task)
+            indegree[task.id] += 1
+    ready = [task for task in tasks if indegree[task.id] == 0]
+    ordered: list[Task] = []
+    while ready:
+        current = ready.pop(0)
+        ordered.append(current)
+        for child in children[current.id]:
+            indegree[child.id] -= 1
+            if indegree[child.id] == 0:
+                ready.append(child)
+    return ordered
+
+
+async def related_tasks(session: AsyncSession, task_id: str) -> list[Task]:
+    start = await session.get(Task, task_id)
+    if start is None:
+        return []
+    group = {start.id: start}
+    current = start
+    while current.related_task_id and current.related_task_id not in group:
+        parent = await session.get(Task, current.related_task_id)
+        if parent is None:
+            break
+        group[parent.id] = parent
+        current = parent
+    changed = True
+    while changed:
+        changed = False
+        rows = (await session.scalars(select(Task).where(Task.related_task_id.in_(list(group))))).all()
+        for row in rows:
+            if row.id not in group:
+                group[row.id] = row
+                changed = True
+    return dependency_order(list(group.values()))
 
 
 async def create_repository(session: AsyncSession, *, url: str, branch: str, token: str) -> CodeRepository:

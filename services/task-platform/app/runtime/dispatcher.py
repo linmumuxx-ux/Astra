@@ -10,6 +10,7 @@ from app.models import DigitalEmployee, Task
 from app.runtime.capability import dispatch_allowed
 from app.runtime.environment import environment_snapshot
 from app.runtime.occupancy import occupying_exists, sync_employee_occupancy
+from app.runtime.repository import read_base_commit
 from app.services import TaskService
 
 
@@ -50,6 +51,8 @@ class Dispatcher:
             .all()
         )
         for task in candidates:
+            if not task.repository_id:
+                continue
             conditions = [
                 DigitalEmployee.status == EmployeeStatus.IDLE,
                 DigitalEmployee.enabled.is_(True),
@@ -78,6 +81,7 @@ class Dispatcher:
                 for employee in employees
                 if employee.execution_environment
                 and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+                and employee.execution_environment.repository_id == task.repository_id
                 and dispatch_allowed(employee.execution_environment.status_detail)
                 and task.task_type in employee.task_types
                 and task.category_id in employee.category_ids
@@ -86,7 +90,10 @@ class Dispatcher:
             if not employee:
                 continue
             task.employee_id = employee.id
-            task.execution_environment_snapshot = environment_snapshot(employee.execution_environment)
+            snapshot = environment_snapshot(employee.execution_environment)
+            snapshot["base_commit"] = read_base_commit(employee.execution_environment.workspace_root)
+            task.base_commit = snapshot["base_commit"] or None
+            task.execution_environment_snapshot = snapshot
             task.claimed_at = datetime.now(UTC)
             service = TaskService(self.session)
             await service.add_event(

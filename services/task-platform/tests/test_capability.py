@@ -82,6 +82,7 @@ def _task(**overrides):
         employee_id=None,
         claimed_at=None,
         current_session_id=None,
+        repository_id="repo-1",
     )
     values.update(overrides)
     return Task(**values)
@@ -104,6 +105,7 @@ async def test_unapplied_binding_is_not_dispatched_and_a_running_task_stays(sess
         mode="LOCAL",
         name="local",
         workspace_root="/tmp/workspaces",
+        repository_id="repo-1",
         status=EnvironmentStatus.AVAILABLE,
         status_detail=detail,
     )

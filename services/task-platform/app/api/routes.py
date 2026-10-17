@@ -47,6 +47,7 @@ from app.runtime.environment import (
     checks_status,
 )
 from app.runtime.presentation import project_channel_health
+from app.runtime.repository import related_tasks
 from app.schemas import (
     EmployeeCreate,
     EmployeePatch,
@@ -55,6 +56,7 @@ from app.schemas import (
     EventRead,
     ExecutionEnvironmentRead,
     ExecutionEnvironmentWrite,
+    RelatedTaskCreate,
     TaskCategoryCreate,
     TaskCategoryPatch,
     TaskCategoryRead,
@@ -550,6 +552,63 @@ async def list_tasks(
     tasks = (await session.execute(query.order_by(desc(Task.created_at)).limit(limit))).scalars().all()
     await _attach_session_facts(session, tasks)
     return tasks
+
+
+@router.post("/tasks/related", status_code=status.HTTP_201_CREATED)
+async def create_related_tasks(payload: RelatedTaskCreate, session: AsyncSession = Depends(get_session)):
+    category = await session.get(TaskCategory, payload.category_id)
+    if not category or not category.enabled:
+        raise HTTPException(status_code=422, detail="请选择已启用的任务分类")
+    created: list[Task] = []
+    created_ids: list[str] = []
+    for index, part in enumerate(payload.parts):
+        if await session.get(CodeRepository, part.repository_id) is None:
+            raise HTTPException(status_code=422, detail="仓库不存在")
+        if part.depends_on is not None and part.depends_on >= index:
+            raise HTTPException(status_code=422, detail="依赖必须指向更早的任务")
+        task = await TaskService(session).create(
+            TaskCreate(
+                task_type=payload.task_type,
+                category_id=payload.category_id,
+                title=part.title or payload.title,
+                description=payload.description,
+                acceptance_criteria=payload.acceptance_criteria,
+                repository_id=part.repository_id,
+            )
+        )
+        if part.depends_on is not None:
+            task.related_task_id = created_ids[part.depends_on]
+            await session.commit()
+            await session.refresh(task)
+        created.append(task)
+        created_ids.append(task.id)
+    return [
+        {
+            "id": task.id,
+            "title": task.title,
+            "repository_id": task.repository_id,
+            "related_task_id": task.related_task_id,
+            "status": task.status,
+        }
+        for task in created
+    ]
+
+
+@router.get("/tasks/{task_id}/related")
+async def get_related_tasks(task_id: str, session: AsyncSession = Depends(get_session)):
+    await require_task(task_id, session)
+    rows = await related_tasks(session, task_id)
+    return [
+        {
+            "id": task.id,
+            "title": task.title,
+            "repository_id": task.repository_id,
+            "related_task_id": task.related_task_id,
+            "status": task.status,
+            "base_commit": task.base_commit,
+        }
+        for task in rows
+    ]
 
 
 @router.post("/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED)

@@ -230,6 +230,21 @@ class AcceptanceCriterion(BaseModel):
 
 
 
+class RelatedTaskPart(BaseModel):
+    repository_id: str = Field(min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=240)
+    depends_on: int | None = Field(default=None, ge=0)
+
+
+class RelatedTaskCreate(BaseModel):
+    task_type: TaskType
+    category_id: str
+    title: str = Field(min_length=1, max_length=240)
+    description: str = Field(min_length=1)
+    acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
+    parts: list[RelatedTaskPart] = Field(min_length=1)
+
+
 class TaskCreate(BaseModel):
     source: str = "manual"
     external_task_id: str | None = None
@@ -289,6 +304,8 @@ class TaskRead(RuntimeRead):
     source_channel_id: str | None = None
     idempotency_key: str | None = None
     repository_id: str | None = None
+    related_task_id: str | None = None
+    base_commit: str | None = None
     current_session_id: str | None
     session_status: str | None = None
     session_terminal_reason: str | None = None

@@ -126,7 +126,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
   - 验证：同仓两个 Worker 各自 worktree。一个 Worker 不改绑仓库
 - [x] H.3 部署写入 Worker 全局 `config_home/opencode/opencode.jsonc` 的网关 provider 和该 Worker 的 MCP。技能装到 Worker 专用目录。不改仓库 `.opencode/` 和项目配置。不再写平台根 `opencode.json`
   - 验证：生产配置指向现有网关。本地 e2e 模型为 `opencode/deepseek-v4.1-flash-free`，不读网关 Key
-- [ ] H.4 分配时记录 base commit 和 S 的配置快照。跨仓拆成多条带 `repository_id` 的关联 Task，并按依赖汇总。未指定仓库不派单。占用中的 Worker 不被另一条 Task 领走
+- [x] H.4 分配时记录 base commit 和 S 的配置快照。跨仓拆成多条带 `repository_id` 的关联 Task，并按依赖汇总。未指定仓库不派单。占用中的 Worker 不被另一条 Task 领走
 
 ## I. 等待原因与人工终态
 
