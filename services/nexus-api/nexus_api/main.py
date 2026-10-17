@@ -41,6 +41,7 @@ from .im import (
     open_external,
     redeliver,
 )
+from .model_route import ModelRouteError, chat_config_for_route, gateway_api_key, require_enabled_route
 from .task_skill import TASK_SKILL_ID, attach_task_capability, sync_task_capability, with_builtin_skill
 
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -73,6 +74,7 @@ class EmployeeBody(BaseModel):
     knowledge: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    model_route_id: str = ""
 
 
 class ConversationBody(BaseModel):
@@ -776,6 +778,41 @@ def create_app() -> FastAPI:
     def client_of(request: Request) -> AgentScopeClient:
         return request.app.state.agentscope
 
+    async def checked_route(route_id: str) -> None:
+        wanted = route_id.strip()
+        if not wanted:
+            return
+        await require_enabled_route(wanted)
+        gateway_api_key()
+
+    async def model_for(client: AgentScopeClient, employee: dict[str, Any]) -> dict[str, Any] | None:
+        route_id = str(employee.get("model_route_id") or "").strip()
+        if not route_id or not client.configured:
+            return None
+        try:
+            return await chat_config_for_route(client, route_id)
+        except ModelRouteError as exc:
+            raise AgentScopeError(exc.detail, exc.status_code) from exc
+
+    def session_ids(connection, employee: dict[str, Any]) -> list[str]:
+        found: list[str] = []
+        mailbox = employee.get("mailbox_session_id")
+        if mailbox:
+            found.append(str(mailbox))
+        rows = connection.execute(
+            "SELECT agentscope_session_id FROM conversations WHERE employee_id = ?",
+            (employee["id"],),
+        ).fetchall()
+        rows += connection.execute(
+            "SELECT agentscope_session_id FROM channel_members WHERE employee_id = ?",
+            (employee["id"],),
+        ).fetchall()
+        for row in rows:
+            session_id = row["agentscope_session_id"]
+            if session_id and session_id not in found:
+                found.append(str(session_id))
+        return found
+
     def load_employee(connection, employee_id: str) -> dict[str, Any]:
         row = connection.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
         if row is None:
@@ -908,7 +945,12 @@ def create_app() -> FastAPI:
             else:
                 raise AgentScopeError("AgentScope 未连接，员工目录已保存，Agent 尚未创建")
             if not mailbox and agent_id:
-                mailbox = await client.create_session(agent_id, f"{employee['name']}的邮箱")
+                config = await model_for(client, employee)
+                mailbox = await client.create_session(
+                    agent_id,
+                    f"{employee['name']}的邮箱",
+                    chat_model_config=config,
+                )
             if agent_id and mailbox:
                 await client.set_permission_mode(agent_id, mailbox, UNATTENDED_PERMISSION)
                 current = {**employee, "agentscope_agent_id": agent_id, "mailbox_session_id": mailbox}
@@ -950,8 +992,8 @@ def create_app() -> FastAPI:
             INSERT INTO employees (
                 id, name, domain, description, instructions, avatar, enabled,
                 knowledge_json, skills_json, tools_json, agentscope_agent_id,
-                mailbox_session_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                mailbox_session_id, model_route_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 employee_id,
@@ -964,6 +1006,7 @@ def create_app() -> FastAPI:
                 json.dumps(knowledge, ensure_ascii=False),
                 json.dumps(skills, ensure_ascii=False),
                 json.dumps(tools, ensure_ascii=False),
+                body.model_route_id.strip(),
                 now,
                 now,
             ),
@@ -1042,8 +1085,13 @@ def create_app() -> FastAPI:
         current: str | None,
         name: str,
         permission_mode: str | None = None,
+        chat_model_config: dict[str, Any] | None = None,
     ) -> str:
-        session_id = current or await client.create_session(agent_id, name)
+        session_id = current or await client.create_session(
+            agent_id,
+            name,
+            chat_model_config=chat_model_config,
+        )
         if permission_mode:
             await client.set_permission_mode(agent_id, session_id, permission_mode)
         return session_id
@@ -1146,6 +1194,10 @@ def create_app() -> FastAPI:
         conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), None)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)
+        try:
+            await checked_route(body.model_route_id)
+        except ModelRouteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         client = client_of(request)
         skills, knowledge, tools = await chosen_resources(client, body, {})
         employee = insert_employee(connection, body, skills, knowledge, tools)
@@ -1167,13 +1219,17 @@ def create_app() -> FastAPI:
         conflict = find_duplicate(connection, body.name.strip(), body.domain.strip(), employee_id)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)
+        try:
+            await checked_route(body.model_route_id)
+        except ModelRouteError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         client = client_of(request)
         skills, knowledge, tools = await chosen_resources(client, body, current)
         connection.execute(
             """
             UPDATE employees
             SET name = ?, domain = ?, description = ?, instructions = ?, avatar = ?, enabled = ?,
-                knowledge_json = ?, skills_json = ?, tools_json = ?, updated_at = ?
+                knowledge_json = ?, skills_json = ?, tools_json = ?, model_route_id = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -1186,18 +1242,29 @@ def create_app() -> FastAPI:
                 json.dumps(knowledge, ensure_ascii=False),
                 json.dumps(skills, ensure_ascii=False),
                 json.dumps(tools, ensure_ascii=False),
+                body.model_route_id.strip(),
                 utcnow(),
                 employee_id,
             ),
         )
         connection.commit()
         employee = load_employee(connection, employee_id)
+        previous_route = str(current.get("model_route_id") or "")
         sync = await sync_agent(client, employee, connection)
         save_agent_link(connection, employee_id, sync)
         employee = load_employee(connection, employee_id)
         await store_capability(connection, client, employee)
+        employee = load_employee(connection, employee_id)
+        route_id = str(employee.get("model_route_id") or "")
+        if route_id and route_id != previous_route and employee["agentscope_agent_id"] and client.configured:
+            try:
+                config = await chat_config_for_route(client, route_id)
+                for session_id in session_ids(connection, employee):
+                    await client.replace_session_model(employee["agentscope_agent_id"], session_id, config)
+            except (ModelRouteError, AgentScopeError) as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         return {
-            "employee": load_employee(connection, employee_id),
+            "employee": employee,
             "agentscope": {"ok": sync["ok"], "detail": sync["detail"]},
         }
 
@@ -1454,6 +1521,7 @@ def create_app() -> FastAPI:
                                 employee["agentscope_agent_id"],
                                 session_name,
                                 workspace_id,
+                                chat_model_config=await model_for(client, employee),
                             )
                             await client.set_permission_mode(
                                 employee["agentscope_agent_id"],
@@ -1508,6 +1576,7 @@ def create_app() -> FastAPI:
                 employee["agentscope_agent_id"],
                 row["name"],
                 workspace_id,
+                chat_model_config=await model_for(client, employee),
             )
         except AgentScopeError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -1694,7 +1763,19 @@ def create_app() -> FastAPI:
                 break
         if not agent_id:
             return "", ""
-        session_id = await client.create_session(agent_id, f"记录:{channel['name']}")
+        record_employee = next(
+            (
+                load_employee(connection, member["employee_id"])
+                for member in channel["members"]
+                if load_employee(connection, member["employee_id"])["agentscope_agent_id"] == agent_id
+            ),
+            None,
+        )
+        session_id = await client.create_session(
+            agent_id,
+            f"记录:{channel['name']}",
+            chat_model_config=await model_for(client, record_employee) if record_employee else None,
+        )
         connection.execute(
             """
             UPDATE channels SET record_agent_id = ?, record_session_id = ?, updated_at = ?
@@ -1816,6 +1897,7 @@ def create_app() -> FastAPI:
                     binding["agentscope_session_id"],
                     channel["name"],
                     UNATTENDED_PERMISSION,
+                    await model_for(client, employee),
                 )
                 connection.execute(
                     """
@@ -2047,6 +2129,7 @@ def create_app() -> FastAPI:
                     peer_session = await client.create_session(
                         employee["agentscope_agent_id"],
                         channel["name"] if channel is not None else employee["name"],
+                        chat_model_config=await model_for(client, employee),
                     )
                 except AgentScopeError as exc:
                     raise HTTPException(status_code=503, detail=exc.detail) from exc

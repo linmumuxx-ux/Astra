@@ -111,12 +111,59 @@ class AgentScopeClient:
     async def delete_agent(self, agent_id: str) -> None:
         await self.request("DELETE", f"/agent/{agent_id}")
 
-    async def create_session(self, agent_id: str, name: str, workspace_id: str | None = None) -> str:
+    async def ensure_gateway_credential(self, api_key: str, base_url: str) -> str:
+        """登记指向网关 /v1 的 credential。密钥只出现在这次请求体里。"""
+
+        try:
+            listed = await self.request("GET", "/credential/")
+            for item in listed.json().get("credentials", []):
+                data = item.get("data") or {}
+                same_gateway = (
+                    data.get("type") == "openai_credential" and (data.get("base_url") or "") == base_url
+                )
+                if same_gateway and item.get("id"):
+                    return str(item["id"])
+            created = await self.request(
+                "POST",
+                "/credential/",
+                json={"data": {"type": "openai_credential", "api_key": api_key, "base_url": base_url}},
+            )
+        except AgentScopeError as exc:
+            if api_key and api_key in exc.detail:
+                raise AgentScopeError(exc.detail.replace(api_key, "[redacted]"), exc.status_code) from exc
+            raise
+        credential_id = created.json().get("credential_id")
+        if not credential_id:
+            raise AgentScopeError("AgentScope 没有返回 credential_id")
+        return str(credential_id)
+
+    async def replace_session_model(
+        self,
+        agent_id: str,
+        session_id: str,
+        chat_model_config: dict[str, Any],
+    ) -> None:
+        await self.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            params={"agent_id": agent_id},
+            json={"chat_model_config": chat_model_config},
+        )
+
+    async def create_session(
+        self,
+        agent_id: str,
+        name: str,
+        workspace_id: str | None = None,
+        *,
+        chat_model_config: dict[str, Any] | None = None,
+    ) -> str:
         body: dict[str, Any] = {"agent_id": agent_id, "name": name}
         if workspace_id:
             body["workspace_id"] = workspace_id
-        if self.chat_model_config:
-            body["chat_model_config"] = self.chat_model_config
+        config = self.chat_model_config if chat_model_config is None else chat_model_config
+        if config:
+            body["chat_model_config"] = config
         response = await self.request(
             "POST",
             "/sessions/",

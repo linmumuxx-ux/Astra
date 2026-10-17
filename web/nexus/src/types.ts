@@ -11,6 +11,7 @@ export interface Employee {
   tools: string[];
   agentscope_agent_id: string | null;
   mailbox_session_id: string | null;
+  model_route_id?: string;
 }
 
 export interface SkillItem {

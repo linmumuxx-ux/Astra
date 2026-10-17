@@ -80,7 +80,7 @@
         <div v-else class="empty">创建第一个数字员工，直接定义他的职责与能力</div>
       </aside>
     </div>
-    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalogs="catalogs" @close="drawerOpen = false" @save="save" />
+    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalogs="catalogs" :routes="routes" :route-error="routeError" @close="drawerOpen = false" @save="save" />
     <el-dialog v-model="deleteOpen" title="删除数字员工" width="460px">
       <p>确定删除 <b>{{ deleting?.name }}</b> 吗？删除后将不再显示该员工。</p>
       <template #footer>
@@ -97,6 +97,7 @@ import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import EmployeeDrawer from "../components/EmployeeDrawer.vue";
 import { deleteEmployee, getKnowledge, getSkills, getTools, listEmployees, saveEmployee } from "../api";
+import { gatewayApi, type GatewayRoute } from "../api/gateway";
 import type { Employee, ResourceCatalog } from "../types";
 
 const router = useRouter();
@@ -109,6 +110,8 @@ const deleteOpen = ref(false);
 const deleting = ref<Employee | null>(null);
 const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
 const catalogs = ref({ skills: emptyCatalog(), knowledge: emptyCatalog(), tools: emptyCatalog() });
+const routes = ref<GatewayRoute[]>([]);
+const routeError = ref("");
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -184,6 +187,11 @@ async function confirmDelete() {
 onMounted(async () => {
   const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
   catalogs.value = { skills, knowledge, tools };
+  try {
+    routes.value = (await gatewayApi.routes()).filter((item) => item.enabled);
+  } catch (error) {
+    routeError.value = error instanceof Error ? error.message : "无法读取模型路由";
+  }
   await reload();
 });
 </script>

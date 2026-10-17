@@ -21,6 +21,14 @@
       <el-form-item label="工作指令" required>
         <el-input v-model="form.instructions" type="textarea" :rows="5" />
       </el-form-item>
+      <el-form-item label="模型路由">
+        <el-select v-model="form.model_route_id" clearable filterable placeholder="选择已启用的路由" style="width: 100%">
+          <el-option v-for="item in routes" :key="item.id" :label="item.model" :value="item.id" />
+        </el-select>
+        <div class="muted" style="margin-top: 6px">只列出已启用的网关路由。密钥不会出现在这里。</div>
+        <div v-if="routeError" class="muted">{{ routeError }}</div>
+        <div v-if="missingRoute" class="muted">当前路由不在已启用列表中。</div>
+      </el-form-item>
       <div class="form-cap">知识与工具</div>
       <el-form-item label="知识">
         <el-select
@@ -79,6 +87,7 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import type { Employee, ResourceCatalog } from "../types";
+import type { GatewayRoute } from "../api/gateway";
 
 const props = defineProps<{
   open: boolean;
@@ -88,6 +97,8 @@ const props = defineProps<{
     knowledge: ResourceCatalog;
     tools: ResourceCatalog;
   };
+  routes: GatewayRoute[];
+  routeError: string;
 }>();
 const emit = defineEmits<{
   close: [];
@@ -106,6 +117,7 @@ const form = reactive({
   knowledge: [] as string[],
   skills: [] as string[],
   tools: [] as string[],
+  model_route_id: "",
 });
 
 const visible = ref(false);
@@ -134,6 +146,9 @@ function onClose() {
 const skillOptions = computed(() => optionsFor(props.catalogs.skills, form.skills));
 const knowledgeOptions = computed(() => optionsFor(props.catalogs.knowledge, form.knowledge));
 const toolOptions = computed(() => optionsFor(props.catalogs.tools, form.tools));
+const missingRoute = computed(
+  () => Boolean(form.model_route_id) && !props.routes.some((item) => item.id === form.model_route_id),
+);
 
 watch(
   () => [props.open, props.employee] as const,
@@ -148,6 +163,7 @@ watch(
     form.knowledge = [...(employee?.knowledge ?? [])];
     form.skills = [...(employee?.skills ?? [])];
     form.tools = [...(employee?.tools ?? defaultTools())];
+    form.model_route_id = employee?.model_route_id ?? "";
   },
   { immediate: true },
 );
@@ -177,6 +193,7 @@ function submit() {
     knowledge: [...form.knowledge],
     skills: [...form.skills],
     tools: [...form.tools],
+    model_route_id: form.model_route_id,
   });
 }
 </script>

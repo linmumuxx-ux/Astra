@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS employees (
     agentscope_agent_id TEXT,
     mailbox_session_id TEXT,
     capability_json TEXT NOT NULL DEFAULT '{}',
+    model_route_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -167,6 +168,8 @@ def init_db(path: Path) -> None:
         employee_columns = {row[1] for row in connection.execute("PRAGMA table_info(employees)")}
         if "capability_json" not in employee_columns:
             connection.execute("ALTER TABLE employees ADD COLUMN capability_json TEXT NOT NULL DEFAULT '{}'")
+        if "model_route_id" not in employee_columns:
+            connection.execute("ALTER TABLE employees ADD COLUMN model_route_id TEXT NOT NULL DEFAULT ''")
         member_columns = {row[1] for row in connection.execute("PRAGMA table_info(channel_members)")}
         if "last_delivered_message_id" not in member_columns:
             connection.execute(
@@ -205,6 +208,7 @@ def employee_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "agentscope_agent_id": row["agentscope_agent_id"],
         "mailbox_session_id": row["mailbox_session_id"],
         "capability": _object(row["capability_json"]) if "capability_json" in row.keys() else {},
+        "model_route_id": row["model_route_id"] if "model_route_id" in row.keys() else "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

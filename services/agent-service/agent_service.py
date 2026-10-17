@@ -226,6 +226,73 @@ def memory_status() -> dict[str, str | bool]:
     return {"ok": _memory_error == "", "error": _memory_error}
 
 
+def card_context_size(model_name: str, classes) -> int | None:
+    """网关模型名对上任意厂商的模型卡时，用那张卡的 context_size。"""
+
+    seen: set[int] = set()
+    for cls in classes:
+        identity = id(cls)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        list_models = getattr(cls, "list_models", None)
+        if list_models is None:
+            continue
+        try:
+            cards = list_models()
+        except Exception:
+            continue
+        for card in cards:
+            if getattr(card, "name", None) == model_name:
+                return int(card.context_size)
+    return None
+
+
+def install_card_context_size() -> None:
+    """OpenAI 兼容网关不会命中本厂商卡片。注入时改用同名卡片的 context_size。"""
+
+    from agentscope.app._service import _chat as chat_service
+    from agentscope.app._service import _model as model_service
+    from agentscope.model import (
+        AnthropicChatModel,
+        DashScopeChatModel,
+        DeepSeekChatModel,
+        GeminiChatModel,
+        MiniMaxChatModel,
+        MoonshotChatModel,
+        OllamaChatModel,
+        OpenAIChatModel,
+        OpenAIResponseModel,
+        VolcengineChatModel,
+        XAIChatModel,
+    )
+
+    classes = [
+        OpenAIChatModel,
+        DeepSeekChatModel,
+        AnthropicChatModel,
+        DashScopeChatModel,
+        GeminiChatModel,
+        MiniMaxChatModel,
+        MoonshotChatModel,
+        OllamaChatModel,
+        OpenAIResponseModel,
+        VolcengineChatModel,
+        XAIChatModel,
+    ]
+    original = model_service.get_model
+
+    async def get_model(user_id, config, access):
+        model = await original(user_id, config, access)
+        size = card_context_size(getattr(config, "model", ""), [type(model), *classes])
+        if size is not None:
+            model.context_size = size
+        return model
+
+    model_service.get_model = get_model
+    chat_service.get_model = get_model
+
+
 def attach_memory(workspace, factory=None) -> list:
     """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。"""
 
@@ -281,6 +348,7 @@ def main() -> None:
     from agentscope.permission import PermissionBehavior, PermissionDecision
     from agentscope.tool import FunctionTool, MCPTool
 
+    install_card_context_size()
     allow_nexus_task_mcp(MCPTool, PermissionDecision, PermissionBehavior)
 
     async def mailbox_lookup(agent_id: str) -> str | None:

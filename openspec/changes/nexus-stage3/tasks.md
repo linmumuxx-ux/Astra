@@ -102,7 +102,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B。不改 Gateway 代码。
 
-- [ ] G.1 员工增加 `model_route_id`。页面只列已启用路由。Session 注入指向网关 `/v1` 的 credential。Key 不出现在页面和日志。没有路由时不改成直连厂商
+- [x] G.1 员工增加 `model_route_id`。页面只列已启用路由。Session 注入指向网关 `/v1` 的 credential。Key 不出现在页面和日志。没有路由时不改成直连厂商
   - 验证：空闲时更换路由不新建私聊 Session。错误路由的原因可见
 
 本地和 e2e 的 OpenCode 不使用这条路由，见 H.3。
