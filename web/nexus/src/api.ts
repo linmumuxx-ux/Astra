@@ -11,19 +11,55 @@ import type {
 
 const OWNER_KEY = "nexus_owner_id";
 
-export function ownerId(): string {
-  let value = localStorage.getItem(OWNER_KEY);
-  if (!value) {
-    value = `browser_${crypto.randomUUID?.() ?? `${Date.now()}`}`;
-    localStorage.setItem(OWNER_KEY, value);
+let resolvedUid = "";
+let proxyVerified = false;
+
+export function storedOwnerId(): string {
+  const value = localStorage.getItem(OWNER_KEY) ?? "";
+  return value.startsWith("browser_") ? "" : value;
+}
+
+export function currentUid(): string {
+  return resolvedUid || storedOwnerId();
+}
+
+function rememberCookie(uid: string) {
+  document.cookie = `nexus_uid=${encodeURIComponent(uid)}; Path=/; SameSite=Lax`;
+}
+
+export function saveOwnerId(uid: string) {
+  const value = uid.trim();
+  if (!value) return;
+  localStorage.setItem(OWNER_KEY, value);
+  resolvedUid = value;
+  proxyVerified = false;
+  rememberCookie(value);
+}
+
+export async function resolveOwner(): Promise<string> {
+  const response = await fetch("/api/v1/me", { credentials: "omit" });
+  if (response.ok) {
+    const payload = (await response.json()) as { uid?: string };
+    if (payload.uid) {
+      resolvedUid = payload.uid;
+      proxyVerified = true;
+      rememberCookie(payload.uid);
+      return payload.uid;
+    }
   }
-  return value;
+  const stored = storedOwnerId();
+  if (!stored) throw new Error("需要输入 UID");
+  resolvedUid = stored;
+  proxyVerified = false;
+  rememberCookie(stored);
+  return stored;
 }
 
 function headers(json = true): HeadersInit {
+  const uid = resolvedUid || storedOwnerId();
   return {
     ...(json ? { "Content-Type": "application/json" } : {}),
-    "X-Owner-Id": ownerId(),
+    ...(!proxyVerified && uid ? { "X-Owner-Id": uid } : {}),
   };
 }
 
@@ -80,7 +116,11 @@ export async function deleteEmployee(id: string): Promise<void> {
 export async function uploadAttachment(file: File): Promise<Attachment> {
   const form = new FormData();
   form.append("file", file);
-  return read(await fetch("/api/v1/attachments", { method: "POST", body: form }));
+  return read(await fetch("/api/v1/attachments", {
+    method: "POST",
+    headers: headers(false),
+    body: form,
+  }));
 }
 
 export function attachmentUrl(id: string): string {
@@ -104,7 +144,9 @@ export async function createConversation(employeeId: string): Promise<Conversati
   );
 }
 
-export async function getConversation(id: string): Promise<Conversation & { messages: ChatMessage[]; history_error: string }> {
+export async function getConversation(
+  id: string,
+): Promise<Conversation & { messages: ChatMessage[]; history_error: string; event_cursor: string }> {
   return read(await fetch(`/api/v1/conversations/${id}`, { headers: headers(false) }));
 }
 
@@ -134,7 +176,20 @@ export async function saveChannel(body: { name: string; description: string; mem
 }
 
 export async function channelMessages(id: string): Promise<Channel & { messages: ChatMessage[]; history_error?: string }> {
-  return read(await fetch(`/api/v1/channels/${id}/messages`));
+  return read(await fetch(`/api/v1/channels/${id}/messages`, { headers: headers(false) }));
+}
+
+export interface TimelineItem {
+  id: string;
+  speaker: string;
+  text: string;
+  kind: string;
+  created_at: string;
+  attachments?: Attachment[];
+}
+
+export async function channelTimeline(id: string): Promise<{ items: TimelineItem[] }> {
+  return read(await fetch(`/api/v1/channels/${id}/timeline`, { headers: headers(false) }));
 }
 
 export async function sendChannel(id: string, text: string, attachmentIds: string[]) {

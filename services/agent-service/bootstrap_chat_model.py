@@ -70,7 +70,7 @@ def public_chat_config(credential_type: str, credential_id: str, model: str) -> 
 
 
 def main() -> None:
-    base = os.environ.get("NEXUS_AGENTSCOPE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    base = os.environ.get("NEXUS_AGENTSCOPE_BASE_URL", "http://127.0.0.1:18000").rstrip("/")
     user_id = os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus")
     data, model = credential_payload()
     headers = {"X-User-ID": user_id}

@@ -15,7 +15,7 @@ depends_on = None
 def upgrade() -> None:
     with op.batch_alter_table("opencode_execution_environments") as batch:
         batch.add_column(
-            sa.Column("opencode_server_port", sa.Integer(), nullable=False, server_default="4096")
+            sa.Column("opencode_server_port", sa.Integer(), nullable=False, server_default="14096")
         )
 
 

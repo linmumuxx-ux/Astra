@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
@@ -21,6 +22,7 @@ from app.main import app
 from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, RuntimeSession, Task
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.remote_provisioning import (
+    E2E_MODEL,
     RemoteProvisioner,
     managed_config,
     operation_active,
@@ -66,6 +68,75 @@ async def employee(**overrides):
 async def reserve(employee_id):
     async with SessionLocal() as db:
         return await reserve_operation(employee_id, "deploy", db)
+
+
+@pytest.mark.asyncio
+async def test_restart_finish_keeps_the_capability_record():
+    record = {
+        "desired_revision": "rev",
+        "applied_revision": "rev",
+        "runtime_status": "applied",
+        "error": "",
+    }
+    employee_id = await employee(status_detail={"capability": record})
+    env, op = await reserve(employee_id)
+    assert env.status_detail["capability"] == record
+    applied = await RemoteProvisioner(env, {**op, "action": "restart"})._finish(True)
+    assert applied
+    async with SessionLocal() as db:
+        current = await db.get(OpenCodeExecutionEnvironment, env.id)
+        assert current.status_detail["capability"] == record
+
+
+@pytest.mark.asyncio
+async def test_channel_switch_keeps_capability(monkeypatch):
+    from app.runtime.worker_channel import mark_worker_channel
+
+    record = {
+        "desired_revision": "rev",
+        "applied_revision": "rev",
+        "runtime_status": "applied",
+        "error": "",
+    }
+    employee_id = await employee(status_detail={"capability": record})
+
+    async def environment_id():
+        async with SessionLocal() as db:
+            environment = await db.scalar(
+                select(OpenCodeExecutionEnvironment).where(
+                    OpenCodeExecutionEnvironment.employee_id == employee_id
+                )
+            )
+            return environment.id
+
+    target = await environment_id()
+
+    async def switch():
+        return {"reloaded": True}
+
+    monkeypatch.setattr("app.runtime.worker_channel._mismatch", lambda _result: None)
+    async with SessionLocal() as db:
+        stored = await mark_worker_channel(db, target, switch=switch)
+        assert stored.worker_channel == "worker"
+        assert stored.status_detail["capability"] == record
+
+    employee_id = await employee(status_detail={"capability": record})
+    target = await environment_id()
+
+    async def fail():
+        raise RuntimeError("switch failed")
+
+    with pytest.raises(HTTPException):
+        async with SessionLocal() as db:
+            await mark_worker_channel(db, target, switch=fail)
+    async with SessionLocal() as db:
+        current = await db.scalar(
+            select(OpenCodeExecutionEnvironment).where(
+                OpenCodeExecutionEnvironment.employee_id == employee_id
+            )
+        )
+        assert current.worker_channel == "ssh"
+        assert current.status_detail["capability"] == record
 
 
 @pytest.mark.asyncio
@@ -266,17 +337,14 @@ def test_expired_reservation_allows_explicit_retry():
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="Node.js required for real config merge")
-@pytest.mark.parametrize("jsonc", [False, True])
-def test_real_config_merge_preserves_user_settings_and_refuses_jsonc(tmp_path, jsonc):
-    target = tmp_path / "opencode.json"
+def test_real_config_merge_writes_jsonc_and_keeps_user_settings(tmp_path):
+    target = tmp_path / "opencode.jsonc"
     original = {
         "provider": {"custom": {"options": {"apiKey": "private"}}},
         "mcp": {"custom-mcp": {"enabled": False}},
         "permission": {"bash": "ask"},
     }
-    target.write_text(json.dumps(original))
-    if jsonc:
-        target.with_suffix(".jsonc").write_text("// keep this\n{}")
+    target.write_text("// keep this\n" + json.dumps(original))
     payload = managed_config(
         config_path=str(target),
         model="test-model",
@@ -285,26 +353,60 @@ def test_real_config_merge_preserves_user_settings_and_refuses_jsonc(tmp_path, j
         gateway_key="agw_test",
         mcp_url="http://127.0.0.1:8201/mcp",
         mcp_key="mcp-test",
+        skills=[{"name": "review", "body": "# review\n"}],
+        mcp_refs=[{"name": "worker-mcp", "url": "http://127.0.0.1:9/mcp"}],
     )
     payload_file = tmp_path / "payload.json"
     payload_file.write_text(json.dumps(payload))
+    repo = tmp_path / "repo" / ".opencode" / "skills" / "hidden"
+    repo.mkdir(parents=True)
+    (repo / "SKILL.md").write_text("untouched", encoding="utf-8")
     source = Path("app/runtime/remote_install.sh").read_text().split("<<'NODE'\n", 1)[1].split("\nNODE", 1)[0]
     result = subprocess.run(
-        [shutil.which("node"), "-", str(payload_file), "op123"], input=source, text=True, capture_output=True
+        [
+            shutil.which("node"),
+            "-",
+            str(payload_file),
+            "op123",
+            sys.executable,
+            str(Path("app/worker_agent/jsonc.py")),
+        ],
+        input=source,
+        text=True,
+        capture_output=True,
     )
-    if jsonc:
-        assert result.returncode != 0
-        assert json.loads(target.read_text()) == original
-        return
     assert result.returncode == 0, result.stderr
     config = json.loads(target.read_text())
     assert config["provider"]["custom"] == original["provider"]["custom"]
+    assert config["provider"]["astra-gateway"]["options"]["baseURL"] == "http://127.0.0.1:8110/v1"
     assert config["mcp"]["custom-mcp"] == original["mcp"]["custom-mcp"]
+    assert config["mcp"]["worker-mcp"]["url"] == "http://127.0.0.1:9/mcp"
     assert config["permission"] == original["permission"]
     assert config["model"] == "astra-gateway/test-model"
     assert config["mcp"]["nexus-library"]["headers"]["Authorization"] == "Bearer mcp-test"
-    assert json.loads((tmp_path / "opencode.json.astra-backup-op123").read_text()) == original
+    backup = json.loads((tmp_path / "opencode.jsonc.astra-backup-op123").read_text().split("\n", 1)[1])
+    assert backup == original
     assert target.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "skill" / "review" / "SKILL.md").read_text(encoding="utf-8") == "# review\n"
+    assert (repo / "SKILL.md").read_text(encoding="utf-8") == "untouched"
+
+
+def test_e2e_config_points_at_the_free_model_and_omits_the_gateway_key():
+    payload = managed_config(
+        config_path="/tmp/opencode.jsonc",
+        model=E2E_MODEL,
+        models=[],
+        gateway_url="http://127.0.0.1:8110/v1",
+        gateway_key="agw_do_not_read",
+        mcp_url="http://127.0.0.1:8201/mcp",
+        mcp_key="mcp-test",
+        e2e=True,
+    )
+    encoded = json.dumps(payload)
+    assert payload["model"] == E2E_MODEL
+    assert payload["provider"] is None
+    assert payload["e2e"] is True
+    assert "agw_do_not_read" not in encoded
 
 
 def test_api_streams_progress_and_final_result_without_secrets(monkeypatch):
@@ -614,7 +716,7 @@ async def test_failed_venv_does_not_rotate_the_worker_token(monkeypatch):
     assert not any(isinstance(item, str) and item.endswith(".env") for item in calls)
     pip = next(item for item in calls if isinstance(item, tuple) and "pip install" in item[1])
     assert pip[0] == 300
-    assert pip[1].startswith("/usr/bin/python3.12 -m venv /opt/astra/worker/venv && ")
+    assert pip[1].startswith("/usr/bin/python3.12 -m venv /opt/nexus/worker/venv && ")
     assert "-i https://pypi.example.invalid/simple " in pip[1]
 
 

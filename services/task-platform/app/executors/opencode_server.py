@@ -100,12 +100,15 @@ class OpenCodeServerClient:
         body: Any = None,
         query: dict[str, Any] | None = None,
         include_headers: bool = False,
+        session_id: str | None = None,
     ) -> Any:
         params = dict(query or {})
         if directory:
             params["directory"] = str(directory)
         try:
-            status, content, headers = await self.exchange(method, path, params=params, body=body)
+            status, content, headers = await self.exchange(
+                method, path, params=params, body=body, session_id=session_id
+            )
         except httpx.TimeoutException as exc:
             raise OpenCodeExecutionTimeout(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -126,6 +129,7 @@ class OpenCodeServerClient:
         *,
         params: dict[str, Any] | None = None,
         body: Any = None,
+        session_id: str | None = None,
     ) -> tuple[int, bytes, dict[str, str]]:
         async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
             response = await client.request(
@@ -190,7 +194,9 @@ class OpenCodeServerClient:
         return await self.request("POST", "/session", directory=directory, body=body)
 
     async def session(self, directory: WorkspacePath, session_id: str) -> dict[str, Any]:
-        return await self.request("GET", f"/session/{session_id}", directory=directory)
+        return await self.request(
+            "GET", f"/session/{session_id}", directory=directory, session_id=session_id
+        )
 
     async def prompt(
         self,
@@ -212,10 +218,13 @@ class OpenCodeServerClient:
             f"/session/{session_id}/prompt_async",
             directory=directory,
             body=body,
+            session_id=session_id,
         )
 
     async def messages(self, directory: WorkspacePath, session_id: str) -> list[dict[str, Any]]:
-        return await self.request("GET", f"/session/{session_id}/message", directory=directory)
+        return await self.request(
+            "GET", f"/session/{session_id}/message", directory=directory, session_id=session_id
+        )
 
     async def messages_page(
         self, directory: WorkspacePath, session_id: str, *, limit: int, before: str | None = None
@@ -225,12 +234,14 @@ class OpenCodeServerClient:
             query["before"] = before
         messages, headers = await self.request(
             "GET", f"/session/{session_id}/message", directory=directory,
-            query=query, include_headers=True,
+            query=query, include_headers=True, session_id=session_id,
         )
         return {"messages": messages, "next_before": headers.get("x-next-cursor")}
 
     async def children(self, directory: WorkspacePath, session_id: str) -> list[dict[str, Any]]:
-        return await self.request("GET", f"/session/{session_id}/children", directory=directory)
+        return await self.request(
+            "GET", f"/session/{session_id}/children", directory=directory, session_id=session_id
+        )
 
     async def questions(self, directory: WorkspacePath) -> list[dict[str, Any]]:
         return await self.request("GET", "/question", directory=directory)
@@ -269,11 +280,17 @@ class OpenCodeServerClient:
         )
 
     async def abort(self, directory: WorkspacePath, session_id: str) -> bool:
-        return bool(await self.request("POST", f"/session/{session_id}/abort", directory=directory))
+        return bool(
+            await self.request(
+                "POST", f"/session/{session_id}/abort", directory=directory, session_id=session_id
+            )
+        )
 
     async def status(self, directory: WorkspacePath, session_id: str) -> str:
         await self.session(directory, session_id)
-        statuses = await self.request("GET", "/session/status", directory=directory)
+        statuses = await self.request(
+            "GET", "/session/status", directory=directory, session_id=session_id
+        )
         return str((statuses.get(session_id) or {"type": "idle"}).get("type"))
 
 
@@ -321,7 +338,7 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
             else:
                 created = await self.client.create_session(
                     workspace,
-                    title=f"Astra {task.id}",
+                    title=f"Nexus {task.id}",
                     model_name=self.model_name,
                     agent=self.settings.opencode_agent or "build",
                 )

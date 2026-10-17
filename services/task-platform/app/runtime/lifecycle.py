@@ -365,21 +365,35 @@ class RuntimeService:
         if _task_result_concluded(task):
             await self.session.commit()
             return
+        if state.status == RuntimeSessionStatus.UNKNOWN.value:
+            # 通信失败和 UNKNOWN 不写 waiting_reason，也不改 Task 状态。
+            await self.session.commit()
+            return
+        if state.terminal_reason == SessionTerminalReason.UNCONFIRMED.value:
+            task.waiting_reason = "TRANSPORT_RECOVERY"
+            await self.session.commit()
+            return
         previous_status = TaskStatus(task.status)
         previous_reason = task.human_required_reason
         if state.status == RuntimeSessionStatus.RUNNING.value:
             task.failure_reason = None
             task.execution_error = None
+            task.waiting_reason = None
             await self.project(task, TaskStatus.RUNNING)
             return
         if state.status == RuntimeSessionStatus.SUCCEEDED.value:
             detail = _ACCEPTANCE_REASON
             task.failure_reason = None
             task.execution_error = None
+            task.waiting_reason = "EXECUTION_RESULT_REVIEW"
         elif state.status == RuntimeSessionStatus.WAITING.value:
             detail = _QUESTION_REASON
             task.failure_reason = None
             task.execution_error = None
+            if state.hitl == "permission":
+                task.waiting_reason = "HITL_PERMISSION"
+            else:
+                task.waiting_reason = "HITL_QUESTION"
         elif state.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}:
             detail = _RECOVERY_REASON.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
             task.failure_reason = detail
@@ -389,8 +403,27 @@ class RuntimeService:
                 "source": "opencode_session",
                 "session_id": task.current_session_id,
             }
+            reason = state.terminal_reason
+            if reason == SessionTerminalReason.TIMEOUT.value:
+                task.waiting_reason = "TIMEOUT"
+            elif reason == SessionTerminalReason.ABORTED.value:
+                task.waiting_reason = "MANUAL_INTERVENTION"
+            elif reason in {
+                SessionTerminalReason.ASSISTANT_ERROR.value,
+                SessionTerminalReason.NO_REPLY.value,
+                SessionTerminalReason.INCOMPLETE.value,
+            }:
+                task.waiting_reason = "RETRY_EXHAUSTED"
+            elif reason == SessionTerminalReason.COMPLETED.value:
+                task.waiting_reason = "EXECUTION_RESULT_REVIEW"
+            elif reason == SessionTerminalReason.SESSION_MISSING.value:
+                task.waiting_reason = "SESSION_MISSING"
+            elif reason == SessionTerminalReason.TRANSPORT_UNKNOWN.value:
+                task.waiting_reason = "TRANSPORT_RECOVERY"
+            else:
+                task.waiting_reason = None
         else:
-            # UNKNOWN keeps the business status. The caller records why it is unconfirmed.
+            task.waiting_reason = None
             await self.session.commit()
             return
         task.human_required_reason = detail
@@ -520,6 +553,11 @@ class RuntimeService:
             await guard_environment_write(self.session, environment)
         except HTTPException as exc:
             raise RuntimeStateError(str(exc.detail)) from exc
+        from app.runtime.dispatcher import runtime_assignment_block
+
+        blocked = runtime_assignment_block(environment, task)
+        if blocked:
+            raise RuntimeStateError(blocked)
         new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
         reservation = {"pending_message_id": initial_id, "pending_attempt": 0}
@@ -598,6 +636,8 @@ class RuntimeService:
                 reuse_existing=reuse_workspace,
             )
             base_commit = await workspace_head_commit(environment, new_workspace)
+            if base_commit:
+                new_snapshot["base_commit"] = base_commit
 
             # New environment relocation cannot safely reuse materialized attachment
             # paths from the old host. Preserve metadata, but only materialize payloads
@@ -656,7 +696,15 @@ class RuntimeService:
 
                 # Only now switch the business pointer to the new environment/session.
                 task.workspace = new_workspace
+                previous_snapshot = (
+                    task.execution_environment_snapshot
+                    if isinstance(task.execution_environment_snapshot, dict)
+                    else {}
+                )
+                new_snapshot = {**previous_snapshot, **new_snapshot}
                 task.execution_environment_snapshot = new_snapshot
+                if new_snapshot.get("base_commit"):
+                    task.base_commit = new_snapshot["base_commit"]
                 task.attachments = materialized_attachments
                 task.current_session_id = created_session_id
                 clear_execution_stop(task)
@@ -1332,6 +1380,8 @@ class RuntimeService:
         task.pending_message_id = None
         task.pending_prompt = None
         task.runtime_error = None
+        if cancel_task:
+            task.waiting_reason = None
         await self.project(
             task,
             TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
@@ -1577,6 +1627,7 @@ class RuntimeService:
                 task.runtime_error = (
                     "Session 不存在，连接异常，状态待确认。Worker 与 Workspace 仍保留，请人工处理。"
                 )
+                task.waiting_reason = "SESSION_MISSING"
                 await self.session.commit()
             else:
                 await self.session.rollback()
@@ -1732,6 +1783,39 @@ class RuntimeService:
         await self.apply_session_state(task, state)
         return task
 
+    async def continue_task(self, task_id: str) -> Task:
+        """人工继续沿用原来的 Worker、worktree 和 Session。"""
+
+        task = await self.lock_task(task_id)
+        if task.status not in {TaskStatus.WAITING.value, TaskStatus.RUNNING.value}:
+            raise RuntimeStateError("只有未结束的任务可以继续")
+        if not task.current_session_id or not task.workspace or not task.employee_id:
+            raise RuntimeStateError("任务尚未绑定 Session，不能继续")
+        session_id = task.current_session_id
+        workspace = task.workspace
+        employee_id = task.employee_id
+        await self.session.commit()
+        task = await self.lock_task(task_id)
+        if (
+            task.current_session_id != session_id
+            or task.workspace != workspace
+            or task.employee_id != employee_id
+        ):
+            await self.session.rollback()
+            raise RuntimeStateError("任务绑定已变化")
+        task.current_progress = "继续当前 Session"
+        await TaskService(self.session).add_event(
+            task,
+            "TASK_CONTINUED",
+            "work",
+            "继续当前 Session",
+            {"session_id": session_id, "workspace": workspace, "employee_id": employee_id},
+            commit=False,
+        )
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
     async def confirm_completion(self, task_id: str):
         """Close the business task only on an explicit human action."""
         task = await self.session.get(Task, task_id)
@@ -1801,6 +1885,7 @@ class RuntimeService:
         task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None
         task.human_intervention = None
+        task.waiting_reason = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务已人工确认完成")
         return task
 
@@ -1820,6 +1905,7 @@ class RuntimeService:
             runtime_session.terminal_reason = SessionTerminalReason.TRANSPORT_UNKNOWN.value
         task.runtime_connection = "UNAVAILABLE"
         task.runtime_error = f"连接异常，状态待确认：{error}"
+        task.waiting_reason = "TRANSPORT_RECOVERY"
         await self.session.commit()
 
     async def confirm_execution_stop(self, task_id: str, *, operator: str, reason: str) -> Task:

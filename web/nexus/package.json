@@ -4,10 +4,10 @@
   "version": "1.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 5174",
+    "dev": "vite --host 0.0.0.0 --port 15174",
     "type-check": "vue-tsc --noEmit -p tsconfig.json",
     "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5174"
+    "preview": "vite preview --host 0.0.0.0 --port 15174"
   },
   "dependencies": {
     "@vueuse/core": "^13.9.0",

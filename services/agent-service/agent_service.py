@@ -9,7 +9,16 @@ import asyncio
 import os
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+
+class RecordMessageBody(BaseModel):
+    session_id: str
+    message_id: str
+    name: str = "user"
+    text: str = ""
+    user_id: str = "nexus"
+    metadata: dict = Field(default_factory=dict)
 
 
 class TaskHintBody(BaseModel):
@@ -72,6 +81,32 @@ async def finish_event(event_id: str | int | None, *, delivered: bool) -> None:
             _seen_events.pop(next(iter(_seen_events)))
 
 
+def register_record_message(app, storage, message_bus, keys, msg_cls) -> None:
+    @app.post("/nexus/record-message")
+    async def record_message(body: RecordMessageBody) -> dict[str, bool]:
+        if not body.session_id.strip() or not body.message_id.strip():
+            raise HTTPException(status_code=422, detail="缺少记录会话或消息")
+        message = msg_cls(
+            id=body.message_id,
+            name=body.name or "user",
+            role="user",
+            content=[{"type": "text", "text": body.text}],
+            metadata=body.metadata,
+        )
+        try:
+            await write_record_message(
+                storage,
+                message_bus,
+                message,
+                user_id=body.user_id or "nexus",
+                session_id=body.session_id,
+                keys=keys,
+            )
+        except RecordRunning as exc:
+            raise HTTPException(status_code=409, detail="会话正在运行，没有写入") from exc
+        return {"ok": True}
+
+
 def register_task_hint(app, deliver) -> None:
     """注册真实唤醒路由。Request 必须在模块全局里，延迟注解才能解析。"""
 
@@ -108,19 +143,15 @@ def allow_nexus_task_mcp(mcp_tool_class, decision_class, behavior_class) -> None
     mcp_tool_class.check_permissions = check_permissions
 
 
-# 官方 get_toolkit 会无条件挂上任务规划和 Agent Team。Nexus 的员工是对等同事，
-# 这些工具会把小模型从 contact_employee 上带走。启动时从组装结果里卸掉，不改安装包。
-HIDDEN_AGENT_TOOLS = (
+# 任务规划和临时 Agent 会把岗位员工带偏。团队协作留下 TeamCreate、TeamSay、
+# TeamDelete 和 AgentInvite。AgentCreate 会造出 source=team 的临时 Agent，继续卸掉。
+REMOVED_AGENT_TOOLS = (
     "TaskCreate",
     "TaskGet",
     "TaskList",
     "TaskUpdate",
     "ToolStop",
     "AgentCreate",
-    "AgentInvite",
-    "TeamCreate",
-    "TeamDelete",
-    "TeamSay",
     "ScheduleCreate",
     "ScheduleDelete",
     "ScheduleList",
@@ -128,10 +159,56 @@ HIDDEN_AGENT_TOOLS = (
 )
 
 
-def without_team_and_task_tools(get_toolkit):
+class RecordRunning(RuntimeError):
+    """记录 Session 上已有运行，纯写入直接拒绝。"""
+
+
+def select_invite_session(sessions, mailbox_session_id: str | None):
+    """只借用该员工自己的邮箱 Session。没有邮箱就新建 workspace。"""
+
+    if not mailbox_session_id:
+        return None
+    for session in sessions:
+        if getattr(session, "id", None) == mailbox_session_id:
+            return session
+    return None
+
+
+class MailboxSessionView:
+    """挡住 list_sessions 的第一条。那条通常是别人的私聊或其他团队。"""
+
+    def __init__(self, inner, lookup) -> None:
+        self._inner = inner
+        self._lookup = lookup
+
+    async def list_sessions(self, user_id: str, agent_id: str):
+        sessions = await self._inner.list_sessions(user_id, agent_id)
+        mailbox_id = await self._lookup(agent_id)
+        chosen = select_invite_session(sessions, mailbox_id)
+        return [chosen] if chosen is not None else []
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def retarget_agent_invites(toolkit, lookup) -> None:
+    groups = getattr(toolkit, "tool_groups", None) or []
+    for group in groups:
+        for tool in getattr(group, "tools", []) or []:
+            if getattr(tool, "name", "") != "AgentInvite":
+                continue
+            storage = getattr(tool, "_storage", None)
+            if isinstance(storage, MailboxSessionView):
+                continue
+            tool._storage = MailboxSessionView(storage, lookup)
+
+
+def without_team_and_task_tools(get_toolkit, mailbox_lookup=None):
     async def assembled(**kwargs):
         toolkit = await get_toolkit(**kwargs)
-        await toolkit.remove_tool(list(HIDDEN_AGENT_TOOLS))
+        await toolkit.remove_tool(list(REMOVED_AGENT_TOOLS))
+        if mailbox_lookup is not None:
+            retarget_agent_invites(toolkit, mailbox_lookup)
         groups = getattr(toolkit, "tool_groups", None)
         if groups is not None:
             toolkit.tool_groups = [
@@ -142,6 +219,190 @@ def without_team_and_task_tools(get_toolkit):
     return assembled
 
 
+_memory_state: dict[str, str] = {}
+
+
+def memory_status(key: str | None = None) -> dict[str, str | bool | dict]:
+    """按 agent 或 workspace 记录。没有进程级的一份状态。"""
+
+    if key is None:
+        return {
+            "items": {
+                name: {"ok": False, "status": "degraded", "error": error}
+                for name, error in _memory_state.items()
+                if error
+            }
+        }
+    error = _memory_state.get(key, "")
+    if error:
+        return {"ok": False, "status": "degraded", "error": error}
+    return {"ok": True, "status": "ok", "error": ""}
+
+
+class GuardedMemory:
+    """记忆 hook 抛错时继续后面的对话，并把这一份标成 degraded。"""
+
+    def __init__(self, inner, key: str) -> None:
+        self._inner = inner
+        self._key = key
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def _mark(self, exc: Exception) -> None:
+        _memory_state[self._key] = str(exc)
+
+    async def on_system_prompt(self, agent, current_prompt: str) -> str:
+        method = getattr(self._inner, "on_system_prompt", None)
+        if method is None:
+            return current_prompt
+        try:
+            return await method(agent, current_prompt)
+        except Exception as exc:
+            self._mark(exc)
+            return current_prompt
+
+    async def _guard(self, name: str, agent, input_kwargs, next_handler):
+        method = getattr(self._inner, name, None)
+        if method is None:
+            async for item in next_handler(**input_kwargs):
+                yield item
+            return
+        started = False
+
+        async def tracked(**kwargs):
+            nonlocal started
+            started = True
+            async for item in next_handler(**kwargs):
+                yield item
+
+        try:
+            async for item in method(agent, input_kwargs, tracked):
+                yield item
+        except Exception as exc:
+            if started:
+                raise
+            self._mark(exc)
+            async for item in next_handler(**input_kwargs):
+                yield item
+
+    async def on_reply(self, agent, input_kwargs, next_handler):
+        async for item in self._guard("on_reply", agent, input_kwargs, next_handler):
+            yield item
+
+    async def on_reasoning(self, agent, input_kwargs, next_handler):
+        async for item in self._guard("on_reasoning", agent, input_kwargs, next_handler):
+            yield item
+
+
+def card_context_size(model_name: str, classes) -> int | None:
+    """网关模型名对上任意厂商的模型卡时，用那张卡的 context_size。"""
+
+    seen: set[int] = set()
+    for cls in classes:
+        identity = id(cls)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        list_models = getattr(cls, "list_models", None)
+        if list_models is None:
+            continue
+        try:
+            cards = list_models()
+        except Exception:
+            continue
+        for card in cards:
+            if getattr(card, "name", None) == model_name:
+                return int(card.context_size)
+    return None
+
+
+def install_card_context_size() -> None:
+    """OpenAI 兼容网关不会命中本厂商卡片。注入时改用同名卡片的 context_size。"""
+
+    from agentscope.app._service import _chat as chat_service
+    from agentscope.app._service import _model as model_service
+    from agentscope.model import (
+        AnthropicChatModel,
+        DashScopeChatModel,
+        DeepSeekChatModel,
+        GeminiChatModel,
+        MiniMaxChatModel,
+        MoonshotChatModel,
+        OllamaChatModel,
+        OpenAIChatModel,
+        OpenAIResponseModel,
+        VolcengineChatModel,
+        XAIChatModel,
+    )
+
+    classes = [
+        OpenAIChatModel,
+        DeepSeekChatModel,
+        AnthropicChatModel,
+        DashScopeChatModel,
+        GeminiChatModel,
+        MiniMaxChatModel,
+        MoonshotChatModel,
+        OllamaChatModel,
+        OpenAIResponseModel,
+        VolcengineChatModel,
+        XAIChatModel,
+    ]
+    original = model_service.get_model
+
+    async def get_model(user_id, config, access):
+        model = await original(user_id, config, access)
+        size = card_context_size(getattr(config, "model", ""), [type(model), *classes])
+        if size is not None:
+            model.context_size = size
+        return model
+
+    model_service.get_model = get_model
+    chat_service.get_model = get_model
+
+
+def attach_memory(workspace, factory=None, key: str = "") -> list:
+    """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。
+
+    个人记忆只留在这个 workspace，不写入图书馆。
+    """
+
+    state_key = key or str(getattr(workspace, "workdir", "") or "memory")
+    if factory is None:
+        try:
+            from agentscope.middleware import AgenticMemoryMiddleware
+        except Exception as exc:
+            _memory_state[state_key] = str(exc)
+            return []
+        factory = AgenticMemoryMiddleware
+    try:
+        middleware = factory(workdir=workspace.workdir, backend=workspace.get_backend())
+    except Exception as exc:
+        _memory_state[state_key] = str(exc)
+        return []
+    _memory_state.pop(state_key, None)
+    return [GuardedMemory(middleware, state_key)]
+
+
+async def memory_middlewares(user_id: str, agent_id: str, session_id: str, workspace) -> list:
+    workdir = str(getattr(workspace, "workdir", "") or "")
+    return attach_memory(workspace, key=agent_id or workdir)
+
+
+async def write_record_message(storage, message_bus, message, *, user_id: str, session_id: str, keys) -> None:
+    """checkpoint 锁下只 upsert。不调用 ChatService.run，也不占用运行锁。"""
+
+    if await message_bus.is_locked(keys.session_lock(session_id)):
+        raise RecordRunning(session_id)
+    async with message_bus.acquire_lock(keys.session_event_checkpoint_lock(session_id)):
+        await storage.upsert_message(user_id, session_id, message)
+    await message_bus.publish(
+        keys.session_events(session_id),
+        {"type": "record", "message_id": str(getattr(message, "id", "") or "")},
+    )
+
+
 def main() -> None:
     import agentscope.app._service._chat as chat_service
     import agentscope.app._service._realtime as realtime_service
@@ -150,33 +411,58 @@ def main() -> None:
     from agentscope.app import create_app
     from agentscope.app._bus_ops import deliver_to_inbox
     from agentscope.app._service._toolkit import get_toolkit
-    from agentscope.app.message_bus import RedisMessageBus
+    from agentscope.app.message_bus import MessageBusKeys, RedisMessageBus
+    from agentscope.app.rag.blob_store import LocalBlobStore
+    from agentscope.app.rag.knowledge_base_manager import CollectionPerKbManager
     from agentscope.app.storage import RedisStorage
     from agentscope.app.workspace_manager import (
         IsolationPolicy,
         LocalWorkspaceManager,
     )
-    from agentscope.message import HintBlock
+    from agentscope.message import HintBlock, Msg
     from agentscope.permission import PermissionBehavior, PermissionDecision
+    from agentscope.rag import QdrantStore
     from agentscope.tool import FunctionTool, MCPTool
 
+    install_card_context_size()
     allow_nexus_task_mcp(MCPTool, PermissionDecision, PermissionBehavior)
-    peer_toolkit = without_team_and_task_tools(get_toolkit)
+
+    async def mailbox_lookup(agent_id: str) -> str | None:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{nexus_api}/api/v1/internal/mailbox",
+                params={"agent_id": agent_id},
+            )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        session_id = response.json().get("session_id")
+        return str(session_id) if session_id else None
+
+    peer_toolkit = without_team_and_task_tools(get_toolkit, mailbox_lookup)
     chat_service.get_toolkit = peer_toolkit
     realtime_service.get_toolkit = peer_toolkit
 
     host = os.environ.get("AGENTSCOPE_REDIS_HOST", "localhost")
     port = int(os.environ.get("AGENTSCOPE_REDIS_PORT", "6379"))
+    redis_db = int(os.environ.get("AGENTSCOPE_REDIS_DB", "1"))
     password = os.environ.get("AGENTSCOPE_REDIS_PASSWORD") or None
-    nexus_api = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:8120").rstrip("/")
+    nexus_api = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:18120").rstrip("/")
     workspace_dir = os.environ.get("AGENTSCOPE_WORKSPACE_DIR", "services/agent-service/data/workspaces")
     os.makedirs(workspace_dir, exist_ok=True)
 
-    storage = RedisStorage(host=host, port=port, password=password)
-    message_bus = RedisMessageBus(host=host, port=port, password=password)
+    storage = RedisStorage(host=host, port=port, db=redis_db, password=password)
+    message_bus = RedisMessageBus(host=host, port=port, db=redis_db, password=password)
     workspace_manager = LocalWorkspaceManager(
         basedir=workspace_dir,
         isolation=IsolationPolicy.PER_SESSION,
+    )
+    qdrant_path = os.environ.get("AGENTSCOPE_QDRANT_PATH", "services/agent-service/data/qdrant")
+    blob_dir = os.environ.get("AGENTSCOPE_BLOB_DIR", "services/agent-service/data/blobs")
+    os.makedirs(qdrant_path, exist_ok=True)
+    knowledge_base_manager = CollectionPerKbManager(
+        storage=storage,
+        vector_store=QdrantStore(path=qdrant_path),
     )
 
     async def extra_agent_tools(user_id: str, agent_id: str, session_id: str):
@@ -199,6 +485,26 @@ def main() -> None:
                 message,
             )
 
+        async def contact_human(conversation_key: str, message: str) -> str:
+            """把一条消息交给人类。同一会话按原来的 delivery_id 投递，不在这里再次推理。
+
+            conversation_key: 这条人和员工会话的键。
+            message: 要送给人类的原文。
+            """
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    f"{nexus_api}/api/v1/im/contacts",
+                    json={
+                        "agent_id": agent_id,
+                        "conversation_key": conversation_key,
+                        "session_id": session_id,
+                        "body": message,
+                    },
+                )
+            if response.status_code >= 400:
+                return response.text
+            return str(response.json().get("delivery_id") or "")
+
         return [
             FunctionTool(
                 contact_employee,
@@ -207,17 +513,28 @@ def main() -> None:
                     behavior=PermissionBehavior.ALLOW,
                     message="允许数字员工联系同事",
                 ),
-            )
+            ),
+            FunctionTool(
+                contact_human,
+                name="contact_human",
+                permission=PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="允许数字员工联系人类",
+                ),
+            ),
         ]
 
     app = create_app(
         storage=storage,
         message_bus=message_bus,
         workspace_manager=workspace_manager,
+        knowledge_base_manager=knowledge_base_manager,
+        blob_store=LocalBlobStore(blob_dir),
         extra_agent_tools=extra_agent_tools,
+        extra_agent_middlewares=memory_middlewares,
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
-    listen_port = int(os.environ.get("AGENTSCOPE_PORT", "8000"))
+    listen_port = int(os.environ.get("AGENTSCOPE_PORT", "18000"))
 
     async def deliver(user_id: str, agent_id: str, session_id: str, hint: str) -> None:
         await deliver_task_hint(
@@ -231,6 +548,11 @@ def main() -> None:
         )
 
     register_task_hint(app, deliver)
+    register_record_message(app, storage, message_bus, MessageBusKeys, Msg)
+
+    @app.get("/nexus/memory-status")
+    async def nexus_memory_status(key: str = "") -> dict[str, str | bool | dict]:
+        return memory_status(key or None)
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 

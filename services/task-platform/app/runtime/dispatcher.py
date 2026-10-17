@@ -7,9 +7,31 @@ from sqlalchemy.orm import selectinload
 from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
 from app.event_bus import event_bus
 from app.models import DigitalEmployee, Task
+from app.runtime.capability import binding_names, dispatch_allowed
 from app.runtime.environment import environment_snapshot
 from app.runtime.occupancy import occupying_exists, sync_employee_occupancy
+from app.runtime.repository import read_base_commit
+from app.runtime.worker_files import environment_uses_worker
+from app.runtime.workspace_changes import workspace_head_commit
 from app.services import TaskService
+
+
+def runtime_assignment_block(environment, task) -> str | None:
+    """任务必须有仓库，且和 Worker 的仓库、已应用修订一致。"""
+
+    if not task.repository_id:
+        return "任务没有绑定仓库"
+    if environment.repository_id != task.repository_id:
+        return "任务仓库与 Worker 不一致"
+    names = binding_names(environment.skill_refs, environment.mcp_refs)
+    if not dispatch_allowed(environment.status_detail, bindings=names):
+        return "Worker 能力绑定尚未应用"
+    return None
+
+
+def _parent_open(status) -> bool:
+    value = status.value if hasattr(status, "value") else status
+    return value != TaskStatus.SUCCEEDED.value
 
 
 class Dispatcher:
@@ -49,6 +71,21 @@ class Dispatcher:
             .all()
         )
         for task in candidates:
+            if not task.repository_id:
+                continue
+            if task.related_task_id:
+                parent = await self.session.get(Task, task.related_task_id)
+                parent_status = None
+                if parent is not None:
+                    parent_status = parent.status.value if hasattr(parent.status, "value") else parent.status
+                if parent_status == TaskStatus.CANCELED.value:
+                    task.status = TaskStatus.CANCELED
+                    task.runtime_error = "父任务已取消，子任务已跳过"
+                    task.current_progress = "父任务已取消，子任务已跳过"
+                    await self.session.commit()
+                    continue
+                if parent is None or _parent_open(parent.status):
+                    continue
             conditions = [
                 DigitalEmployee.status == EmployeeStatus.IDLE,
                 DigitalEmployee.enabled.is_(True),
@@ -77,6 +114,7 @@ class Dispatcher:
                 for employee in employees
                 if employee.execution_environment
                 and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+                and runtime_assignment_block(employee.execution_environment, task) is None
                 and task.task_type in employee.task_types
                 and task.category_id in employee.category_ids
             ]
@@ -84,7 +122,15 @@ class Dispatcher:
             if not employee:
                 continue
             task.employee_id = employee.id
-            task.execution_environment_snapshot = environment_snapshot(employee.execution_environment)
+            environment = employee.execution_environment
+            snapshot = environment_snapshot(environment)
+            if await environment_uses_worker(environment):
+                head = await workspace_head_commit(environment, environment.workspace_root)
+                snapshot["base_commit"] = head or ""
+            else:
+                snapshot["base_commit"] = read_base_commit(environment.workspace_root)
+            task.base_commit = snapshot["base_commit"] or None
+            task.execution_environment_snapshot = snapshot
             task.claimed_at = datetime.now(UTC)
             service = TaskService(self.session)
             await service.add_event(

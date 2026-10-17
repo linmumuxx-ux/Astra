@@ -21,6 +21,25 @@ os.environ["ASTRA_WORKSPACE_ROOT"] = str(TEST_WORKSPACES)
 
 
 @pytest.fixture(autouse=True)
+def keep_redis_url_stable():
+    """全量跑时，前面的用例清掉缓存或改掉环境变量后，把 Redis URL 还回来。"""
+
+    expected = os.environ.get("ASTRA_REDIS_URL")
+    yield
+    if expected is not None:
+        os.environ["ASTRA_REDIS_URL"] = expected
+    from app.config.settings import get_settings
+
+    if get_settings.cache_info().currsize and expected and get_settings().redis_url != expected:
+        get_settings.cache_clear()
+    import app.worker_gateway.service as gateway_service
+
+    gateway = gateway_service._gateway
+    if gateway is not None and expected and gateway.settings.redis_url != expected:
+        gateway_service._gateway = None
+
+
+@pytest.fixture(autouse=True)
 def isolate_assistant_command_test(request, monkeypatch):
     """Keep command-construction tests independent from a local OpenCode install."""
 
@@ -50,13 +69,13 @@ def pytest_sessionfinish(session, exitstatus):
                 client.delete(*keys)
             if cursor == 0:
                 break
-        members = client.smembers("astra:gateway:revoked_keys")
+        members = client.smembers("nexus:gateway:revoked_keys")
         stale = []
         for member in members:
             text = member.decode() if isinstance(member, bytes) else str(member)
             if text.startswith(SESSION_REVOKED_MEMBER_PREFIX) or _OLD_REVOKED_MEMBER.fullmatch(text):
                 stale.append(member)
         if stale:
-            client.srem("astra:gateway:revoked_keys", *stale)
+            client.srem("nexus:gateway:revoked_keys", *stale)
     finally:
         client.close()

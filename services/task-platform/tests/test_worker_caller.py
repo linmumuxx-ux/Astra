@@ -118,6 +118,64 @@ async def test_worker_http_exchange_returns_cursor_headers(environment_id):
 
 
 @pytest.mark.asyncio
+async def test_worker_http_records_the_session_and_keeps_the_body_off_the_frame(environment_id, monkeypatch):
+    import httpx
+
+    gateway = gateway_for()
+    enrolled, auth = await bring_online(gateway, environment_id)
+    queues = gateway.bus.bound[enrolled.worker_instance_id]
+
+    class Refused:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("worker transport dialed base_url")
+
+    monkeypatch.setattr(httpx, "AsyncClient", Refused)
+
+    async def answer():
+        frame = await queues.wait_frame()
+        assert frame["session_id"] == "ses_bound"
+        data = frame["payload"]["data"]
+        assert data["ready"] is True
+        assert "body" not in data
+        async with SessionLocal() as session:
+            fetched = await DataChannel(gateway).fetch_request(
+                session,
+                request_id=frame["request_id"],
+                worker_instance_id=enrolled.worker_instance_id,
+                epoch=auth.epoch,
+            )
+            assert fetched["query"]["directory"] == "/ws"
+            assert json.loads(fetched["body"]) == {"hidden": True}
+            await DataChannel(gateway).commit_upload(
+                session,
+                request_id=frame["request_id"],
+                worker_instance_id=enrolled.worker_instance_id,
+                epoch=auth.epoch,
+                upload_id="up-session",
+                http_status=200,
+                headers={"x-next-cursor": "cursor-session", "x-has-more": "false"},
+                content_type="application/json",
+                chunk='{"ok":true}',
+                complete=True,
+            )
+
+    running = asyncio.create_task(answer())
+    client = WorkerOpenCodeClient(environment_id=environment_id, gateway=gateway, timeout_seconds=5)
+    status, content, headers = await client.exchange(
+        "GET",
+        "/file",
+        params={"directory": "/ws"},
+        body={"hidden": True},
+        session_id="ses_bound",
+    )
+    await running
+    assert status == 200
+    assert json.loads(content) == {"ok": True}
+    assert headers["x-next-cursor"] == "cursor-session"
+    assert headers["x-has-more"] == "false"
+
+
+@pytest.mark.asyncio
 async def test_prepare_workspace_command_copies_config(environment_id, tmp_path):
     gateway = gateway_for()
     enrolled, auth = await bring_online(gateway, environment_id)

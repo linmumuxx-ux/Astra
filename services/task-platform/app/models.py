@@ -80,11 +80,33 @@ class DigitalEmployee(RuntimeProjection, Base):
     )
 
 
+class CodeRepository(Base):
+    __tablename__ = "code_repositories"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    url: Mapped[str] = mapped_column(Text)
+    branch: Mapped[str] = mapped_column(String(255), default="main", server_default="main")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class GitCredential(Base):
+    __tablename__ = "git_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(ForeignKey("code_repositories.id"), unique=True, index=True)
+    token_ciphertext: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
 class OpenCodeExecutionEnvironment(Base):
     __tablename__ = "opencode_execution_environments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     employee_id: Mapped[str] = mapped_column(ForeignKey("digital_employees.id"), unique=True, index=True)
+    repository_id: Mapped[str | None] = mapped_column(
+        ForeignKey("code_repositories.id"), nullable=True, index=True
+    )
     mode: Mapped[str] = mapped_column(String(32), default="LOCAL", index=True)
     name: Mapped[str] = mapped_column(String(120), default="本地 Agent 工作环境")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -92,10 +114,13 @@ class OpenCodeExecutionEnvironment(Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
-    opencode_server_port: Mapped[int] = mapped_column(Integer, default=4096)
+    opencode_server_port: Mapped[int] = mapped_column(Integer, default=14096)
     opencode_path: Mapped[str] = mapped_column(Text, default="opencode")
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_root: Mapped[str] = mapped_column(Text, default="./workspaces")
+    branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    skill_refs: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    mcp_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, server_default="[]")
     status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", index=True)
     worker_channel: Mapped[str] = mapped_column(String(16), default="ssh", server_default="ssh")
     status_detail: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -141,6 +166,11 @@ class Task(RuntimeProjection, Base):
     source_channel_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
     workspace: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repository_id: Mapped[str | None] = mapped_column(
+        ForeignKey("code_repositories.id"), nullable=True, index=True
+    )
+    related_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"), nullable=True, index=True)
+    base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     turn_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     pending_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
@@ -170,6 +200,7 @@ class Task(RuntimeProjection, Base):
     current_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     human_required_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    waiting_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     execution_environment_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -384,6 +415,12 @@ class KnowledgeItem(Base):
     updated_by: Mapped[str] = mapped_column(String(120))
     published_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    agentscope_kb_id: Mapped[str] = mapped_column(String(64), default="", server_default="", index=True)
+    agentscope_document_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    agentscope_sync_status: Mapped[str] = mapped_column(
+        String(16), default="not_synced", server_default="not_synced"
+    )
+    agentscope_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     reference_count: Mapped[int] = mapped_column(Integer, default=0)
     helpful_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

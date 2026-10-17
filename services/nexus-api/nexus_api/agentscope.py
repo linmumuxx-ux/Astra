@@ -11,7 +11,7 @@ import httpx
 PINNED_VERSION = "2.0.10"
 # Linux 上 LocalWorkspace.list_tools 的名称，加上本仓库启动脚本注册的 contact_employee。
 # AgentScope 的 get_toolkit 还会自行挂上任务和团队工具，那些不在这份可选目录里。
-LAUNCHER_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee")
+LAUNCHER_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee", "contact_human")
 
 
 class AgentScopeError(Exception):
@@ -75,11 +75,15 @@ class AgentScopeClient:
             return False
         return True
 
-    async def create_agent(self, name: str, system_prompt: str) -> str:
+    async def create_agent(self, name: str, system_prompt: str, invite_description: str = "") -> str:
         response = await self.request(
             "POST",
             "/agent/",
-            json={"name": name, "system_prompt": system_prompt},
+            json={
+                "name": name,
+                "system_prompt": system_prompt,
+                "chat_config": _invite_config(invite_description or name),
+            },
         )
         payload = response.json()
         agent_id = payload.get("agent_id")
@@ -87,20 +91,96 @@ class AgentScopeClient:
             raise AgentScopeError("AgentScope 创建员工后没有返回 agent_id")
         return str(agent_id)
 
-    async def update_agent(self, agent_id: str, name: str, system_prompt: str) -> None:
+    async def update_agent(
+        self,
+        agent_id: str,
+        name: str,
+        system_prompt: str,
+        invite_description: str = "",
+    ) -> None:
         await self.request(
             "PATCH",
             f"/agent/{agent_id}",
-            json={"name": name, "system_prompt": system_prompt},
+            json={
+                "name": name,
+                "system_prompt": system_prompt,
+                "chat_config": _invite_config(invite_description or name),
+            },
         )
 
     async def delete_agent(self, agent_id: str) -> None:
         await self.request("DELETE", f"/agent/{agent_id}")
 
-    async def create_session(self, agent_id: str, name: str) -> str:
+    async def ensure_gateway_credential(self, api_key: str, base_url: str) -> str:
+        """登记指向网关 /v1 的 credential。密钥只出现在这次请求体里。"""
+
+        payload = {"type": "openai_credential", "api_key": api_key, "base_url": base_url}
+        try:
+            listed = await self.request("GET", "/credential/")
+            for item in listed.json().get("credentials", []):
+                data = item.get("data") or {}
+                same_gateway = (
+                    data.get("type") == "openai_credential" and (data.get("base_url") or "") == base_url
+                )
+                if same_gateway and item.get("id"):
+                    if (data.get("api_key") or "") == api_key:
+                        return str(item["id"])
+                    await self.request("PATCH", f"/credential/{item['id']}", json={"data": payload})
+                    return str(item["id"])
+            created = await self.request("POST", "/credential/", json={"data": payload})
+        except AgentScopeError as exc:
+            if api_key and api_key in exc.detail:
+                raise AgentScopeError(exc.detail.replace(api_key, "[redacted]"), exc.status_code) from exc
+            raise
+        credential_id = created.json().get("credential_id")
+        if not credential_id:
+            raise AgentScopeError("AgentScope 没有返回 credential_id")
+        return str(credential_id)
+
+    async def replace_session_model(
+        self,
+        agent_id: str,
+        session_id: str,
+        chat_model_config: dict[str, Any],
+    ) -> None:
+        await self.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            params={"agent_id": agent_id},
+            json={"chat_model_config": chat_model_config},
+        )
+
+    async def replace_session_knowledge(
+        self,
+        agent_id: str,
+        session_id: str,
+        knowledge_base_ids: list[str],
+    ) -> None:
+        await self.request(
+            "PATCH",
+            f"/sessions/{session_id}",
+            params={"agent_id": agent_id},
+            json={"knowledge_config": {"knowledge_base_ids": knowledge_base_ids}},
+        )
+
+    async def create_session(
+        self,
+        agent_id: str,
+        name: str,
+        workspace_id: str | None = None,
+        *,
+        chat_model_config: dict[str, Any] | None = None,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> str:
         body: dict[str, Any] = {"agent_id": agent_id, "name": name}
-        if self.chat_model_config:
-            body["chat_model_config"] = self.chat_model_config
+        if workspace_id:
+            body["workspace_id"] = workspace_id
+        config = self.chat_model_config if chat_model_config is None else chat_model_config
+        if config:
+            body["chat_model_config"] = config
+        ids = [item for item in knowledge_base_ids or [] if item]
+        if ids:
+            body["knowledge_config"] = {"knowledge_base_ids": ids}
         response = await self.request(
             "POST",
             "/sessions/",
@@ -132,20 +212,85 @@ class AgentScopeClient:
         session_id: str,
         content: list[dict[str, Any]],
         user_name: str,
+        verified_uid: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        display_text: str | None = None,
     ) -> str:
+        message: dict[str, Any] = {"name": user_name, "role": "user", "content": content}
+        metadata: dict[str, Any] = {}
+        if verified_uid:
+            metadata["verified_uid"] = verified_uid
+        if attachments:
+            metadata["attachments"] = attachments
+        if display_text is not None:
+            metadata["display_text"] = display_text
+        if metadata:
+            message["metadata"] = metadata
         response = await self.request(
             "POST",
             "/chat/",
             json={
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "input": {"name": user_name, "role": "user", "content": content},
+                "input": message,
             },
         )
         payload = response.json()
         if payload.get("status") != "started":
             raise AgentScopeError("AgentScope 没有接受这次运行")
         return str(payload.get("session_id") or session_id)
+
+    async def trigger_inputs(self, agent_id: str, session_id: str, messages: list[dict[str, Any]]) -> str:
+        """把多条原消息一次送进会话。调用方保留消息 id，这里不新造一条。"""
+
+        response = await self.request(
+            "POST",
+            "/chat/",
+            json={"agent_id": agent_id, "session_id": session_id, "input": messages},
+        )
+        payload = response.json()
+        if payload.get("status") != "started":
+            raise AgentScopeError("AgentScope 没有接受这次运行")
+        return str(payload.get("session_id") or session_id)
+
+    async def record_message(
+        self,
+        session_id: str,
+        message_id: str,
+        name: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        await self.request(
+            "POST",
+            "/nexus/record-message",
+            json={
+                "session_id": session_id,
+                "message_id": message_id,
+                "name": name,
+                "text": text,
+                "user_id": self.user_id,
+                "metadata": metadata or {},
+            },
+        )
+
+    async def list_user_mcp(self) -> list[dict[str, str]]:
+        response = await self.request("GET", "/mcp")
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise AgentScopeError("AgentScope MCP 返回的不是列表")
+        return _named_items(payload, "id", "name")
+
+    async def list_workspace_mcp(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        response = await self.request(
+            "GET",
+            "/workspace/mcp",
+            params={"agent_id": agent_id, "session_id": session_id},
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise AgentScopeError("AgentScope 工作区 MCP 返回的不是列表")
+        return [item for item in payload if isinstance(item, dict)]
 
     async def list_skills(self) -> list[dict[str, str]]:
         response = await self.request("GET", "/skill")
@@ -194,8 +339,11 @@ class AgentScopeClient:
             return cursor
         return None
 
-    async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+    async def read_session(self, agent_id: str, session_id: str) -> tuple[list[dict[str, Any]], str]:
+        """同一页里取出消息和重放游标，避免历史和流各读一次中间漏事件。"""
+
         collected: list[dict[str, Any]] = []
+        event_cursor = ""
         before: str | None = None
         for _ in range(10):
             params: dict[str, Any] = {"agent_id": agent_id, "limit": 200}
@@ -209,14 +357,32 @@ class AgentScopeClient:
             if not isinstance(rows, list):
                 raise AgentScopeError("AgentScope 会话消息返回的不是列表")
             page = [item for item in rows if isinstance(item, dict)]
+            if before is None:
+                cursor = payload.get("event_cursor")
+                event_cursor = cursor if isinstance(cursor, str) else ""
             collected = page + collected if before else page
             if not payload.get("has_more") or not page:
                 break
-            cursor = page[0].get("id")
-            if not isinstance(cursor, str) or cursor == before:
+            older = page[0].get("id")
+            if not isinstance(older, str) or older == before:
                 break
-            before = cursor
-        return collected
+            before = older
+        return collected, event_cursor
+
+    async def list_agent_sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        response = await self.request("GET", "/sessions/", params={"agent_id": agent_id})
+        payload = response.json()
+        if isinstance(payload, dict):
+            items = payload.get("sessions") or []
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+        return [item for item in items if isinstance(item, dict)]
+
+    async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        messages, _cursor = await self.read_session(agent_id, session_id)
+        return messages
 
     async def upload_workspace_skill(self, agent_id: str, session_id: str, directory: Path) -> None:
         skill = directory / "SKILL.md"
@@ -344,6 +510,18 @@ class AgentScopeClient:
             headers=self._headers(),
             timeout=None,
         )
+
+
+def _invite_config(description: str) -> dict[str, Any]:
+    """员工 Agent 的对话配置。压缩用默认阈值，邀请说明给 AgentInvite。"""
+
+    return {
+        "context_config": {"trigger_ratio": 0.8, "reserve_ratio": 0.1},
+        "invite_config": {
+            "invitable": True,
+            "invite_description": description.strip() or "同事",
+        },
+    }
 
 
 def _named_items(rows: list[Any], *keys: str) -> list[dict[str, str]]:

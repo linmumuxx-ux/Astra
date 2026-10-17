@@ -15,7 +15,6 @@ exec 9>"$cache/install.lock"
 flock -n 9 || { echo '同一 SSH 用户已有部署操作，请等待远端操作结束后重试' >&2; exit 75; }
 step() { printf 'ASTRA_STEP\t%s\t%s\n' "$1" "$2"; }
 download() { curl --fail --location --silent --show-error --connect-timeout 15 --max-time 180 --retry 2 "$1" -o "$2"; }
-trap 'rm -f "$payload"' EXIT
 step '系统依赖' running
 test "$(uname -s)" = Linux || { echo '只支持 Linux' >&2; exit 1; }
 case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) echo '只支持 x86_64 / aarch64' >&2; exit 1 ;; esac
@@ -25,6 +24,10 @@ glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}' || true)
 if test -n "$glibc" && test "$(printf '2.28\n%s\n' "$glibc" | sort -V | head -1)" != 2.28; then old_glibc=true; fi
 if test "$old_glibc" = true && test "$arch" != x64; then echo '旧 glibc 仅支持 x86_64，请升级系统' >&2; exit 1; fi
 python_bin=${8:-python3}
+jsonc_py=${9:-}
+token_file=${10:-}
+askpass=
+trap 'rm -f "$payload"; if test -n "${token_file:-}"; then rm -f "$token_file"; fi; if test -n "${askpass:-}"; then rm -f "$askpass"; fi' EXIT
 if ! "$python_bin" -c 'import sys; sys.exit(sys.version_info<(3,11))' >/dev/null 2>&1; then
   echo '需要 Python ≥3.11' >&2
   exit 1
@@ -150,34 +153,89 @@ if test "$binary" != "$npm_binary"; then ln -sfn "$npm_binary" "$binary"; fi
 test "$("$binary" --version)" = "$opencode_version" || { echo 'OpenCode 执行路径未指向目标 npm 版本' >&2; exit 1; }
 step 'OpenCode 安装' passed
 step '工程目录' running
-mkdir -p "$workspace"
-if ! git -C "$workspace" rev-parse --git-dir >/dev/null 2>&1; then
-  if test -n "$(ls -A "$workspace")"; then echo '工程目录不是 Git 仓库且不为空，请先初始化或配置正确的仓库根目录' >&2; exit 1; fi
-  git -C "$workspace" init -q
-  git -C "$workspace" -c user.name='Astra' -c user.email='astra@localhost' commit -q --allow-empty -m 'chore: initialize employee workspace'
+repo_url=$("$python_bin" -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); r=p.get("repository") or {}; sys.stdout.write(r.get("url") or "")' "$payload")
+repo_branch=$("$python_bin" -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); r=p.get("repository") or {}; sys.stdout.write(r.get("branch") or "main")' "$payload")
+mkdir -p "$(dirname "$workspace")"
+if test -n "$repo_url"; then
+  if git -C "$workspace" rev-parse --git-dir >/dev/null 2>&1; then
+    origin=$(git -C "$workspace" config --get remote.origin.url || true)
+    current_branch=$(git -C "$workspace" branch --show-current || true)
+    test "$origin" = "$repo_url" || { echo '工程目录的 origin 与绑定仓库不一致' >&2; exit 1; }
+    test "$current_branch" = "$repo_branch" || { echo '工程目录的分支与绑定仓库不一致' >&2; exit 1; }
+    if test -n "$token_file"; then rm -f "$token_file"; token_file=; fi
+  else
+    if test -e "$workspace" && test -n "$(ls -A "$workspace")"; then echo '工程目录不是 Git 仓库且不为空，请先初始化或配置正确的仓库根目录' >&2; exit 1; fi
+    test -n "$token_file" && test -f "$token_file" || { echo '绑定仓库缺少凭据文件' >&2; exit 1; }
+    chmod 600 "$token_file"
+    askpass=$(mktemp)
+    cat >"$askpass" <<'ASK'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' git ;;
+  *) printf '%s\n' "$ASTRA_GIT_TOKEN" ;;
+esac
+ASK
+    chmod 700 "$askpass"
+    # PAT 只进入 askpass 进程的环境，用完立即删除 0600 文件。
+    ASTRA_GIT_TOKEN=$(cat "$token_file")
+    export ASTRA_GIT_TOKEN
+    GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --branch "$repo_branch" -- "$repo_url" "$workspace"
+    unset ASTRA_GIT_TOKEN
+    rm -f "$token_file" "$askpass"
+    token_file=
+    askpass=
+  fi
+else
+  mkdir -p "$workspace"
+  if ! git -C "$workspace" rev-parse --git-dir >/dev/null 2>&1; then
+    if test -n "$(ls -A "$workspace")"; then echo '工程目录不是 Git 仓库且不为空，请先初始化或配置正确的仓库根目录' >&2; exit 1; fi
+    git -C "$workspace" init -q
+    git -C "$workspace" -c user.name='Astra' -c user.email='astra@localhost' commit -q --allow-empty -m 'chore: initialize employee workspace'
+  fi
 fi
 git -C "$workspace" rev-parse --verify HEAD >/dev/null || { echo '工程仓库没有提交，请先创建初始提交' >&2; exit 1; }
 step '工程目录' passed
 step '全局 OpenCode 配置' running
-node - "$payload" "$operation" <<'NODE'
-const fs = require('fs'), path = require('path');
+test -n "$jsonc_py" && test -f "$jsonc_py" || { echo '缺少 JSONC 解析器' >&2; exit 1; }
+node - "$payload" "$operation" "$python_bin" "$jsonc_py" <<'NODE'
+const fs = require('fs'), path = require('path'), {execFileSync} = require('child_process');
 const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const target = payload.config_path;
 fs.mkdirSync(path.dirname(target), { recursive:true, mode:0o700 });
-if (fs.existsSync(target+'c')) throw Error('已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置');
-let config={};
-if(fs.existsSync(target)) {
-  try { config=JSON.parse(fs.readFileSync(target,'utf8')); } catch { throw Error('全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置'); }
-  if(!config || Array.isArray(config) || typeof config!=='object') throw Error('全局配置必须是 JSON 对象');
-  fs.copyFileSync(target, target+'.astra-backup-'+process.argv[3]);
-  fs.chmodSync(target+'.astra-backup-'+process.argv[3],0o600);
+function load(file) {
+  let out;
+  try { out = execFileSync(process.argv[4], [process.argv[5], file], {encoding:'utf8'}); }
+  catch { throw Error('全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置'); }
+  let config;
+  try { config = JSON.parse(out); } catch { throw Error('全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置'); }
+  if (!config || Array.isArray(config) || typeof config !== 'object') throw Error('全局配置必须是 JSON 对象');
+  return config;
 }
-config.$schema='https://opencode.ai/config.json';
-config.provider={...config.provider,'astra-gateway':payload.provider};
-config.mcp={...config.mcp,'nexus-library':payload.mcp};
-config.model=payload.model;
-const tmp=target+'.tmp-'+process.argv[3];
-fs.writeFileSync(tmp,JSON.stringify(config,null,2)+'\n',{mode:0o600});
-fs.renameSync(tmp,target);
+let config = {};
+if (fs.existsSync(target)) {
+  config = load(target);
+  const backup = target + '.astra-backup-' + process.argv[3];
+  fs.copyFileSync(target, backup);
+  fs.chmodSync(backup, 0o600);
+}
+config.$schema = 'https://opencode.ai/config.json';
+if (payload.provider) config.provider = {...(config.provider || {}), 'astra-gateway': payload.provider};
+config.mcp = {...(config.mcp || {}), 'nexus-library': payload.mcp};
+for (const item of payload.mcp_refs || []) {
+  if (item && item.name && item.url) {
+    config.mcp[item.name] = {type: 'remote', url: item.url, enabled: true, oauth: false};
+  }
+}
+config.model = payload.model;
+const tmp = target + '.tmp-' + process.argv[3];
+fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', {mode: 0o600});
+fs.renameSync(tmp, target);
+const skillRoot = path.join(path.dirname(target), 'skill');
+for (const skill of payload.skills || []) {
+  if (!skill || !skill.name || skill.body == null) continue;
+  const dir = path.join(skillRoot, skill.name);
+  fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), skill.body, {mode: 0o600});
+}
 NODE
 step '全局 OpenCode 配置' passed

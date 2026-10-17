@@ -461,7 +461,7 @@ class RedisRouteBus:
         self,
         redis_url: str,
         *,
-        prefix: str = "astra:worker-gateway",
+        prefix: str = "nexus:worker-gateway",
         control_limit: int = 64,
         event_limit: int = 64,
         owner_ttl_seconds: float = 60,

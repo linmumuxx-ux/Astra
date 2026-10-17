@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Astra"
+    app_name: str = "Nexus"
     environment: str = "development"
     timezone: str = "Asia/Shanghai"
 
@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     database_backend: str = "sqlite"
     database_host: str = "127.0.0.1"
     database_port: int = 3306
-    database_name: str = "astra"
-    database_username: str = "astra"
+    database_name: str = "nexus"
+    database_username: str = "nexus"
     database_password: str = ""
     database_charset: str = "utf8mb4"
     database_pool_recycle: int = 1800
@@ -46,9 +46,9 @@ class Settings(BaseSettings):
     runtime_dir: Path = PROJECT_ROOT / ".astra" / "run"
     config_dir: Path = SERVICE_ROOT / "configs"
     seed_demo: bool = True
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5174"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:15174"])
 
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://localhost:6379/1"
     # auto：redis_url 非空时用 Redis 共享连接所有者；URL 为空才退回 memory。
     # memory / redis 可显式覆盖。memory 会在健康接口提示仅单进程可用。
     worker_gateway_bus: Literal["auto", "memory", "redis"] = "auto"
@@ -89,11 +89,11 @@ class Settings(BaseSettings):
     # https://api.deepseek.com。Worker 的 model_name 优先于这个全局后备。
     # 对话模型仍是 OPENAI_MODEL=deepseek-flash，不使用这个字段。
     opencode_model: str | None = "deepseek/deepseek-flash"
-    nexus_api_base: str = "http://127.0.0.1:8120"
-    agentscope_base_url: str = "http://127.0.0.1:8000"
+    nexus_api_base: str = "http://127.0.0.1:18120"
+    agentscope_base_url: str = "http://127.0.0.1:18000"
     agentscope_user_id: str = "nexus"
     task_mcp_host: str = "127.0.0.1"
-    task_mcp_port: int = Field(default=8202, ge=1, le=65535)
+    task_mcp_port: int = Field(default=18202, ge=1, le=65535)
     # Shared with Nexus API (NEXUS_TASK_MCP_KEY). Empty rejects every Task MCP call.
     task_mcp_key: str | None = None
     opencode_timeout_seconds: int = 3600
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     opencode_control_timeout_seconds: int = Field(default=60, ge=5, le=600)
     opencode_server_url: str | None = None
     opencode_server_hostname: str = "127.0.0.1"
-    opencode_server_port: int = Field(default=4096, ge=1, le=65535)
+    opencode_server_port: int = Field(default=14096, ge=1, le=65535)
     opencode_server_username: str = "opencode"
     opencode_server_password: str | None = None
     # Exactly one company OpenCode release is supported. A custom build can
@@ -128,20 +128,20 @@ class Settings(BaseSettings):
     # Empty keeps pip's default index. A value is passed as pip -i.
     remote_pip_index_url: str = ""
     remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)
-    remote_gateway_local_url: str = "http://127.0.0.1:8110"
+    remote_gateway_local_url: str = "http://127.0.0.1:18110"
     remote_gateway_public_url: str | None = None
     # WebSocket the remote Worker Agent dials. Deploy rejects an empty or loopback value.
     worker_agent_gateway_url: str = ""
 
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
-    mcp_port: int = Field(default=8201, ge=1, le=65535)
+    mcp_port: int = Field(default=18201, ge=1, le=65535)
     mcp_streamable_http_path: str = "/mcp"
     mcp_api_key: str | None = None
     # Optional public MCP URL. Deploy uses mcp_resource_server_url and rejects loopback.
     mcp_public_url: str | None = None
-    mcp_issuer_url: str = "http://127.0.0.1:8201"
-    mcp_resource_server_url: str = "http://127.0.0.1:8201/mcp"
+    mcp_issuer_url: str = "http://127.0.0.1:18201"
+    mcp_resource_server_url: str = "http://127.0.0.1:18201/mcp"
 
     llm_wiki_enabled: bool = False
     llm_wiki_api_base_url: str = "http://127.0.0.1:19828/api/v1"
@@ -173,7 +173,7 @@ class Settings(BaseSettings):
     assistant_enabled: bool = True
     assistant_opencode_url: str | None = None
     assistant_opencode_hostname: str = "127.0.0.1"
-    assistant_opencode_port: int = Field(default=4097, ge=1, le=65535)
+    assistant_opencode_port: int = Field(default=14097, ge=1, le=65535)
     assistant_opencode_username: str = "opencode"
     assistant_opencode_password: str | None = None
     assistant_agent: str = "platform-assistant"
@@ -365,7 +365,7 @@ class Settings(BaseSettings):
                 return f"sqlite+aiosqlite:///{path}"
             return self.database_url
         if self.database_backend == "sqlite":
-            path = (self.resolved_data_dir / "astra.db").as_posix()
+            path = (self.resolved_data_dir / "nexus.db").as_posix()
             return f"sqlite+aiosqlite:///{path}"
 
         username = quote(self.database_username, safe="")
@@ -389,7 +389,7 @@ class Settings(BaseSettings):
                 f"mysql://{self.database_host}:{self.database_port}/"
                 f"{self.database_name}?charset={self.database_charset}"
             )
-        return str(self.resolved_data_dir / "astra.db")
+        return str(self.resolved_data_dir / "nexus.db")
 
     @property
     def redis_description(self) -> str:

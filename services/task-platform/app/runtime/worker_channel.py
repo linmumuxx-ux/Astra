@@ -17,6 +17,7 @@ from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.domain import EnvironmentStatus
 from app.models import OpenCodeExecutionEnvironment, WorkerInstance
+from app.runtime.capability import stored_capability, write_capability
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.remote_provisioning import no_active_operation, require_no_operation
 
@@ -53,6 +54,7 @@ async def mark_worker_channel(
         await session.rollback()
         raise
     employee_id = environment.employee_id
+    kept_capability = stored_capability(environment.status_detail)
     previous_status = environment.status
     workspace = environment.workspace_root
     port = environment.opencode_server_port
@@ -89,7 +91,12 @@ async def mark_worker_channel(
         online = await _worker_online(environment_id)
         if not online:
             await _release(
-                session, environment_id, operation_id, previous_status, "Worker 不在线，通道保持 ssh"
+                session,
+                environment_id,
+                operation_id,
+                previous_status,
+                "Worker 不在线，通道保持 ssh",
+                capability=kept_capability,
             )
         operation_fn: Switch = _worker_switch(environment_id, workspace, port)
     else:
@@ -98,11 +105,18 @@ async def mark_worker_channel(
         result = await operation_fn()
     except Exception as exc:
         await _release(
-            session, environment_id, operation_id, previous_status, f"切换失败，通道保持 ssh：{exc}"
+            session,
+            environment_id,
+            operation_id,
+            previous_status,
+            f"切换失败，通道保持 ssh：{exc}",
+            capability=kept_capability,
         )
     mismatch = _mismatch(result)
     if mismatch:
-        await _release(session, environment_id, operation_id, previous_status, mismatch)
+        await _release(
+            session, environment_id, operation_id, previous_status, mismatch, capability=kept_capability
+        )
     written = await session.execute(
         update(OpenCodeExecutionEnvironment)
         .where(
@@ -111,7 +125,11 @@ async def mark_worker_channel(
             ~occupying_exists(employee_id),
             ~blocking_session_exists(employee_id),
         )
-        .values(worker_channel="worker", status=previous_status, status_detail={})
+        .values(
+            worker_channel="worker",
+            status=previous_status,
+            status_detail=write_capability({}, kept_capability) if kept_capability is not None else {},
+        )
         .execution_options(synchronize_session=False)
     )
     if written.rowcount != 1:
@@ -122,6 +140,7 @@ async def mark_worker_channel(
             operation_id,
             previous_status,
             "切换期间员工被占用或维护锁已失效，通道保持 ssh",
+            capability=kept_capability,
         )
     await session.commit()
     stored = await session.get(OpenCodeExecutionEnvironment, environment_id)
@@ -239,14 +258,17 @@ async def _release(
     operation_id: str,
     previous_status: str,
     reason: str,
+    *,
+    capability: dict[str, Any] | None = None,
 ) -> None:
+    detail = write_capability({}, capability) if capability is not None else {}
     await session.execute(
         update(OpenCodeExecutionEnvironment)
         .where(
             OpenCodeExecutionEnvironment.id == environment_id,
             OpenCodeExecutionEnvironment.status_detail["operation"]["id"].as_string() == operation_id,
         )
-        .values(worker_channel="ssh", status=previous_status, status_detail={})
+        .values(worker_channel="ssh", status=previous_status, status_detail=detail)
         .execution_options(synchronize_session=False)
     )
     await session.commit()

@@ -8,7 +8,7 @@
 
 数字图书馆须运行 HTTP MCP。`ops/env/.env` 设置 `ASTRA_MCP_TRANSPORT=streamable-http`、`ASTRA_MCP_API_KEY=<服务密钥>`，重启平台并运行 `python -m app.mcp_server`（在 backend 内，使用项目虚拟环境）。平台和图书馆服务须加载同一份配置。服务管理命令见 [部署指南](../../ops/deploy/DEPLOYMENT_GUIDE.md)。
 
-远端 OpenCode 只听 `127.0.0.1` 上的环境端口，默认 4096。Worker 直连内网的 API 中转和图书馆，部署拒绝回环地址。SSH 只用于安装和 Worker 离线时的维护。
+远端 OpenCode 只听 `127.0.0.1` 上的环境端口，默认 14096。Worker 直连内网的 API 中转和图书馆，部署拒绝回环地址。SSH 只用于安装和 Worker 离线时的维护。
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -36,6 +36,6 @@
 
 ## 维护与恢复
 
-部署或重启期间不能再次维护、修改或删除该员工、检测环境或启动任务。有占用任务、待确认提交、未结束 Runtime Session 或忙碌的原生 Session 时拒绝维护。Worker 在线时，重启下发给 Agent，不打开 SSH。Worker 离线时，用 SSH 重启 OpenCode 和 Agent 单元。安装成功后 SSH 密码留在环境行上。OpenCode 监听 `127.0.0.1` 和环境上的端口，默认 4096。
+部署或重启期间不能再次维护、修改或删除该员工、检测环境或启动任务。有占用任务、待确认提交、未结束 Runtime Session 或忙碌的原生 Session 时拒绝维护。Worker 在线时，重启下发给 Agent，不打开 SSH。Worker 离线时，用 SSH 重启 OpenCode 和 Agent 单元。安装成功后 SSH 密码留在环境行上。OpenCode 监听 `127.0.0.1` 和环境上的端口，默认 14096。
 
 界面可取消操作；浏览器断线同样取消等待并关闭 SSH 连接。已执行的系统安装不会回滚，远端脚本还有超时和文件锁保护。失败或取消后先查看失败阶段再显式重试；服务进程崩溃遗留的操作租约到期后可重试。不要同时对同一 Linux 用户的多个员工部署。部署结束会检查 Serve、模型中转认证及图书馆 MCP，模型实际生成还取决于中转上游可用性。

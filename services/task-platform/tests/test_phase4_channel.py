@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -37,6 +38,9 @@ RAW_KEY = "agw_phase4-install-key"
 
 def _direct(monkeypatch):
     settings = get_settings()
+    redis_url = os.environ.get("ASTRA_REDIS_URL") or os.environ.get("ASTRA_TEST_REDIS_URL")
+    if redis_url:
+        monkeypatch.setattr(settings, "redis_url", redis_url)
     monkeypatch.setattr(settings, "mcp_transport", "streamable-http")
     monkeypatch.setattr(settings, "remote_gateway_local_url", GATEWAY)
     monkeypatch.setattr(settings, "mcp_resource_server_url", MCP)
@@ -273,7 +277,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
         async def read_file(self, path):
             if path in files:
                 return files[path]
-            if path.endswith("opencode.json"):
+            if path.endswith("opencode.json") or path.endswith("opencode.jsonc"):
                 return json.dumps(
                     {"provider": {"astra-gateway": {"options": {"apiKey": RAW_KEY}}}}
                 ).encode()
@@ -391,7 +395,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     assert any("serve --hostname 127.0.0.1 --port 4096" in text for text in texts)
     assert any(GATEWAY in text and "astra-gateway" in text for text in texts)
     wheels = [path for path in files if path.endswith(".whl")]
-    assert wheels == ["/opt/astra/worker/astra_worker_agent-0.4.0-py3-none-any.whl"]
+    assert wheels == ["/opt/nexus/worker/astra_worker_agent-0.4.0-py3-none-any.whl"]
     with zipfile.ZipFile(io.BytesIO(files[wheels[0]])) as archive:
         packed = set(archive.namelist())
     assert "app/worker_agent/__main__.py" in packed
@@ -399,12 +403,12 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
     assert "app/config/settings.py" not in packed
     assert "app/worker_gateway/service.py" not in packed
     install = next(command for command in commands if "pip install" in command)
-    assert install.startswith("python3 -m venv /opt/astra/worker/venv && ")
+    assert install.startswith("python3 -m venv /opt/nexus/worker/venv && ")
     assert f"{AGENT_PYTHON} -m pip install" in install
     assert "--force-reinstall" in install
     assert wheels[0] in install
-    worker_unit = f"astra-worker-{environment_id}.service"
-    opencode_unit = f"astra-opencode-{environment_id}.service"
+    worker_unit = f"nexus-worker-{environment_id}.service"
+    opencode_unit = f"nexus-opencode-{environment_id}.service"
     unit = files[f"/etc/systemd/system/{worker_unit}"].decode()
     assert f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n" in unit
     assert "/usr/bin/python3" not in unit
@@ -469,14 +473,14 @@ def repo_root() -> Path:
     raise AssertionError("找不到仓库根目录")
 
 
-def test_remote_port_default_is_4096_and_llm_wiki_tunnel_stays():
+def test_remote_port_default_is_14096_and_llm_wiki_tunnel_stays():
     root = repo_root()
     script = (root / "ops/deploy/install_nexus.sh").read_text(encoding="utf-8")
-    assert "REMOTE_WORKER_OPENCODE_PORT:=4096" in script
+    assert "REMOTE_WORKER_OPENCODE_PORT:=14096" in script
     assert "4296" not in script
     assert "ssh -N -i" in script
     example = (root / "ops/env/.env.example").read_text(encoding="utf-8")
-    assert "REMOTE_WORKER_OPENCODE_PORT=4096" in example
+    assert "REMOTE_WORKER_OPENCODE_PORT=14096" in example
     assert "4296" not in example
     guide = (root / "ops/deploy/DEPLOYMENT_GUIDE.md").read_text(encoding="utf-8")
     employees = (root / "docs/deploy/REMOTE_EMPLOYEES.md").read_text(encoding="utf-8")

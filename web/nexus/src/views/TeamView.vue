@@ -38,7 +38,7 @@
           <div v-if="current && !messages.length && !liveLines.length && !notice" class="empty">开始一次团队讨论。用 @员工名 唤醒对应员工。</div>
           <div v-for="message in messages" :key="message.id" class="msg" :class="{ user: message.sender === 'user' }">
             <div>
-              <div class="muted">{{ speakerName(message.sender) }}</div>
+              <div class="muted">{{ speakerLabel(message) }}</div>
               <div v-if="message.text" class="bubble">{{ message.text }}</div>
               <div class="message-attachments">
                 <a v-for="file in message.attachments" :key="file.id" class="sent-attachment" :class="{ image: isImage(file.type) }" :href="attachmentUrl(file.id)" :download="file.name" target="_blank">
@@ -125,13 +125,16 @@ import { ElMessage } from "element-plus";
 import {
   attachmentUrl,
   channelMessages,
+  channelTimeline,
   listChannels,
   listEmployees,
   readEventStream,
+  currentUid,
   saveChannel,
   sendChannel,
   uploadAttachment,
 } from "../api";
+import type { TimelineItem } from "../api";
 import TaskTable from "../components/TaskTable.vue";
 import { listTasks, type PlatformTask } from "../platform";
 import type { Attachment, Channel, ChatMessage, Employee } from "../types";
@@ -155,6 +158,7 @@ const form = reactive({ name: "", description: "", memberIds: [] as string[] });
 const sideTab = ref<"members" | "tasks">("members");
 const tasks = ref<PlatformTask[]>([]);
 let streamAbort: AbortController | null = null;
+let channelAbort: AbortController | null = null;
 
 const current = computed(() => channels.value.find((item) => item.id === currentId.value) ?? null);
 const memberEmployees = computed(() =>
@@ -228,8 +232,44 @@ function formatSize(size: number) {
 }
 
 function speakerName(sender: string) {
-  if (sender === "user") return "你";
   return employees.value.find((item) => item.id === sender)?.name ?? "数字员工";
+}
+
+function speakerLabel(message: ChatMessage) {
+  const speaker = message.speaker || "";
+  const me = currentUid();
+  if (message.sender === "user" && (!speaker || speaker === "user" || (me && speaker === me))) return "你";
+  if (speaker && speaker !== "user") {
+    return employees.value.find((item) => item.id === speaker)?.name ?? speaker;
+  }
+  return speakerName(message.sender);
+}
+
+function fromTimeline(item: TimelineItem): ChatMessage {
+  return {
+    id: item.id,
+    sender: item.kind === "human" ? "user" : item.speaker,
+    speaker: item.speaker,
+    text: item.text,
+    attachments: item.attachments ?? [],
+    created_at: item.created_at,
+  };
+}
+
+function mergeById(item: ChatMessage) {
+  const index = messages.value.findIndex((message) => message.id === item.id);
+  if (index >= 0) {
+    const next = messages.value.slice();
+    const previous = next[index];
+    next[index] = {
+      ...previous,
+      ...item,
+      attachments: item.attachments.length ? item.attachments : previous.attachments,
+    };
+    messages.value = next;
+    return;
+  }
+  messages.value = [...messages.value, item];
 }
 
 async function addFileList(files: File[]) {
@@ -278,9 +318,37 @@ function onPaste(event: ClipboardEvent) {
   void addFileList(files);
 }
 
-function stopStream() {
+function stopMemberStream() {
   streamAbort?.abort();
   streamAbort = null;
+}
+
+function stopChannelStream() {
+  channelAbort?.abort();
+  channelAbort = null;
+}
+
+function stopStream() {
+  stopMemberStream();
+  stopChannelStream();
+}
+
+async function followChannel(channelId: string, signal: AbortSignal) {
+  try {
+    await readEventStream(`/api/v1/channels/${channelId}/events`, signal, (event) => {
+      if (currentId.value !== channelId || typeof event.id !== "string") return;
+      mergeById({
+        id: event.id,
+        sender: "user",
+        speaker: String(event.speaker ?? ""),
+        text: String(event.text ?? ""),
+        attachments: [],
+        created_at: "",
+      });
+    });
+  } catch (error) {
+    if (!signal.aborted) notice.value = error instanceof Error ? error.message : "事件流中断";
+  }
 }
 
 function delay(ms: number, signal: AbortSignal) {
@@ -313,11 +381,10 @@ async function followMember(channelId: string, employeeId: string, signal: Abort
         }
         if (event.type === "REPLY_END") {
           settled.add(employeeId);
-          void channelMessages(channelId).then((payload) => {
+          void channelTimeline(channelId).then((payload) => {
             if (currentId.value !== channelId) return;
-            messages.value = payload.messages;
+            messages.value = payload.items.map(fromTimeline);
             liveLines.value = liveLines.value.filter((item) => item.employeeId !== employeeId);
-            if (payload.history_error) notice.value = payload.history_error;
           });
         }
         if (event.type === "NEXUS_UPSTREAM_ERROR") {
@@ -379,12 +446,12 @@ async function send() {
       return;
     }
     notice.value = rejected.map((item) => `${item.name}：${item.detail}`).filter(Boolean).join(" ");
-    stopStream();
+    stopMemberStream();
     liveLines.value = [];
     const controller = new AbortController();
     streamAbort = controller;
     await watchMembers(channelId, controller.signal);
-    if (streamAbort === controller) stopStream();
+    if (streamAbort === controller) stopMemberStream();
   } catch (error) {
     if (!(error instanceof DOMException)) {
       ElMessage.error(error instanceof Error ? error.message : "发送失败");
@@ -421,9 +488,11 @@ watch(currentId, async (id) => {
     messages.value = [];
     return;
   }
-  const payload = await channelMessages(id);
-  messages.value = payload.messages;
-  if (payload.history_error) notice.value = payload.history_error;
+  const payload = await channelTimeline(id);
+  messages.value = payload.items.map(fromTimeline);
+  const controller = new AbortController();
+  channelAbort = controller;
+  void followChannel(id, controller.signal);
 });
 
 watch([messages, liveLines], async () => {
