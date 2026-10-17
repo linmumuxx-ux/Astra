@@ -161,6 +161,18 @@ def handle_command(
             ), None
         except (RuntimeError, OSError, ValueError) as exc:
             return None, str(exc)
+    if name == "restart_opencode":
+        from app.worker_agent.channel_switch import restart_local_opencode
+
+        try:
+            port = int(data.get("port"))
+        except (TypeError, ValueError):
+            return None, "OpenCode 端口无效"
+        try:
+            restart_local_opencode(str(data.get("workspace") or ""), port)
+        except (RuntimeError, OSError, ValueError) as exc:
+            return None, str(exc)
+        return {"restarted": True}, None
     if name == "ping":
         return {"pong": True}, None
     if name == "echo":

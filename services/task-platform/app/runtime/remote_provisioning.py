@@ -16,12 +16,6 @@ from sqlalchemy import and_, or_, select, update
 from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.domain import EnvironmentStatus, ExecutionMode
-from app.executors.opencode_remote_server import (
-    RemoteOpenCodeServerConnection,
-    ensure_remote_gateway_tunnel,
-    ensure_remote_mcp_tunnel,
-)
-from app.executors.opencode_server import OpenCodeServerClient, OpenCodeServerUnavailable
 from app.gateway.models import GatewayKey, GatewayRoute
 from app.gateway.probe import HttpGatewayProbeClient
 from app.gateway.runtime import RedisRuntimeStore
@@ -29,6 +23,7 @@ from app.gateway.schemas import GatewayKeyCreate
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
 from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment
+from app.runtime.direct_urls import require_direct_url
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
@@ -205,23 +200,26 @@ class RemoteProvisioner:
         return out.strip()
 
     async def _native_idle(self):
-        tunnel = await self.ssh.open_tunnel(
-            remote_host="127.0.0.1",
-            remote_port=self.environment.opencode_server_port,
+        port = int(self.environment.opencode_server_port)
+        script = (
+            "import json,urllib.request\n"
+            f"url='http://127.0.0.1:{port}/session/status'\n"
+            "try:\n"
+            "    print(urllib.request.urlopen(url, timeout=3).read().decode())\n"
+            "except Exception:\n"
+            "    pass\n"
         )
+        out = await self._command(f"python3 -c {shlex.quote(script)} || true")
+        if not out:
+            return
         try:
-            client = OpenCodeServerClient(self.settings, base_url=tunnel.base_url)
-            try:
-                await client.health()
-            except OpenCodeServerUnavailable:
-                return
-            states = await client.request(
-                "GET", "/session/status", directory=Path(self.environment.workspace_root)
-            )
-            if any(s.get("type") in {"busy", "retry"} for s in states.values()):
-                raise RuntimeError("OpenCode 存在正在执行的 Session，请先停止执行再维护环境")
-        finally:
-            await tunnel.close()
+            states = json.loads(out)
+        except json.JSONDecodeError:
+            return
+        if isinstance(states, dict) and any(
+            isinstance(item, dict) and item.get("type") in {"busy", "retry"} for item in states.values()
+        ):
+            raise RuntimeError("OpenCode 存在正在执行的 Session，请先停止执行再维护环境")
 
     async def _gateway_key(self, config_path, models):
         content = await self.ssh.read_file(config_path)
@@ -342,75 +340,158 @@ class RemoteProvisioner:
             await asyncio.gather(stderr_task, return_exceptions=True)
             await self._command(f"rm -f {shlex.quote(stem + '.sh')} {shlex.quote(stem + '.json')}")
 
+    def _direct_endpoints(self) -> tuple[str, str]:
+        return (
+            require_direct_url(self.settings.remote_gateway_local_url, "Gateway"),
+            require_direct_url(self.settings.mcp_resource_server_url, "图书馆 MCP"),
+        )
+
     async def _channel_endpoints(self) -> tuple[str, str]:
-        from app.runtime.worker_channel import read_worker_channel
+        return self._direct_endpoints()
 
-        async with SessionLocal() as session:
-            channel = await read_worker_channel(session, self.environment.id)
-        if channel == "worker":
-            return self.settings.remote_gateway_local_url, self.settings.mcp_resource_server_url
-        gateway_url = await ensure_remote_gateway_tunnel(self.environment, self.settings, self.runtime)
-        mcp_url = await ensure_remote_mcp_tunnel(self.environment, self.settings, self.runtime)
-        return gateway_url, mcp_url
-
-    async def _restart(self, emit):
+    async def _restart_via_agent(self, emit):
         await self.step(emit, "重启 OpenCode Serve", "running")
-        # Use the existing PID/cwd/port ownership checks, never kill by process name.
-        self.environment.opencode_path = self.target_binary
-        self.environment.model_name = self.target_model
-        from app.runtime.worker_channel import read_worker_channel
         from app.runtime.worker_client import WorkerOpenCodeClient
 
-        async with SessionLocal() as session:
-            channel = await read_worker_channel(session, self.environment.id)
-        if channel == "worker":
-            client = WorkerOpenCodeClient(self.settings, environment_id=self.environment.id)
-            health = await client.health()
-            await self.step(emit, "重启 OpenCode Serve", "passed", f"健康 · OpenCode {health.get('version')}")
-            return
-        connection = RemoteOpenCodeServerConnection(self.environment, self.settings, self.runtime)
-        await connection._require_workspace_config(self.ssh)
-        if (self.target_model or "").startswith(f"{PROVIDER_ID}/"):
-            await ensure_remote_gateway_tunnel(self.environment, self.settings, self.runtime)
-        await ensure_remote_mcp_tunnel(self.environment, self.settings, self.runtime)
-        tunnel = await self.ssh.open_tunnel(
-            remote_host="127.0.0.1", remote_port=self.environment.opencode_server_port
+        client = WorkerOpenCodeClient(self.settings, environment_id=self.environment.id)
+        await client.run_command(
+            "restart_opencode",
+            {
+                "workspace": self.environment.workspace_root,
+                "port": self.environment.opencode_server_port,
+            },
         )
-        try:
-            client = OpenCodeServerClient(self.settings, base_url=tunnel.base_url)
-            await connection._start_server(self.ssh)
-            connection.session = self.ssh
-            await connection._wait_until_ready(client)
-            health = await client.health()
-            await self.step(emit, "重启 OpenCode Serve", "passed", f"健康 · OpenCode {health.get('version')}")
-            if self.operation["action"] == "deploy":
-                await self.step(emit, "模型中转连接", "running")
-                probe = (
-                    "const fs=require('fs');const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));"
-                    "const p=c.provider['astra-gateway'];"
-                    "async function main(){for(let i=0;i<15;i++){"
-                    "const r=await fetch(p.options.baseURL+'/models',{headers:{Authorization:'Bearer '+"
-                    "p.options.apiKey},signal:AbortSignal.timeout(5000)});"
-                    "if(r.ok){const d=await r.json();const id=c.model.slice('astra-gateway/'.length);"
-                    "if(!d.data?.some(m=>m.id===id))throw Error('中转未提供员工模型');"
-                    "console.log('模型中转认证与模型路由正常');return;}"
-                    "if(r.status!==401)throw Error('中转 HTTP '+r.status);"
-                    "await new Promise(r=>setTimeout(r,2000));}throw Error('中转 Key 未生效');}"
-                    "main().catch(e=>{console.error(e.message);process.exit(1)})"
+        health = await client.health()
+        await self.step(emit, "重启 OpenCode Serve", "passed", f"健康 · OpenCode {health.get('version')}")
+
+    async def _probe_gateway(self, emit):
+        await self.step(emit, "模型中转连接", "running")
+        probe = (
+            "const fs=require('fs');const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));"
+            "const p=c.provider['astra-gateway'];"
+            "async function main(){for(let i=0;i<15;i++){"
+            "const r=await fetch(p.options.baseURL+'/models',{headers:{Authorization:'Bearer '+"
+            "p.options.apiKey},signal:AbortSignal.timeout(5000)});"
+            "if(r.ok){const d=await r.json();const id=c.model.slice('astra-gateway/'.length);"
+            "if(!d.data?.some(m=>m.id===id))throw Error('中转未提供员工模型');"
+            "console.log('模型中转认证与模型路由正常');return;}"
+            "if(r.status!==401)throw Error('中转 HTTP '+r.status);"
+            "await new Promise(r=>setTimeout(r,2000));}throw Error('中转 Key 未生效');}"
+            "main().catch(e=>{console.error(e.message);process.exit(1)})"
+        )
+        detail = await self._command(
+            'export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; '
+            f"node -e {shlex.quote(probe)} {shlex.quote(self.config_path)}",
+            timeout=50,
+        )
+        await self.step(emit, "模型中转连接", "passed", detail)
+
+    async def _install_units(self, emit):
+        await self.step(emit, "安装 Worker Agent", "running")
+        gateway_url, mcp_url = self._direct_endpoints()
+        agent_gateway = require_direct_url(self.settings.worker_agent_gateway_url, "Worker Gateway")
+        from app.worker_gateway.service import get_gateway
+
+        async with SessionLocal() as session:
+            enrolled = await get_gateway().enroll(session, self.environment.id)
+        port = int(self.environment.opencode_server_port)
+        opencode_unit = f"astra-opencode-{self.environment.id}.service"
+        token_path = f"/etc/astra/worker-{self.environment.id}.env"
+        opencode_url = f"http://127.0.0.1:{port}"
+        env = "\n".join(
+            [
+                f"ASTRA_WORKER_TOKEN={enrolled.token}",
+                f"ASTRA_WORKER_GATEWAY_URL={agent_gateway}",
+                f"ASTRA_WORKER_INSTANCE_ID={enrolled.worker_instance_id}",
+                f"ASTRA_WORKER_ENVIRONMENT_ID={self.environment.id}",
+                f"ASTRA_REMOTE_GATEWAY_URL={gateway_url}",
+                f"ASTRA_MCP_RESOURCE_URL={mcp_url}",
+                f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
+                f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
+                f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
+            ]
+        ) + "\n"
+        opencode_unit_text = (
+            "[Unit]\nDescription=Astra OpenCode\nAfter=network-online.target\n"
+            "[Service]\n"
+            f"ExecStart={self.target_binary} serve --hostname 127.0.0.1 --port {port}\n"
+            "Restart=on-failure\n"
+            "[Install]\nWantedBy=multi-user.target\n"
+        )
+        agent_unit_text = (
+            "[Unit]\nDescription=Astra Worker Agent\nAfter=network-online.target\n"
+            "[Service]\n"
+            f"EnvironmentFile={token_path}\n"
+            "ExecStart=/usr/bin/python3 -m app.worker_agent\n"
+            "Restart=on-failure\n"
+            "[Install]\nWantedBy=multi-user.target\n"
+        )
+        await self._command("install -d -m 700 /etc/astra /etc/systemd/system")
+        await self.ssh.write_file(token_path, env.encode(), mode=0o600)
+        await self.ssh.write_file(
+            f"/etc/systemd/system/{opencode_unit}", opencode_unit_text.encode(), mode=0o644
+        )
+        await self.ssh.write_file(
+            f"/etc/systemd/system/astra-worker-{self.environment.id}.service",
+            agent_unit_text.encode(),
+            mode=0o644,
+        )
+        await self._command(
+            "systemctl daemon-reload && "
+            f"systemctl enable --now {shlex.quote(opencode_unit)} "
+            f"astra-worker-{self.environment.id}.service"
+        )
+        self.secrets.append(enrolled.token)
+        await self.step(emit, "安装 Worker Agent", "passed", enrolled.worker_instance_id)
+
+    async def _wait_until_online(self):
+        from app.models import WorkerInstance
+
+        deadline = asyncio.get_running_loop().time() + 30
+        while asyncio.get_running_loop().time() < deadline:
+            async with SessionLocal() as session:
+                instance = await session.scalar(
+                    select(WorkerInstance).where(WorkerInstance.environment_id == self.environment.id)
                 )
-                detail = await self._command(
-                    'export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"; '
-                    f"node -e {shlex.quote(probe)} {shlex.quote(self.config_path)}",
-                    timeout=50,
-                )
-                await self.step(emit, "模型中转连接", "passed", detail)
-                await self.step(emit, "图书馆 MCP", "running")
-                mcp = await client.request("GET", "/mcp", directory=Path(self.environment.workspace_root))
-                if mcp.get("nexus-library", {}).get("status") != "connected":
-                    raise RuntimeError("数字图书馆 MCP 未连接，请检查本机 HTTP 服务及 SSH 反向隧道")
-                await self.step(emit, "图书馆 MCP", "passed", "数字图书馆已连接")
-        finally:
-            await tunnel.close()
+                if instance is not None and instance.status == "online":
+                    return
+            await asyncio.sleep(0.2)
+        raise RuntimeError("Worker 未上线，通道保持未安装")
+
+    async def _mark_inside_operation(self, emit):
+        await self.step(emit, "切换到 Worker", "running")
+        await self._wait_until_online()
+        from app.runtime.worker_channel import complete_worker_mark
+
+        async def probe():
+            await self._probe_mcp(emit)
+
+        async with SessionLocal() as session:
+            await complete_worker_mark(
+                session,
+                self.environment.id,
+                self.operation["id"],
+                before_write=probe,
+            )
+        await self.step(emit, "切换到 Worker", "passed", "生效配置与内网地址一致")
+
+    async def _probe_mcp(self, emit):
+        await self.step(emit, "图书馆 MCP", "running")
+        from app.runtime.worker_client import WorkerOpenCodeClient
+
+        client = WorkerOpenCodeClient(self.settings, environment_id=self.environment.id)
+        mcp = await client.request("GET", "/mcp", directory=Path(self.environment.workspace_root))
+        if not isinstance(mcp, dict) or mcp.get("nexus-library", {}).get("status") != "connected":
+            raise RuntimeError("数字图书馆 MCP 未连接")
+        await self.step(emit, "图书馆 MCP", "passed", "数字图书馆已连接")
+
+    async def _restart_offline(self, emit):
+        await self.step(emit, "重启 OpenCode Serve", "running")
+        unit = f"astra-opencode-{self.environment.id}.service"
+        await self._command(
+            f"systemctl restart {shlex.quote(unit)} astra-worker-{self.environment.id}.service"
+        )
+        await self.step(emit, "重启 OpenCode Serve", "passed", "已通过 SSH 重启单元")
 
     async def _finish(self, success, error=""):
         state = "SUCCEEDED" if success else "FAILED"
@@ -459,18 +540,36 @@ class RemoteProvisioner:
                 await runtime.close()
         return applied
 
+    async def _worker_is_online(self) -> bool:
+        from app.models import WorkerInstance
+
+        async with SessionLocal() as session:
+            instance = await session.scalar(
+                select(WorkerInstance).where(WorkerInstance.environment_id == self.environment.id)
+            )
+            return instance is not None and instance.status == "online"
+
     async def run(self, emit):
         success, error = False, ""
         try:
             async with asyncio.timeout(self.settings.remote_deploy_timeout_seconds):
-                await self.step(emit, "SSH 连接与执行检查", "running")
-                self.ssh = await self.runtime.open_session(self.environment)
-                await self._native_idle()
-                await self.step(emit, "SSH 连接与执行检查", "passed")
-                if self.operation["action"] == "deploy":
-                    await self._install(emit)
-                await self._restart(emit)
-                success = True
+                self._direct_endpoints()
+                if self.operation["action"] == "restart" and await self._worker_is_online():
+                    await self._restart_via_agent(emit)
+                    success = True
+                else:
+                    await self.step(emit, "SSH 连接与执行检查", "running")
+                    self.ssh = await self.runtime.open_session(self.environment)
+                    await self._native_idle()
+                    await self.step(emit, "SSH 连接与执行检查", "passed")
+                    if self.operation["action"] == "deploy":
+                        await self._install(emit)
+                        await self._probe_gateway(emit)
+                        await self._install_units(emit)
+                        await self._mark_inside_operation(emit)
+                    else:
+                        await self._restart_offline(emit)
+                    success = True
         except asyncio.CancelledError:
             error = "操作已取消或连接中断；请核对远端状态后重试"
             raise

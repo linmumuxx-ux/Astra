@@ -126,14 +126,15 @@ class Settings(BaseSettings):
     remote_deploy_timeout_seconds: int = Field(default=1200, ge=60, le=3600)
     remote_gateway_local_url: str = "http://127.0.0.1:8110"
     remote_gateway_public_url: str | None = None
+    # WebSocket the remote Worker Agent dials. Deploy rejects an empty or loopback value.
+    worker_agent_gateway_url: str = ""
 
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = Field(default=8201, ge=1, le=65535)
     mcp_streamable_http_path: str = "/mcp"
     mcp_api_key: str | None = None
-    # Reachable Streamable HTTP MCP endpoint for remote Linux OpenCode servers.
-    # When unset, an SSH reverse tunnel to mcp_port is used instead.
+    # Optional public MCP URL. Deploy uses mcp_resource_server_url and rejects loopback.
     mcp_public_url: str | None = None
     mcp_issuer_url: str = "http://127.0.0.1:8201"
     mcp_resource_server_url: str = "http://127.0.0.1:8201/mcp"

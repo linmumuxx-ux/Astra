@@ -131,6 +131,57 @@ async def mark_worker_channel(
     return stored
 
 
+async def complete_worker_mark(
+    session: AsyncSession,
+    environment_id: int,
+    operation_id: str,
+    *,
+    before_write: Callable[[], Awaitable[None]] | None = None,
+) -> OpenCodeExecutionEnvironment:
+    """Probe and mark inside a maintenance operation the caller already holds."""
+
+    environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
+    if environment is None:
+        raise HTTPException(404, "环境不存在")
+    await session.refresh(environment)
+    operation = (environment.status_detail or {}).get("operation") or {}
+    if operation.get("id") != operation_id or operation.get("state") != "RUNNING":
+        raise HTTPException(409, "维护操作不是进行中，不能标记通道")
+    workspace = environment.workspace_root
+    port = environment.opencode_server_port
+    employee_id = environment.employee_id
+    await session.commit()
+    try:
+        result = await _worker_switch(environment_id, workspace, port)()
+    except Exception as exc:
+        raise HTTPException(409, f"切换失败，通道保持未安装：{exc}") from exc
+    mismatch = _mismatch(result)
+    if mismatch:
+        raise HTTPException(409, mismatch)
+    if before_write is not None:
+        await before_write()
+    written = await session.execute(
+        update(OpenCodeExecutionEnvironment)
+        .where(
+            OpenCodeExecutionEnvironment.id == environment_id,
+            OpenCodeExecutionEnvironment.status_detail["operation"]["id"].as_string() == operation_id,
+            ~occupying_exists(employee_id),
+            ~blocking_session_exists(employee_id),
+        )
+        .values(worker_channel="worker")
+        .execution_options(synchronize_session=False)
+    )
+    if written.rowcount != 1:
+        await session.rollback()
+        raise HTTPException(409, "切换期间员工被占用或维护锁已失效，通道保持未安装")
+    await session.commit()
+    stored = await session.get(OpenCodeExecutionEnvironment, environment_id)
+    if stored is None:
+        raise HTTPException(404, "环境不存在")
+    await session.refresh(stored)
+    return stored
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="把执行环境切换到 Worker 通道")
     parser.add_argument("--environment-id", type=int, required=True)

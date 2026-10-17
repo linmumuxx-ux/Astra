@@ -164,10 +164,10 @@ async def create_command(
     session: AsyncSession = Depends(get_session),
     _: None = Depends(require_admin),
 ) -> dict[str, Any]:
-    if body.name == "switch_channel":
+    if body.name in {"switch_channel", "restart_opencode"}:
         raise HTTPException(
             status_code=403,
-            detail={"code": "maintenance_command", "message": "维护指令只能通过通道切换入口下发"},
+            detail={"code": "maintenance_command", "message": "维护指令只能通过维护入口下发"},
         )
     try:
         result = await get_gateway().dispatch(
