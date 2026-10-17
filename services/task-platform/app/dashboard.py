@@ -108,19 +108,24 @@ def _employee_state(
         if employee.status == EmployeeStatus.WAIT_HUMAN:
             return "waiting", employee.runtime_status_label
         return "idle", EMPLOYEE_LABELS[EmployeeStatus.IDLE]
-    if task.status == TaskStatus.FAILED or (binding and binding.status == RuntimeSessionStatus.FAILED):
+    if task.status == TaskStatus.FAILED:
         return "error", TASK_STATUS[TaskStatus.FAILED]["label"]
-    if binding and binding.status == RuntimeSessionStatus.INTERRUPTED:
-        return "waiting", "当前轮已停止"
+    if task.runtime_connection == "UNAVAILABLE" or (
+        binding and binding.status == RuntimeSessionStatus.UNKNOWN
+    ):
+        return "waiting", "连接异常/状态待确认"
+    if binding and binding.status == RuntimeSessionStatus.SUCCEEDED and task.status != TaskStatus.SUCCEEDED:
+        return "waiting", "执行结束，待确认"
+    if binding and binding.status in {
+        RuntimeSessionStatus.FAILED,
+        RuntimeSessionStatus.INTERRUPTED,
+    }:
+        return "waiting", "执行异常，待恢复"
     if task.status == TaskStatus.WAITING or (binding and binding.status == RuntimeSessionStatus.WAITING):
-        return "waiting", TASK_STATUS[TaskStatus.WAITING]["label"]
-    if binding and binding.status == RuntimeSessionStatus.SUCCEEDED:
-        # Native completion does not close the business Task. Keep both facts visible.
-        return "idle", "本轮已结束"
+        reason = (task.human_required_reason or "").strip()
+        return "waiting", reason or TASK_STATUS[TaskStatus.WAITING]["label"]
     if task.status == TaskStatus.PENDING:
         return "idle", task.runtime_status_label
-    if task.runtime_connection == "UNAVAILABLE":
-        return "waiting", "连接中断"
     if binding and binding.status == RuntimeSessionStatus.RUNNING and task.runtime_connection == "CONNECTED":
         return "working", task.runtime_status_label
     return "idle", "状态待确认"

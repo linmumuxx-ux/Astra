@@ -23,8 +23,10 @@ def should_wake(previous: TaskStatus, target: TaskStatus) -> bool:
 
 
 def wake_hint(task: Task, event: Event, target: TaskStatus) -> str:
+    reason = (task.human_required_reason or "").strip()
+    reason_text = f"原因：{reason}。" if target is TaskStatus.WAITING and reason else ""
     return (
-        f"任务 {task.id} 状态变为 {target.value}（事件 {event.id}）。"
+        f"任务 {task.id} 状态变为 {target.value}（事件 {event.id}）。{reason_text}"
         "请先调用 nexus_task_get 查询最新状态，再决定是否处理。"
         "不要根据这条提示直接改任务状态。"
     )

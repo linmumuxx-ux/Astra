@@ -7,6 +7,7 @@
         <ElText type="info">{{ employeeName }} · {{ task.id }}</ElText>
       </div>
       <RuntimeStatusBadge :projection="task" :show-detail="false" />
+      <ElText v-if="sessionFact" type="warning">{{ sessionFact }}</ElText>
       <ElTag v-if="repo" class="repo" type="info" effect="plain" :title="repo.commit">{{ repoSummary }}</ElTag>
       <ElSelect v-if="binding?.sessions.length" v-model="selectedSession" class="task-header__session" data-testid="session-select" :data-session-id="selectedSession" aria-label="选择 Session">
         <ElOption v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id" :label="`Session #${binding.sessions.length - index} · ${item.current ? '当前' : '历史只读'}`" />
@@ -97,6 +98,8 @@
         <ElDescriptionsItem label="来源会话">{{ task.source_session_id || '无' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="来源对话">{{ task.source_conversation_id || '无' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="当前状态">{{ task.runtime_status_label }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="Session 结果">{{ sessionFact || '尚未开始' }}</ElDescriptionsItem>
+        <ElDescriptionsItem v-if="task.human_required_reason" label="等待原因">{{ task.human_required_reason }}</ElDescriptionsItem>
         <ElDescriptionsItem label="创建时间">{{ formatTime(task.created_at) }}</ElDescriptionsItem>
         <ElDescriptionsItem label="开始时间">{{ formatTime(task.started_at) }}</ElDescriptionsItem>
         <ElDescriptionsItem label="运行时长">{{ duration }}</ElDescriptionsItem>
@@ -237,8 +240,20 @@ const categoryName = computed(() => store.categories.find(item => item.id === ta
 const repoSummary = computed(() => repo.value
   ? `${repo.value.name} / ${repo.value.branch || 'detached'} · ${repo.value.commit?.slice(0, 8)} · 累计 ${repo.value.task_changes?.changed_files ?? 0} 个文件 / ${repo.value.task_changes?.commits?.length ?? 0} 次提交 · 未提交 ${repo.value.changes}`
   : '')
-const canFinish = computed(() => task.value?.current_session_id &&
-  ['RUNNING', 'WAITING', 'FAILED'].includes(task.value.status) && !task.value.pending_message_id)
+const currentSession = computed(() => binding.value?.sessions.find(item => item.current))
+const sessionFact = computed(() => {
+  const current = currentSession.value
+  if (!current && task.value?.runtime_connection !== 'UNAVAILABLE') return ''
+  if (task.value?.runtime_connection === 'UNAVAILABLE' || current?.status === 'UNKNOWN') return '连接异常/状态待确认'
+  if (current?.status === 'SUCCEEDED') return '本轮已完成，待确认'
+  if (current?.status === 'FAILED' || current?.status === 'INTERRUPTED') return task.value?.human_required_reason || '执行异常，待恢复'
+  if (current?.status === 'WAITING') return task.value?.human_required_reason || '等待回答或授权'
+  if (current?.status === 'RUNNING') return '执行中'
+  return ''
+})
+const canFinish = computed(() => task.value?.status === 'WAITING'
+  && currentSession.value?.status === 'SUCCEEDED'
+  && !task.value.pending_message_id)
 const showChanges = ref(false)
 const changesLoading = ref(false)
 const changesError = ref('')

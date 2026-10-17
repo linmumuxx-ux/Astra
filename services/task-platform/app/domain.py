@@ -37,6 +37,7 @@ class SessionTerminalReason(StrEnum):
     TIMEOUT = "timeout"
     SESSION_MISSING = "session_missing"
     TRANSPORT_UNKNOWN = "transport_unknown"
+    UNCONFIRMED = "unconfirmed"
 
 
 class ExperienceOrigin(StrEnum):

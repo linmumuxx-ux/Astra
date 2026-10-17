@@ -516,7 +516,9 @@ async def list_tasks(
         query = query.where(Task.created_at >= created_from)
     if created_to:
         query = query.where(Task.created_at <= created_to)
-    return (await session.execute(query.order_by(desc(Task.created_at)).limit(limit))).scalars().all()
+    tasks = (await session.execute(query.order_by(desc(Task.created_at)).limit(limit))).scalars().all()
+    await _attach_session_facts(session, tasks)
+    return tasks
 
 
 @router.post("/tasks", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
@@ -540,7 +542,21 @@ async def create_task(payload: TaskCreate, session: AsyncSession = Depends(get_s
 
 @router.get("/tasks/{task_id}", response_model=TaskRead)
 async def get_task(task_id: str, session: AsyncSession = Depends(get_session)):
-    return await require_task(task_id, session)
+    task = await require_task(task_id, session)
+    await _attach_session_facts(session, [task])
+    return task
+
+
+async def _attach_session_facts(session: AsyncSession, tasks: list[Task]) -> None:
+    ids = [task.current_session_id for task in tasks if task.current_session_id]
+    bindings = {}
+    if ids:
+        rows = (await session.scalars(select(RuntimeSession).where(RuntimeSession.id.in_(ids)))).all()
+        bindings = {row.id: row for row in rows}
+    for task in tasks:
+        binding = bindings.get(task.current_session_id or "")
+        task.session_status = binding.status if binding else None
+        task.session_terminal_reason = binding.terminal_reason if binding else None
 
 
 @router.patch("/tasks/{task_id}", response_model=TaskRead)

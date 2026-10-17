@@ -55,8 +55,11 @@
         <ElTableColumn label="分类" width="110" show-overflow-tooltip>
           <template #default="{ row }">{{ categoryName(row.category_id) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="状态" width="130">
-          <template #default="{ row }"><RuntimeStatusBadge :projection="row as Task" :show-detail="false" /></template>
+        <ElTableColumn label="状态" width="168">
+          <template #default="{ row }">
+            <RuntimeStatusBadge :projection="taskObservation(row as Task)" :show-detail="false" />
+            <ElText v-if="taskObservation(row as Task).runtime_detail" class="task-status-reason" type="info" truncated :title="taskObservation(row as Task).runtime_detail">{{ taskObservation(row as Task).runtime_detail }}</ElText>
+          </template>
         </ElTableColumn>
         <ElTableColumn label="Worker" width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ employeeName(row.worker_id || row.employee_id) }}</template>
@@ -206,6 +209,21 @@ const ownerName = (id: string | null) => owners.value.find((item) => item.id ===
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
 const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
+function taskObservation(task: Task): Task {
+  if (task.runtime_connection === 'UNAVAILABLE' || task.session_status === 'UNKNOWN') {
+    return { ...task, runtime_state: 'WAITING', runtime_status_label: '连接异常', runtime_detail: task.runtime_error || '状态待确认' }
+  }
+  if (task.status === 'WAITING' && task.session_status === 'SUCCEEDED') {
+    return { ...task, runtime_status_label: '本轮已完成', runtime_detail: task.human_required_reason || '执行结束，待确认' }
+  }
+  if (task.status === 'WAITING' && (task.session_status === 'FAILED' || task.session_status === 'INTERRUPTED' || task.execution_error)) {
+    return { ...task, runtime_status_label: '执行异常', runtime_detail: task.human_required_reason || '待恢复' }
+  }
+  if (task.status === 'WAITING') {
+    return { ...task, runtime_status_label: '等待确认', runtime_detail: task.human_required_reason || '' }
+  }
+  return task
+}
 const shortTitle = (value: string) => value.length > 24 ? `${value.slice(0, 24)}…` : value
 
 const resetFilters = () => Object.assign(filters, { query: '', type: '', category: '', status: '', employee: '', owner: '' })
@@ -296,6 +314,7 @@ async function onTaskSaved() {
 /* 页面骨架、标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css，
    这里只保留表格单元格内部的排版。 */
 .task-title-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.task-status-reason { display: block; max-width: 148px; font-size: var(--astra-font-helper); }
 .task-title-cell__link, .task-id-link { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
 .task-id-link { font-weight: 400; }
 .task-title-cell__link:hover, .task-id-link:hover { color: var(--astra-primary); }

@@ -148,7 +148,7 @@ async def test_old_session_error_event_does_not_fail_new_running_round(
     async with session_factory() as session:
         task = await session.get(Task, "T1")
     assert task.status == "RUNNING"
-    assert task.failure_reason == "old round failed"
+    assert task.failure_reason is None
 
 
 async def test_supervisor_watches_waiting_task_without_automatic_review(monkeypatch, session_factory):

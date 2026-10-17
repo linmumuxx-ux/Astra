@@ -146,3 +146,54 @@ def test_aged_turn_without_reply_is_failed():
 def test_no_anchor_exposes_last_message_id():
     state = derive([user("u1"), user("u2")], server_status="busy")
     assert state.last_message_id == "u2"
+
+
+def test_retry_with_assistant_error_stays_running():
+    state = derive(
+        [user("u1"), assistant("a1", error={"name": "APIError"})],
+        server_status="retry",
+        turn_anchor_id="u1",
+    )
+    assert state.status == "RUNNING"
+
+
+def test_older_assistant_error_does_not_fail_the_new_turn():
+    state = derive(
+        [assistant("old", error={"name": "APIError"}), user("new")],
+        turn_anchor_id="old-user",
+        server_status="idle",
+        turn_started_at=NOW - timedelta(seconds=2),
+    )
+    # Anchor is missing, so the historical error is not this round.
+    assert state.status == "RUNNING"
+
+
+def test_missing_anchor_converges_after_grace_without_inventing_success():
+    state = derive(
+        [assistant("old")],
+        turn_anchor_id="msg_missing",
+        server_status="idle",
+        turn_started_at=NOW - timedelta(minutes=5),
+    )
+    assert state.status == "INTERRUPTED"
+    assert state.terminal_reason == "unconfirmed"
+
+
+def test_new_user_after_old_error_is_not_failed_before_grace():
+    state = derive(
+        [user("u1"), assistant("a1", error={"name": "APIError"}), user("u2")],
+        turn_anchor_id="u1",
+        server_status="idle",
+        turn_started_at=NOW - timedelta(seconds=2),
+    )
+    assert state.status == "RUNNING"
+
+
+def test_aged_new_user_after_old_error_is_no_reply():
+    state = derive(
+        [user("u1"), assistant("a1", error={"name": "APIError"}), user("u2")],
+        turn_anchor_id="u1",
+        turn_started_at=NOW - timedelta(minutes=5),
+    )
+    assert state.status == "FAILED"
+    assert state.terminal_reason == "no_reply"

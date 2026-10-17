@@ -257,6 +257,8 @@ class TaskRead(RuntimeRead):
     source_channel_id: str | None = None
     idempotency_key: str | None = None
     current_session_id: str | None
+    session_status: str | None = None
+    session_terminal_reason: str | None = None
     workspace: str | None
     runtime_connection: str
     pending_message_id: str | None

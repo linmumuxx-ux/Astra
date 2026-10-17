@@ -73,6 +73,28 @@ def _task_result_concluded(task: Task) -> bool:
     return task.status in {TaskStatus.SUCCEEDED.value, TaskStatus.CANCELED.value}
 
 
+def _confirm_blocked(session_status: str) -> str:
+    if session_status == RuntimeSessionStatus.RUNNING.value:
+        return "Session 仍在执行，请先停止当前回复"
+    if session_status == RuntimeSessionStatus.WAITING.value:
+        return "仍有问题或权限请求，请先在 Workspace 处理"
+    if session_status == RuntimeSessionStatus.UNKNOWN.value:
+        return "连接异常，状态待确认，不能确认任务完成"
+    return "当前轮尚未正常结束，不能确认任务完成"
+
+
+_ACCEPTANCE_REASON = "执行结束，待确认"
+_QUESTION_REASON = "请在 Workspace 回答问题或权限请求"
+_RECOVERY_REASON = {
+    SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode 返回执行错误，可在 Workspace 继续",
+    SessionTerminalReason.NO_REPLY.value: "当前轮无回复，可在 Workspace 继续",
+    SessionTerminalReason.TIMEOUT.value: "当前轮达到时间上限，可在 Workspace 继续",
+    SessionTerminalReason.INCOMPLETE.value: "当前轮未完整结束，可在 Workspace 继续",
+    SessionTerminalReason.ABORTED.value: "当前回复已停止，可在 Workspace 继续",
+    SessionTerminalReason.UNCONFIRMED.value: "当前轮结果无法确认，状态待确认，可在 Workspace 核对后继续",
+}
+
+
 def message_id():
     # Native OpenCode messages are ordered lexically by their 48-bit time prefix.
     stamp = ((time_ns() // 1_000_000) * 0x1000) & ((1 << 48) - 1)
@@ -232,25 +254,26 @@ class RuntimeService:
         await self._project_session_state(task, state)
 
     async def _project_session_state(self, task: Task, state: SessionState) -> None:
-        """Observe native execution without deciding the business outcome."""
+        """Project one Session result onto the business Task without closing it."""
         if _task_result_concluded(task):
             await self.session.commit()
             return
-        if state.status in {RuntimeSessionStatus.RUNNING.value, RuntimeSessionStatus.SUCCEEDED.value}:
+        if state.status == RuntimeSessionStatus.RUNNING.value:
             task.failure_reason = None
             task.execution_error = None
             await self.project(task, TaskStatus.RUNNING)
+        elif state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            task.failure_reason = None
+            task.execution_error = None
+            task.human_required_reason = _ACCEPTANCE_REASON
+            await self.project(task, TaskStatus.WAITING, detail=_ACCEPTANCE_REASON)
         elif state.status == RuntimeSessionStatus.WAITING.value:
-            task.human_required_reason = "请在 Workspace 回答问题或权限请求"
-            await self.project(task, TaskStatus.WAITING)
+            task.failure_reason = None
+            task.execution_error = None
+            task.human_required_reason = _QUESTION_REASON
+            await self.project(task, TaskStatus.WAITING, detail=_QUESTION_REASON)
         elif state.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}:
-            message = {
-                SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode 返回执行错误，可在 Workspace 继续",
-                SessionTerminalReason.NO_REPLY.value: "当前轮无回复，可在 Workspace 继续",
-                SessionTerminalReason.TIMEOUT.value: "当前轮达到时间上限，可在 Workspace 继续",
-                SessionTerminalReason.INCOMPLETE.value: "当前轮未完整结束，可在 Workspace 继续",
-                SessionTerminalReason.ABORTED.value: "当前回复已停止，可在 Workspace 继续",
-            }.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
+            message = _RECOVERY_REASON.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
             task.failure_reason = message
             task.execution_error = {
                 "code": state.terminal_reason or "session_failed",
@@ -261,6 +284,7 @@ class RuntimeService:
             task.human_required_reason = message
             await self.project(task, TaskStatus.WAITING, detail=message)
         else:
+            # UNKNOWN keeps the business status. The caller records why it is unconfirmed.
             await self.session.commit()
 
     async def _supersede_session(self, old_id: str | None, new_id: str, *, interrupted: bool) -> None:
@@ -276,8 +300,10 @@ class RuntimeService:
         old.superseded_by = new_id
         old.superseded_at = datetime.now(UTC)
 
-    async def _wait_for_session_stop(self, client, directory: Path, session_id: str) -> None:
-        """Abort, then wait until the old Session can no longer write the workspace."""
+    async def _wait_for_session_stop(
+        self, client, directory: Path, session_id: str, *, message: str | None = None
+    ) -> None:
+        """Wait until this Session can no longer write the workspace."""
         timeout = get_settings().opencode_restart_abort_timeout_seconds
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -289,7 +315,7 @@ class RuntimeService:
             if status not in {"busy", "retry"}:
                 return
             await asyncio.sleep(0.2)
-        raise RuntimeStateError("旧 Session 未在超时时间内停止，未创建新 Session")
+        raise RuntimeStateError(message or "旧 Session 未在超时时间内停止，未创建新 Session")
 
     async def start(self, task_id: str, *, restart: bool = False):
         task = await self.lock_task(task_id)
@@ -886,10 +912,24 @@ class RuntimeService:
         if session_id and environment:
             try:
                 async with connect(environment, start=True) as client:
-                    await client.abort(Path(workspace), session_id)
+                    directory = Path(workspace)
+                    await client.abort(directory, session_id)
+                    try:
+                        watched = await session_tree(client, directory, session_id)
+                    except OpenCodeSessionNotFound:
+                        watched = set()
+                    for watched_id in sorted(watched or {session_id}):
+                        await self._wait_for_session_stop(
+                            client,
+                            directory,
+                            watched_id,
+                            message="执行尚未停止，未取消任务，也未释放 Worker",
+                        )
                     usage_messages, native_session_count = await self._collect_final_usage(
-                        client, Path(workspace), session_id
+                        client, directory, session_id
                     )
+            except RuntimeStateError:
+                raise
             except OpenCodeSessionNotFound:
                 # A restarted Serve that cannot find the Session proves there is
                 # no live execution attached to this binding.
@@ -981,6 +1021,10 @@ class RuntimeService:
                 if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
                     runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
                     runtime_session.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
+                task.runtime_connection = "UNAVAILABLE"
+                task.runtime_error = (
+                    "Session 不存在，连接异常，状态待确认。Worker 与 Workspace 仍保留，请人工处理。"
+                )
                 await self.session.commit()
             else:
                 await self.session.rollback()
@@ -1138,6 +1182,14 @@ class RuntimeService:
         if task.status == TaskStatus.CANCELED:
             await self.session.rollback()
             raise RuntimeStateError("任务已终止")
+        if final_state is not None and final_state.status != RuntimeSessionStatus.SUCCEEDED.value:
+            await self.session.rollback()
+            raise RuntimeStateError(_confirm_blocked(final_state.status))
+        if final_state is None:
+            binding = await self._runtime_session(task)
+            if not binding or binding.status != RuntimeSessionStatus.SUCCEEDED.value:
+                await self.session.rollback()
+                raise RuntimeStateError("当前轮结果无法确认，不能确认任务完成")
         if messages is not None:
             await self._update_session_usage(task, messages, native_session_count=count)
         if final_state is not None:
@@ -1164,7 +1216,7 @@ class RuntimeService:
             runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
             runtime_session.terminal_reason = SessionTerminalReason.TRANSPORT_UNKNOWN.value
         task.runtime_connection = "UNAVAILABLE"
-        task.runtime_error = str(error)
+        task.runtime_error = f"连接异常，状态待确认：{error}"
         await self.session.commit()
 
     async def refresh_employee_heartbeats(self):

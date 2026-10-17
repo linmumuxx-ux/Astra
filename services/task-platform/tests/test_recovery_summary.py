@@ -23,7 +23,7 @@ from app.models import (
     TaskSummary,
 )
 from app.runtime.environment import environment_snapshot
-from app.runtime.lifecycle import RuntimeService
+from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 SKILL_PATH = (
@@ -227,7 +227,13 @@ async def test_manual_confirmation_needs_no_summary(factory, monkeypatch):
         async def children(self, *args): return []
         async def questions(self, *args): return []
         async def permissions(self, *args): return []
-        async def messages(self, *args): return []
+        async def messages(self, *args):
+            return [
+                {"info": {"id": "msg_001", "role": "user"}, "parts": []},
+                {"info": {"id": "msg_200", "role": "assistant", "finish": "stop",
+                          "time": {"completed": 1_800_000_000_000}},
+                 "parts": [{"type": "text", "text": "完成"}]},
+            ]
     @asynccontextmanager
     async def connect(*args, **kwargs):
         yield IdleNative()
@@ -736,7 +742,16 @@ async def test_review_capture_failure_does_not_block_human_completion(factory, m
         binding = await session.get(RuntimeSession, "ses_1")
         binding.status = "UNKNOWN"
         await session.commit()
+        with pytest.raises(RuntimeStateError, match="无法确认"):
+            await RuntimeService(session).confirm_completion(task.id)
+        await session.refresh(task)
+        await session.refresh(binding)
+        assert task.status == "RUNNING"
+        assert binding.status == "UNKNOWN"
+        binding.status = "SUCCEEDED"
+        task.status = "WAITING"
+        await session.commit()
         await RuntimeService(session).confirm_completion(task.id)
         assert task.status == "SUCCEEDED" and task.confirmed_at
-        assert binding.status == "UNKNOWN"  # Business acceptance never fabricates execution success.
+        assert binding.status == "SUCCEEDED"
         assert review.review_ready(task, binding)

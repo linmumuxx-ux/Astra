@@ -74,6 +74,26 @@ def _has_visible_reply(message: dict) -> bool:
     )
 
 
+def _without_older_assistant(messages: list[dict]) -> tuple[list[dict], tuple[int, dict] | None]:
+    """Drop an assistant that belongs to an earlier turn inside this slice."""
+    found = _last_with_role(messages, "assistant")
+    if not found:
+        return messages, None
+    index, _message = found
+    newer = _last_with_role(messages, "user")
+    if newer and newer[0] > index:
+        suffix = messages[newer[0] :]
+        return suffix, _last_with_role(suffix, "assistant")
+    return messages, found
+
+
+def _grace_elapsed(turn_started_at: datetime | None, now: datetime, grace_seconds: int) -> bool:
+    if turn_started_at is None:
+        return True
+    started = turn_started_at if turn_started_at.tzinfo else turn_started_at.replace(tzinfo=UTC)
+    return (now - started).total_seconds() >= grace_seconds
+
+
 def derive_session_state(
     *,
     messages: list[dict],
@@ -125,7 +145,19 @@ def derive_session_state(
         )
 
     turn = _messages_from(messages, turn_anchor_id)
-    assistant = _last_with_role(turn, "assistant")
+    # An anchor that is not in the transcript is not evidence of an older round.
+    if turn_anchor_id and not turn:
+        if server_status == "idle" and _grace_elapsed(turn_started_at, now, grace_seconds):
+            return SessionState(
+                status=RuntimeSessionStatus.INTERRUPTED.value,
+                terminal_reason=SessionTerminalReason.UNCONFIRMED.value,
+                last_message_id=last_message_id,
+                finished_at=now,
+            )
+        return SessionState(
+            status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id
+        )
+    turn, assistant = _without_older_assistant(turn)
     if assistant:
         _, assistant_message = assistant
         assistant_info = _info(assistant_message)
@@ -138,13 +170,7 @@ def derive_session_state(
             )
         finish = assistant_info.get("finish")
         completed = bool(assistant_info.get("time", {}).get("completed"))
-        newer_user = _last_with_role(turn, "user")
-        has_new_turn = bool(newer_user and newer_user[0] > assistant[0])
         if completed and finish in _TERMINAL_FINISH:
-            if has_new_turn:
-                return SessionState(
-                    status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id
-                )
             if not _has_visible_reply(assistant_message):
                 return SessionState(
                     status=RuntimeSessionStatus.FAILED.value,
@@ -160,21 +186,13 @@ def derive_session_state(
                 last_message_id=last_message_id or assistant_info.get("id"),
                 finished_at=_native_completed_at(assistant_info, now),
             )
-        if server_status == "idle" and turn:
-            started = turn_started_at
-            if started is not None:
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=UTC)
-                aged = (now - started).total_seconds() >= grace_seconds
-            else:
-                aged = True
-            if aged:
-                return SessionState(
-                    status=RuntimeSessionStatus.INTERRUPTED.value,
-                    terminal_reason=SessionTerminalReason.INCOMPLETE.value,
-                    last_message_id=last_message_id or assistant_info.get("id"),
-                    finished_at=now,
-                )
+        if server_status == "idle" and turn and _grace_elapsed(turn_started_at, now, grace_seconds):
+            return SessionState(
+                status=RuntimeSessionStatus.INTERRUPTED.value,
+                terminal_reason=SessionTerminalReason.INCOMPLETE.value,
+                last_message_id=last_message_id or assistant_info.get("id"),
+                finished_at=now,
+            )
         return SessionState(
             status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id
         )
@@ -182,19 +200,11 @@ def derive_session_state(
     # No assistant reply in this turn. A turn only counts as ended without a
     # reply once the native server is idle and the grace window has passed, so a
     # just-submitted prompt is never mistaken for a failed one.
-    if server_status == "idle" and turn:
-        started = turn_started_at
-        if started is not None:
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=UTC)
-            aged = (now - started).total_seconds() >= grace_seconds
-        else:
-            aged = True
-        if aged:
-            return SessionState(
-                status=RuntimeSessionStatus.FAILED.value,
-                terminal_reason=SessionTerminalReason.NO_REPLY.value,
-                last_message_id=last_message_id,
-                finished_at=now,
-            )
+    if server_status == "idle" and turn and _grace_elapsed(turn_started_at, now, grace_seconds):
+        return SessionState(
+            status=RuntimeSessionStatus.FAILED.value,
+            terminal_reason=SessionTerminalReason.NO_REPLY.value,
+            last_message_id=last_message_id,
+            finished_at=now,
+        )
     return SessionState(status=RuntimeSessionStatus.RUNNING.value, last_message_id=last_message_id)

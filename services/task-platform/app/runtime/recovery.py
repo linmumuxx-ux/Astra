@@ -119,18 +119,15 @@ async def watch_session(task_id):
                     }:
                         continue
 
+                    # OpenCode 1.18.35 emits session.status (idle/busy/retry), the
+                    # deprecated session.idle, and session.error {sessionID, error}.
+                    # None of those events is a final round result. A live re-read
+                    # decides, and a stale round cannot overwrite a newer anchor.
                     if event["type"] == "session.error" and event_session_id == session_id:
-                        # An error event only proves the Session had an error at some
-                        # point; it does not prove the current round failed. Record the
-                        # native reason, then let a live re-read decide the round.
                         async with SessionLocal() as session:
                             current = await session.get(Task, task_id)
                             if not current or current.current_session_id != session_id:
                                 return
-                            if current.status not in {"SUCCEEDED", "FAILED", "CANCELED"}:
-                                current.failure_reason = str(
-                                    props.get("error", "Session error")
-                                )
                             await session.commit()
 
                     # Reconcile once for a burst; native SSE still reaches Workspace immediately.

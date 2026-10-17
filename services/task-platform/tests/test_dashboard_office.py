@@ -55,10 +55,10 @@ async def office_employee(session):
     [
         ("RUNNING", "working", TASK_STATUS["RUNNING"]["label"]),
         ("WAITING", "waiting", TASK_STATUS["WAITING"]["label"]),
-        ("SUCCEEDED", "idle", "本轮已结束"),
-        ("FAILED", "error", TASK_STATUS["FAILED"]["label"]),
-        ("INTERRUPTED", "waiting", "当前轮已停止"),
-        ("UNKNOWN", "idle", "状态待确认"),
+        ("SUCCEEDED", "waiting", "执行结束，待确认"),
+        ("FAILED", "waiting", "执行异常，待恢复"),
+        ("INTERRUPTED", "waiting", "执行异常，待恢复"),
+        ("UNKNOWN", "waiting", "连接异常/状态待确认"),
     ],
 )
 async def test_office_motion_uses_native_current_round_without_closing_task(
@@ -243,7 +243,7 @@ async def test_office_unavailable_employee_does_not_animate(office_session, empl
 
 @pytest.mark.parametrize(
     ("connection", "state", "label"),
-    [("UNKNOWN", "idle", "状态待确认"), ("UNAVAILABLE", "waiting", "连接中断")],
+    [("UNKNOWN", "idle", "状态待确认"), ("UNAVAILABLE", "waiting", "连接异常/状态待确认")],
 )
 async def test_office_unconfirmed_connection_does_not_animate(office_session, connection, state, label):
     await employee_task(office_session, task_values={"runtime_connection": connection})

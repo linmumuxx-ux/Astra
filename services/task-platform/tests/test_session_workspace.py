@@ -295,7 +295,8 @@ async def test_previous_completed_turn_cannot_complete_new_submission(runtime):
         }
     )
     await r.service.refresh("T1")
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
+    assert r.task.human_required_reason == "执行结束，待确认"
 
 
 async def test_manual_confirm_waits_for_business_confirmation(runtime):
@@ -309,7 +310,8 @@ async def test_manual_confirm_waits_for_business_confirmation(runtime):
     session = await r.session.get(RuntimeSession, "ses_current")
     employee = await r.session.get(DigitalEmployee, "E1")
     assert session.status == "SUCCEEDED"
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
+    assert r.task.human_required_reason == "执行结束，待确认"
     assert r.task.submitted_at is None
     assert r.task.confirmed_at is None
     assert employee.current_task_count == 1
@@ -344,8 +346,9 @@ async def test_auto_final_text_claim_does_not_decide_task_status(runtime):
 
     await r.service.refresh("T1")
 
-    # A plain statement in the final reply never decides the Task status.
-    assert r.task.status == "RUNNING"
+    # Reply text never closes the business Task. The round waits for acceptance.
+    assert r.task.status == "WAITING"
+    assert r.task.status != "SUCCEEDED"
 
 
 async def test_auto_unverifiable_result_requires_native_question(runtime):
@@ -368,7 +371,7 @@ async def test_auto_completed_turn_projects_succeeded(runtime):
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
     session = await r.session.get(RuntimeSession, "ses_current")
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     assert session.status == "SUCCEEDED"
 
 
@@ -464,13 +467,13 @@ async def test_delayed_ack_does_not_reopen_succeeded_task(runtime):
     # The background refresh concludes the round and ACKs the submission while
     # the send request is still in flight.
     await _complete_current_turn(r)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
 
     release.set()
     result = await send_task
 
-    assert result.status == "RUNNING"
-    assert r.task.status == "RUNNING"
+    assert result.status == "WAITING"
+    assert r.task.status == "WAITING"
     binding = await r.session.get(RuntimeSession, "ses_current")
     assert binding.status == "SUCCEEDED"
 
@@ -498,7 +501,7 @@ async def test_delayed_ack_does_not_clear_manual_confirmation(runtime):
     await started.wait()
 
     await _complete_current_turn(r)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     response = await r.api.post("/api/tasks/T1/confirm")
     assert response.status_code == 200
     assert r.task.confirmed_at is not None
@@ -515,13 +518,13 @@ async def test_stop_cancels_continued_round_after_lost_ack_on_succeeded_task(run
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "first"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
 
     # The user continues on the same Session, but the ACK is lost.
     r.native.fail_after_accept = True
     with pytest.raises(ConnectionError):
         await r.service.send("T1", {"parts": [{"type": "text", "text": "continue"}]})
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     assert r.task.pending_message_id is not None
     assert r.native.state == "busy"
 
@@ -876,7 +879,7 @@ async def test_restart_does_not_rewrite_business_completion_time(runtime):
         SessionState(status="SUCCEEDED", terminal_reason="completed", finish_reason="stop"),
     )
     await r.session.refresh(r.task)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     assert r.task.completed_at == first_completed_at
 
 
@@ -1335,7 +1338,7 @@ async def test_succeeded_persists_runtime_session_terminal(runtime):
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
     session = await r.session.get(RuntimeSession, "ses_current")
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     assert session.status == "SUCCEEDED"
     assert session.finish_reason == "stop"
     assert session.finished_at is not None
@@ -1519,7 +1522,8 @@ async def test_refresh_recovers_unknown_session_to_terminal(runtime):
     await r.service.refresh("T1")
     session = await r.session.get(RuntimeSession, "ses_current")
     assert session.status == "SUCCEEDED"
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
+    assert r.task.human_required_reason == "执行结束，待确认"
 
 
 @pytest.mark.parametrize("params", [
@@ -1630,7 +1634,7 @@ async def test_manual_confirm_allows_continuing_without_confirmation(runtime):
     await r.session.commit()
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     await r.service.send("T1", {"parts": [{"type": "text", "text": "another"}]})
     assert r.task.current_session_id == "ses_current"
     assert len(r.native.sent) == 2
@@ -1861,7 +1865,7 @@ async def test_completion_and_restart_do_not_create_reviews(runtime):
     r = runtime
     await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
     await _complete_current_turn(r)
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
     await r.service.refresh("T1")
     assert await r.session.scalar(select(func.count()).select_from(TaskSummary)) == 0
     assert await r.session.scalar(select(func.count()).select_from(KnowledgeItem)) == 0
@@ -1932,7 +1936,7 @@ async def test_idle_completed_turn_does_not_repeat_full_history_reads(runtime):
         raise AssertionError("idle completed turn must not fetch full history again")
     r.native.messages = unexpected
     await r.service.refresh("T1")
-    assert r.task.status == "RUNNING"
+    assert r.task.status == "WAITING"
 
 
 async def test_new_prompt_resets_timeout_window_after_idle(runtime):
@@ -2008,3 +2012,164 @@ async def test_remote_worktree_shell_reuses_absolute_common_dir_and_config(tmp_p
     await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target))
     await _ensure_remote_workspace(runtime, None, root=str(root), target=str(target), reuse_existing=True)
     assert (target / "opencode.json").read_text() == (root / "opencode.json").read_text()
+
+
+async def test_retry_then_final_error_waits_without_releasing_worker(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    r.native.state = "retry"
+    assistant = r.native.sessions["ses_current"][-1]
+    assistant["info"]["error"] = {"name": "RateLimit"}
+    await r.service.refresh("T1")
+    assert r.task.status == "RUNNING"
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "RUNNING"
+
+    r.native.state = "idle"
+    await r.service.refresh("T1")
+    assert binding.status == "FAILED"
+    assert binding.terminal_reason == "assistant_error"
+    assert r.task.status == "WAITING"
+    assert "执行错误" in r.task.human_required_reason
+    employee = await r.session.get(DigitalEmployee, "E1")
+    assert employee.current_task_count == 1
+    assert employee.status == "WAIT_HUMAN"
+
+
+async def test_idle_without_reply_converges_after_grace(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    anchor = r.task.last_message_id
+    r.native.sessions["ses_current"] = [{"info": {"id": anchor, "role": "user"}, "parts": []}]
+    r.native.state = "idle"
+    r.task.turn_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    await r.session.commit()
+    await r.service.refresh("T1")
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "FAILED"
+    assert binding.terminal_reason == "no_reply"
+    assert r.task.status == "WAITING"
+
+
+async def test_missing_anchor_does_not_stay_running_or_reuse_old_success(runtime):
+    r = runtime
+    r.native.sessions["ses_current"] = [
+        {"info": {"id": "old", "role": "assistant", "finish": "stop", "time": {"completed": 1}},
+         "parts": [{"type": "text", "text": "上一轮"}]},
+    ]
+    r.native.state = "idle"
+    r.task.status = "RUNNING"
+    r.task.last_message_id = "msg_missing_round"
+    r.task.turn_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    await r.session.commit()
+    await r.service.refresh("T1")
+    binding = await r.session.get(RuntimeSession, "ses_current")
+    assert binding.status == "INTERRUPTED"
+    assert binding.terminal_reason == "unconfirmed"
+    assert r.task.status == "WAITING"
+    assert r.task.status != "SUCCEEDED"
+
+
+async def test_disconnect_keeps_task_and_worker_until_reconcile(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    session_id = r.task.current_session_id
+    await r.service.disconnected("T1", ConnectionError("reset"))
+    assert r.task.status == "RUNNING"
+    assert r.task.runtime_connection == "UNAVAILABLE"
+    assert "状态待确认" in r.task.runtime_error
+    binding = await r.session.get(RuntimeSession, session_id)
+    assert binding.status == "UNKNOWN"
+    employee = await r.session.get(DigitalEmployee, "E1")
+    assert employee.current_task_count == 1
+
+    await _complete_current_turn(r)
+    assert r.task.current_session_id == session_id
+    assert r.task.status == "WAITING"
+    assert binding.status == "SUCCEEDED"
+    assert await r.session.scalar(select(func.count()).select_from(RuntimeSession)) == 1
+
+
+async def test_acceptance_confirm_releases_worker_and_continue_reuses_session(runtime):
+    from app.runtime.dispatcher import Dispatcher
+
+    r = runtime
+    r.task.responsible_employee_id = "E1"
+    employee = await r.session.get(DigitalEmployee, "E1")
+    employee.category_ids = ["testing"]
+    employee.task_types = ["ISSUE"]
+    r.task.category_id = "testing"
+    await r.session.commit()
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    assert r.task.status == "WAITING"
+    assert employee.current_task_count == 1
+
+    queued = Task(
+        id="T2", title="other", task_type="ISSUE", status="PENDING", category_id="testing",
+    )
+    r.session.add(queued)
+    await r.session.commit()
+    assert await Dispatcher(r.session).claim_once() is None
+
+    await r.service.confirm_completion("T1")
+    assert r.task.status == "SUCCEEDED"
+    assert employee.current_task_count == 0
+    assert employee.status == "IDLE"
+
+
+async def test_continue_after_acceptance_returns_to_running(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    session_id = r.task.current_session_id
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "revise"}]})
+    assert r.task.status == "RUNNING"
+    assert r.task.current_session_id == session_id
+
+
+async def test_repeated_refresh_does_not_duplicate_waiting_wake(runtime):
+    from app.models import Event, TaskWakeOutbox
+
+    r = runtime
+    r.task.responsible_employee_id = "E1"
+    await r.session.commit()
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await _complete_current_turn(r)
+    await r.service.refresh("T1")
+    waiting = (
+        await r.session.scalars(
+            select(Event).where(Event.task_id == "T1", Event.event_type == "TASK_WAITING")
+        )
+    ).all()
+    pending = (
+        await r.session.scalars(
+            select(TaskWakeOutbox).where(
+                TaskWakeOutbox.task_id == "T1", TaskWakeOutbox.status == "pending",
+            )
+        )
+    ).all()
+    assert len(waiting) == 1
+    assert len(pending) == 1
+    assert "执行结束，待确认" in pending[0].hint
+
+
+async def test_cancel_keeps_worker_until_execution_stops(runtime, monkeypatch):
+    from app.config.settings import get_settings
+
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    employee = await r.session.get(DigitalEmployee, "E1")
+    assert employee.current_task_count == 1
+
+    async def stuck_abort(directory, sid):
+        r.native.abort_count += 1
+        r.native.state = "busy"
+        return True
+
+    r.native.abort = stuck_abort
+    monkeypatch.setattr(get_settings(), "opencode_restart_abort_timeout_seconds", 1)
+    with pytest.raises(RuntimeStateError, match="未释放 Worker"):
+        await r.service.stop("T1")
+    assert r.task.status == "RUNNING"
+    assert employee.current_task_count == 1

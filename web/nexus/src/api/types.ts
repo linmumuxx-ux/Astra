@@ -151,6 +151,8 @@ export interface Task extends RuntimeProjection {
   source_conversation_id: string | null
   source_channel_id: string | null
   current_session_id: string | null
+  session_status?: string | null
+  session_terminal_reason?: string | null
   workspace: string | null
   runtime_connection: string
   pending_message_id: string | null
