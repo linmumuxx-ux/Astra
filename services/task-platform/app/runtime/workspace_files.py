@@ -66,6 +66,18 @@ def relative_path(value: str, workspace: str, *, local: bool = False) -> str:
     return str(path)
 
 
+_FILE_API = {"/file", "/file/content", "/file/status", "/find/file"}
+
+
+async def check_request_path(environment, workspace: str, value: str, *, native_path: str = "") -> str:
+    """Worker send and session calls stay lexical. File and Git routes still use SSH."""
+
+    worker = getattr(environment, "worker_channel", "ssh") == "worker"
+    if worker and native_path not in _FILE_API:
+        return relative_path(value or ".", workspace, local=environment.mode == ExecutionMode.LOCAL)
+    return await validate_path(environment, workspace, value)
+
+
 async def validate_path(environment, workspace: str, value: str) -> str:
     local = environment.mode == ExecutionMode.LOCAL
     relative = relative_path(value, workspace, local=local)

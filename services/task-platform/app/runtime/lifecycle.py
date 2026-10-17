@@ -225,6 +225,10 @@ class RuntimeStateError(ValueError):
     pass
 
 
+class MessageHistoryIncomplete(RuntimeStateError):
+    """The transcript was not fully read, so the round result is unknown."""
+
+
 _MAX_MESSAGE_PAGES = 20
 
 
@@ -976,13 +980,19 @@ class RuntimeService:
         for _page in range(_MAX_MESSAGE_PAGES):
             page = await client.messages_page(directory, session_id, limit=100, before=before)
             batch = list(page.get("messages") or [])
-            collected.extend(batch)
             cursor = page.get("next_before")
-            if not cursor or cursor in seen or not batch:
+            if cursor and str(cursor) in seen:
+                raise MessageHistoryIncomplete("消息没有读完，结果未知")
+            if not batch:
+                if cursor:
+                    raise MessageHistoryIncomplete("消息没有读完，结果未知")
+                return collected
+            collected.extend(batch)
+            if not cursor:
                 return collected
             seen.add(str(cursor))
             before = cursor
-        return collected
+        raise MessageHistoryIncomplete("消息没有读完，结果未知")
 
     async def deliver_first_submission(self, task_id: str):
         """Post the prompt reserved by start(). This is not a human retry."""
@@ -1052,6 +1062,14 @@ class RuntimeService:
             await self.session.rollback()
             raise RuntimeStateError("没有这次提交的请求记录，不能判断是否已发送")
         fetched = body_fetched_at(task, pending_id, expected)
+        if fetched is None:
+            from app.worker_gateway.data_channel import UnfetchedSealError, seal_unfetched_request
+
+            try:
+                await seal_unfetched_request(self.session, str(record["request_id"]))
+            except UnfetchedSealError as exc:
+                await self.session.rollback()
+                raise RuntimeStateError(str(exc)) from exc
         if fetched is not None:
             limit = get_settings().opencode_control_timeout_seconds
             ready_at = fetched + timedelta(seconds=limit * 2)
@@ -1102,6 +1120,14 @@ class RuntimeService:
         async with connect(environment, start=True) as client:
             try:
                 messages = await self._all_messages(client, Path(workspace), session_id)
+            except MessageHistoryIncomplete:
+                task = await self.lock_task(task_id)
+                if task.pending_message_id == pending_id:
+                    task.runtime_error = "消息没有读完，结果未知"
+                    await self.session.commit()
+                else:
+                    await self.session.rollback()
+                raise
             except Exception as exc:
                 await self.disconnected(task_id, exc)
                 raise
@@ -1615,15 +1641,24 @@ class RuntimeService:
             observed = RuntimeSessionStatus.WAITING if has_pending else RuntimeSessionStatus.RUNNING
             await self.apply_session_state(task, SessionState(status=observed.value))
             return task
-        messages = await self._all_messages(client, directory, session_id)
-        usage_messages = list(messages)
-        for child_session_id in sorted(allowed_sessions - {session_id}):
-            try:
-                usage_messages.extend(
-                    await self._all_messages(client, directory, child_session_id)
-                )
-            except OpenCodeSessionNotFound:
-                continue
+        try:
+            messages = await self._all_messages(client, directory, session_id)
+            usage_messages = list(messages)
+            for child_session_id in sorted(allowed_sessions - {session_id}):
+                try:
+                    usage_messages.extend(
+                        await self._all_messages(client, directory, child_session_id)
+                    )
+                except OpenCodeSessionNotFound:
+                    continue
+        except MessageHistoryIncomplete:
+            task = await self.lock_task(task_id)
+            if task.current_session_id == session_id and not _task_result_concluded(task):
+                task.runtime_error = "消息没有读完，结果未知"
+                await self.session.commit()
+                return task
+            await self.session.rollback()
+            return task
 
         task = await self.lock_task(task_id)
         if (task.current_session_id != session_id or task.last_message_id != observed_anchor

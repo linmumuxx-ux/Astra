@@ -53,6 +53,7 @@ class AgentConfig:
     command_dedupe_limit: int = 256
     command_dedupe_ttl_seconds: float = 600
     opencode_url: str = "http://127.0.0.1:4096"
+    workspace_root: str = ""
 
 
 @dataclass(slots=True)
@@ -111,7 +112,10 @@ def reconnect_delay(attempt: int, minimum: float, maximum: float, rng: random.Ra
 
 
 def handle_command(
-    message: WorkerMessage, supervisor: RuntimeSupervisor
+    message: WorkerMessage,
+    supervisor: RuntimeSupervisor,
+    *,
+    workspace_root: str = "",
 ) -> tuple[dict[str, Any] | None, str | None]:
     name = message.payload.get("name")
     data = message.payload.get("data")
@@ -122,11 +126,14 @@ def handle_command(
     if name == "prepare_workspace":
         from app.worker_agent.workspace import prepare_workspace_local
 
+        if not workspace_root:
+            return None, "未配置工作区根，拒绝准备目录"
         try:
             return prepare_workspace_local(
                 str(data.get("root") or ""),
                 str(data.get("target") or ""),
                 reuse_existing=bool(data.get("reuse_existing")),
+                allowed_root=workspace_root,
             ), None
         except RuntimeError as exc:
             return None, str(exc)
@@ -180,6 +187,7 @@ class WorkerConnectionManager:
         self.event_seq: dict[str, int] = {}
         self.paused_directories: set[str] = set()
         self.stopped_directories: set[str] = set()
+        self.resume_waiters: dict[str, asyncio.Event] = {}
         self.fetch_body = None
         self.local_request = None
         self.upload_body = None
@@ -379,9 +387,13 @@ class WorkerConnectionManager:
                     lines = response.aiter_lines()
                     while True:
                         while directory in self.paused_directories:
-                            await asyncio.sleep(0.05)
                             if directory in self.stopped_directories or self.epoch != epoch:
                                 return
+                            waiter = self.resume_waiters.setdefault(directory, asyncio.Event())
+                            try:
+                                await asyncio.wait_for(waiter.wait(), 1)
+                            except TimeoutError:
+                                continue
                         if directory in self.stopped_directories or self.epoch != epoch:
                             return
                         try:
@@ -396,27 +408,17 @@ class WorkerConnectionManager:
                             event = json.loads(line[6:])
                         except json.JSONDecodeError:
                             continue
-                        encoded = line[6:].encode("utf-8")
-                        payload: dict[str, Any] = {"seq": seq, "directory": directory}
-                        if len(encoded) > self.config.max_frame_bytes:
-                            payload.update(
-                                dropped=True,
-                                reason="event_too_large",
-                                event_type=event.get("type") if isinstance(event, dict) else None,
+                        await transport.send(
+                            _bounded_event_frame(
+                                incoming,
+                                self.config,
+                                directory=directory,
+                                seq=seq,
+                                event=event if isinstance(event, dict) else {"raw": event},
+                                epoch=epoch,
+                                expires_at=int(self.clock()) + 30,
                             )
-                        else:
-                            payload["event"] = event
-                        message = envelope(
-                            request_id=f"evt-{directory}-{seq}",
-                            worker_instance_id=self.config.worker_instance_id,
-                            environment_id=self.config.environment_id,
-                            session_id=incoming.session_id,
-                            message_type="event",
-                            payload=payload,
                         )
-                        message.epoch = epoch
-                        message.expires_at = int(self.clock()) + 30
-                        await transport.send(message.to_dict())
         except asyncio.CancelledError:
             return
         finally:
@@ -438,7 +440,9 @@ class WorkerConnectionManager:
             return
         await transport.send(self._response(incoming, "ack", None, None).to_dict())
         self.ledger.begin(incoming.request_id, now)
-        result, error_code = handle_command(incoming, self.supervisor)
+        result, error_code = handle_command(
+            incoming, self.supervisor, workspace_root=self.config.workspace_root
+        )
         self._note_event_control(incoming.payload.get("name"), result)
         self.ledger.finish(incoming.request_id, result, error_code, self.clock())
         await transport.send(self._response(incoming, "result", result, error_code).to_dict())
@@ -450,9 +454,13 @@ class WorkerConnectionManager:
         if name == "pause_events":
             self.paused_directories.add(directory)
             self.stopped_directories.discard(directory)
+            waiter = self.resume_waiters.get(directory)
+            if waiter is not None:
+                waiter.clear()
             return
         if name == "resume_events":
             self.paused_directories.discard(directory)
+            self.resume_waiters.setdefault(directory, asyncio.Event()).set()
             return
         self.stopped_directories.add(directory)
         self.paused_directories.discard(directory)
@@ -589,4 +597,53 @@ def load_agent_config(environ: dict[str, str]) -> AgentConfig:
         token=token,
         agent_version=environ.get("ASTRA_WORKER_AGENT_VERSION", "0.1.0"),
         opencode_url=environ.get("ASTRA_WORKER_OPENCODE_URL", "http://127.0.0.1:4096"),
+        workspace_root=environ.get("ASTRA_WORKER_WORKSPACE_ROOT", "").strip(),
     )
+
+
+def _bounded_event_frame(
+    incoming: WorkerMessage,
+    config: AgentConfig,
+    *,
+    directory: str,
+    seq: int,
+    event: dict[str, Any],
+    epoch: int,
+    expires_at: int,
+) -> dict[str, Any]:
+    """Judge the encapsulated frame. An oversized event becomes a gap marker."""
+
+    payload: dict[str, Any] = {"seq": seq, "directory": directory, "event": event}
+    message = _event_envelope(incoming, config, directory, seq, payload, epoch, expires_at)
+    if len(dump_message(message).encode("utf-8")) <= config.max_frame_bytes:
+        return message
+    payload = {
+        "seq": seq,
+        "directory": directory,
+        "dropped": True,
+        "reason": "event_too_large",
+        "event_type": event.get("type"),
+    }
+    return _event_envelope(incoming, config, directory, seq, payload, epoch, expires_at)
+
+
+def _event_envelope(
+    incoming: WorkerMessage,
+    config: AgentConfig,
+    directory: str,
+    seq: int,
+    payload: dict[str, Any],
+    epoch: int,
+    expires_at: int,
+) -> dict[str, Any]:
+    message = envelope(
+        request_id=f"evt-{directory}-{seq}",
+        worker_instance_id=config.worker_instance_id,
+        environment_id=config.environment_id,
+        session_id=incoming.session_id,
+        message_type="event",
+        payload=payload,
+    )
+    message.epoch = epoch
+    message.expires_at = expires_at
+    return message.to_dict()

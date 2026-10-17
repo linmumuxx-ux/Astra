@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -18,12 +19,15 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from app.worker_agent.process_env import child_environ
+
 _GATEWAY_ENV = "ASTRA_REMOTE_GATEWAY_URL"
 _MCP_ENV = "ASTRA_MCP_RESOURCE_URL"
 _DEFAULT_GATEWAY = "http://127.0.0.1:8110"
 _DEFAULT_MCP = "http://127.0.0.1:8201/mcp"
 _HEALTH_WAIT_SECONDS = 15
 _EXIT_WAIT_SECONDS = 5
+_UNIT_NAME = re.compile(r"^[A-Za-z0-9_:.@-]+$")
 
 Probe = Callable[[str], bool]
 Reload = Callable[[], None]
@@ -142,10 +146,28 @@ def restart_local_opencode(workspace: str, port: int, *, environ: dict[str, str]
         raise RuntimeError("Workspace 不存在，未重载 OpenCode")
     if port < 1 or port > 65535:
         raise RuntimeError("OpenCode 端口无效")
+    env = environ if environ is not None else os.environ
+    unit = (env.get("ASTRA_WORKER_OPENCODE_UNIT") or "").strip()
+    if unit:
+        if _UNIT_NAME.fullmatch(unit) is None:
+            raise RuntimeError("OpenCode systemd 单元名无效")
+        completed = subprocess.run(
+            ["systemctl", "restart", unit],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=child_environ(env),
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("systemd 重载 OpenCode 失败")
+        _wait_until_healthy(port)
+        return
     pid = _listener_pid(port)
     if pid == os.getpid():
         raise RuntimeError("拒绝结束当前进程")
     if pid is not None:
+        if not _opencode_listener(pid):
+            raise RuntimeError("端口上的进程不是 OpenCode，未重载")
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + _EXIT_WAIT_SECONDS
         while time.monotonic() < deadline:
@@ -154,16 +176,19 @@ def restart_local_opencode(workspace: str, port: int, *, environ: dict[str, str]
             time.sleep(0.1)
         else:
             raise RuntimeError("OpenCode 没有在时限内退出")
-    env = environ if environ is not None else os.environ
     binary = env.get("ASTRA_WORKER_OPENCODE_BIN") or "opencode"
     subprocess.Popen(
-        [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port), "--pure"],
+        [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)],
         cwd=folder,
-        env=dict(env),
+        env=child_environ(env),
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    _wait_until_healthy(port)
+
+
+def _wait_until_healthy(port: int) -> None:
     health = f"http://127.0.0.1:{port}/global/health"
     deadline = time.monotonic() + _HEALTH_WAIT_SECONDS
     while time.monotonic() < deadline:
@@ -171,6 +196,42 @@ def restart_local_opencode(workspace: str, port: int, *, environ: dict[str, str]
             return
         time.sleep(0.2)
     raise RuntimeError("OpenCode 重载后健康检查失败")
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace")
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("PPid:"):
+            return int(line.split()[1])
+    return None
+
+
+def _opencode_listener(pid: int) -> bool:
+    """The listener is OpenCode itself, or a process OpenCode started."""
+
+    current = pid
+    seen: set[int] = set()
+    while current and current > 1 and current not in seen:
+        seen.add(current)
+        command = _cmdline(current)
+        if "opencode" in command and "serve" in command:
+            return True
+        parent = _parent_pid(current)
+        if parent is None:
+            return False
+        current = parent
+    return False
 
 
 def apply_channel_switch(

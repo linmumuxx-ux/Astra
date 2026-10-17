@@ -31,3 +31,19 @@ def pytest_sessionfinish(session, exitstatus):
 
     asyncio.run(engine.dispose())
     TEST_DB.unlink(missing_ok=True)
+    url = os.environ.get("ASTRA_TEST_REDIS_URL")
+    if not url:
+        return
+    from redis import Redis
+
+    client = Redis.from_url(url)
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = client.scan(cursor=cursor, match="astra:worker-gateway:test:*", count=500)
+            if keys:
+                client.delete(*keys)
+            if cursor == 0:
+                break
+    finally:
+        client.close()

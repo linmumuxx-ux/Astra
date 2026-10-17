@@ -133,6 +133,18 @@ async def enroll_instance(
     }
 
 
+@router.post("/environments/{environment_id}/channel")
+async def switch_environment_channel(
+    environment_id: int,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_admin),
+) -> dict[str, Any]:
+    from app.runtime.worker_channel import mark_worker_channel
+
+    environment = await mark_worker_channel(session, environment_id)
+    return {"environment_id": environment.id, "worker_channel": environment.worker_channel}
+
+
 @router.get("/instances/{worker_instance_id}")
 async def get_instance(
     worker_instance_id: str,
@@ -152,6 +164,11 @@ async def create_command(
     session: AsyncSession = Depends(get_session),
     _: None = Depends(require_admin),
 ) -> dict[str, Any]:
+    if body.name == "switch_channel":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "maintenance_command", "message": "维护指令只能通过通道切换入口下发"},
+        )
     try:
         result = await get_gateway().dispatch(
             session,

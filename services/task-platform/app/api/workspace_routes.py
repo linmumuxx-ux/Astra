@@ -24,7 +24,14 @@ from app.models import RuntimeSession
 from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
-from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
+from app.runtime.workspace_files import (
+    MAX_UPLOAD,
+    check_request_path,
+    relative_path,
+    same_workspace_path,
+    upload,
+    validate_path,
+)
 from app.schemas import ExecutionStopConfirm, RetrySubmission, TaskRead
 
 router = APIRouter(prefix="/api/tasks/{task_id}")
@@ -353,7 +360,10 @@ async def persist_attachments(body, environment, workspace):
             value = unquote(parsed.path)
             if environment.mode == ExecutionMode.LOCAL:
                 value = url2pathname(value)
-            await validate_path(environment, workspace, value)
+            if getattr(environment, "worker_channel", "ssh") == "worker":
+                relative_path(value, workspace, local=False)
+            else:
+                await validate_path(environment, workspace, value)
         else:
             raise PermissionError("附件必须写入任务 Workspace")
     return body
@@ -375,6 +385,7 @@ async def native_proxy(
     stored = await session.get(OpenCodeExecutionEnvironment, binding.environment["environment_id"])
     if stored:
         environment.ssh_password = stored.ssh_password
+        environment.worker_channel = stored.worker_channel
     workspace = binding.workspace
     # Release the read transaction before path validation, SSH/OpenCode startup,
     # SSE or upstream HTTP. Native Workspace requests can be long-lived.
@@ -438,7 +449,9 @@ async def native_proxy(
     if not match and not pending and not (method == "GET" and native_path in READ_PATHS):
         raise HTTPException(403, "此接口不属于 Task Workspace 的权限范围")
     try:
-        await validate_path(environment, workspace, request.query_params.get("path", "."))
+        await check_request_path(
+            environment, workspace, request.query_params.get("path", "."), native_path=native_path
+        )
         async with connect(environment, start=True) as client:
             allowed = await session_tree(client, Path(workspace), session_id)
             # Global reads such as /session/status are not per-session resources;

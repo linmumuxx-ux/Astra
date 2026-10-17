@@ -265,8 +265,7 @@ class RemoteProvisioner:
         if await self.ssh.read_file(config_path + "c") is not None:
             raise RuntimeError("已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置")
         raw = await self._gateway_key(config_path, models)
-        gateway_url = await ensure_remote_gateway_tunnel(self.environment, self.settings, self.runtime)
-        mcp_url = await ensure_remote_mcp_tunnel(self.environment, self.settings, self.runtime)
+        gateway_url, mcp_url = await self._channel_endpoints()
         self.target_model = f"{PROVIDER_ID}/{selected}"
         uid = await self._command("id -u")
         if not self.target_binary.startswith("/"):
@@ -319,6 +318,17 @@ class RemoteProvisioner:
             stderr_task.cancel()
             await asyncio.gather(stderr_task, return_exceptions=True)
             await self._command(f"rm -f {shlex.quote(stem + '.sh')} {shlex.quote(stem + '.json')}")
+
+    async def _channel_endpoints(self) -> tuple[str, str]:
+        from app.runtime.worker_channel import read_worker_channel
+
+        async with SessionLocal() as session:
+            channel = await read_worker_channel(session, self.environment.id)
+        if channel == "worker":
+            return self.settings.remote_gateway_local_url, self.settings.mcp_resource_server_url
+        gateway_url = await ensure_remote_gateway_tunnel(self.environment, self.settings, self.runtime)
+        mcp_url = await ensure_remote_mcp_tunnel(self.environment, self.settings, self.runtime)
+        return gateway_url, mcp_url
 
     async def _restart(self, emit):
         await self.step(emit, "重启 OpenCode Serve", "running")

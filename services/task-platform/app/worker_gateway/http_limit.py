@@ -63,4 +63,3 @@ async def release_http_slot(session: AsyncSession, worker_id: str, epoch: int) -
         )
         .values(inflight=WorkerHttpSlot.inflight - 1)
     )
-

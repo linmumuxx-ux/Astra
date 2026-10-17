@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import or_, select
 
@@ -28,10 +29,15 @@ def _active_task_filter():
     )
 
 
-async def _refresh_with_client(task_id: str, client) -> Task | None:
+async def _refresh_with_client(task_id: str, client) -> SimpleNamespace | None:
     async with SessionLocal() as session:
         task = await RuntimeService(session).refresh(task_id, client=client)
-        return task
+        if task is None:
+            return None
+        # refresh() may roll back, which expires the Task. Async sessions cannot
+        # lazy-load those fields after the session closes, so reload them here.
+        await session.refresh(task)
+        return SimpleNamespace(status=task.status, current_session_id=task.current_session_id)
 
 
 async def watch_session(task_id):

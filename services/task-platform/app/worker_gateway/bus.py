@@ -280,6 +280,7 @@ class MemoryRouteBus:
         self._results: dict[str, tuple[float, dict[str, Any]]] = {}
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._texts: dict[str, tuple[float, str]] = {}
+        self._text_waiters: dict[str, list[asyncio.Event]] = {}
 
     def _remember_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> None:
         self.owners[worker_instance_id] = (
@@ -410,6 +411,22 @@ class MemoryRouteBus:
 
     async def put_text(self, key: str, value: str, ttl_seconds: float) -> None:
         self._texts[key] = (time.monotonic() + ttl_seconds, value)
+        for waiter in self._text_waiters.get(key, ()):
+            waiter.set()
+
+    async def wait_text(self, key: str, timeout: float) -> None:
+        waiter = asyncio.Event()
+        self._text_waiters.setdefault(key, []).append(waiter)
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout)
+        except TimeoutError:
+            return
+        finally:
+            waiters = self._text_waiters.get(key, [])
+            if waiter in waiters:
+                waiters.remove(waiter)
+            if not waiters:
+                self._text_waiters.pop(key, None)
 
     async def get_text(self, key: str) -> str | None:
         item = self._texts.get(key)
@@ -492,8 +509,22 @@ class RedisRouteBus:
     def _text_key(self, key: str) -> str:
         return f"{self.prefix}:{key}"
 
+    def _notify_key(self, key: str) -> str:
+        return f"{self.prefix}:notify:{key}"
+
     async def put_text(self, key: str, value: str, ttl_seconds: float) -> None:
-        await self._connection().set(self._text_key(key), value, ex=max(1, int(ttl_seconds)))
+        client = self._connection()
+        ttl = max(1, int(ttl_seconds))
+        notify = self._notify_key(key)
+        async with client.pipeline(transaction=True) as pipe:
+            pipe.set(self._text_key(key), value, ex=ttl)
+            pipe.rpush(notify, "1")
+            pipe.ltrim(notify, -8, -1)
+            pipe.expire(notify, max(2, ttl))
+            await pipe.execute()
+
+    async def wait_text(self, key: str, timeout: float) -> None:
+        await self._connection().blpop(self._notify_key(key), timeout=max(1, int(timeout)))
 
     async def get_text(self, key: str) -> str | None:
         return await self._connection().get(self._text_key(key))

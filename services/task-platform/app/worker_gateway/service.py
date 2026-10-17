@@ -589,20 +589,24 @@ class WorkerGateway:
             values["error_code"] = None
         result_body = message.payload.get("result")
         values["result"] = result_body if isinstance(result_body, dict) else {"value": result_body}
-        held = await session.scalar(
-            select(WorkerCommand.slot_held).where(
-                WorkerCommand.request_id == message.request_id,
-                WorkerCommand.worker_instance_id == worker_instance_id,
-                WorkerCommand.epoch == epoch,
+        released = await session.execute(
+            update(WorkerCommand)
+            .where(
+                *where,
+                WorkerCommand.status.in_(("pending", "accepted")),
+                WorkerCommand.slot_held.is_(True),
             )
+            .values(**values, slot_held=False)
         )
+        if released.rowcount == 1:
+            await release_http_slot(session, worker_instance_id, epoch)
+            await session.commit()
+            return True
         result = await session.execute(
             update(WorkerCommand)
             .where(*where, WorkerCommand.status.in_(("pending", "accepted")))
             .values(**values, slot_held=False)
         )
-        if result.rowcount == 1 and held:
-            await release_http_slot(session, worker_instance_id, epoch)
         await session.commit()
         return result.rowcount == 1
 
@@ -633,32 +637,30 @@ class WorkerGateway:
             offline = await session.execute(
                 update(WorkerInstance).where(*stale_filter).values(status="offline", updated_at=current)
             )
-            held_slots = (
+            expired_values = {
+                "status": "expired",
+                "error_code": "timeout",
+                "finished_at": current,
+                "updated_at": current,
+                "slot_held": False,
+            }
+            due = (
+                WorkerCommand.status.in_(("pending", "accepted")),
+                WorkerCommand.deadline_at.is_not(None),
+                WorkerCommand.deadline_at <= current,
+            )
+            released_slots = (
                 await session.execute(
-                    select(WorkerCommand.id, WorkerCommand.worker_instance_id, WorkerCommand.epoch).where(
-                        WorkerCommand.status.in_(("pending", "accepted")),
-                        WorkerCommand.deadline_at.is_not(None),
-                        WorkerCommand.deadline_at <= current,
-                        WorkerCommand.slot_held.is_(True),
-                    )
+                    update(WorkerCommand)
+                    .where(*due, WorkerCommand.slot_held.is_(True))
+                    .values(**expired_values)
+                    .returning(WorkerCommand.worker_instance_id, WorkerCommand.epoch)
                 )
             ).all()
             expired = await session.execute(
-                update(WorkerCommand)
-                .where(
-                    WorkerCommand.status.in_(("pending", "accepted")),
-                    WorkerCommand.deadline_at.is_not(None),
-                    WorkerCommand.deadline_at <= current,
-                )
-                .values(
-                    status="expired",
-                    error_code="timeout",
-                    finished_at=current,
-                    updated_at=current,
-                    slot_held=False,
-                )
+                update(WorkerCommand).where(*due).values(**expired_values)
             )
-            for _command_id, worker_id, epoch in held_slots:
+            for worker_id, epoch in released_slots:
                 await release_http_slot(session, worker_id, epoch)
             await session.commit()
             offlined: list[tuple[str, int]] = []
@@ -679,7 +681,7 @@ class WorkerGateway:
         for worker_id, epoch in offlined:
             self._close_local_socket(worker_id, epoch)
             await self.bus.clear_owner(worker_id, epoch, None)
-        return int(offline.rowcount or 0) + int(expired.rowcount or 0)
+        return int(offline.rowcount or 0) + len(released_slots) + int(expired.rowcount or 0)
 
     async def serve_socket(self, websocket: Any) -> None:
         await websocket.accept()

@@ -121,3 +121,6 @@ class EventLog:
         state["gap_refresh"] = False
         await self._save(key, state)
         return again
+
+    async def wait_append(self, *, worker_id: str, epoch: int, directory: str, timeout: float = 1) -> None:
+        await self.bus.wait_text(self._key(worker_id, epoch, directory), timeout)

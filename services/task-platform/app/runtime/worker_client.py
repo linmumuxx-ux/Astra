@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -18,7 +17,11 @@ from app.executors.errors import (
     OpenCodeServerUnavailable,
     OpenCodeSessionNotFound,
 )
-from app.executors.opencode_server import OpenCodeServerClient, WorkspacePath
+from app.executors.opencode_server import (
+    OpenCodeServerCapabilityError,
+    OpenCodeServerClient,
+    WorkspacePath,
+)
 from app.models import WorkerInstance
 from app.worker_gateway.events import EventLog
 from app.worker_gateway.protocol import WorkerGatewayError
@@ -148,6 +151,23 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         result = payload.get("result")
         return result if isinstance(result, dict) else {"value": result}
 
+    async def health(self) -> dict[str, Any]:
+        try:
+            payload = await self.request("GET", "/global/health")
+        except OpenCodeExecutionError as exc:
+            raise OpenCodeServerUnavailable(f"OpenCode Server 不可用: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise OpenCodeServerUnavailable("OpenCode Server 不可用: 健康检查没有返回对象")
+        version = str(payload.get("version") or "") or None
+        version_error = self.manager.version_error(version)
+        if version_error:
+            raise OpenCodeServerCapabilityError(version_error)
+        if payload.get("healthy") is not True:
+            raise OpenCodeServerCapabilityError(
+                f"OpenCode Server 健康检查失败: {json.dumps(payload, ensure_ascii=False)}"
+            )
+        return {"healthy": True, "version": version}
+
     async def events(
         self, directory: WorkspacePath, *, consumer: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
@@ -163,6 +183,22 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         await self.run_command("subscribe_events", {"directory": folder})
         seen = 0
         while True:
+            current_id, current_epoch = await self._online()
+            if current_id != worker_id or current_epoch != epoch:
+                yield {
+                    "type": "astra.event_gap",
+                    "directory": folder,
+                    "reason": "worker_reconnected",
+                    "from": seen,
+                    "to": None,
+                }
+                worker_id, epoch = current_id, current_epoch
+                seen = 0
+                await log.touch_cursor(
+                    worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=0
+                )
+                await self.run_command("subscribe_events", {"directory": folder})
+                continue
             state = await log._load(log._key(worker_id, epoch, folder))
             delivered = False
             for item in state.get("events") or []:
@@ -187,7 +223,11 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
                 await log.touch_cursor(
                     worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=seen
                 )
-                await asyncio.sleep(0.05)
+            action = await log.control(worker_id=worker_id, epoch=epoch, directory=folder)
+            if action == "resume_events":
+                await self.run_command("resume_events", {"directory": folder})
+            if not delivered:
+                await log.wait_append(worker_id=worker_id, epoch=epoch, directory=folder)
 
     def _event_log(self) -> EventLog:
         return EventLog(self.gateway.bus, limit=self.gateway.settings.worker_gateway_event_queue_size)

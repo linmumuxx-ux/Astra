@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
+from app.database import SessionLocal
+from app.domain import EnvironmentStatus
 from app.models import OpenCodeExecutionEnvironment, WorkerInstance
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 
@@ -31,7 +37,7 @@ async def mark_worker_channel(
     *,
     switch: Switch | None = None,
 ) -> OpenCodeExecutionEnvironment:
-    """Maintenance switch. A failed step keeps ssh and reports the reason.
+    """Maintenance switch. The occupancy reservation is held until the mark is written.
 
     Reload happens inside the Worker command, never because a socket dropped.
     """
@@ -39,38 +45,101 @@ async def mark_worker_channel(
     environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
     if environment is None:
         raise HTTPException(404, "环境不存在")
-    occupied = await session.scalar(select(occupying_exists(environment.employee_id)))
-    blocked = await session.scalar(select(blocking_session_exists(environment.employee_id)))
-    if occupied or blocked:
-        await session.rollback()
-        raise HTTPException(409, "员工被占用，不能切换通道")
+    await session.refresh(environment)
+    employee_id = environment.employee_id
+    previous_status = environment.status
     workspace = environment.workspace_root
     port = environment.opencode_server_port
-    if switch is None:
-        instance = await session.scalar(
-            select(WorkerInstance).where(WorkerInstance.environment_id == environment.id)
+    operation_id = uuid4().hex
+    now = datetime.now(UTC)
+    settings = get_settings()
+    operation = {
+        "id": operation_id,
+        "action": "switch_channel",
+        "state": "RUNNING",
+        "previous_status": previous_status,
+        "started_at": now.isoformat(),
+        "expires_at": (
+            now + timedelta(seconds=settings.opencode_control_timeout_seconds + 30)
+        ).isoformat(),
+    }
+    reserved = await session.execute(
+        update(OpenCodeExecutionEnvironment)
+        .where(
+            OpenCodeExecutionEnvironment.id == environment_id,
+            OpenCodeExecutionEnvironment.status_detail == environment.status_detail,
+            ~occupying_exists(employee_id),
+            ~blocking_session_exists(employee_id),
         )
-        online = instance is not None and instance.status == "online"
+        .values(status=EnvironmentStatus.CHECKING, status_detail={"operation": operation})
+        .execution_options(synchronize_session=False)
+    )
+    if reserved.rowcount != 1:
         await session.rollback()
+        raise HTTPException(409, "员工被占用或环境正在维护，不能切换通道")
+    await session.commit()
+    if switch is None:
+        online = await _worker_online(environment_id)
         if not online:
-            await _keep_ssh(session, environment_id, "Worker 不在线，通道保持 ssh")
-        operation = _worker_switch(environment_id, workspace, port)
+            await _release(
+                session, environment_id, operation_id, previous_status, "Worker 不在线，通道保持 ssh"
+            )
+        operation_fn: Switch = _worker_switch(environment_id, workspace, port)
     else:
-        await session.rollback()
-        operation = switch
+        operation_fn = switch
     try:
-        result = await operation()
+        result = await operation_fn()
     except Exception as exc:
-        await _keep_ssh(session, environment_id, f"切换失败，通道保持 ssh：{exc}")
+        await _release(
+            session, environment_id, operation_id, previous_status, f"切换失败，通道保持 ssh：{exc}"
+        )
     mismatch = _mismatch(result)
     if mismatch:
-        await _keep_ssh(session, environment_id, mismatch)
+        await _release(session, environment_id, operation_id, previous_status, mismatch)
+    written = await session.execute(
+        update(OpenCodeExecutionEnvironment)
+        .where(
+            OpenCodeExecutionEnvironment.id == environment_id,
+            OpenCodeExecutionEnvironment.status_detail["operation"]["id"].as_string() == operation_id,
+            ~occupying_exists(employee_id),
+            ~blocking_session_exists(employee_id),
+        )
+        .values(worker_channel="worker", status=previous_status, status_detail={})
+        .execution_options(synchronize_session=False)
+    )
+    if written.rowcount != 1:
+        await session.rollback()
+        await _release(
+            session,
+            environment_id,
+            operation_id,
+            previous_status,
+            "切换期间员工被占用或维护锁已失效，通道保持 ssh",
+        )
+    await session.commit()
     stored = await session.get(OpenCodeExecutionEnvironment, environment_id)
     if stored is None:
         raise HTTPException(404, "环境不存在")
-    stored.worker_channel = "worker"
-    await session.commit()
+    await session.refresh(stored)
     return stored
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="把执行环境切换到 Worker 通道")
+    parser.add_argument("--environment-id", type=int, required=True)
+    args = parser.parse_args(argv)
+
+    async def run() -> int:
+        async with SessionLocal() as session:
+            try:
+                environment = await mark_worker_channel(session, args.environment_id)
+            except HTTPException as exc:
+                print(exc.detail)
+                return 1
+        print(environment.worker_channel)
+        return 0
+
+    return asyncio.run(run())
 
 
 def _worker_switch(environment_id: int, workspace: str, port: int) -> Switch:
@@ -81,6 +150,14 @@ def _worker_switch(environment_id: int, workspace: str, port: int) -> Switch:
         return await client.run_command("switch_channel", {"workspace": workspace, "port": port})
 
     return switch
+
+
+async def _worker_online(environment_id: int) -> bool:
+    async with SessionLocal() as session:
+        instance = await session.scalar(
+            select(WorkerInstance).where(WorkerInstance.environment_id == environment_id)
+        )
+        return instance is not None and instance.status == "online"
 
 
 def _mismatch(result: object) -> str | None:
@@ -98,9 +175,25 @@ def _same_direct_url(actual: object, expected: str) -> bool:
     return isinstance(actual, str) and actual.rstrip("/") == expected.rstrip("/")
 
 
-async def _keep_ssh(session: AsyncSession, environment_id: int, reason: str) -> None:
-    environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
-    if environment is not None:
-        environment.worker_channel = "ssh"
-        await session.commit()
+async def _release(
+    session: AsyncSession,
+    environment_id: int,
+    operation_id: str,
+    previous_status: str,
+    reason: str,
+) -> None:
+    await session.execute(
+        update(OpenCodeExecutionEnvironment)
+        .where(
+            OpenCodeExecutionEnvironment.id == environment_id,
+            OpenCodeExecutionEnvironment.status_detail["operation"]["id"].as_string() == operation_id,
+        )
+        .values(worker_channel="ssh", status=previous_status, status_detail={})
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
     raise HTTPException(409, reason)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

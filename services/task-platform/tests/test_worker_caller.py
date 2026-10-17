@@ -139,13 +139,13 @@ async def test_prepare_workspace_command_copies_config(environment_id, tmp_path)
     root = tmp_path / "root"
     root.mkdir()
     (root / "opencode.json").write_text('{"model":"deepseek-flash"}\n')
-    target = tmp_path / "task"
+    target = tmp_path / ".astra-tasks" / "emp" / "task"
     queues = gateway.bus.bound[enrolled.worker_instance_id]
 
     async def answer():
         frame = await queues.wait_frame()
         message = parse_message(json.dumps(frame), max_bytes=10**6)
-        result, error = handle_command(message, RuntimeSupervisor())
+        result, error = handle_command(message, RuntimeSupervisor(), workspace_root=str(root))
         reply = envelope(
             request_id=message.request_id,
             worker_instance_id=message.worker_instance_id,
