@@ -114,6 +114,35 @@ async def test_file_commands_do_not_take_http_slots_and_upload_is_not_republishe
     assert reason == "needs_reconcile"
 
 
+async def test_empty_upload_is_fetched_as_empty_bytes(environment_id):
+    gateway = gateway_for()
+    enrolled, auth = await bring_online(gateway, environment_id)
+    content = b""
+    digest = hashlib.sha256(content).hexdigest()
+    channel = DataChannel(gateway)
+    await channel.stage_upload("req-empty-upload", content, 60)
+    await _dispatch(
+        gateway,
+        enrolled,
+        "upload_file",
+        "req-empty-upload",
+        {"workspace": "/ws", "filename": "empty.txt", "size": 0, "sha256": digest},
+    )
+    async with SessionLocal() as session:
+        fetched = await channel.fetch_request(
+            session,
+            request_id="req-empty-upload",
+            worker_instance_id=enrolled.worker_instance_id,
+            epoch=auth.epoch,
+        )
+    assert isinstance(fetched, RawBody)
+    assert fetched.content == b""
+    assert fetched.sha256 == digest
+    response = request_body_response(fetched)
+    assert response.body == b""
+    assert response.headers["x-astra-sha256"] == digest
+
+
 async def test_upload_get_returns_raw_bytes_and_git_hash_is_of_those_bytes(environment_id, monkeypatch):
     gateway = gateway_for()
     enrolled, auth = await bring_online(gateway, environment_id)

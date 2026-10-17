@@ -113,7 +113,7 @@ class DataChannel:
         stored = await self.gateway.bus.get_text(request_key(request_id))
         raw_upload: bytes | None = None
         if upload:
-            if not stored:
+            if stored is None:
                 raise WorkerGatewayError("unknown_command", "上传正文不存在")
             try:
                 raw_upload = base64.b64decode(stored, validate=True)
