@@ -55,8 +55,8 @@ load_env_file "$SCRIPT_DIR/../env/.env"
 : "${OPENAI_MODEL:=deepseek-flash}"
 : "${LLM_WIKI_LOCAL_PORT:=19828}"; : "${LLM_WIKI_REMOTE_PORT:=18080}"
 : "${REMOTE_WORKER_ID:=p2-remote}"; : "${REMOTE_WORKER_USER:=root}"; : "${REMOTE_WORKER_PORT:=22}"
-: "${REMOTE_WORKER_OPENCODE_PORT:=4096}"; : "${REMOTE_WORKER_WORKSPACE:=/root/nexus-remote}"
-PORTS=(6379 18000 18100 18110 18120 18201 18202 15174 4096 14097)
+: "${REMOTE_WORKER_OPENCODE_PORT:=14096}"; : "${REMOTE_WORKER_WORKSPACE:=/root/nexus-remote}"
+PORTS=(6379 18000 18100 18110 18120 18201 18202 15174 14096 14097)
 [ "$WITH_WIKI" = 1 ] && PORTS+=("$LLM_WIKI_LOCAL_PORT")
 
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }

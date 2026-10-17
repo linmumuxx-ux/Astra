@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -414,34 +415,30 @@ def merge_transcript(
 def tool_cards(content: Any) -> list[dict[str, str]]:
     if not isinstance(content, list):
         return []
-    cards: list[dict[str, str]] = []
+    cards: dict[str, dict[str, str]] = {}
+    order: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
         kind = block.get("type")
+        if kind not in {"tool_call", "tool_result"}:
+            continue
+        card_id = str(block.get("id") or "")
+        card = cards.get(card_id)
+        if card is None:
+            card = {"id": card_id, "name": "", "input": "", "output": "", "state": ""}
+            cards[card_id] = card
+            order.append(card_id)
+        if block.get("name"):
+            card["name"] = str(block.get("name"))
         if kind == "tool_call":
-            cards.append(
-                {
-                    "id": str(block.get("id") or ""),
-                    "name": str(block.get("name") or ""),
-                    "input": str(block.get("input") or ""),
-                    "output": "",
-                    "state": str(block.get("state") or ""),
-                }
-            )
-        elif kind == "tool_result":
+            card["input"] = str(block.get("input") or "")
+        else:
             output = block.get("output")
-            text = block_text(output) if isinstance(output, list) else str(output or "")
-            cards.append(
-                {
-                    "id": str(block.get("id") or ""),
-                    "name": str(block.get("name") or ""),
-                    "input": "",
-                    "output": text,
-                    "state": str(block.get("state") or ""),
-                }
-            )
-    return cards
+            card["output"] = block_text(output) if isinstance(output, list) else str(output or "")
+        if block.get("state"):
+            card["state"] = str(block.get("state"))
+    return [cards[card_id] for card_id in order]
 
 
 def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, Any]]:
@@ -454,9 +451,10 @@ def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, An
         role = message.get("role")
         if role not in {"user", "assistant"}:
             continue
-        text = block_text(message.get("content"))
-        tools = tool_cards(message.get("content"))
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        display = metadata.get("display_text")
+        text = display if isinstance(display, str) else block_text(message.get("content"))
+        tools = tool_cards(message.get("content"))
         attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
         if role == "assistant" and not text and not tools:
             continue
@@ -673,6 +671,59 @@ def lines(values: list[str]) -> list[str]:
         if text and text not in cleaned:
             cleaned.append(text)
     return cleaned
+
+
+_conversation_locks: dict[str, asyncio.Lock] = {}
+_conversation_locks_guard = asyncio.Lock()
+
+
+async def conversation_lock(conversation_id: str) -> asyncio.Lock:
+    async with _conversation_locks_guard:
+        lock = _conversation_locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _conversation_locks[conversation_id] = lock
+        return lock
+
+
+def attachment_visible(connection, attachment_id: str, owner_uid: str, requester: str) -> bool:
+    if owner_uid == requester:
+        return True
+    rows = connection.execute(
+        """
+        SELECT channel_id FROM messages
+        WHERE channel_id IS NOT NULL AND attachments_json LIKE ?
+        """,
+        (f'%"{attachment_id}"%',),
+    ).fetchall()
+    for item in rows:
+        member = connection.execute(
+            "SELECT 1 FROM channel_humans WHERE channel_id = ? AND user_uid = ?",
+            (item["channel_id"], requester),
+        ).fetchone()
+        if member is not None:
+            return True
+    return False
+
+
+def claim_private_session(connection, conversation_id: str, session_id: str, workspace_id: str) -> str:
+    """只绑定还没有 Session 的私聊。并发时使用先写入的那一个。"""
+
+    connection.execute(
+        """
+        UPDATE conversations
+        SET agentscope_session_id = ?, workspace_id = ?, updated_at = ?
+        WHERE id = ? AND agentscope_session_id IS NULL
+        """,
+        (session_id, workspace_id, utcnow(), conversation_id),
+    )
+    connection.commit()
+    row = connection.execute(
+        "SELECT agentscope_session_id FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ).fetchone()
+    stored = row["agentscope_session_id"] if row is not None else None
+    return str(stored or session_id)
 
 
 def require_owner(
@@ -992,6 +1043,10 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok", "product": "nexus", "version": "1.0.1"}
 
+    @app.get("/api/v1/me")
+    def me(owner_id: str = Depends(require_owner)) -> dict[str, str]:
+        return {"uid": owner_id}
+
     @app.get("/api/v1/runtime")
     async def runtime(request: Request) -> dict[str, Any]:
         client = client_of(request)
@@ -1184,7 +1239,13 @@ def create_app() -> FastAPI:
         connection=Depends(database),
     ) -> FileResponse:
         row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-        if row is None or row["owner_uid"] != owner_id or not Path(row["path"]).is_file():
+        visible = row is not None and Path(row["path"]).is_file() and attachment_visible(
+            connection,
+            attachment_id,
+            row["owner_uid"],
+            owner_id,
+        )
+        if not visible or row is None:
             raise HTTPException(status_code=404, detail="附件内容不存在")
         disposition = "inline" if str(row["media_type"]).startswith("image/") else "attachment"
         return FileResponse(
@@ -1251,14 +1312,27 @@ def create_app() -> FastAPI:
         name = body.name.strip() or "私聊"
         connection.execute(
             """
-            INSERT INTO conversations (
+            INSERT OR IGNORE INTO conversations (
                 id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
             ) VALUES (?, ?, ?, 'private', ?, NULL, ?, ?)
             """,
             (conversation_id, employee_id, owner_id, name, now, now),
         )
         connection.commit()
-        return {"id": conversation_id, "name": name, "agentscope_session_id": None}
+        stored = connection.execute(
+            """
+            SELECT * FROM conversations
+            WHERE employee_id = ? AND owner_id = ? AND kind = 'private'
+            """,
+            (employee_id, owner_id),
+        ).fetchone()
+        if stored["id"] != conversation_id:
+            response.status_code = 200
+        return {
+            "id": stored["id"],
+            "name": stored["name"],
+            "agentscope_session_id": stored["agentscope_session_id"],
+        }
 
     def owned_conversation(connection, conversation_id: str, owner_id: str):
         row = connection.execute(
@@ -1280,9 +1354,10 @@ def create_app() -> FastAPI:
         employee = load_employee(connection, row["employee_id"])
         history: list[dict[str, Any]] = []
         history_error = ""
+        event_cursor = ""
         if row["agentscope_session_id"] and employee["agentscope_agent_id"]:
             try:
-                remote = await client_of(request).list_session_messages(
+                remote, event_cursor = await client_of(request).read_session(
                     employee["agentscope_agent_id"],
                     row["agentscope_session_id"],
                 )
@@ -1294,6 +1369,7 @@ def create_app() -> FastAPI:
             "employee_id": row["employee_id"],
             "name": row["name"],
             "agentscope_session_id": row["agentscope_session_id"],
+            "event_cursor": event_cursor,
             "messages": interleave_messages(
                 history,
                 await peer_replies_for_conversation(connection, client_of(request), conversation_id),
@@ -1329,6 +1405,7 @@ def create_app() -> FastAPI:
             "accepted": False,
             "created_at": utcnow(),
         }
+        session_name = row["name"]
         if message["text"] and row["name"] in {"新对话", "私聊"}:
             title = message["text"] if len(message["text"]) <= 20 else message["text"][:20] + "…"
             connection.execute(
@@ -1354,26 +1431,28 @@ def create_app() -> FastAPI:
                         UNATTENDED_PERMISSION,
                     )
                 else:
-                    workspace_id = row["workspace_id"] or f"ws-{conversation_id}"
-                    session_id = await client.create_session(
-                        employee["agentscope_agent_id"],
-                        row["name"],
-                        workspace_id,
-                    )
-                    await client.set_permission_mode(
-                        employee["agentscope_agent_id"],
-                        session_id,
-                        UNATTENDED_PERMISSION,
-                    )
-                    connection.execute(
-                        "UPDATE conversations SET workspace_id = ? WHERE id = ?",
-                        (workspace_id, conversation_id),
-                    )
-                connection.execute(
-                    "UPDATE conversations SET agentscope_session_id = ?, updated_at = ? WHERE id = ?",
-                    (session_id, utcnow(), conversation_id),
-                )
-                connection.commit()
+                    async with await conversation_lock(conversation_id):
+                        current = owned_conversation(connection, conversation_id, owner_id)
+                        if current["agentscope_session_id"]:
+                            session_id = current["agentscope_session_id"]
+                        else:
+                            workspace_id = current["workspace_id"] or f"ws-{conversation_id}"
+                            session_id = await client.create_session(
+                                employee["agentscope_agent_id"],
+                                session_name,
+                                workspace_id,
+                            )
+                            await client.set_permission_mode(
+                                employee["agentscope_agent_id"],
+                                session_id,
+                                UNATTENDED_PERMISSION,
+                            )
+                            session_id = claim_private_session(
+                                connection,
+                                conversation_id,
+                                session_id,
+                                workspace_id,
+                            )
                 await attach_task_capability(
                     client,
                     employee,
@@ -1390,6 +1469,7 @@ def create_app() -> FastAPI:
                     owner_id,
                     verified_uid=owner_id,
                     attachments=visible,
+                    display_text=message["text"],
                 )
                 message["accepted"] = True
                 outcome = {"accepted": True, "detail": "", "session_id": session_id}
@@ -1531,8 +1611,25 @@ def create_app() -> FastAPI:
         return channel_payload(connection, channel_id)
 
     @app.get("/api/v1/channels/{channel_id}/messages")
-    async def channel_messages(channel_id: str, request: Request, connection=Depends(database)):
+    async def channel_messages(
+        channel_id: str,
+        request: Request,
+        connection=Depends(database),
+        x_owner_id: str | None = Header(default=None),
+        x_verified_uid: str | None = Header(default=None),
+    ):
         channel = channel_payload(connection, channel_id)
+        viewer = (x_verified_uid or x_owner_id or "").strip()
+        if viewer:
+            connection.execute(
+                """
+                INSERT INTO channel_humans (channel_id, user_uid, display_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(channel_id, user_uid) DO UPDATE SET display_name = excluded.display_name
+                """,
+                (channel_id, viewer, viewer),
+            )
+            connection.commit()
         local = list_messages(connection, channel_id=channel_id)
         replies: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -1605,8 +1702,9 @@ def create_app() -> FastAPI:
         x_verified_uid: str | None = Header(default=None),
     ):
         channel = channel_payload(connection, channel_id)
-        speaker = (x_verified_uid or x_owner_id or "user").strip() or "user"
-        if x_owner_id or x_verified_uid:
+        trusted = (x_verified_uid or x_owner_id or "").strip()
+        speaker = trusted or "user"
+        if trusted:
             connection.execute(
                 """
                 INSERT INTO channel_humans (channel_id, user_uid, display_name)
@@ -1616,7 +1714,9 @@ def create_app() -> FastAPI:
                 (channel_id, speaker, speaker),
             )
             connection.commit()
-        attachments = load_attachments(connection, body.attachment_ids)
+        if body.attachment_ids and not trusted:
+            raise HTTPException(status_code=401, detail="缺少 X-Verified-UID")
+        attachments = load_attachments(connection, body.attachment_ids, trusted or None)
         message = store_user_message(
             connection,
             body.text,

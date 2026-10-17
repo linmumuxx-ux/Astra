@@ -31,7 +31,7 @@ class ExecutionEnvironmentWrite(BaseModel):
     port: int = Field(default=22, ge=1, le=65535)
     username: str | None = None
     ssh_password: str | None = Field(default=None, max_length=1024)
-    opencode_server_port: int = Field(default=4096, ge=1, le=65535)
+    opencode_server_port: int = Field(default=14096, ge=1, le=65535)
     opencode_path: str = Field(default="opencode", min_length=1)
     model_name: str | None = Field(default=None, max_length=255)
     workspace_root: str = Field(default="./workspaces", min_length=1)

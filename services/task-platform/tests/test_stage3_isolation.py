@@ -34,4 +34,7 @@ def test_process_defaults_do_not_collide_with_v09(monkeypatch):
     assert settings.mcp_port == 18201
     assert settings.assistant_opencode_port == 14097
     assert settings.remote_gateway_local_url.endswith(":18110")
-    assert settings.opencode_server_port == 4096
+    assert settings.opencode_server_port == 14096
+    assert settings.database_username == "nexus"
+    assert celery.conf.task_default_queue == "nexus-control"
+    assert celery.conf.task_routes["nexus.dispatch"]["queue"] == "nexus-control"

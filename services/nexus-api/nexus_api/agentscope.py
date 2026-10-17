@@ -150,6 +150,7 @@ class AgentScopeClient:
         user_name: str,
         verified_uid: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        display_text: str | None = None,
     ) -> str:
         message: dict[str, Any] = {"name": user_name, "role": "user", "content": content}
         metadata: dict[str, Any] = {}
@@ -157,6 +158,8 @@ class AgentScopeClient:
             metadata["verified_uid"] = verified_uid
         if attachments:
             metadata["attachments"] = attachments
+        if display_text is not None:
+            metadata["display_text"] = display_text
         if metadata:
             message["metadata"] = metadata
         response = await self.request(
@@ -254,8 +257,11 @@ class AgentScopeClient:
             return cursor
         return None
 
-    async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+    async def read_session(self, agent_id: str, session_id: str) -> tuple[list[dict[str, Any]], str]:
+        """同一页里取出消息和重放游标，避免历史和流各读一次中间漏事件。"""
+
         collected: list[dict[str, Any]] = []
+        event_cursor = ""
         before: str | None = None
         for _ in range(10):
             params: dict[str, Any] = {"agent_id": agent_id, "limit": 200}
@@ -269,14 +275,21 @@ class AgentScopeClient:
             if not isinstance(rows, list):
                 raise AgentScopeError("AgentScope 会话消息返回的不是列表")
             page = [item for item in rows if isinstance(item, dict)]
+            if before is None:
+                cursor = payload.get("event_cursor")
+                event_cursor = cursor if isinstance(cursor, str) else ""
             collected = page + collected if before else page
             if not payload.get("has_more") or not page:
                 break
-            cursor = page[0].get("id")
-            if not isinstance(cursor, str) or cursor == before:
+            older = page[0].get("id")
+            if not isinstance(older, str) or older == before:
                 break
-            before = cursor
-        return collected
+            before = older
+        return collected, event_cursor
+
+    async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        messages, _cursor = await self.read_session(agent_id, session_id)
+        return messages
 
     async def upload_workspace_skill(self, agent_id: str, session_id: str, directory: Path) -> None:
         skill = directory / "SKILL.md"

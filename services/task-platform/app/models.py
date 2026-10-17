@@ -92,7 +92,7 @@ class OpenCodeExecutionEnvironment(Base):
     port: Mapped[int] = mapped_column(Integer, default=22)
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
-    opencode_server_port: Mapped[int] = mapped_column(Integer, default=4096)
+    opencode_server_port: Mapped[int] = mapped_column(Integer, default=14096)
     opencode_path: Mapped[str] = mapped_column(Text, default="opencode")
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_root: Mapped[str] = mapped_column(Text, default="./workspaces")

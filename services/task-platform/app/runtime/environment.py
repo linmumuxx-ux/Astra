@@ -51,7 +51,7 @@ def environment_from_snapshot(snapshot: dict, employee_id: str) -> OpenCodeExecu
         port=snapshot.get("port", 22),
         username=snapshot.get("username"),
         ssh_password=None,
-        opencode_server_port=snapshot.get("opencode_server_port", 4096),
+        opencode_server_port=snapshot.get("opencode_server_port", 14096),
         opencode_path=snapshot["opencode_path"],
         model_name=snapshot.get("model_name"),
         workspace_root=snapshot["workspace_root"],

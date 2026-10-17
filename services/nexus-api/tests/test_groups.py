@@ -42,11 +42,14 @@ def test_backlog_keeps_original_ids_until_the_cursor_moves():
         history,
         speaker="张三",
         verified_uid="u1",
-        current_content=[{"type": "text", "text": "@星河 接着看"}],
+        current_content=[{"type": "text", "text": "@星河 接着看\n\n文件正文"}],
     )
     assert [item["id"] for item in payload] == ["m1", "m2"]
     assert payload[0]["content"] == [{"type": "text", "text": "先说一件事"}]
+    assert payload[0]["metadata"]["display_text"] == "先说一件事"
     assert payload[1]["metadata"]["verified_uid"] == "u1"
+    assert payload[1]["metadata"]["display_text"] == "@星河 接着看"
+    assert payload[1]["content"][0]["text"].endswith("文件正文")
     assert [item["id"] for item in messages_since(history, "m2")] == []
 
 

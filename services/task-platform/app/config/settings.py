@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     database_host: str = "127.0.0.1"
     database_port: int = 3306
     database_name: str = "nexus"
-    database_username: str = "astra"
+    database_username: str = "nexus"
     database_password: str = ""
     database_charset: str = "utf8mb4"
     database_pool_recycle: int = 1800
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     opencode_control_timeout_seconds: int = Field(default=60, ge=5, le=600)
     opencode_server_url: str | None = None
     opencode_server_hostname: str = "127.0.0.1"
-    opencode_server_port: int = Field(default=4096, ge=1, le=65535)
+    opencode_server_port: int = Field(default=14096, ge=1, le=65535)
     opencode_server_username: str = "opencode"
     opencode_server_password: str | None = None
     # Exactly one company OpenCode release is supported. A custom build can

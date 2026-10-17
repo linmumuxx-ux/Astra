@@ -422,7 +422,7 @@ def core_services(
             "runtime-control",
             [
                 sys.executable, "-m", "celery", "-A", "app.runtime.celery_app:celery",
-                "worker", "--loglevel=INFO", "--pool=solo", "--queues=control",
+                "worker", "--loglevel=INFO", "--pool=solo", "--queues=nexus-control",
                 "--hostname=astra-control@%h",
             ],
             BACKEND,

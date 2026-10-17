@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -210,8 +211,139 @@ def test_session_transcript_keeps_speaker_and_tool_cards():
     )
     assert rows[0]["speaker"] == "张三"
     assert rows[1]["text"] == "ok"
-    assert rows[1]["tools"][0]["input"] == "{\"path\":\"a\"}"
-    assert rows[1]["tools"][1]["output"] == "file"
+    assert rows[1]["tools"] == [
+        {
+            "id": "c1",
+            "name": "read",
+            "input": "{\"path\":\"a\"}",
+            "output": "file",
+            "state": "success",
+        }
+    ]
+
+
+def test_me_ignores_query_uid(client):
+    missing = client.get("/api/v1/me")
+    assert missing.status_code == 401
+    queried = client.get("/api/v1/me", params={"uid": "from-query"})
+    assert queried.status_code == 401
+    found = client.get("/api/v1/me", headers={"X-Verified-UID": "u-9"})
+    assert found.json() == {"uid": "u-9"}
+
+
+def test_parallel_private_creates_share_one_row(client):
+    employee = client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+    barrier = threading.Barrier(8)
+    results: list[tuple[int, str]] = []
+    guard = threading.Lock()
+
+    def once() -> None:
+        barrier.wait()
+        response = client.post(
+            f"/api/v1/employees/{employee['id']}/conversations",
+            headers={"X-Owner-Id": "same-owner"},
+            json={"name": "新对话"},
+        )
+        with guard:
+            results.append((response.status_code, response.json()["id"]))
+
+    threads = [threading.Thread(target=once) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert {code for code, _ident in results} <= {200, 201}
+    assert len({ident for _code, ident in results}) == 1
+    assert sum(code == 201 for code, _ident in results) == 1
+
+
+def test_claim_private_session_keeps_the_first_writer(client):
+    from nexus_api.db import connect
+    from nexus_api.main import claim_private_session, db_path
+
+    employee = client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+    created = client.post(
+        f"/api/v1/employees/{employee['id']}/conversations",
+        headers={"X-Owner-Id": "owner"},
+        json={"name": "私聊"},
+    )
+    conversation_id = created.json()["id"]
+    connection = connect(db_path())
+    try:
+        first = claim_private_session(connection, conversation_id, "session-a", "ws-1")
+        second = claim_private_session(connection, conversation_id, "session-b", "ws-2")
+    finally:
+        connection.close()
+    assert first == "session-a"
+    assert second == "session-a"
+    stored = client.get(
+        f"/api/v1/conversations/{conversation_id}",
+        headers={"X-Owner-Id": "owner"},
+    ).json()
+    assert stored["agentscope_session_id"] == "session-a"
+    assert stored["event_cursor"] == ""
+
+
+def test_channel_attachment_stays_with_its_owner(client):
+    employee = client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+    channel = client.post(
+        "/api/v1/channels",
+        json={"name": "附件讨论", "description": "看日志", "member_ids": [employee["id"]]},
+    ).json()
+    uploaded = client.post(
+        "/api/v1/attachments",
+        headers={"X-Owner-Id": "owner-a"},
+        files={"file": ("run.log", b"LOG-TOKEN-88", "text/plain")},
+    )
+    attachment_id = uploaded.json()["id"]
+    stolen = client.post(
+        f"/api/v1/channels/{channel['id']}/messages",
+        headers={"X-Owner-Id": "owner-b"},
+        json={"text": "这不是我的文件", "attachment_ids": [attachment_id]},
+    )
+    assert stolen.status_code == 404
+    anonymous = client.post(
+        f"/api/v1/channels/{channel['id']}/messages",
+        json={"text": "没有身份", "attachment_ids": [attachment_id]},
+    )
+    assert anonymous.status_code == 401
+    sent = client.post(
+        f"/api/v1/channels/{channel['id']}/messages",
+        headers={"X-Owner-Id": "owner-a"},
+        json={"text": "看日志", "attachment_ids": [attachment_id]},
+    )
+    assert sent.status_code == 200, sent.text
+    stranger = client.get(f"/api/v1/attachments/{attachment_id}", headers={"X-Owner-Id": "owner-c"})
+    assert stranger.status_code == 404
+    opened = client.get(
+        f"/api/v1/channels/{channel['id']}/messages",
+        headers={"X-Owner-Id": "owner-c"},
+    )
+    assert opened.status_code == 200
+    member = client.get(f"/api/v1/attachments/{attachment_id}", headers={"X-Owner-Id": "owner-c"})
+    assert member.status_code == 200
+    assert member.content == b"LOG-TOKEN-88"
+
+
+def test_session_transcript_renders_display_text():
+    rows = session_transcript(
+        [
+            {
+                "id": "u",
+                "role": "user",
+                "name": "张三",
+                "metadata": {
+                    "display_text": "看日志",
+                    "attachments": [{"id": "att", "name": "run.log"}],
+                },
+                "content": [{"type": "text", "text": "看日志\n\n文件正文 LOG-TOKEN-88"}],
+            }
+        ],
+        "emp",
+    )
+    assert rows[0]["text"] == "看日志"
+    assert "LOG-TOKEN-88" not in rows[0]["text"]
+    assert rows[0]["attachments"][0]["name"] == "run.log"
 
 
 def test_model_input_includes_text_and_does_not_invent_binary_analysis():
@@ -620,6 +752,7 @@ def test_channel_peer_contact_creates_session_caps_and_keeps_identity(tmp_path, 
         )
         sent = test_client.post(
             f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Owner-Id": "channel-user"},
             json={"text": "@运营 自动化失败了", "attachment_ids": [uploaded.json()["id"]]},
         )
         assert sent.status_code == 200, sent.text
@@ -630,6 +763,7 @@ def test_channel_peer_contact_creates_session_caps_and_keeps_identity(tmp_path, 
         assert isinstance(delivered, list)
         assert delivered[-1]["id"]
         assert any("LOG-TOKEN-88" in block.get("text", "") for block in delivered[-1]["content"])
+        assert delivered[-1]["metadata"]["display_text"] == "@运营 自动化失败了"
         ops_session = sent.json()["triggered"][0]["session_id"]
         eng_session = f"session-{eng['agentscope_agent_id']}-故障协同"
         replies[eng_session] = "我是自动化工程师"

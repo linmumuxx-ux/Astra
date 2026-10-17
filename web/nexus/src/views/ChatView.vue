@@ -34,7 +34,7 @@
             <div>
               <div class="muted">{{ message.sender === "user" ? (message.speaker || "你") : speakerName(message.sender) }}</div>
               <div v-if="message.text" class="bubble markdown" v-html="renderMarkdown(message.text)"></div>
-              <div v-for="tool in message.tools || []" :key="tool.id + tool.state" class="tool-card">
+              <div v-for="tool in message.tools || []" :key="tool.id" class="tool-card">
                 <b>{{ tool.name }}</b>
                 <pre v-if="tool.input">{{ tool.input }}</pre>
                 <pre v-if="tool.output">{{ tool.output }}</pre>
@@ -296,56 +296,72 @@ function delay(ms: number) {
 
 async function reloadConversation(id: string) {
   const payload = await getConversation(id);
-  if (conversationId.value !== id) return;
+  if (conversationId.value !== id) return null;
   messages.value = payload.messages;
   if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+  return payload;
 }
 
-async function followStream(id: string) {
+function applyStreamEvent(id: string, event: Record<string, unknown>, seen: Set<string>, cursor: { value: string }) {
+  if (typeof event.id === "string" && /^\d+-\d+$/.test(event.id)) cursor.value = event.id;
+  if (typeof event.id === "string") {
+    if (seen.has(event.id)) return false;
+    seen.add(event.id);
+  }
+  if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
+    liveText.value += event.delta;
+  }
+  if (event.type === "TOOL_CALL_START" && typeof event.tool_call_id === "string") {
+    ensureTool(event.tool_call_id, typeof event.tool_call_name === "string" ? event.tool_call_name : "");
+  }
+  if (event.type === "TOOL_CALL_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
+    ensureTool(event.tool_call_id).input += event.delta;
+  }
+  if (event.type === "TOOL_RESULT_TEXT_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
+    ensureTool(event.tool_call_id).output += event.delta;
+  }
+  if (event.type === "REPLY_END" || event.type === "NEXUS_RUN_FINISHED") {
+    const reason = String(event.finished_reason ?? "");
+    if (reason === "error" || reason === "interrupted") {
+      notice.value = reason === "interrupted" ? "回复已中断" : "回复失败";
+    }
+    liveText.value = "";
+    liveTools.value = [];
+    void reloadConversation(id);
+    return true;
+  }
+  if (event.type === "NEXUS_UPSTREAM_ERROR") {
+    notice.value = String(event.detail ?? "事件流中断");
+  }
+  return false;
+}
+
+async function followStream(id: string, untilFinished = false) {
   stopStream();
   const token = ++followToken;
   liveText.value = "";
   liveTools.value = [];
-  const seen = seenEventIds.get(id) ?? new Set<string>();
+  const seen = new Set<string>();
   seenEventIds.set(id, seen);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (token !== followToken || conversationId.value !== id) return;
-    await reloadConversation(id);
+  const payload = await reloadConversation(id);
+  if (!payload || token !== followToken || conversationId.value !== id) return;
+  if (!payload.agentscope_session_id) return;
+  const cursor = { value: payload.event_cursor || "" };
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     if (token !== followToken || conversationId.value !== id) return;
     streamAbort = new AbortController();
     const signal = streamAbort.signal;
+    const query = cursor.value ? `?after=${encodeURIComponent(cursor.value)}` : "";
+    let sawEvent = false;
+    let finished = false;
     try {
-      await readEventStream(`/api/v1/conversations/${id}/stream`, signal, (event) => {
-        if (typeof event.id === "string") {
-          if (seen.has(event.id)) return;
-          seen.add(event.id);
-        }
-        if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
-          liveText.value += event.delta;
-        }
-        if (event.type === "TOOL_CALL_START" && typeof event.tool_call_id === "string") {
-          ensureTool(event.tool_call_id, typeof event.tool_call_name === "string" ? event.tool_call_name : "");
-        }
-        if (event.type === "TOOL_CALL_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
-          ensureTool(event.tool_call_id).input += event.delta;
-        }
-        if (event.type === "TOOL_RESULT_TEXT_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
-          ensureTool(event.tool_call_id).output += event.delta;
-        }
-        if (event.type === "REPLY_END" || event.type === "NEXUS_RUN_FINISHED") {
-          const reason = String(event.finished_reason ?? "");
-          if (reason === "error" || reason === "interrupted") {
-            notice.value = reason === "interrupted" ? "回复已中断" : "回复失败";
-          }
-          liveText.value = "";
-          liveTools.value = [];
-          void reloadConversation(id);
-        }
-        if (event.type === "NEXUS_UPSTREAM_ERROR") {
-          notice.value = String(event.detail ?? "事件流中断");
-        }
+      await readEventStream(`/api/v1/conversations/${id}/stream${query}`, signal, (event) => {
+        sawEvent = true;
+        if (applyStreamEvent(id, event, seen, cursor)) finished = true;
       });
-      return;
+      if (finished || signal.aborted || token !== followToken) return;
+      if (!untilFinished && !sawEvent) return;
+      await delay(400);
     } catch (error) {
       if (signal.aborted || token !== followToken) return;
       notice.value = error instanceof Error ? error.message : "事件流中断";
@@ -358,38 +374,38 @@ async function send() {
   if (!conversationId.value || !canSend.value) return;
   takeLiveReply();
   const text = draft.value.trim();
-  if (!text && !draftFiles.value.length) return;
+  const files = draftFiles.value.map((item) => item.id);
+  if (!text && !files.length) return;
   try {
-    const result = await sendConversation(conversationId.value, text, draftFiles.value.map((item) => item.id));
-    messages.value = [...messages.value, result.message];
+    const result = await sendConversation(conversationId.value, text, files);
+    if (!result.agentscope.accepted) {
+      notice.value = result.agentscope.detail || "没有生成回复";
+      return;
+    }
     draft.value = "";
     draftFiles.value = [];
+    messages.value = [...messages.value, result.message];
     const conversation = conversations.value.find((item) => item.id === conversationId.value);
     if (conversation && conversation.name === "新对话") {
       conversation.name = result.message.text.slice(0, 20) || result.message.attachments[0]?.name || "新对话";
     }
-    if (!result.agentscope.accepted) {
-      notice.value = result.agentscope.detail || "没有生成回复";
-    liveText.value = "";
-    liveTools.value = [];
-    return;
-    }
     notice.value = "";
-    await followStream(conversationId.value);
+    await followStream(conversationId.value, true);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "发送失败");
   }
 }
 
-watch(conversationId, async (id) => {
-  stopStream();
+watch(conversationId, (id) => {
   if (!id) {
+    stopStream();
+    followToken += 1;
     messages.value = [];
+    liveText.value = "";
+    liveTools.value = [];
     return;
   }
-  const payload = await getConversation(id);
-  messages.value = payload.messages;
-  if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+  void followStream(id);
 });
 
 async function refreshTasks() {

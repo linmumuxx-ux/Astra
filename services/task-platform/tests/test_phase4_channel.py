@@ -469,14 +469,14 @@ def repo_root() -> Path:
     raise AssertionError("找不到仓库根目录")
 
 
-def test_remote_port_default_is_4096_and_llm_wiki_tunnel_stays():
+def test_remote_port_default_is_14096_and_llm_wiki_tunnel_stays():
     root = repo_root()
     script = (root / "ops/deploy/install_nexus.sh").read_text(encoding="utf-8")
-    assert "REMOTE_WORKER_OPENCODE_PORT:=4096" in script
+    assert "REMOTE_WORKER_OPENCODE_PORT:=14096" in script
     assert "4296" not in script
     assert "ssh -N -i" in script
     example = (root / "ops/env/.env.example").read_text(encoding="utf-8")
-    assert "REMOTE_WORKER_OPENCODE_PORT=4096" in example
+    assert "REMOTE_WORKER_OPENCODE_PORT=14096" in example
     assert "4296" not in example
     guide = (root / "ops/deploy/DEPLOYMENT_GUIDE.md").read_text(encoding="utf-8")
     employees = (root / "docs/deploy/REMOTE_EMPLOYEES.md").read_text(encoding="utf-8")

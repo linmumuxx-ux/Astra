@@ -34,14 +34,16 @@ def chat_inputs(
     last = len(messages) - 1
     for index, message in enumerate(messages):
         content = current_content if index == last else [{"type": "text", "text": message.get("text") or ""}]
+        metadata: dict[str, Any] = {"display_text": str(message.get("text") or "")}
+        if verified_uid:
+            metadata["verified_uid"] = verified_uid
         item: dict[str, Any] = {
             "id": message["id"],
             "name": speaker or "user",
             "role": "user",
             "content": content,
+            "metadata": metadata,
         }
-        if verified_uid:
-            item["metadata"] = {"verified_uid": verified_uid}
         payload.append(item)
     return payload
 
@@ -120,6 +122,9 @@ def merge_timeline(
                 if not message_id or message_id in seen_users:
                     continue
                 seen_users.add(message_id)
+                metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+                display = metadata.get("display_text")
+                text = display if isinstance(display, str) else _plain_text(message.get("content"))
                 rows.append(
                     {
                         "id": message_id,
@@ -127,7 +132,7 @@ def merge_timeline(
                         "created_at": created_at,
                         "kind": "human",
                         "speaker": str(message.get("name") or "user"),
-                        "text": _plain_text(message.get("content")),
+                        "text": text,
                     }
                 )
                 continue
