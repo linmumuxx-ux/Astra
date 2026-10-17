@@ -8,6 +8,7 @@ from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
 from app.event_bus import event_bus
 from app.models import DigitalEmployee, Task
 from app.runtime.environment import environment_snapshot
+from app.runtime.occupancy import occupying_exists, sync_employee_occupancy
 from app.services import TaskService
 
 
@@ -51,7 +52,7 @@ class Dispatcher:
             conditions = [
                 DigitalEmployee.status == EmployeeStatus.IDLE,
                 DigitalEmployee.enabled.is_(True),
-                DigitalEmployee.current_task_count < 1,
+                ~occupying_exists(DigitalEmployee.id),
             ]
             if task.employee_id:
                 # 指定员工由人工分配，auto_claim 只约束无人认领的任务池。
@@ -95,7 +96,7 @@ class Dispatcher:
                 commit=False,
             )
             task.current_progress = f"已分配给 {employee.name}，等待启动"
-            employee.current_task_count = 1
+            await sync_employee_occupancy(self.session, employee.id, preferred=task)
             await self.session.commit()
             await self.session.refresh(task)
             await event_bus.publish({"type": "TASK_ASSIGNED", "task_id": task.id, "status": task.status})

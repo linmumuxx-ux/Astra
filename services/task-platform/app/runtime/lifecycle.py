@@ -16,7 +16,7 @@ from secrets import token_hex
 from time import time_ns
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
@@ -41,6 +41,7 @@ from app.executors.usage import (
 )
 from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
+from app.runtime.occupancy import clear_execution_stop, occupying_clause, sync_employee_occupancy
 from app.runtime.opencode_model import direct_model, gateway_model
 from app.runtime.runtime_context import (
     build_runtime_context_part,
@@ -247,27 +248,7 @@ class RuntimeService:
                 commit=False,
             )
         if task.employee_id:
-            employee = await self.session.get(DigitalEmployee, task.employee_id)
-            if employee:
-                active = await self.session.scalar(
-                    select(Task.id)
-                    .where(
-                        Task.employee_id == employee.id,
-                        or_(
-                            Task.status == TaskStatus.RUNNING,
-                            Task.status == TaskStatus.WAITING,
-                            Task.pending_message_id.is_not(None),
-                        ),
-                    )
-                    .limit(1)
-                )
-                employee.current_task_count = int(bool(active))
-                if active:
-                    employee.status = (
-                        EmployeeStatus.WAIT_HUMAN if status == TaskStatus.WAITING else EmployeeStatus.WORKING
-                    )
-                elif employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
-                    employee.status = EmployeeStatus.IDLE
+            await sync_employee_occupancy(self.session, task.employee_id, preferred=task)
         if status == TaskStatus.RUNNING:
             # A reopened task starts a new business completion attempt.
             task.submitted_at = None
@@ -487,17 +468,7 @@ class RuntimeService:
         if not employee or not employee.enabled or not employee.execution_environment:
             raise RuntimeStateError("请先分配已配置运行环境的员工")
         occupied = await self.session.scalar(
-            select(Task.id)
-            .where(
-                Task.employee_id == employee.id,
-                Task.id != task.id,
-                or_(
-                    Task.status == TaskStatus.RUNNING,
-                    Task.status == TaskStatus.WAITING,
-                    Task.pending_message_id.is_not(None),
-                ),
-            )
-            .limit(1)
+            select(Task.id).where(occupying_clause(employee.id), Task.id != task.id).limit(1)
         )
         if occupied:
             raise RuntimeStateError("员工正在处理其他任务")
@@ -519,14 +490,24 @@ class RuntimeService:
             raise RuntimeStateError(str(exc.detail)) from exc
         new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
+        reservation = {"pending_message_id": initial_id}
+        if restart:
+            clear_execution_stop(task)
+            reservation.update(
+                execution_stop_confirmed_at=None,
+                execution_stop_session_id=None,
+                execution_stop_attempt=None,
+                execution_stop_operator=None,
+                execution_stop_reason=None,
+            )
         reserved = await self.session.execute(
             update(Task)
             .where(Task.id == task.id, Task.pending_message_id.is_(None))
-            .values(pending_message_id=initial_id)
+            .values(**reservation)
         )
         if reserved.rowcount != 1:
             raise RuntimeStateError("任务正在启动，请先重连核对或停止")
-        employee.current_task_count = 1
+        await sync_employee_occupancy(self.session, employee.id, preferred=task)
         employee.status = EmployeeStatus.WORKING
         await self.session.commit()
 
@@ -646,6 +627,7 @@ class RuntimeService:
                 task.execution_environment_snapshot = new_snapshot
                 task.attachments = materialized_attachments
                 task.current_session_id = created_session_id
+                clear_execution_stop(task)
                 now = datetime.now(UTC)
                 context_digest = hash_runtime_context(runtime_token)
                 self.session.add(
@@ -751,15 +733,7 @@ class RuntimeService:
                             task, TaskStatus.WAITING, detail="重新开始失败，可检查配置后继续"
                         )
                     else:
-                        active = (
-                            task.status == TaskStatus.RUNNING
-                            or task.status == TaskStatus.WAITING
-                        )
-                        employee = await self.session.get(DigitalEmployee, task.employee_id)
-                        if employee and not active:
-                            employee.current_task_count = 0
-                            if employee.status in {EmployeeStatus.WORKING, EmployeeStatus.WAIT_HUMAN}:
-                                employee.status = EmployeeStatus.IDLE
+                        await sync_employee_occupancy(self.session, task.employee_id)
                         await self.session.commit()
                     abort_unbound_session = True
                 else:
@@ -838,24 +812,12 @@ class RuntimeService:
             .with_for_update()
         )
         occupied = await self.session.scalar(
-            select(Task.id)
-            .where(
-                Task.employee_id == employee_id,
-                Task.id != task.id,
-                or_(
-                    Task.status == TaskStatus.RUNNING,
-                    Task.status == TaskStatus.WAITING,
-                    Task.pending_message_id.is_not(None),
-                ),
-            )
-            .limit(1)
+            select(Task.id).where(occupying_clause(employee_id), Task.id != task.id).limit(1)
         )
         if occupied:
             await self.session.rollback()
             raise RuntimeStateError("员工正在处理其他任务")
-        if employee:
-            employee.current_task_count = 1
-            employee.status = EmployeeStatus.WORKING
+        clear_execution_stop(task)
         task.last_message_id = outbound_id
         started = datetime.now(UTC)
         prompt = _arm_in_flight({"action": native_action, "body": body})
@@ -868,11 +830,19 @@ class RuntimeService:
                 pending_message_id=outbound_id,
                 turn_started_at=started,
                 pending_prompt=prompt,
+                execution_stop_confirmed_at=None,
+                execution_stop_session_id=None,
+                execution_stop_attempt=None,
+                execution_stop_operator=None,
+                execution_stop_reason=None,
             )
         )
         if reserved.rowcount != 1:
             await self.session.rollback()
             raise RuntimeStateError("已有待确认输入")
+        if employee:
+            await sync_employee_occupancy(self.session, employee.id, preferred=task)
+            employee.status = EmployeeStatus.WORKING
         # This reservation belongs to a new turn on the same native Session.
         # A previous abort/timeout must not invalidate its eventual ACK.
         await self._sync_session_state(task, SessionState(status=RuntimeSessionStatus.RUNNING.value))
@@ -1613,6 +1583,40 @@ class RuntimeService:
         task.runtime_error = f"连接异常，状态待确认：{error}"
         await self.session.commit()
 
+    async def confirm_execution_stop(self, task_id: str, *, operator: str, reason: str) -> Task:
+        """Record a human stop confirmation. This does not change Task status."""
+
+        operator = operator.strip()
+        reason = reason.strip()
+        if not operator or not reason:
+            raise RuntimeStateError("确认执行停止需要操作人和原因")
+        task = await self.lock_task(task_id)
+        if task.status != TaskStatus.CANCELED and not _cancel_active(task):
+            await self.session.rollback()
+            raise RuntimeStateError("只能确认已取消或正在取消的任务已经停止")
+        now = datetime.now(UTC)
+        task.execution_stop_confirmed_at = now
+        task.execution_stop_session_id = task.current_session_id
+        task.execution_stop_attempt = task.pending_attempt
+        task.execution_stop_operator = operator
+        task.execution_stop_reason = reason
+        await TaskService(self.session).add_event(
+            task,
+            "EXECUTION_STOP_CONFIRMED",
+            "work",
+            "人工确认执行已停止",
+            {
+                "operator": operator,
+                "reason": reason,
+                "session_id": task.current_session_id,
+                "pending_attempt": task.pending_attempt,
+            },
+            commit=False,
+        )
+        await sync_employee_occupancy(self.session, task.employee_id)
+        await self.session.commit()
+        return task
+
     async def refresh_employee_heartbeats(self):
         employees = (
             await self.session.scalars(
@@ -1632,33 +1636,25 @@ class RuntimeService:
             if not environment:
                 continue
 
-            active = await self.session.scalar(
-                select(Task)
-                .where(
-                    Task.employee_id == employee.id,
-                    or_(
-                        Task.status == TaskStatus.RUNNING,
-                        Task.status == TaskStatus.WAITING,
-                        Task.pending_message_id.is_not(None),
-                    ),
-                )
-                .limit(1)
+            occupying = await self.session.scalar(
+                select(Task.id).where(occupying_clause(employee.id)).limit(1)
             )
             await self.session.commit()
 
-            # Employee Serve is intentionally on-demand. No active task means an
+            # Employee Serve is intentionally on-demand. No occupying task means an
             # absent OpenCode listener is normal; rely on the last explicit
             # environment check instead of marking the employee OFFLINE.
-            if active is None:
+            if occupying is None:
                 fresh = await self.session.get(DigitalEmployee, employee.id)
-                if fresh and fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
-                    fresh.current_task_count = 0
-                    if environment.status == "AVAILABLE":
-                        fresh.status = EmployeeStatus.IDLE
-                        fresh.last_heartbeat = datetime.now(UTC)
-                        healthy.append(fresh.id)
-                    else:
-                        fresh.status = EmployeeStatus.OFFLINE
+                if fresh:
+                    await sync_employee_occupancy(self.session, fresh.id)
+                    if fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
+                        if environment.status == "AVAILABLE":
+                            fresh.status = EmployeeStatus.IDLE
+                            fresh.last_heartbeat = datetime.now(UTC)
+                            healthy.append(fresh.id)
+                        else:
+                            fresh.status = EmployeeStatus.OFFLINE
                 await self.session.commit()
                 continue
 
@@ -1672,22 +1668,13 @@ class RuntimeService:
                 probe_error = exc
 
             fresh = await self.session.get(DigitalEmployee, employee.id)
-            current = await self.session.scalar(
-                select(Task)
-                .where(
-                    Task.employee_id == employee.id,
-                    or_(
-                        Task.status == TaskStatus.RUNNING,
-                        Task.status == TaskStatus.WAITING,
-                        Task.pending_message_id.is_not(None),
-                    ),
-                )
-                .limit(1)
-            )
             if not fresh:
                 await self.session.rollback()
                 continue
-            fresh.current_task_count = int(current is not None)
+            await sync_employee_occupancy(self.session, fresh.id)
+            current = await self.session.scalar(
+                select(Task).where(occupying_clause(fresh.id)).limit(1)
+            )
             if probe_error is not None:
                 if fresh.status not in {EmployeeStatus.PAUSED, EmployeeStatus.ERROR}:
                     fresh.status = EmployeeStatus.OFFLINE

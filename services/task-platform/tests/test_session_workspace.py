@@ -1583,7 +1583,7 @@ async def test_idle_employee_heartbeat_does_not_require_on_demand_server(runtime
     monkeypatch.setattr("app.runtime.lifecycle.connect", unavailable_connect)
     employee = await runtime.session.get(DigitalEmployee, "E1")
     employee.status = "OFFLINE"
-    runtime.task.status = "FAILED"
+    runtime.task.status = "SUCCEEDED"
     await runtime.session.commit()
 
     healthy = await runtime.service.refresh_employee_heartbeats()
@@ -2172,4 +2172,61 @@ async def test_cancel_keeps_worker_until_execution_stops(runtime, monkeypatch):
     with pytest.raises(RuntimeStateError, match="未释放 Worker"):
         await r.service.stop("T1")
     assert r.task.status == "RUNNING"
+    assert employee.current_task_count == 1
+
+
+async def test_cancel_does_not_release_worker_until_human_confirms(runtime):
+    r = runtime
+    await r.service.send("T1", {"parts": [{"type": "text", "text": "go"}]})
+    await r.service.stop("T1")
+    employee = await r.session.get(DigitalEmployee, "E1")
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.status == "CANCELED"
+    assert employee.current_task_count == 1
+    assert employee.status == "WORKING"
+
+    rejected = await r.api.post(
+        "/api/tasks/T1/confirm-execution-stop",
+        json={"reason": "已经看过进程"},
+    )
+    assert rejected.status_code == 409
+
+    missing_operator = await r.api.post(
+        "/api/tasks/T1/confirm-execution-stop",
+        json={"reason": "已经看过进程"},
+        headers={"X-Astra-User-Id": "   "},
+    )
+    assert missing_operator.status_code == 409
+
+    response = await r.api.post(
+        "/api/tasks/T1/confirm-execution-stop",
+        json={"reason": "已经看过进程"},
+        headers={"X-Astra-User-Id": "ada"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "CANCELED"
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.execution_stop_operator == "ada"
+    assert r.task.execution_stop_reason == "已经看过进程"
+    assert r.task.execution_stop_session_id == r.task.current_session_id
+    assert r.task.execution_stop_attempt == r.task.pending_attempt
+    assert employee.current_task_count == 0
+    assert employee.status == "IDLE"
+
+
+async def test_restart_clears_execution_stop_confirmation(runtime):
+    r = runtime
+    await r.service.stop("T1")
+    await r.service.confirm_execution_stop("T1", operator="ada", reason="已停止")
+    employee = await r.session.get(DigitalEmployee, "E1")
+    await r.session.refresh(employee)
+    assert employee.current_task_count == 0
+
+    await r.service.start("T1", restart=True)
+    await r.session.refresh(r.task)
+    await r.session.refresh(employee)
+    assert r.task.execution_stop_confirmed_at is None
+    assert r.task.current_session_id != "ses_current"
     assert employee.current_task_count == 1

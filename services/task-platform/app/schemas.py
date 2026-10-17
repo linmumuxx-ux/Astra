@@ -227,6 +227,10 @@ class TaskCreate(BaseModel):
     completion_policy: CompletionPolicy = CompletionPolicy.MANUAL_CONFIRM
 
 
+class ExecutionStopConfirm(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=240)
     description: str | None = Field(default=None, min_length=1)

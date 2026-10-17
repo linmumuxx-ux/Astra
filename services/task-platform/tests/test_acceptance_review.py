@@ -205,7 +205,7 @@ async def test_cancel_does_not_release_worker_after_a_concurrent_new_turn(runtim
         assert "取消" in send_error
         assert r.task.status == "CANCELED"
         assert r.task.pending_message_id is None
-        assert employee.current_task_count == 0
+        assert employee.current_task_count == 1
         assert r.native.state != "busy"
     else:
         assert r.task.status != "CANCELED"
@@ -273,7 +273,7 @@ async def test_delayed_send_after_cancel_does_not_leave_native_busy(runtime):
     assert not _left_running_after_close(r.native, r.task, employee)
     assert r.task.status == "CANCELED"
     assert r.task.pending_message_id is None
-    assert employee.current_task_count == 0
+    assert employee.current_task_count == 1
     assert r.native.state != "busy"
 
 
@@ -313,7 +313,7 @@ async def test_delayed_retry_after_cancel_does_not_leave_native_busy(runtime):
     assert not _left_running_after_close(r.native, r.task, employee)
     assert r.task.status == "CANCELED"
     assert r.task.pending_message_id is None
-    assert employee.current_task_count == 0
+    assert employee.current_task_count == 1
     assert r.native.state != "busy"
 
 
@@ -353,7 +353,7 @@ async def test_refresh_finishes_cancel_when_inflight_sender_is_gone(runtime):
     await r.session.refresh(employee)
     assert r.task.status == "CANCELED"
     assert r.task.pending_message_id is None
-    assert employee.current_task_count == 0
+    assert employee.current_task_count == 1
     assert r.native.state != "busy"
 
 
@@ -387,5 +387,5 @@ async def test_refresh_finishes_cancel_when_inflight_message_landed(runtime):
     await r.session.refresh(employee)
     assert not _left_running_after_close(r.native, r.task, employee)
     assert r.task.status == "CANCELED"
-    assert employee.current_task_count == 0
+    assert employee.current_task_count == 1
     assert r.native.state != "busy"

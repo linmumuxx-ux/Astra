@@ -231,24 +231,6 @@ class EmployeeService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    @staticmethod
-    def reserve(employee: DigitalEmployee) -> None:
-        """Reserve the employee's single execution slot."""
-
-        employee.current_task_count = 1
-        employee.status = EmployeeStatus.WORKING
-
-    @staticmethod
-    def release(
-        employee: DigitalEmployee,
-        *,
-        status: EmployeeStatus = EmployeeStatus.IDLE,
-    ) -> None:
-        """Release the single execution slot idempotently."""
-
-        employee.current_task_count = 0
-        employee.status = status
-
     async def set_status(self, employee: DigitalEmployee, status: EmployeeStatus) -> None:
         employee.status = status.value
         if status is not EmployeeStatus.OFFLINE:

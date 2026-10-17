@@ -6,11 +6,12 @@ import base64
 import json
 import re
 from pathlib import Path, PurePosixPath
+from typing import Annotated
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -24,7 +25,7 @@ from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
 from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
-from app.schemas import TaskRead
+from app.schemas import ExecutionStopConfirm, TaskRead
 
 router = APIRouter(prefix="/api/tasks/{task_id}")
 # Task Workspace capability model: a task-bound, read-only window onto the
@@ -162,6 +163,22 @@ async def stop_task(task_id: str, session=Depends(get_session)):
     await require_task(task_id, session)
     try:
         return await RuntimeService(session).stop(task_id)
+    except Exception as exc:
+        raise error_response(exc) from exc
+
+
+@router.post("/confirm-execution-stop", response_model=TaskRead)
+async def confirm_execution_stop(
+    task_id: str,
+    body: ExecutionStopConfirm,
+    session=Depends(get_session),
+    user_id: Annotated[str, Header(alias="X-Astra-User-Id")] = "",
+):
+    await require_task(task_id, session)
+    try:
+        return await RuntimeService(session).confirm_execution_stop(
+            task_id, operator=user_id, reason=body.reason
+        )
     except Exception as exc:
         raise error_response(exc) from exc
 

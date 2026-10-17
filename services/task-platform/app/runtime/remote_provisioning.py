@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import select, update
 
 from app.config.settings import get_settings
 from app.database import SessionLocal
@@ -28,8 +28,9 @@ from app.gateway.runtime import RedisRuntimeStore
 from app.gateway.schemas import GatewayKeyCreate
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
-from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment, RuntimeSession, Task
+from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment
 from app.runtime.environment import ExecutionEnvironmentRuntime
+from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
 
 PROVIDER_ID = "astra-gateway"
@@ -91,22 +92,8 @@ async def reserve_operation(employee_id: str, action: str, session):
         raise HTTPException(409, "工程目录必须是 Linux 绝对路径")
     if action == "deploy" and settings.mcp_transport != "streamable-http":
         raise HTTPException(409, "请先配置 ASTRA_MCP_TRANSPORT=streamable-http 并启动数字图书馆 HTTP 服务")
-    occupied = exists(
-        select(Task.id).where(
-            Task.employee_id == employee_id,
-            or_(
-                Task.status.in_(["RUNNING", "WAITING"]),
-                Task.pending_message_id.is_not(None),
-                (Task.status == "PENDING") & Task.claimed_at.is_not(None),
-            ),
-        )
-    )
-    active_session = exists(
-        select(RuntimeSession.id).where(
-            RuntimeSession.employee_id == employee_id,
-            RuntimeSession.status.in_(["RUNNING", "WAITING", "UNKNOWN"]),
-        )
-    )
+    occupied = occupying_exists(employee_id)
+    active_session = blocking_session_exists(employee_id)
     operation_id = uuid4().hex
     now = datetime.now(UTC)
     operation = {
@@ -123,12 +110,6 @@ async def reserve_operation(employee_id: str, action: str, session):
             OpenCodeExecutionEnvironment.status_detail == environment.status_detail,
             ~occupied,
             ~active_session,
-            exists(
-                select(DigitalEmployee.id).where(
-                    DigitalEmployee.id == employee_id,
-                    DigitalEmployee.current_task_count == 0,
-                )
-            ),
         )
         .values(status=EnvironmentStatus.CHECKING, status_detail={"operation": operation})
         .execution_options(synchronize_session=False)
