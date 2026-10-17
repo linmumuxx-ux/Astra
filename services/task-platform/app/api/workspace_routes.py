@@ -27,7 +27,6 @@ from app.runtime.workspace_changes import collect_workspace_changes, workspace_d
 from app.runtime.workspace_files import (
     MAX_UPLOAD,
     check_request_path,
-    relative_path,
     same_workspace_path,
     upload,
     validate_path,
@@ -363,10 +362,7 @@ async def persist_attachments(body, environment, workspace):
             value = unquote(parsed.path)
             if environment.mode == ExecutionMode.LOCAL:
                 value = url2pathname(value)
-            if getattr(environment, "worker_channel", "ssh") == "worker":
-                relative_path(value, workspace, local=False)
-            else:
-                await validate_path(environment, workspace, value)
+            await validate_path(environment, workspace, value)
         else:
             raise PermissionError("附件必须写入任务 Workspace")
     return body
@@ -592,8 +588,22 @@ async def task_repo(task_id: str, session=Depends(get_session)):
     environment = await resolve_environment(session, task)
     await session.commit()
     await validate_path(environment, task.workspace, ".")
+    from app.runtime.worker_files import WorkerFileError, environment_uses_worker, worker_git
+
+    worker = await environment_uses_worker(environment)
+    status_overflow = False
 
     async def git(*args):
+        nonlocal status_overflow
+        if worker:
+            try:
+                code, output = await worker_git(environment, task.workspace, args)
+            except WorkerFileError as exc:
+                if args[:1] == ("status",) and exc.code == "too_large":
+                    status_overflow = True
+                    return ""
+                raise
+            return output.strip() if code == 0 else ""
         if environment.mode == ExecutionMode.LOCAL:
             proc = await asyncio.create_subprocess_exec(
                 "git",
@@ -626,7 +636,7 @@ async def task_repo(task_id: str, session=Depends(get_session)):
         "name": name,
         "branch": branch,
         "commit": commit,
-        "dirty": bool(changes),
+        "dirty": status_overflow or bool(changes),
         "changes": sum(bool(entry) for entry in changes.split("\0")),
         "task_changes": task_changes,
     }

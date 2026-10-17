@@ -79,6 +79,11 @@ async def check_request_path(environment, workspace: str, value: str, *, native_
 
 
 async def validate_path(environment, workspace: str, value: str) -> str:
+    from app.runtime.worker_files import environment_uses_worker, worker_validate_path
+
+    if await environment_uses_worker(environment):
+        relative_path(value, workspace, local=False)
+        return await worker_validate_path(environment, workspace, value)
     local = environment.mode == ExecutionMode.LOCAL
     relative = relative_path(value, workspace, local=local)
     if local:
@@ -113,6 +118,10 @@ async def upload(environment, workspace: str, filename: str, content: bytes) -> 
         raise ValueError("文件名无效")
     if len(content) > MAX_UPLOAD:
         raise ValueError("文件不能超过 20 MB")
+    from app.runtime.worker_files import environment_uses_worker, worker_upload
+
+    if await environment_uses_worker(environment):
+        return await worker_upload(environment, workspace, filename, content)
     relative = f"uploads/{uuid4().hex[:12]}-{filename}"
     if environment.mode == ExecutionMode.LOCAL:
         root = Path(workspace).resolve(strict=True)

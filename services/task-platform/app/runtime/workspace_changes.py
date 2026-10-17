@@ -21,6 +21,10 @@ from app.runtime.workspace_files import MAX_UPLOAD, validate_path
 async def _git(environment, workspace: str, *args: str) -> tuple[int, str]:
     """Return Git stdout without stripping porcelain-leading status bytes."""
 
+    from app.runtime.worker_files import environment_uses_worker, worker_git
+
+    if await environment_uses_worker(environment):
+        return await worker_git(environment, workspace, args)
     command = ["git", "-C", workspace, *args]
     if environment.mode == ExecutionMode.LOCAL:
         process = await asyncio.create_subprocess_exec(
@@ -138,6 +142,11 @@ async def collect_workspace_changes(session, task) -> dict:
 
 
 async def _working_text(environment, workspace: str, file: str) -> str:
+    from app.runtime.worker_files import environment_uses_worker, worker_read_text
+
+    if await environment_uses_worker(environment):
+        await validate_path(environment, workspace, file)
+        return await worker_read_text(environment, workspace, file)
     relative = await validate_path(environment, workspace, file)
     if environment.mode == ExecutionMode.LOCAL:
         target = Path(workspace) / relative
