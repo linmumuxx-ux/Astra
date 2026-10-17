@@ -449,9 +449,9 @@ async def main() -> int:
             result(
                 "Astra 配置",
                 False,
-                PROJECT_ROOT / ".env",
+                PROJECT_ROOT / "ops" / "env" / ".env",
                 details,
-                "检查 .env 的变量名称、格式和值；可重新复制 deploy 中的示例",
+                "检查 ops/env/.env 的变量名称、格式和值；可重新复制 ops/env/.env.example",
             )
         )
         print_results(checks)

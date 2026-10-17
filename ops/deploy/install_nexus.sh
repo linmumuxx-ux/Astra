@@ -290,8 +290,34 @@ start_service() { # name type cmd [stop]
   else svc_detach "$1" "$3"; fi
 }
 
+# Drop standalone units left by older installs. astra_service supervises both.
+retire_legacy_units() {
+  if [ -z "${RETIRE_UNITS_UNDER_TEST:-}" ]; then
+    command -v systemctl >/dev/null 2>&1 || return 0
+    [ -d /run/systemd/system ] || return 0
+  fi
+  local name unit dir removed=0
+  dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+  for name in nexus-task-mcp nexus-web; do
+    unit="$dir/${name}.service"
+    if [ -e "$unit" ] || $SUDO systemctl cat "${name}.service" >/dev/null 2>&1; then
+      $SUDO systemctl stop "${name}.service" >/dev/null 2>&1 || true
+      $SUDO systemctl disable "${name}.service" >/dev/null 2>&1 || true
+      if [ -e "$unit" ]; then
+        $SUDO rm -f "$unit"
+        removed=1
+      fi
+    fi
+  done
+  if [ "$removed" = 1 ]; then
+    $SUDO systemctl daemon-reload
+  fi
+} # end retire_legacy_units
+
 step_services() {
-  detect_systemd; log "启动服务（$( [ "$SYSTEMD" = 1 ] && echo systemd || echo python )）"
+  detect_systemd
+  retire_legacy_units
+  log "启动服务（$( [ "$SYSTEMD" = 1 ] && echo systemd || echo python )）"
   local R="$NEXUS_ROOT"
   start_service nexus-astra oneshot "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev restart" "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev stop"
   wait_http http://127.0.0.1:8100/api/health "Task API(8100)" 90

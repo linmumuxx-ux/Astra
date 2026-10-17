@@ -16,8 +16,8 @@
 | Astra Gateway（API 中转数据面） | 8110 | 同上（`app.gateway.server`） | OpenAI 兼容 `/v1`，远程 Worker 经反向隧道使用 |
 | Nexus API | 8120 | `uvicorn nexus_api.main:app` | Nexus 前端的 `/api/v1` |
 | Library MCP | 8201 | 同 astra_service（`nexus-library-mcp`，streamable-http） | 员工/OpenCode 查询数字图书馆 |
-| Task MCP | 8202 | `services/task-platform/.venv/bin/astra-task-mcp` | 员工会话里的 `nexus_task_*` 工具 |
-| Nexus Web | 5174 | `web/nexus`（`vite` dev 或 `vite preview`） | 唯一前端。代理 `/api/v1→8120`、`/api→8100` |
+| Task MCP | 8202 | 同 astra_service（`astra-task-mcp`） | 员工会话里的 `nexus_task_*` 工具 |
+| Nexus Web | 5174 | 同 astra_service（开发起 Vite，生产提供已构建页面） | 唯一前端。代理 `/api/v1→8120`、`/api→8100` |
 | 平台 OpenCode / 助手 OpenCode | 4096 / 4097 | astra_service 拉起 `opencode serve` | **本地 Worker 不能再用 4096** |
 | 本地 Worker OpenCode | 自定（如 4196） | Astra runtime 拉起 | 每个 Worker 一个端口 |
 | llm_wiki Web 版（远端） | 18080（网关）/ 19829（内部） | Docker 容器 `llm-wiki-web` | 只绑 127.0.0.1 |
@@ -148,7 +148,7 @@ cp /opt/nexus/ops/env/.env.example /opt/nexus/ops/env/.env && chmod 600 /opt/nex
 
 ## 4. （手工）部署顺序总览
 
-1. Redis → 2. backend venv + alembic → 3. Task API / Celery / OpenCode（astra_service）→ 4. Task MCP → 5. Agent Service + 聊天模型登记 → 6. Nexus API → 7. web/nexus 构建与服务 → 8. 网关路由 deepseek-flash → 9. llm_wiki 部署与项目创建 → 10. 远程 Worker 部署。
+1. Redis → 2. backend venv + alembic → 3. `astra_service.py`（Task API、Celery、OpenCode、Task MCP、管理台）→ 4. Agent Service + 聊天模型登记 → 5. Nexus API → 6. 网关路由 deepseek-flash → 7. llm_wiki 部署与项目创建 → 8. 远程 Worker 部署。Task MCP 和管理台不单独启动。
 
 ## 5. 分步说明
 
@@ -185,11 +185,14 @@ cd $R/services/task-platform && ASTRA_GATEWAY_MASTER_KEY=$(cat ../.gwmaster) AST
   ASTRA_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000 ASTRA_AGENTSCOPE_USER_ID=nexus \
   .venv/bin/python ../ops/dev/astra_service.py dev start
 ```
-（即 `ops/dev/start_astra.sh [start|restart|stop|status]`。）Python 用新会话拉起 backend 8100（uvicorn --reload）、gateway 8110、Library MCP 8201、Celery beat/control/agent、OpenCode 4096/4097、管理台 5174，并记录 pid 与 create_time。健康检查只认 HTTP 2xx。停不干净时保留 `astra-service.json` 并以非 0 退出。启动前会做自检。
+（即 `ops/dev/start_astra.sh [start|restart|stop|status]`。）Python 用新会话拉起 backend 8100（uvicorn --reload）、gateway 8110、Library MCP 8201、Task MCP 8202、Celery beat/control/agent、OpenCode 4096/4097、管理台 5174，并记录 pid 与 create_time。健康检查只认 HTTP 2xx。停不干净时保留 `astra-service.json` 并以非 0 退出。启动前会做自检。
 
 ### 5.4 Task MCP
+
+Task MCP（8202）由 `ops/dev/astra_service.py` 与 Task API、Celery、OpenCode、管理台一起拉起。启停用 Python 脚本，macOS 与 Linux 同一条命令；`start_astra.sh` 只加载 `ops/env/.env` 再调用它：
+
 ```bash
-ASTRA_TASK_MCP_PORT=8202 ops/dev/start_task_mcp.sh start
+ops/dev/start_astra.sh start     # 或 restart / stop / status
 ```
 
 ### 5.5 Agent Service（AgentScope 2.0.10）与聊天模型
@@ -217,9 +220,8 @@ ops/dev/start_nexus_api.sh start
 ### 5.7 web/nexus
 ```bash
 cd $R/web/nexus && npm ci && npm run build        # vue-tsc + vite build → dist/
-npx vite preview --host 127.0.0.1 --port 5174     # 生产；开发用 npx vite --port 5174
 ```
-`vite.config.ts` 代理 `/api/v1 → 8120`、`/api → 8100`（preview 沿用该代理）。对外发布请用 nginx 反代（参考 `ops/deploy/nginx-nexus.conf`）并加认证。
+管理台（5174）由 `astra_service.py` 拉起，不要再单独执行 `vite preview`。开发模式起 Vite，生产构建完成后由同一 Python 进程提供页面。启停与 5.4 相同：`ops/dev/start_astra.sh start|restart|stop|status`（macOS 与 Linux 都走 `astra_service.py`）。`vite.config.ts` 代理 `/api/v1 → 8120`、`/api → 8100`。对外发布请用 nginx 反代（参考 `ops/deploy/nginx-nexus.conf`）并加认证。
 
 ### 5.8 网关路由 deepseek-flash
 在管理台「API 中转」或 API：
@@ -342,10 +344,9 @@ curl -X POST $B/nodes/<node>/probe     # 直到 HEALTHY → ACTIVE
 **重启**（box 现状）：
 ```bash
 cd /workspace/nexus-p2
-ops/dev/start_astra.sh restart        # 8100/8110/8201/5174/4096/4097 + Celery
+ops/dev/start_astra.sh restart        # Task API、网关、Task MCP、管理台、Celery、OpenCode
 ops/dev/start_agent_service.sh start  # 8000
 ops/dev/start_nexus_api.sh start      # 8120
-ops/dev/start_task_mcp.sh start       # 8202
 ```
 一键脚本部署的机器：`systemctl restart nexus-astra nexus-agent-service nexus-api [nexus-llm-wiki-tunnel nexus-llm-wiki-pump]`。Task MCP 与管理台随 `nexus-astra` 里的 `astra_service.py` 一起重启。
 远端：`docker restart llm-wiki-web`（重启主机后先重新注册 binfmt）。
@@ -358,6 +359,8 @@ cd $R/services/nexus-api && .venv/bin/pip install -r requirements.txt
 cd $R/web/nexus && npm ci && npm run build
 # 然后按上面重启；或直接重跑 ops/deploy/install_nexus.sh（幂等）
 ```
+原地升级重跑安装脚本时，若还留着旧的独立单元 `nexus-task-mcp` 或 `nexus-web`，脚本会 `stop`、`disable`、删除 `/etc/systemd/system` 下对应单元文件并 `daemon-reload`。单元不存在时这一步直接跳过，不报错。Task MCP 与管理台之后只随 `astra_service.py` 启停。
+
 升级前备份：`backend` 的 SQLite/MySQL、`services/nexus-api/data/nexus.sqlite3`、Redis（AgentScope 数据与凭证）、`/var/lib/llm-wiki`、`secrets.env`/`.gwmaster`/`.mcpkey`。远程 Worker 升级后执行一次 `environment/restart`。
 
 `nexus-astra` 重启会经 `astra_service.py` 执行 `alembic upgrade head`，所以重启也会跑迁移；升级或重启前先备份数据库。从 `0037_gateway_runtime_events` 降级会删除 `gateway_runtime_events` 表。从 `0038_gateway_request_lifecycle` 降级会删除调用日志上的实例代次与 `outcome` 列。`finished_at` 为空且没有 `gateway_instance_id` 的历史未完成行不会被自动改写成失败或成功。
