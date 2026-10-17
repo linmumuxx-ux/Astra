@@ -172,36 +172,37 @@ class WorkerConnectionManager:
 
     async def run_session(self, transport: FrameTransport) -> None:
         config = self.config
-        auth = envelope(
-            request_id=f"auth-{config.worker_instance_id}",
-            worker_instance_id=config.worker_instance_id,
-            environment_id=config.environment_id,
-            session_id=None,
-            message_type="command",
-            payload={
-                "name": "authenticate",
-                "token": config.token,
-                "agent_version": config.agent_version,
-            },
-        )
-        await transport.send(auth.to_dict())
-        try:
-            reply = await asyncio.wait_for(self._recv(transport), config.auth_timeout_seconds)
-        except TimeoutError as exc:
-            raise WorkerTransportError("auth_timeout") from exc
-        if reply.type != "response" or not reply.payload.get("ok"):
-            raise WorkerTransportError(str(reply.payload.get("error_code") or "auth_failed"))
-        epoch = int(reply.payload["epoch"])
-        self.epoch = epoch
-        self.epochs.append(epoch)
-        ping_seconds = float(reply.payload.get("ping_seconds") or config.ping_seconds)
-        ping_timeout = float(reply.payload.get("ping_timeout_seconds") or config.ping_timeout_seconds)
-        monitor = HeartbeatMonitor(config.heartbeat_misses)
+        heartbeat: asyncio.Task[None] | None = None
         heartbeat_stop = asyncio.Event()
-        heartbeat = asyncio.create_task(
-            self._heartbeat(transport, ping_seconds, ping_timeout, monitor, heartbeat_stop)
-        )
         try:
+            auth = envelope(
+                request_id=f"auth-{config.worker_instance_id}",
+                worker_instance_id=config.worker_instance_id,
+                environment_id=config.environment_id,
+                session_id=None,
+                message_type="command",
+                payload={
+                    "name": "authenticate",
+                    "token": config.token,
+                    "agent_version": config.agent_version,
+                },
+            )
+            await transport.send(auth.to_dict())
+            try:
+                reply = await asyncio.wait_for(self._recv(transport), config.auth_timeout_seconds)
+            except TimeoutError as exc:
+                raise WorkerTransportError("auth_timeout") from exc
+            if reply.type != "response" or not reply.payload.get("ok"):
+                raise WorkerTransportError(str(reply.payload.get("error_code") or "auth_failed"))
+            epoch = int(reply.payload["epoch"])
+            self.epoch = epoch
+            self.epochs.append(epoch)
+            ping_seconds = float(reply.payload.get("ping_seconds") or config.ping_seconds)
+            ping_timeout = float(reply.payload.get("ping_timeout_seconds") or config.ping_timeout_seconds)
+            monitor = HeartbeatMonitor(config.heartbeat_misses)
+            heartbeat = asyncio.create_task(
+                self._heartbeat(transport, ping_seconds, ping_timeout, monitor, heartbeat_stop)
+            )
             while True:
                 incoming = await self._next_message(transport, heartbeat)
                 if incoming.type == "heartbeat":
@@ -218,8 +219,9 @@ class WorkerConnectionManager:
                 await self._handle_command(transport, incoming, epoch)
         finally:
             heartbeat_stop.set()
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
+            if heartbeat is not None:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
             try:
                 await transport.close()
             except Exception:
@@ -259,8 +261,8 @@ class WorkerConnectionManager:
                 self._response(incoming, "result", recorded.result, recorded.error_code).to_dict()
             )
             return
-        self.ledger.begin(incoming.request_id, now)
         await transport.send(self._response(incoming, "ack", None, None).to_dict())
+        self.ledger.begin(incoming.request_id, now)
         result, error_code = handle_command(incoming, self.supervisor)
         self.ledger.finish(incoming.request_id, result, error_code, self.clock())
         await transport.send(self._response(incoming, "result", result, error_code).to_dict())

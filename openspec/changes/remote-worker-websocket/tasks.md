@@ -11,7 +11,8 @@
 - [x] 1.9 断开、响应和 sweep 改为条件更新
 - [x] 1.10 相同 request_id 冲突回读原记录，不一致返回 409
 - [x] 1.11 持久化投递状态和 owner dispatcher；Agent 按 request_id 去重；prompt 不盲重发
-- [x] 1.12 管理接口使用内部服务密钥，缺省时写入 ops/env/.env
+- [x] 1.12 管理接口使用内部服务密钥；启动脚本生成一次，API 进程不各自生成
+- [x] 1.13 epoch 高水位不随租约删除；投递状态拆成 unpublished / uncertain / published；已 ACK 的指令不再重发
 
 ## 2. OpenCode API、SSE 与 Session 恢复
 
@@ -25,6 +26,8 @@
 - [ ] 2.8 已迁移环境断线进入通信恢复，不回退 SSH，不运行会杀旧进程的启动脚本
 - [ ] 2.9 ACK 丢失时用持久化的原生消息 ID 决定能否重发
 - [ ] 2.10 把 lifecycle 与 remote_provisioning 的占用判断收成一个入口，沿用 dfc5eab
+- [ ] 2.11 决定幂等身份是否包含 session_id。当前比较不含 session_id
+- [ ] 2.12 有副作用的指令在执行前持久化 Agent 去重，或改为原生消息核对。阶段 1 的去重只在内存
 
 ## 3. Workspace、文件与 Git
 

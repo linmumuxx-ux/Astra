@@ -251,8 +251,12 @@ class WorkerGateway:
         now = utcnow()
         result = await session.execute(
             update(WorkerInstance)
-            .where(WorkerInstance.id == worker_instance_id, WorkerInstance.epoch == epoch)
-            .values(status="online", last_heartbeat_at=now, updated_at=now)
+            .where(
+                WorkerInstance.id == worker_instance_id,
+                WorkerInstance.epoch == epoch,
+                WorkerInstance.status == "online",
+            )
+            .values(last_heartbeat_at=now, updated_at=now)
         )
         await session.commit()
         return result.rowcount == 1
@@ -339,19 +343,22 @@ class WorkerGateway:
             raise WorkerGatewayError("duplicate_request", "request_id 已用于其他指令")
 
     async def dispatch_due(self, worker_instance_id: str, epoch: int) -> int:
-        """只有当前 owner 进程补投未确认的指令。prompt 一旦交出去就不再盲重发。"""
+        """只补投当前 epoch 上仍未 ACK 的指令。prompt 离开 unpublished 后不再发布。"""
 
         owner = await self.bus.get_owner(worker_instance_id)
         if owner is None or owner[0] != self.owner_id or owner[1] != epoch:
             return 0
         lease_before = utcnow() - timedelta(seconds=self.settings.worker_gateway_dispatch_lease_seconds)
         async with SessionLocal() as session:
+            instance = await session.get(WorkerInstance, worker_instance_id)
+            if instance is None or instance.epoch != epoch:
+                return 0
             rows = (
                 await session.scalars(
                     select(WorkerCommand).where(
                         WorkerCommand.worker_instance_id == worker_instance_id,
                         WorkerCommand.epoch == epoch,
-                        WorkerCommand.status.in_(("pending", "accepted")),
+                        WorkerCommand.status == "pending",
                         or_(
                             WorkerCommand.last_dispatched_at.is_(None),
                             WorkerCommand.last_dispatched_at <= lease_before,
@@ -359,10 +366,10 @@ class WorkerGateway:
                     )
                 )
             ).all()
-            pending = [(row.id, row.name, row.delivery_attempts) for row in rows]
+            pending = [(row.id, row.name, row.delivery_state) for row in rows]
         delivered = 0
-        for command_id, name, attempts in pending:
-            if name in SIDE_EFFECT_COMMANDS and attempts > 0:
+        for command_id, name, state in pending:
+            if name in SIDE_EFFECT_COMMANDS and state != "unpublished":
                 continue
             ok, _reason = await self._handoff(command_id, owner_only=True)
             if ok:
@@ -372,10 +379,13 @@ class WorkerGateway:
     async def _handoff(self, command_id: int, *, owner_only: bool) -> tuple[bool, str]:
         async with SessionLocal() as session:
             command = await session.get(WorkerCommand, command_id)
-            if command is None or command.status not in {"pending", "accepted"}:
+            if command is None or command.status != "pending":
                 return False, "offline"
-            if command.name in SIDE_EFFECT_COMMANDS and command.delivery_attempts > 0:
+            if command.name in SIDE_EFFECT_COMMANDS and command.delivery_state != "unpublished":
                 return False, "needs_reconcile"
+            instance = await session.get(WorkerInstance, command.worker_instance_id)
+            if instance is None or instance.epoch != command.epoch:
+                return False, "offline"
             owner = await self.bus.get_owner(command.worker_instance_id)
             if owner is None or owner[1] != command.epoch:
                 return False, "offline"
@@ -383,19 +393,22 @@ class WorkerGateway:
                 return False, "offline"
             now = utcnow()
             lease_before = now - timedelta(seconds=self.settings.worker_gateway_dispatch_lease_seconds)
+            previous_state = command.delivery_state
             attempts = command.delivery_attempts + 1
             claim = await session.execute(
                 update(WorkerCommand)
                 .where(
                     WorkerCommand.id == command.id,
                     WorkerCommand.epoch == command.epoch,
-                    WorkerCommand.status.in_(("pending", "accepted")),
+                    WorkerCommand.status == "pending",
+                    WorkerCommand.delivery_state == previous_state,
                     or_(
                         WorkerCommand.last_dispatched_at.is_(None),
                         WorkerCommand.last_dispatched_at <= lease_before,
                     ),
                 )
                 .values(
+                    delivery_state="uncertain",
                     delivery_attempts=WorkerCommand.delivery_attempts + 1,
                     last_dispatched_at=now,
                     dispatched_epoch=command.epoch,
@@ -413,16 +426,17 @@ class WorkerGateway:
             published = await self.bus.publish_command(worker_id, frame)
         except Exception:
             logger.warning("worker command publish failed", exc_info=True)
-            published = False
+            return False, "publish_unknown"
         if published:
+            await self._mark_published(command_id, attempts, epoch)
             return True, ""
-        await self._revert_handoff(command_id, attempts, epoch)
+        await self._revert_definite(command_id, attempts, epoch, previous_state)
         fresh_owner = await self.bus.get_owner(worker_id)
         if fresh_owner is None or fresh_owner[1] != epoch:
             return False, "offline"
         return False, "queue_full"
 
-    async def _revert_handoff(self, command_id: int, attempts: int, epoch: int) -> None:
+    async def _mark_published(self, command_id: int, attempts: int, epoch: int) -> None:
         async with SessionLocal() as session:
             await session.execute(
                 update(WorkerCommand)
@@ -430,14 +444,33 @@ class WorkerGateway:
                     WorkerCommand.id == command_id,
                     WorkerCommand.epoch == epoch,
                     WorkerCommand.delivery_attempts == attempts,
-                    WorkerCommand.status.in_(("pending", "accepted")),
+                    WorkerCommand.status == "pending",
                 )
-                .values(
-                    delivery_attempts=attempts - 1,
-                    last_dispatched_at=None,
-                    dispatched_epoch=None,
-                    updated_at=utcnow(),
+                .values(delivery_state="published", updated_at=utcnow())
+            )
+            await session.commit()
+
+    async def _revert_definite(
+        self, command_id: int, attempts: int, epoch: int, previous_state: str
+    ) -> None:
+        values: dict[str, Any] = {
+            "delivery_attempts": attempts - 1,
+            "delivery_state": previous_state,
+            "updated_at": utcnow(),
+        }
+        if previous_state == "unpublished":
+            values["last_dispatched_at"] = None
+            values["dispatched_epoch"] = None
+        async with SessionLocal() as session:
+            await session.execute(
+                update(WorkerCommand)
+                .where(
+                    WorkerCommand.id == command_id,
+                    WorkerCommand.epoch == epoch,
+                    WorkerCommand.delivery_attempts == attempts,
+                    WorkerCommand.status == "pending",
                 )
+                .values(**values)
             )
             await session.commit()
 
@@ -523,17 +556,19 @@ class WorkerGateway:
             )
         )
         stale_before = current - stale_after
+        stale_filter = (
+            WorkerInstance.status == "online",
+            or_(
+                WorkerInstance.last_heartbeat_at.is_(None),
+                WorkerInstance.last_heartbeat_at <= stale_before,
+            ),
+        )
         async with SessionLocal() as session:
+            stale_rows = (
+                await session.execute(select(WorkerInstance.id, WorkerInstance.epoch).where(*stale_filter))
+            ).all()
             offline = await session.execute(
-                update(WorkerInstance)
-                .where(
-                    WorkerInstance.status == "online",
-                    or_(
-                        WorkerInstance.last_heartbeat_at.is_(None),
-                        WorkerInstance.last_heartbeat_at <= stale_before,
-                    ),
-                )
-                .values(status="offline", updated_at=current)
+                update(WorkerInstance).where(*stale_filter).values(status="offline", updated_at=current)
             )
             expired = await session.execute(
                 update(WorkerCommand)
@@ -550,6 +585,24 @@ class WorkerGateway:
                 )
             )
             await session.commit()
+            offlined: list[tuple[str, int]] = []
+            if stale_rows:
+                wanted = {(row[0], row[1]) for row in stale_rows}
+                current_rows = (
+                    await session.execute(
+                        select(WorkerInstance.id, WorkerInstance.epoch, WorkerInstance.status).where(
+                            WorkerInstance.id.in_([row[0] for row in stale_rows])
+                        )
+                    )
+                ).all()
+                offlined = [
+                    (worker_id, epoch)
+                    for worker_id, epoch, status in current_rows
+                    if (worker_id, epoch) in wanted and status == "offline"
+                ]
+        for worker_id, epoch in offlined:
+            self._close_local_socket(worker_id)
+            await self.bus.clear_owner(worker_id, epoch, None)
         return int(offline.rowcount or 0) + int(expired.rowcount or 0)
 
     async def serve_socket(self, websocket: Any) -> None:
@@ -557,13 +610,16 @@ class WorkerGateway:
         auth: AuthOk | None = None
         queues: ConnectionQueues | None = None
         stop = asyncio.Event()
-        sender: asyncio.Task[None] | None = None
-        pinger: asyncio.Task[None] | None = None
-        dispatcher: asyncio.Task[None] | None = None
+        watched: list[asyncio.Task[None]] = []
         try:
             auth = await self._read_auth(websocket)
             owned = await self.bus.set_owner(auth.worker_instance_id, self.owner_id, auth.epoch)
             if not owned:
+                raise ConnectionError("epoch_stale")
+            async with SessionLocal() as session:
+                current = await self.epoch_is_current(session, auth.worker_instance_id, auth.epoch)
+            if not current:
+                await self.bus.clear_owner(auth.worker_instance_id, auth.epoch, self.owner_id)
                 raise ConnectionError("epoch_stale")
             queues = await self.bus.bind(
                 auth.worker_instance_id, epoch=auth.epoch, owner_id=self.owner_id
@@ -580,23 +636,33 @@ class WorkerGateway:
                 raise ConnectionError("epoch_stale")
             await websocket.send_text(dump_message(auth.ack))
             monitor = HeartbeatMonitor(self.settings.worker_gateway_heartbeat_misses)
-            sender = asyncio.create_task(self._send_loop(websocket, queues, auth, stop))
-            pinger = asyncio.create_task(self._ping_loop(auth, queues, monitor, stop, websocket))
-            dispatcher = asyncio.create_task(self._dispatch_loop(auth, stop, websocket))
-            await self._receive_loop(websocket, auth, lease, monitor, stop)
+            watched = [
+                asyncio.create_task(self._send_loop(websocket, queues, auth, stop)),
+                asyncio.create_task(self._ping_loop(auth, queues, monitor, stop, websocket)),
+                asyncio.create_task(self._dispatch_loop(auth, stop, websocket)),
+                asyncio.create_task(self._receive_loop(websocket, auth, lease, monitor, stop)),
+            ]
+            done, _pending = await asyncio.wait(set(watched), return_when=asyncio.FIRST_COMPLETED)
+            finished = next(iter(done))
+            if not finished.cancelled():
+                error = finished.exception()
+                if error is not None:
+                    raise error
         except WorkerGatewayError as exc:
             await self._send_failure(websocket, exc)
             code = 1009 if exc.code == "frame_too_large" else 1008
             await self._try_close(websocket, code)
         except (WebSocketDisconnect, TimeoutError, ConnectionError):
             await self._try_close(websocket, 4000)
+        except Exception:
+            logger.exception("worker gateway session failed")
+            await self._try_close(websocket, 1011)
         finally:
             stop.set()
-            tasks = [task for task in (sender, pinger, dispatcher) if task is not None]
-            for task in tasks:
+            for task in watched:
                 task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if watched:
+                await asyncio.gather(*watched, return_exceptions=True)
             if auth is not None:
                 if queues is not None:
                     await self.bus.unbind(auth.worker_instance_id, queues)

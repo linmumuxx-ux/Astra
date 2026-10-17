@@ -3,6 +3,7 @@ import json
 import os
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from uuid import uuid4
 
@@ -11,26 +12,33 @@ import websockets
 from sqlalchemy import select, update
 from websockets.exceptions import ConnectionClosed
 
-from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
 from app.models import (
     DigitalEmployee,
     OpenCodeExecutionEnvironment,
     WorkerCommand,
+    WorkerInstance,
     utcnow,
 )
 from app.worker_agent.connection import AgentConfig, WorkerConnectionManager
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import WebSocketTransport, translate_transport_error
-from app.worker_gateway.admin_key import ENV_NAME, ensure_worker_gateway_admin_key
+from app.worker_gateway.admin_key import ENV_NAME, provision_worker_gateway_admin_key
 from app.worker_gateway.bus import MemoryRouteBus, RedisRouteBus
 from app.worker_gateway.protocol import WorkerGatewayError, dump_message, envelope
 from app.worker_gateway.service import WorkerGateway, _SocketLease
 from tests.test_worker_gateway import (
     ADMIN_HEADERS,
+    FakeWebSocket,
     ScriptedTransport,
+    auth_message,
+    bring_online,
+    dispatch,
     gateway_for,
     live_frame,
+    load_command,
+    load_instance,
+    wait_until,
 )
 
 REDIS_URL = os.environ.get("ASTRA_TEST_REDIS_URL")
@@ -520,22 +528,344 @@ async def test_redis_old_consumer_stops_after_newer_epoch():
         await newer.aclose()
 
 
-def test_missing_admin_key_is_written_into_env_file(tmp_path):
+def _restore_admin_env(previous: str | None) -> None:
+    if previous is None:
+        os.environ.pop(ENV_NAME, None)
+    else:
+        os.environ[ENV_NAME] = previous
+
+
+def test_startup_script_writes_admin_key_once(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("ASTRA_REDIS_URL=redis://127.0.0.1:6379/0\n", encoding="utf-8")
-    settings = get_settings().model_copy(update={"worker_gateway_admin_key": ""})
     previous = os.environ.get(ENV_NAME)
     try:
-        key = ensure_worker_gateway_admin_key(settings, env_file)
-        assert key.startswith("wgk_")
-        assert f"{ENV_NAME}={key}" in env_file.read_text(encoding="utf-8")
-        assert settings.worker_gateway_admin_key == key
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            keys = list(pool.map(lambda _index: provision_worker_gateway_admin_key(env_file), (0, 1)))
+        assert keys[0] is not None and keys[0] == keys[1]
+        assert keys[0].startswith("wgk_")
+        text = env_file.read_text(encoding="utf-8")
+        assert "ASTRA_REDIS_URL=redis://127.0.0.1:6379/0" in text
+        assert text.count(f"{ENV_NAME}=") == 1
+        assert (env_file.stat().st_mode & 0o777) == 0o600
+        assert provision_worker_gateway_admin_key(env_file) == keys[0]
+        assert not env_file.with_name(env_file.name + ".gateway-admin.lock").exists()
     finally:
-        if previous is None:
-            os.environ.pop(ENV_NAME, None)
-        else:
-            os.environ[ENV_NAME] = previous
+        _restore_admin_env(previous)
+
+
+def test_admin_key_provision_survives_unwritable_parent(tmp_path):
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("x", encoding="utf-8")
+    previous = os.environ.get(ENV_NAME)
+    try:
+        assert provision_worker_gateway_admin_key(blocked / ".env") is None
+    finally:
+        _restore_admin_env(previous)
 
 
 def test_admin_header_constant_matches_routes():
     assert ADMIN_HEADERS["X-Astra-Worker-Gateway-Key"] == "wgk_test"
+
+
+def _agent_config(**overrides) -> AgentConfig:
+    values = {
+        "gateway_url": "ws://nexus.internal/api/worker-gateway/connect",
+        "worker_instance_id": "wrk_agent",
+        "environment_id": 7,
+        "token": "wtk_test",
+        "ping_seconds": 3600,
+        "auth_timeout_seconds": 1,
+    }
+    values.update(overrides)
+    return AgentConfig(**values)
+
+
+def _auth_reply() -> dict:
+    return envelope(
+        request_id="auth-wrk_agent",
+        worker_instance_id="wrk_agent",
+        environment_id=7,
+        session_id=None,
+        message_type="response",
+        payload={"ok": True, "epoch": 3, "ping_seconds": 3600},
+    ).to_dict()
+
+
+async def test_cleared_or_expired_lease_rejects_older_epoch():
+    bus = MemoryRouteBus()
+    assert await bus.set_owner("wrk_floor", "gw-new", 2) is True
+    assert await bus.clear_owner("wrk_floor", 2, "gw-new") is True
+    assert await bus.get_owner("wrk_floor") is None
+    assert await bus.set_owner("wrk_floor", "gw-late", 1) is False
+    assert await bus.set_owner("wrk_floor", "gw-new", 2) is True
+
+    expiring = MemoryRouteBus(owner_ttl_seconds=0.2)
+    assert await expiring.set_owner("wrk_expire", "gw-new", 2) is True
+    await asyncio.sleep(0.3)
+    assert await expiring.get_owner("wrk_expire") is None
+    assert await expiring.set_owner("wrk_expire", "gw-late", 1) is False
+    assert await expiring.set_owner("wrk_expire", "gw-new", 2) is True
+
+
+async def test_handoff_refuses_command_when_database_epoch_moved(environment_id: int):
+    gateway = gateway_for(MemoryRouteBus())
+    enrolled, auth = await bring_online(gateway, environment_id)
+    request_id = f"req-fenced-{uuid4().hex}"
+    sent = await dispatch(gateway, enrolled.worker_instance_id, request_id, "ping")
+    assert sent.delivered is True
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerInstance)
+            .where(WorkerInstance.id == enrolled.worker_instance_id)
+            .values(epoch=auth.epoch + 1)
+        )
+        await session.execute(
+            update(WorkerCommand)
+            .where(WorkerCommand.request_id == request_id)
+            .values(last_dispatched_at=utcnow() - timedelta(seconds=30))
+        )
+        await session.commit()
+    ok, reason = await gateway._handoff(sent.command.id, owner_only=False)
+    assert ok is False
+    assert reason == "offline"
+    stored = await load_command(request_id)
+    assert stored.delivery_state == "published"
+    assert stored.delivery_attempts == 1
+    assert await gateway.dispatch_due(enrolled.worker_instance_id, auth.epoch) == 0
+
+
+class _EpochShiftBus(MemoryRouteBus):
+    async def set_owner(self, worker_instance_id: str, owner_id: str, epoch: int) -> bool:
+        ok = await super().set_owner(worker_instance_id, owner_id, epoch)
+        async with SessionLocal() as session:
+            await session.execute(
+                update(WorkerInstance)
+                .where(WorkerInstance.id == worker_instance_id)
+                .values(epoch=epoch + 3, status="online")
+            )
+            await session.commit()
+        return ok
+
+
+async def test_serve_socket_drops_owner_when_database_epoch_moved(environment_id: int):
+    gateway = gateway_for(_EpochShiftBus(), worker_gateway_ping_seconds=30)
+    enrolled = await enroll(gateway, environment_id)
+    socket = FakeWebSocket()
+    task = asyncio.create_task(gateway.serve_socket(socket))
+    await socket.incoming.put(dump_message(auth_message(
+        enrolled.worker_instance_id, environment_id, enrolled.token
+    )))
+    await asyncio.wait_for(task, 2)
+    assert socket.close_code == 4000
+    assert await gateway.bus.get_owner(enrolled.worker_instance_id) is None
+
+
+class _LostReplyBus(MemoryRouteBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lose_reply = False
+
+    async def publish_command(self, worker_instance_id: str, frame: dict) -> bool:
+        if self.lose_reply:
+            raise RuntimeError("reply lost")
+        return await super().publish_command(worker_instance_id, frame)
+
+
+async def test_unknown_publish_is_not_rolled_back_and_accepted_is_not_resent(environment_id: int):
+    bus = _LostReplyBus()
+    gateway = gateway_for(bus, worker_gateway_dispatch_lease_seconds=10)
+    enrolled, auth = await bring_online(gateway, environment_id)
+    prompt_id = f"req-prompt-{uuid4().hex}"
+    ping_id = f"req-ping-{uuid4().hex}"
+    bus.lose_reply = True
+    lost = await dispatch(gateway, enrolled.worker_instance_id, prompt_id, "prompt", {"text": "go"})
+    assert lost.delivered is False
+    prompt = await load_command(prompt_id)
+    assert prompt.delivery_state == "uncertain"
+    assert prompt.delivery_attempts == 1
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerCommand)
+            .where(WorkerCommand.request_id == prompt_id)
+            .values(last_dispatched_at=utcnow() - timedelta(seconds=30))
+        )
+        await session.commit()
+    assert await gateway.dispatch_due(enrolled.worker_instance_id, auth.epoch) == 0
+    assert (await load_command(prompt_id)).delivery_attempts == 1
+
+    bus.lose_reply = False
+    queues = bus.bound[enrolled.worker_instance_id]
+    await bus.unbind(enrolled.worker_instance_id, queues)
+    rejected = await dispatch(gateway, enrolled.worker_instance_id, ping_id, "ping")
+    assert rejected.delivered is False
+    ping = await load_command(ping_id)
+    assert ping.delivery_state == "unpublished"
+    assert ping.delivery_attempts == 0
+    rebound = await bus.bind(enrolled.worker_instance_id, epoch=auth.epoch, owner_id=gateway.owner_id)
+    assert rebound is not None
+    assert await gateway.dispatch_due(enrolled.worker_instance_id, auth.epoch) == 1
+    assert (await load_command(ping_id)).delivery_state == "published"
+    async with SessionLocal() as session:
+        acked = await gateway.apply_response(
+            session,
+            worker_instance_id=enrolled.worker_instance_id,
+            epoch=auth.epoch,
+            message=envelope(
+                request_id=ping_id,
+                worker_instance_id=enrolled.worker_instance_id,
+                environment_id=environment_id,
+                session_id=None,
+                message_type="response",
+                payload={"stage": "ack", "ok": True, "result": None, "error_code": None},
+            ),
+        )
+    assert acked is True
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerCommand)
+            .where(WorkerCommand.request_id == ping_id)
+            .values(last_dispatched_at=utcnow() - timedelta(seconds=30))
+        )
+        await session.commit()
+    assert await gateway.dispatch_due(enrolled.worker_instance_id, auth.epoch) == 0
+    assert (await load_command(ping_id)).status == "accepted"
+
+
+class _BoomSocket(FakeWebSocket):
+    async def send_text(self, data: str) -> None:
+        self.sent.append(data)
+        if len(self.sent) >= 2:
+            raise ConnectionError("send failed")
+
+
+async def test_send_loop_failure_ends_session_and_closes_socket(environment_id: int):
+    gateway = gateway_for(
+        MemoryRouteBus(),
+        worker_gateway_ping_seconds=0.05,
+        worker_gateway_ping_timeout_seconds=5,
+        worker_gateway_dispatch_lease_seconds=60,
+    )
+    enrolled = await enroll(gateway, environment_id)
+    socket = _BoomSocket()
+    task = asyncio.create_task(gateway.serve_socket(socket))
+    await socket.incoming.put(dump_message(auth_message(
+        enrolled.worker_instance_id, environment_id, enrolled.token
+    )))
+    await asyncio.wait_for(task, 2)
+    assert task.done()
+    assert socket.close_code is not None
+
+
+async def test_sweep_closes_socket_and_heartbeat_does_not_revive(environment_id: int):
+    gateway = gateway_for(
+        MemoryRouteBus(),
+        worker_gateway_ping_seconds=60,
+        worker_gateway_ping_timeout_seconds=10,
+    )
+    enrolled = await enroll(gateway, environment_id)
+    socket = FakeWebSocket()
+    task = asyncio.create_task(gateway.serve_socket(socket))
+    await socket.incoming.put(dump_message(auth_message(
+        enrolled.worker_instance_id, environment_id, enrolled.token
+    )))
+    await wait_until(lambda: socket.sent)
+    ack = json.loads(socket.sent[0])
+    epoch = ack["payload"]["epoch"]
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerInstance)
+            .where(WorkerInstance.id == enrolled.worker_instance_id)
+            .values(last_heartbeat_at=utcnow() - timedelta(seconds=120))
+        )
+        await session.commit()
+    await gateway.sweep(now=utcnow())
+    assert (await load_instance(enrolled.worker_instance_id)).status == "offline"
+    await wait_until(lambda: socket.close_code is not None)
+    assert await gateway.bus.get_owner(enrolled.worker_instance_id) is None
+    async with SessionLocal() as session:
+        revived = await gateway.note_heartbeat(session, enrolled.worker_instance_id, epoch)
+    assert revived is False
+    assert (await load_instance(enrolled.worker_instance_id)).status == "offline"
+    await asyncio.wait_for(task, 2)
+
+
+async def test_auth_failure_closes_transport_and_ack_failure_skips_ledger():
+    manager = WorkerConnectionManager(_agent_config(), sleep=lambda _seconds: asyncio.sleep(0))
+    failed = ScriptedTransport([])
+    with pytest.raises(ConnectionError):
+        await manager.run_session(failed)
+    assert failed.closed is True
+
+    class AckFail(ScriptedTransport):
+        async def send(self, message: dict) -> None:
+            self.sent.append(message)
+            if message.get("payload", {}).get("stage") == "ack":
+                raise ConnectionError("ack lost")
+
+    command = envelope(
+        request_id="req-agent",
+        worker_instance_id="wrk_agent",
+        environment_id=7,
+        session_id=None,
+        message_type="command",
+        payload={"name": "ping", "data": {}},
+    )
+    command.epoch = 3
+    command.expires_at = int(time.time()) + 60
+    transport = AckFail([_auth_reply(), command.to_dict()])
+    with pytest.raises(ConnectionError):
+        await manager.run_session(transport)
+    assert transport.closed is True
+    assert manager.ledger.lookup("req-agent", time.time()) is None
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
+)
+async def test_redis_floor_survives_clear_and_expiry():
+    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    bus = RedisRouteBus(REDIS_URL, prefix=prefix, owner_ttl_seconds=1)
+    worker_id = f"wrk_{uuid4().hex}"
+    try:
+        assert await bus.set_owner(worker_id, "gw-new", 2) is True
+        assert await bus.clear_owner(worker_id, 2, "gw-new") is True
+        assert await bus.get_owner(worker_id) is None
+        assert await bus.set_owner(worker_id, "gw-late", 1) is False
+        expiring = f"wrk_{uuid4().hex}"
+        assert await bus.set_owner(expiring, "gw-new", 2) is True
+        await asyncio.sleep(1.6)
+        assert await bus.get_owner(expiring) is None
+        assert await bus.set_owner(expiring, "gw-late", 1) is False
+    finally:
+        await bus.delete_prefix()
+        await bus.aclose()
+
+
+@pytest.mark.skipif(
+    not REDIS_URL,
+    reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
+)
+async def test_local_heartbeats_do_not_release_redis_capacity_and_unbind_deletes_list():
+    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    bus = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=2)
+    worker_id = f"wrk_{uuid4().hex}"
+    try:
+        assert await bus.set_owner(worker_id, "gw", 4) is True
+        queues = await bus.bind(worker_id, epoch=4, owner_id="gw")
+        assert queues is not None
+        assert await queues.put_control(live_frame({"request_id": "hb"}, 4)) is True
+        assert await bus.publish_command(worker_id, live_frame({"request_id": "c1"}, 4)) is True
+        await wait_until(lambda: queues.control.qsize() >= 2)
+        assert await bus.publish_command(worker_id, live_frame({"request_id": "c2"}, 4)) is True
+        key = bus._control_key(worker_id, 4)
+        assert await bus._connection().ttl(key) > 0
+        popped = await asyncio.wait_for(queues.wait_frame(), 1)
+        assert popped["request_id"] == "hb"
+        assert await bus.publish_command(worker_id, live_frame({"request_id": "c3"}, 4)) is False
+        await bus.unbind(worker_id, queues)
+        assert await bus._connection().exists(key) == 0
+    finally:
+        await bus.delete_prefix()
+        await bus.aclose()

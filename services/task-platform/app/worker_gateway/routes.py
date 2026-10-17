@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.settings import get_settings
 from app.database import get_session
 from app.models import WorkerCommand, WorkerInstance
+from app.worker_gateway.admin_key import warn_if_admin_key_missing
 from app.worker_gateway.protocol import WorkerGatewayError
 from app.worker_gateway.service import get_gateway
 
@@ -47,7 +48,13 @@ async def require_admin(
     key: Annotated[str | None, Header(alias=ADMIN_HEADER)] = None,
 ) -> None:
     expected = get_settings().worker_gateway_admin_key.strip()
-    if not expected or key is None or not hmac.compare_digest(key, expected):
+    if not expected:
+        warn_if_admin_key_missing("")
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "unauthorized", "message": "管理密钥未配置，拒绝管理调用"},
+        )
+    if key is None or not hmac.compare_digest(key, expected):
         raise HTTPException(
             status_code=401,
             detail={"code": "unauthorized", "message": "管理接口需要内部服务密钥"},

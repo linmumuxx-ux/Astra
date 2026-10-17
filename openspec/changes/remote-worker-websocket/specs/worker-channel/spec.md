@@ -23,7 +23,7 @@ The system MUST increment the epoch when a connection authenticates. After a new
 - **THEN** the Worker remains online at the newer epoch
 
 ### Requirement: Commands are durable and idempotent
-The system MUST store a command before publishing it. The same `request_id` with the same Worker, command name, and payload MUST return the stored command and MUST NOT publish it again. A conflicting Worker, name, or payload MUST be rejected. An offline Worker MUST persist the command as failed with `offline`. A full control queue MUST leave the command pending. Idempotent commands MUST be retried by the current owner after the dispatch lease expires. A side-effect command such as `prompt` MUST NOT be published again while its result is unknown.
+The system MUST store a command before publishing it. The same `request_id` with the same Worker, command name, and payload MUST return the stored command and MUST NOT publish it again. A conflicting Worker, name, or payload MUST be rejected. An offline Worker MUST persist the command as failed with `offline`. A full control queue MUST leave the command pending and `unpublished`. A publish whose result is unknown MUST leave the command `uncertain` and MUST NOT roll the attempt back. Idempotent commands that are still `pending` MAY be retried by the same-epoch owner after the dispatch lease expires. Accepted commands MUST NOT be republished. A newer epoch MUST NOT adopt the previous epoch's commands. A side-effect command such as `prompt` MUST NOT be published again after it leaves `unpublished`.
 
 #### Scenario: Duplicate request is not delivered twice
 - **WHEN** a caller submits a request id that is already stored
@@ -34,7 +34,7 @@ The system MUST store a command before publishing it. The same `request_id` with
 - **THEN** the command row is already pending
 
 ### Requirement: Routing has one owner
-The process holding the socket MUST be the only owner for that epoch. Registration MUST reject an older epoch. Another memory bus MUST NOT observe that owner. Redis clients using the same prefix MUST observe it. Clearing an older epoch or a different owner MUST leave the current lease in place. Publish, consume, and send MUST fence on the target epoch. A consumer that loses ownership MUST stop. Control frames MUST be delivered before queued events, and a full event queue MUST drop events instead of blocking control.
+The process holding the socket MUST be the only owner for that epoch. Registration MUST reject an older epoch, including after the current lease is cleared or expires. Another memory bus MUST NOT observe that owner. Redis clients using the same prefix MUST observe it. Clearing an older epoch or a different owner MUST leave the current lease in place. Publish, consume, and send MUST fence on the target epoch. A consumer that loses ownership MUST stop. Control frames MUST be delivered before queued events, and a full event queue MUST drop events instead of blocking control. Local heartbeat frames MUST NOT release Redis queue capacity.
 
 #### Scenario: Separate memory buses do not share ownership
 - **WHEN** one memory bus records an owner

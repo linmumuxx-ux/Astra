@@ -16,18 +16,29 @@ from typing import Any
 SINGLE_PROCESS_WARNING = "仅单进程可用"
 
 _SET_OWNER_LUA = """
+local floor = tonumber(redis.call('GET', KEYS[2]) or '0')
 local current = redis.call('GET', KEYS[1])
 local new_owner = ARGV[1]
 local new_epoch = tonumber(ARGV[2])
+local live = 0
+local owner = ''
+local epoch_text = nil
 if current then
-  local owner, epoch_text = string.match(current, '^(.-)|(%d+)$')
-  local epoch = tonumber(epoch_text)
-  if epoch > new_epoch then
-    return 0
-  end
-  if epoch == new_epoch and owner ~= new_owner then
-    return 0
-  end
+  owner, epoch_text = string.match(current, '^(.-)|(%d+)$')
+  live = tonumber(epoch_text) or 0
+end
+local high = floor
+if live > high then
+  high = live
+end
+if new_epoch < high then
+  return 0
+end
+if current and live == new_epoch and owner ~= new_owner then
+  return 0
+end
+if new_epoch > floor then
+  redis.call('SET', KEYS[2], tostring(new_epoch))
 end
 redis.call('SET', KEYS[1], new_owner .. '|' .. ARGV[2], 'EX', ARGV[3])
 return 1
@@ -48,6 +59,11 @@ if held + redis.call('LLEN', KEYS[1]) >= limit then
   return 0
 end
 redis.call('RPUSH', KEYS[1], ARGV[2])
+local ttl = tonumber(ARGV[4])
+redis.call('EXPIRE', KEYS[1], ttl)
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('EXPIRE', KEYS[2], ttl)
+end
 return 1
 """
 
@@ -174,15 +190,21 @@ class ConnectionQueues:
         self.dropped_events = 0
         self.epoch: int | None = None
         self.owner_id: str | None = None
+        self.bus_pending = {"control": 0, "event": 0}
         self._signal = asyncio.Event()
         self._lock = asyncio.Lock()
         self._on_delivered = on_delivered
+
+    def _count_bus(self, kind: str, frame: dict[str, Any]) -> None:
+        if frame.get("_bus"):
+            self.bus_pending[kind] += 1
 
     async def put_control(self, frame: dict[str, Any]) -> bool:
         async with self._lock:
             if self.control.full():
                 return False
             self.control.put_nowait(frame)
+            self._count_bus("control", frame)
             self._signal.set()
             return True
 
@@ -192,6 +214,7 @@ class ConnectionQueues:
                 self.dropped_events += 1
                 return False
             self.events.put_nowait(frame)
+            self._count_bus("event", frame)
             self._signal.set()
             return True
 
@@ -210,12 +233,14 @@ class ConnectionQueues:
                     if self.control.empty() and self.events.empty():
                         self._signal.clear()
                     kind, frame = popped
+                    if frame.get("_bus"):
+                        self.bus_pending[kind] = max(0, self.bus_pending[kind] - 1)
                 else:
                     kind, frame = None, None
                     self._signal.clear()
             if kind is not None and frame is not None:
                 if self._on_delivered is not None:
-                    await self._on_delivered(kind)
+                    await self._on_delivered(kind, frame)
                 return frame
             await self._signal.wait()
 
@@ -236,6 +261,7 @@ class MemoryRouteBus:
         self.owner_ttl_seconds = owner_ttl_seconds
         self.result_ttl_seconds = result_ttl_seconds
         self.owners: dict[str, tuple[str, int, float]] = {}
+        self.epoch_floor: dict[str, int] = {}
         self.bound: dict[str, ConnectionQueues] = {}
         self._results: dict[str, tuple[float, dict[str, Any]]] = {}
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -252,6 +278,9 @@ class MemoryRouteBus:
         if current is None:
             return None
         if current[2] <= time.monotonic():
+            self.epoch_floor[worker_instance_id] = max(
+                self.epoch_floor.get(worker_instance_id, 0), current[1]
+            )
             del self.owners[worker_instance_id]
             return None
         return current
@@ -260,11 +289,14 @@ class MemoryRouteBus:
         if "|" in owner_id:
             raise ValueError("owner_id 不能包含 |")
         current = self._live_owner(worker_instance_id)
-        if current is not None:
-            if current[1] > epoch:
-                return False
-            if current[1] == epoch and current[0] != owner_id:
-                return False
+        live = current[1] if current is not None else 0
+        floor = self.epoch_floor.get(worker_instance_id, 0)
+        if epoch < max(floor, live):
+            return False
+        if current is not None and current[1] == epoch and current[0] != owner_id:
+            return False
+        if epoch > floor:
+            self.epoch_floor[worker_instance_id] = epoch
         self._remember_owner(worker_instance_id, owner_id, epoch)
         return True
 
@@ -401,6 +433,12 @@ class RedisRouteBus:
     def _owner_key(self, worker_instance_id: str) -> str:
         return f"{self.prefix}:owner:{worker_instance_id}"
 
+    def _floor_key(self, worker_instance_id: str) -> str:
+        return f"{self.prefix}:epoch:{worker_instance_id}"
+
+    def _queue_ttl(self) -> int:
+        return max(60, _ttl_seconds(self.owner_ttl_seconds) * 2)
+
     def _control_key(self, worker_instance_id: str, epoch: int) -> str:
         return f"{self.prefix}:control:{worker_instance_id}:{epoch}"
 
@@ -418,8 +456,9 @@ class RedisRouteBus:
             raise ValueError("owner_id 不能包含 |")
         result = await self._connection().eval(
             _SET_OWNER_LUA,
-            1,
+            2,
             self._owner_key(worker_instance_id),
+            self._floor_key(worker_instance_id),
             owner_id,
             str(epoch),
             str(_ttl_seconds(self.owner_ttl_seconds)),
@@ -473,7 +512,9 @@ class RedisRouteBus:
         queues = ConnectionQueues(
             self.control_limit,
             self.event_limit,
-            on_delivered=lambda kind: self._release(worker_instance_id, kind, epoch, 1),
+            on_delivered=lambda kind, frame: self._release_delivered(
+                worker_instance_id, kind, epoch, frame
+            ),
         )
         queues.epoch = epoch
         queues.owner_id = owner_id
@@ -497,8 +538,12 @@ class RedisRouteBus:
         epoch = queues.epoch
         if epoch is None:
             return
-        await self._release(worker_instance_id, "control", epoch, queues.control.qsize())
-        await self._release(worker_instance_id, "event", epoch, queues.events.qsize())
+        await self._connection().delete(
+            self._control_key(worker_instance_id, epoch),
+            self._event_key(worker_instance_id, epoch),
+            self._held_key(worker_instance_id, "control", epoch),
+            self._held_key(worker_instance_id, "event", epoch),
+        )
 
     async def publish_command(self, worker_instance_id: str, frame: dict[str, Any]) -> bool:
         epoch = frame_epoch(frame)
@@ -566,8 +611,16 @@ class RedisRouteBus:
             str(limit),
             json.dumps(frame),
             str(epoch),
+            str(self._queue_ttl()),
         )
         return int(result) == 1
+
+    async def _release_delivered(
+        self, worker_instance_id: str, kind: str, epoch: int, frame: dict[str, Any]
+    ) -> None:
+        if not frame.get("_bus"):
+            return
+        await self._release(worker_instance_id, kind, epoch, 1)
 
     async def _release(self, worker_instance_id: str, kind: str, epoch: int, count: int) -> None:
         if count <= 0:
@@ -637,6 +690,7 @@ class RedisRouteBus:
         if item == 0 or item is None:
             return False
         payload = json.loads(item)
+        payload["_bus"] = True
         accepted = await (
             queues.put_control(payload) if kind == "control" else queues.put_event(payload)
         )
