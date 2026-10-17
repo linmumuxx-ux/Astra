@@ -8,6 +8,7 @@ Workspace。它把当前 Python 虚拟环境的可执行目录注入 PATH，使 
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -51,13 +52,33 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
         name = "astra-assistant-mcp.exe" if os.name == "nt" else "astra-assistant-mcp"
         return self.executable_directory / name
 
+    def review_config(self) -> dict:
+        """启动配置只带复盘 MCP。不读取根目录 opencode.json。"""
+
+        return {
+            "mcp": {
+                "nexus-review": {
+                    "type": "local",
+                    "command": ["astra-assistant-mcp"],
+                    "enabled": True,
+                }
+            }
+        }
+
+    def write_review_config(self) -> Path:
+        directory = self.settings.resolved_data_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "review-opencode.json"
+        path.write_text(json.dumps(self.review_config()), encoding="utf-8")
+        return path
+
     def command(self) -> list[str]:
         return local_command(
             self.binary,
             [
                 "serve",
                 "--hostname",
-                self.settings.assistant_opencode_hostname,
+                "127.0.0.1",
                 "--port",
                 str(self.settings.assistant_opencode_port),
             ],
@@ -75,7 +96,8 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
         # Marks this server as the assistant runtime so project-level plugins can
         # keep developer-only behaviour (e.g. the Superpowers bootstrap) out of
         # user-facing assistant sessions.
-        environment["ASTRA_RUNTIME_ROLE"] = "platform-assistant"
+        environment["ASTRA_RUNTIME_ROLE"] = "review-executor"
+        environment["OPENCODE_CONFIG"] = str(self.write_review_config())
         environment["OPENCODE_SERVER_USERNAME"] = self.settings.assistant_opencode_username
         if self.settings.assistant_opencode_password:
             environment["OPENCODE_SERVER_PASSWORD"] = self.settings.assistant_opencode_password
@@ -96,8 +118,6 @@ class AssistantOpenCodeServerManager(OpenCodeServerManager):
 
 def main() -> int:
     manager = AssistantOpenCodeServerManager(get_settings())
-    if not manager.settings.assistant_enabled:
-        return 0
     if manager.settings.assistant_opencode_url:
         print(
             "ASTRA_ASSISTANT_OPENCODE_URL 已配置，不启动本地助手 OpenCode Server。",

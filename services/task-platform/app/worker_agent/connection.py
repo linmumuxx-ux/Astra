@@ -61,7 +61,7 @@ class AgentConfig:
     max_frame_bytes: int = 262144
     command_dedupe_limit: int = 256
     command_dedupe_ttl_seconds: float = 600
-    opencode_url: str = "http://127.0.0.1:4096"
+    opencode_url: str = "http://127.0.0.1:14096"
     workspace_root: str = ""
 
 
@@ -726,7 +726,7 @@ def load_agent_config(environ: dict[str, str]) -> AgentConfig:
         environment_id=int(environment),
         token=token,
         agent_version=environ.get("ASTRA_WORKER_AGENT_VERSION", "0.1.0"),
-        opencode_url=environ.get("ASTRA_WORKER_OPENCODE_URL", "http://127.0.0.1:4096"),
+        opencode_url=environ.get("ASTRA_WORKER_OPENCODE_URL", "http://127.0.0.1:14096"),
         workspace_root=environ.get("ASTRA_WORKER_WORKSPACE_ROOT", "").strip(),
     )
 

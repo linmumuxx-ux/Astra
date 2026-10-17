@@ -21,8 +21,8 @@ pytestmark = pytest.mark.skipif(
     reason="设置 NEXUS_LIVE_AGENTSCOPE=1，并先按 services/agent-service/agentscope.md 启动服务",
 )
 
-NEXUS = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:8120").rstrip("/")
-AGENTSCOPE = os.environ.get("NEXUS_AGENTSCOPE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+NEXUS = os.environ.get("NEXUS_API_BASE", "http://127.0.0.1:18120").rstrip("/")
+AGENTSCOPE = os.environ.get("NEXUS_AGENTSCOPE_BASE_URL", "http://127.0.0.1:18000").rstrip("/")
 USER_ID = os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus")
 OWNER = {"X-Owner-Id": "live-6-1"}
 AGENT_HEADERS = {"X-User-ID": USER_ID}
@@ -157,7 +157,14 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
         assert disposable_agent not in remaining
 
         first = _conversation(client, star_employee["id"])
-        second = _conversation(client, star_employee["id"])
+        second_response = client.post(
+            f"{NEXUS}/api/v1/employees/{star_employee['id']}/conversations",
+            headers=OWNER,
+            json={"name": "新对话"},
+        )
+        assert second_response.status_code == 200, second_response.text
+        second = second_response.json()
+        assert second["id"] == first["id"]
         sent_first = _send(client, first["id"], "请只回复两个汉字：收到。不要调用任何工具。")
         assert sent_first["agentscope"]["accepted"] is True
         assert "assistant" not in sent_first
@@ -176,7 +183,7 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
         second_session = sent_second["agentscope"]["session_id"]
         first_session = sent_first["agentscope"]["session_id"]
         assert first_session and second_session
-        assert first_session != second_session
+        assert first_session == second_session
         sessions = client.get(
             f"{AGENTSCOPE}/sessions/",
             headers=AGENT_HEADERS,
@@ -192,7 +199,7 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
             headers=OWNER,
         ).json()["messages"]
         senders = [item["sender"] for item in stored_messages]
-        assert [item for item in senders if item == "user"] == ["user"]
+        assert [item for item in senders if item == "user"] == ["user", "user"]
         assert star_employee["id"] in senders
 
         peer_events: list[dict] = []
@@ -243,7 +250,7 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
             headers=OWNER,
         ).json()["messages"]
         senders_after = [item["sender"] for item in stored_after]
-        assert [item for item in senders_after if item == "user"] == ["user", "user"]
+        assert [item for item in senders_after if item == "user"] == ["user", "user", "user"]
         assert star_employee["id"] in senders_after
         print(
             json.dumps(
@@ -472,7 +479,7 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 headers=owner_a,
                 json={"name": "新对话"},
             ).json()
-            assert first["id"] != second["id"]
+            assert first["id"] == second["id"]
             hidden = client.get(
                 f"{NEXUS}/api/v1/employees/{employee['id']}/conversations",
                 headers=owner_b,
@@ -512,10 +519,14 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
 
             uploaded = client.post(
                 f"{NEXUS}/api/v1/attachments",
+                headers=owner_a,
                 files={"file": ("run.log", b"LOG-TOKEN-88\n", "text/plain")},
             )
             assert uploaded.status_code == 201, uploaded.text
-            downloaded = client.get(f"{NEXUS}/api/v1/attachments/{uploaded.json()['id']}")
+            downloaded = client.get(
+                f"{NEXUS}/api/v1/attachments/{uploaded.json()['id']}",
+                headers=owner_a,
+            )
             assert downloaded.content == b"LOG-TOKEN-88\n"
             with_file = client.post(
                 f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
@@ -536,12 +547,12 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 time.sleep(1)
             assert remote is not None and "LOG-TOKEN-88" in remote.text
             other = client.post(
-                f"{NEXUS}/api/v1/conversations/{second['id']}/messages",
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
                 headers=owner_a,
-                json={"text": "这是另一条对话。", "attachment_ids": []},
+                json={"text": "还是这一条私聊。", "attachment_ids": []},
             )
             assert other.json()["agentscope"]["accepted"] is True, other.text
-            assert other.json()["agentscope"]["session_id"] != first_session
+            assert other.json()["agentscope"]["session_id"] == first_session
             restored = client.get(f"{NEXUS}/api/v1/conversations/{first['id']}", headers=owner_a)
             assert restored.status_code == 200, restored.text
             assert restored.json()["agentscope_session_id"] == first_session
@@ -652,11 +663,13 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             channel_id = channel.json()["id"]
             uploaded = client.post(
                 f"{NEXUS}/api/v1/attachments",
+                headers={"X-Owner-Id": f"channel-{suffix}"},
                 files={"file": ("fail.log", b"FAIL-TOKEN-55\n", "text/plain")},
             )
             assert uploaded.status_code == 201, uploaded.text
             sent = client.post(
                 f"{NEXUS}/api/v1/channels/{channel_id}/messages",
+                headers={"X-Owner-Id": f"channel-{suffix}"},
                 json={
                     "text": (
                         f"@{ops_name} 自动化失败了。"
@@ -801,8 +814,6 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             assert log_seen
             assert "contact_employee" in ops_tool_list, ops_tool_list
             hidden_names = (
-                "TeamCreate",
-                "TeamSay",
                 "TaskCreate",
                 "TaskGet",
                 "TaskList",

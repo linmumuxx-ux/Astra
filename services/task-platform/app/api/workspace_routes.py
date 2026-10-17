@@ -107,6 +107,20 @@ def workspace_ui_bundle(version: str) -> Path:
     return REPO_ROOT / "web" / "nexus" / "public" / "opencode-workspace" / version / "index.html"
 
 
+_present_bundles: set[str] = set()
+
+
+def bundle_installed(version: str) -> bool:
+    """已安装的版本包不变，命中后不再查磁盘。缺失不缓存，装上后下一次就能看见。"""
+
+    if version in _present_bundles:
+        return True
+    if workspace_ui_bundle(version).is_file():
+        _present_bundles.add(version)
+        return True
+    return False
+
+
 def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None]:
     """Select the UI for the version already stored on the session.
 
@@ -119,7 +133,7 @@ def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None
     version = str(raw).strip().removeprefix("v")
     if not OPENCODE_VERSION.fullmatch(version):
         return version or "unknown", None, RETIRED_WORKSPACE_UI
-    if not workspace_ui_bundle(version).is_file():
+    if not bundle_installed(version):
         return version, None, f"{RETIRED_WORKSPACE_UI}（{version}）"
     return version, f"/opencode-workspace/{version}/index.html", None
 
@@ -173,7 +187,9 @@ async def resume_task(task_id: str, session=Depends(get_session)):
     if task.status != TaskStatus.WAITING.value:
         raise HTTPException(409, "只有等待中的任务可以恢复")
     try:
-        return await RuntimeService(session).start(task_id, restart=bool(task.current_session_id))
+        if task.current_session_id:
+            return await RuntimeService(session).continue_task(task_id)
+        return await RuntimeService(session).start(task_id)
     except Exception as exc:
         raise error_response(exc) from exc
 
@@ -463,7 +479,13 @@ async def native_proxy(
             if body and {"directory", "sessionID", "workspace", "location"}.intersection(body):
                 raise PermissionError("不允许覆盖任务绑定")
             if pending:
-                items = await client.request("GET", f"/{pending[0]}", directory=Path(workspace))
+                items = await client.request(
+                    "GET",
+                    f"/{pending[0]}",
+                    directory=Path(workspace),
+                    session_id=session_id,
+                    task_id=task.id,
+                )
                 if not any(item["id"] == pending[1] and item.get("sessionID") in allowed for item in items):
                     raise PermissionError("请求不属于此任务 Session")
             if native_path.endswith(("/prompt_async", "/message", "/command")) and method == "POST":
@@ -488,7 +510,14 @@ async def native_proxy(
                 if key in params and params[key] not in allowed:
                     raise PermissionError("Session 不属于此任务")
             forward_path = "/project/current" if native_path == "/project" else native_path
-            status, content, headers = await client.exchange(method, forward_path, params=params, body=body)
+            status, content, headers = await client.exchange(
+                method,
+                forward_path,
+                params=params,
+                body=body,
+                session_id=session_id,
+                task_id=task.id,
+            )
             upstream = _Upstream(status, content, headers)
             if upstream.is_error:
                 return Response(

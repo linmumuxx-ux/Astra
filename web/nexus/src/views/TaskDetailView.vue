@@ -63,14 +63,14 @@
     </ElDrawer>
     <ElDrawer v-model="showReview" title="任务总结与经验" size="min(720px, 100%)" data-testid="task-review-drawer">
       <ElAlert v-if="reviewError" :title="reviewError" type="error" :closable="false" />
+      <ElText v-if="reviewLoading && !review">正在读取复盘…</ElText>
       <template v-if="review">
         <div class="task-review__status">
           <ElTag data-testid="task-review-status" :type="review.status === 'failed' ? 'danger' : 'info'">{{ reviewStatusLabel }}</ElTag>
           <ElText type="info">已尝试 {{ review.attempts }} 次</ElText>
           <ElButton :loading="reviewLoading" @click="loadReview(String(route.params.id))">刷新复盘</ElButton>
-          <ElButton v-if="review.can_retry && review.enabled" type="primary" :loading="reviewRetrying" data-testid="task-review-retry" @click="retryReview">重试复盘</ElButton>
+          <ElButton v-if="review.can_retry" type="primary" :loading="reviewRetrying" data-testid="task-review-retry" @click="retryReview">重试复盘</ElButton>
         </div>
-        <ElAlert v-if="!review.enabled" title="后台复盘未启用，请启用平台助手后刷新。" type="info" :closable="false" />
         <ElAlert v-if="review.error" :title="review.error" type="error" :closable="false" />
         <ElAlert v-if="review.summary && !review.summary_current" title="以下是历史轮次总结，当前轮次尚未完成复盘。" type="warning" :closable="false" />
         <div v-if="review.summary" class="task-review__summary" data-testid="task-review-summary" v-html="safeSummary" />
@@ -333,11 +333,11 @@ async function loadTask(id: string) {
     const [nextTask, nextBinding] = await Promise.all([api.task(id), api.taskWorkspace(id)])
     if (id !== String(route.params.id)) return
     task.value = nextTask; binding.value = nextBinding
-    void loadReview(id)
     if (!nextBinding.sessions.some(item => item.id === selectedSession.value)) selectedSession.value = nextTask.current_session_id || ''
     error.value = ''
     if (nextTask.workspace) await loadRepo(id)
     else repo.value = null
+    if (showReview.value) void loadReview(id)
   } catch (reason) { if (id === String(route.params.id)) error.value = reason instanceof Error ? reason.message : '任务加载失败' }
 }
 async function action(name: string) {
@@ -348,6 +348,7 @@ async function action(name: string) {
 }
 async function reconnect() { await action('reconnect'); frameKey.value++ }
 watch(() => route.params.id, () => { selectedSession.value = ''; review.value = null; showReview.value = false; reviewError.value = ''; closeEvents(); showEvents.value = false; void load() }, { immediate: true })
+watch(showReview, (open) => { if (open) void loadReview(String(route.params.id)) })
 onMounted(() => {
   timer = setInterval(() => { now.value = Date.now() }, 1000)
   void listEmployees().then(items => { owners.value = items }).catch(() => { owners.value = [] })

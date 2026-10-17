@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, or_, select, update
 
 from app.assistant.client import AssistantOpenCodeClient
-from app.config.settings import get_settings
 from app.database import SessionLocal
 from app.executors.errors import OpenCodeSessionNotFound
 from app.library_schemas import ExperienceEvidenceWrite, LibrarySubmitExperienceInput
@@ -74,7 +73,7 @@ async def review_detail(session, task: Task) -> dict:
         "error": "复盘超时，尚未收到结构化提交" if expired else job.error if job else None,
         "attempts": job.attempts if job else 0,
         "retry_at": job.retry_at.isoformat() if job else None,
-        "enabled": get_settings().assistant_enabled,
+        "enabled": True,
         "can_retry": ready and (not job or job.status == "failed" or expired),
         "summary": summary.content_md if summary else None,
         "summary_current": summary_is_complete(summary, task),
@@ -331,8 +330,6 @@ async def reconcile_task_reviews(limit: int = 100) -> list[str]:
     A crash before/after sending expires the lease and safely retries the same
     idempotent review. Errors never flow back to execution state.
     """
-    if not get_settings().assistant_enabled:
-        return []
     now = datetime.now(UTC)
     async with SessionLocal() as session:
         ids = (

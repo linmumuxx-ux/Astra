@@ -13,36 +13,36 @@ from app.runtime.task_wakeup import HttpWakeSender, deliver_pending
 from app.sources.nr_test_system import NrTestSystemSource
 
 settings = get_settings()
-celery = Celery("astra", broker=settings.redis_url, backend=settings.redis_url)
+celery = Celery("nexus", broker=settings.redis_url, backend=settings.redis_url)
 celery.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
     timezone="Asia/Shanghai",
-    task_default_queue="control",
+    task_default_queue="nexus-control",
     task_routes={
-        "astra.scout": {"queue": "control"},
-        "astra.dispatch": {"queue": "control"},
-        "astra.heartbeat-check": {"queue": "control"},
-        "astra.employee-heartbeat": {"queue": "control"},
-        "astra.task-review": {"queue": "control"},
-        "astra.task-wake": {"queue": "control"},
+        "nexus.scout": {"queue": "nexus-control"},
+        "nexus.dispatch": {"queue": "nexus-control"},
+        "nexus.heartbeat-check": {"queue": "nexus-control"},
+        "nexus.employee-heartbeat": {"queue": "nexus-control"},
+        "nexus.task-review": {"queue": "nexus-control"},
+        "nexus.task-wake": {"queue": "nexus-control"},
     },
     beat_schedule={
-        "astra-task-review": {"task": "astra.task-review", "schedule": 30.0},
-        "astra-task-wake": {"task": "astra.task-wake", "schedule": float(settings.outbox_interval)},
+        "nexus-task-review": {"task": "nexus.task-review", "schedule": 30.0},
+        "nexus-task-wake": {"task": "nexus.task-wake", "schedule": float(settings.outbox_interval)},
         **(
-            {"astra-scout": {"task": "astra.scout", "schedule": settings.scout_interval}}
+            {"nexus-scout": {"task": "nexus.scout", "schedule": settings.scout_interval}}
             if NrTestSystemSource.enabled(settings)
             else {}
         ),
-        "astra-dispatch": {"task": "astra.dispatch", "schedule": settings.dispatcher_interval},
-        "astra-heartbeat-check": {
-            "task": "astra.heartbeat-check",
+        "nexus-dispatch": {"task": "nexus.dispatch", "schedule": settings.dispatcher_interval},
+        "nexus-heartbeat-check": {
+            "task": "nexus.heartbeat-check",
             "schedule": settings.heartbeat_interval,
         },
-        "astra-employee-heartbeat": {
-            "task": "astra.employee-heartbeat",
+        "nexus-employee-heartbeat": {
+            "task": "nexus.employee-heartbeat",
             "schedule": settings.heartbeat_interval,
         },
     },
@@ -66,7 +66,7 @@ def run_async(coro):
     return _loop.run_until_complete(coro)
 
 
-@celery.task(name="astra.task-wake")
+@celery.task(name="nexus.task-wake")
 def task_wake() -> int:
     async def execute():
         async with worker_session() as session:
@@ -75,12 +75,12 @@ def task_wake() -> int:
     return run_async(execute())
 
 
-@celery.task(name="astra.task-review")
+@celery.task(name="nexus.task-review")
 def task_review() -> list[str]:
     return run_async(reconcile_task_reviews())
 
 
-@celery.task(name="astra.scout")
+@celery.task(name="nexus.scout")
 def scout() -> list[str]:
     if not NrTestSystemSource.enabled(settings):
         return []
@@ -93,7 +93,7 @@ def scout() -> list[str]:
     return run_async(execute())
 
 
-@celery.task(name="astra.dispatch")
+@celery.task(name="nexus.dispatch")
 def dispatch() -> str | None:
     async def execute():
         await init_database()
@@ -111,7 +111,7 @@ def dispatch() -> str | None:
     return run_async(execute())
 
 
-@celery.task(name="astra.heartbeat-check")
+@celery.task(name="nexus.heartbeat-check")
 def heartbeat_check() -> list[str]:
     async def execute():
         async with worker_session() as session:
@@ -120,7 +120,7 @@ def heartbeat_check() -> list[str]:
     return run_async(execute())
 
 
-@celery.task(name="astra.employee-heartbeat")
+@celery.task(name="nexus.employee-heartbeat")
 def employee_heartbeat() -> list[str]:
     async def execute():
         async with worker_session() as session:

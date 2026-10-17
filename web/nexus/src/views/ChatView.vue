@@ -25,20 +25,21 @@
             <h2 style="margin: 0 0 4px">{{ current.name }} · {{ current.domain }}</h2>
             <p class="muted" style="margin: 0">{{ current.description }}</p>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center">
-            <el-select :model-value="conversationId" style="width: 180px" @change="selectConversation">
-              <el-option v-for="item in conversations" :key="item.id" :label="item.name" :value="item.id" />
-            </el-select>
-            <el-button size="small" @click="startConversation">＋ 新对话</el-button>
-          </div>
+          <span class="muted">同一人与该员工只有一条私聊</span>
         </div>
         <div v-else class="chat-head"><h2>尚未创建员工</h2></div>
         <div class="chat-messages" ref="messageBox">
           <div v-if="!messages.length && !notice" class="empty">{{ current ? `与 ${current.name} 开始交流` : "还没有员工可以交流" }}</div>
           <div v-for="message in messages" :key="message.id" class="msg" :class="{ user: message.sender === 'user' }">
             <div>
-              <div class="muted">{{ message.sender === "user" ? "你" : speakerName(message.sender) }}</div>
-              <div v-if="message.text" class="bubble">{{ message.text }}</div>
+              <div class="muted">{{ message.sender === "user" ? (message.speaker || "你") : speakerName(message.sender) }}</div>
+              <div v-if="message.text" class="bubble markdown" v-html="renderMarkdown(message.text)"></div>
+              <div v-for="tool in message.tools || []" :key="tool.id" class="tool-card">
+                <b>{{ tool.name }}</b>
+                <pre v-if="tool.input">{{ tool.input }}</pre>
+                <pre v-if="tool.output">{{ tool.output }}</pre>
+                <small v-if="tool.state === 'error'" class="muted">工具失败</small>
+              </div>
               <div class="message-attachments">
                 <a v-for="file in message.attachments" :key="file.id" class="sent-attachment" :class="{ image: isImage(file.type) }" :href="attachmentUrl(file.id)" :download="file.name" target="_blank">
                   <img v-if="isImage(file.type)" :src="attachmentUrl(file.id)" :alt="file.name" />
@@ -47,7 +48,17 @@
               </div>
             </div>
           </div>
-          <div v-if="liveText" class="msg"><div><div class="muted">{{ current?.name }}</div><div class="bubble">{{ liveText }}</div></div></div>
+          <div v-if="liveText || liveTools.length" class="msg">
+            <div>
+              <div class="muted">{{ current?.name }}</div>
+              <div v-if="liveText" class="bubble markdown" v-html="renderMarkdown(liveText)"></div>
+              <div v-for="tool in liveTools" :key="tool.id" class="tool-card">
+                <b>{{ tool.name || "工具" }}</b>
+                <pre v-if="tool.input">{{ tool.input }}</pre>
+                <pre v-if="tool.output">{{ tool.output }}</pre>
+              </div>
+            </div>
+          </div>
           <div v-if="notice" class="msg system"><div class="bubble">{{ notice }}</div></div>
         </div>
         <div class="chat-compose">
@@ -131,7 +142,6 @@ import {
   getKnowledge,
   getSkills,
   getTools,
-  listConversations,
   listEmployees,
   readEventStream,
   sendConversation,
@@ -151,6 +161,7 @@ const draft = ref("");
 const draftFiles = ref<Attachment[]>([]);
 const notice = ref("");
 const liveText = ref("");
+const liveTools = ref<{ id: string; name: string; input: string; output: string }[]>([]);
 const dropping = ref(false);
 const seenEventIds = new Map<string, Set<string>>();
 let followToken = 0;
@@ -167,6 +178,26 @@ const activeConversation = computed(() => conversations.value.find((item) => ite
 const canSend = computed(() => Boolean(current.value?.enabled && conversationId.value));
 const latestReply = computed(() => [...messages.value].reverse().find((item) => item.sender !== "user")?.text ?? "");
 
+function renderMarkdown(value: string) {
+  const escaped = value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
+}
+function ensureTool(id: string, name = "") {
+  let card = liveTools.value.find((item) => item.id === id);
+  if (!card) {
+    card = { id, name, input: "", output: "" };
+    liveTools.value = [...liveTools.value, card];
+  } else if (name && !card.name) {
+    card.name = name;
+  }
+  return card;
+}
 function speakerName(sender: string) {
   return employees.value.find((item) => item.id === sender)?.name ?? sender;
 }
@@ -201,29 +232,10 @@ async function selectEmployee(id: string) {
   currentId.value = id;
   notice.value = "";
   liveText.value = "";
-  const items = await listConversations(id);
-  conversations.value = items;
-  if (!items.length && employees.value.find((item) => item.id === id)) {
-    const created = await createConversation(id);
-    conversations.value = [created];
-  }
-  conversationId.value = conversations.value.at(-1)?.id ?? null;
-}
-
-async function selectConversation(id: string) {
-  conversationId.value = id;
-  notice.value = "";
-  liveText.value = "";
-}
-
-async function startConversation() {
-  if (!currentId.value) return;
-  const created = await createConversation(currentId.value);
-  conversations.value = [...conversations.value, created];
+  liveTools.value = [];
+  const created = await createConversation(id);
+  conversations.value = [created];
   conversationId.value = created.id;
-  messages.value = [];
-  notice.value = "";
-  liveText.value = "";
 }
 
 async function addFileList(files: File[]) {
@@ -284,45 +296,77 @@ function delay(ms: number) {
 
 async function reloadConversation(id: string) {
   const payload = await getConversation(id);
-  if (conversationId.value !== id) return;
+  if (conversationId.value !== id) return null;
   messages.value = payload.messages;
   if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+  return payload;
 }
 
-async function followStream(id: string) {
+function applyStreamEvent(id: string, event: Record<string, unknown>, seen: Set<string>, cursor: { value: string }) {
+  if (typeof event.id === "string" && /^\d+-\d+$/.test(event.id)) cursor.value = event.id;
+  if (typeof event.id === "string") {
+    if (seen.has(event.id)) return false;
+    seen.add(event.id);
+  }
+  if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
+    liveText.value += event.delta;
+  }
+  if (event.type === "TOOL_CALL_START" && typeof event.tool_call_id === "string") {
+    ensureTool(event.tool_call_id, typeof event.tool_call_name === "string" ? event.tool_call_name : "");
+  }
+  if (event.type === "TOOL_CALL_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
+    ensureTool(event.tool_call_id).input += event.delta;
+  }
+  if (event.type === "TOOL_RESULT_TEXT_DELTA" && typeof event.tool_call_id === "string" && typeof event.delta === "string") {
+    ensureTool(event.tool_call_id).output += event.delta;
+  }
+  if (event.type === "REPLY_END" || event.type === "NEXUS_RUN_FINISHED") {
+    const reason = String(event.finished_reason ?? "");
+    if (reason === "error" || reason === "interrupted") {
+      notice.value = reason === "interrupted" ? "回复已中断" : "回复失败";
+    }
+    liveText.value = "";
+    liveTools.value = [];
+    void reloadConversation(id);
+    return true;
+  }
+  if (event.type === "NEXUS_UPSTREAM_ERROR") {
+    notice.value = String(event.detail ?? "事件流中断");
+  }
+  return false;
+}
+
+async function followStream(id: string, untilFinished = false) {
   stopStream();
   const token = ++followToken;
-  streamAbort = new AbortController();
   liveText.value = "";
-  const seen = seenEventIds.get(id) ?? new Set<string>();
+  liveTools.value = [];
+  const seen = new Set<string>();
   seenEventIds.set(id, seen);
-  try {
-    await readEventStream(`/api/v1/conversations/${id}/stream`, streamAbort.signal, (event) => {
-      if (typeof event.id === "string") {
-        if (seen.has(event.id)) return;
-        seen.add(event.id);
-      }
-      if (event.type === "TEXT_BLOCK_DELTA" && typeof event.delta === "string") {
-        liveText.value += event.delta;
-      }
-      if (event.type === "REPLY_END" || event.type === "NEXUS_RUN_FINISHED") {
-        liveText.value = "";
-        void reloadConversation(id);
-      }
-      if (event.type === "NEXUS_UPSTREAM_ERROR") {
-        notice.value = String(event.detail ?? "事件流中断");
-      }
-    });
-  } catch (error) {
-    if (!streamAbort?.signal.aborted) {
-      notice.value = error instanceof Error ? error.message : "事件流中断";
-    }
-  }
+  const payload = await reloadConversation(id);
+  if (!payload || token !== followToken || conversationId.value !== id) return;
+  if (!payload.agentscope_session_id) return;
+  const cursor = { value: payload.event_cursor || "" };
   for (let attempt = 0; attempt < 8; attempt += 1) {
     if (token !== followToken || conversationId.value !== id) return;
-    await delay(2000);
-    if (token !== followToken || conversationId.value !== id) return;
-    await reloadConversation(id);
+    streamAbort = new AbortController();
+    const signal = streamAbort.signal;
+    const query = cursor.value ? `?after=${encodeURIComponent(cursor.value)}` : "";
+    let sawEvent = false;
+    let finished = false;
+    try {
+      await readEventStream(`/api/v1/conversations/${id}/stream${query}`, signal, (event) => {
+        sawEvent = true;
+        if (applyStreamEvent(id, event, seen, cursor)) finished = true;
+      });
+      if (finished || signal.aborted || token !== followToken) return;
+      if (!untilFinished && !sawEvent) return;
+      await delay(400);
+    } catch (error) {
+      if (signal.aborted || token !== followToken) return;
+      notice.value = error instanceof Error ? error.message : "事件流中断";
+      await delay(1000);
+    }
   }
 }
 
@@ -330,37 +374,38 @@ async function send() {
   if (!conversationId.value || !canSend.value) return;
   takeLiveReply();
   const text = draft.value.trim();
-  if (!text && !draftFiles.value.length) return;
+  const files = draftFiles.value.map((item) => item.id);
+  if (!text && !files.length) return;
   try {
-    const result = await sendConversation(conversationId.value, text, draftFiles.value.map((item) => item.id));
-    messages.value = [...messages.value, result.message];
+    const result = await sendConversation(conversationId.value, text, files);
+    if (!result.agentscope.accepted) {
+      notice.value = result.agentscope.detail || "没有生成回复";
+      return;
+    }
     draft.value = "";
     draftFiles.value = [];
+    messages.value = [...messages.value, result.message];
     const conversation = conversations.value.find((item) => item.id === conversationId.value);
     if (conversation && conversation.name === "新对话") {
       conversation.name = result.message.text.slice(0, 20) || result.message.attachments[0]?.name || "新对话";
     }
-    if (!result.agentscope.accepted) {
-      notice.value = result.agentscope.detail || "没有生成回复";
-      liveText.value = "";
-      return;
-    }
     notice.value = "";
-    await followStream(conversationId.value);
+    await followStream(conversationId.value, true);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "发送失败");
   }
 }
 
-watch(conversationId, async (id) => {
-  stopStream();
+watch(conversationId, (id) => {
   if (!id) {
+    stopStream();
+    followToken += 1;
     messages.value = [];
+    liveText.value = "";
+    liveTools.value = [];
     return;
   }
-  const payload = await getConversation(id);
-  messages.value = payload.messages;
-  if (payload.history_error) notice.value = `没有读到 Session 里的回复。${payload.history_error}`;
+  void followStream(id);
 });
 
 async function refreshTasks() {
@@ -401,4 +446,7 @@ onBeforeUnmount(() => {
 .compose-box.dropping { outline: 2px dashed #187956; }
 .sent-attachment.image, .draft-file { display: flex; gap: 8px; align-items: center; }
 .sent-attachment img, .draft-file img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
+.tool-card { margin-top: 8px; padding: 8px; border: 1px solid #d7e3dc; border-radius: 8px; background: #f7fbf8; }
+.tool-card pre { white-space: pre-wrap; margin: 4px 0 0; font-size: 12px; }
+.markdown :deep(code) { font-family: ui-monospace, monospace; }
 </style>

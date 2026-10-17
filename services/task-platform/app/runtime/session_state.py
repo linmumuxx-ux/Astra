@@ -22,6 +22,7 @@ class SessionState:
     finish_reason: str | None = None
     last_message_id: str | None = None
     finished_at: datetime | None = None
+    hitl: str | None = None
 
 
 def _info(message: dict) -> dict:
@@ -133,7 +134,9 @@ def derive_session_state(
         )
     if has_pending_question or has_pending_permission:
         return SessionState(
-            status=RuntimeSessionStatus.WAITING.value, last_message_id=last_message_id
+            status=RuntimeSessionStatus.WAITING.value,
+            last_message_id=last_message_id,
+            hitl="question" if has_pending_question else "permission",
         )
     if server_status in {"busy", "retry"}:
         return SessionState(

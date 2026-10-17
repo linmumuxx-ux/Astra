@@ -32,7 +32,7 @@ class TaskService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, payload: TaskCreate) -> Task:
+    async def create(self, payload: TaskCreate, *, commit: bool = True) -> Task:
         if payload.idempotency_key:
             existing = await self.session.scalar(
                 select(Task).where(Task.idempotency_key == payload.idempotency_key)
@@ -65,6 +65,7 @@ class TaskService:
             source_conversation_id=payload.source_conversation_id,
             source_channel_id=payload.source_channel_id,
             idempotency_key=payload.idempotency_key,
+            repository_id=payload.repository_id,
             status=TaskStatus.PENDING,
             current_progress="等待领取",
             last_activity_at=datetime.now(UTC),
@@ -83,7 +84,10 @@ class TaskService:
         )
         await self._record(task, "TASK_PENDING", "work", "任务已进入待领取队列")
         try:
-            await self.session.commit()
+            if commit:
+                await self.session.commit()
+            else:
+                await self.session.flush()
         except IntegrityError:
             await self.session.rollback()
             if payload.idempotency_key:
@@ -93,6 +97,8 @@ class TaskService:
                 if existing:
                     return existing
             raise
+        if not commit:
+            return task
         await self.session.refresh(task)
         await event_bus.publish({"type": "TASK_CREATED", "task_id": task.id})
         return task

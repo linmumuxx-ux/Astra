@@ -41,17 +41,25 @@
 
 ## 4. Gateway、MCP 与部署
 
-实现以 design.md「阶段 4」为准。已拍板：通道选项 A，密码留在环境行上。远程执行只留 `worker`。OpenCode 继续用环境上的 `opencode_server_port`（默认 4096）。不新增迁移。
+实现以 design.md「阶段 4」为准。已拍板：通道选项 A，密码留在环境行上。远程执行只留 `worker`。OpenCode 继续用环境上的 `opencode_server_port`（默认 14096）。不新增迁移。
 
 - [x] 4.1 删除反向隧道、`SSHTunnel` / `SSHReverseTunnel` 和 `ssh` 执行分支。`main.py` 的关闭钩子随隧道删除。测试：这些符号无调用方；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 仍不使用 SSH
 - [x] 4.2 安装写入内网 Gateway 与图书馆 MCP，并拒绝回环地址。探测、重载、生效配置核对和 `worker` 标记在 deploy 自己的操作内完成，不嵌套 `mark_worker_channel`。Agent 单元写入 `ASTRA_REMOTE_GATEWAY_URL`、`ASTRA_MCP_RESOURCE_URL` 和与环境端口一致的 `ASTRA_WORKER_OPENCODE_URL`。测试：回环地址被拒绝；写出的地址是配置中的内网地址；探测失败不写成 `worker`；`LINUX_REMOTE` 模型映射仍是 `gateway_model`
 - [x] 4.3 SSH 只用于离线时的安装和故障维护。测试：`connect`、健康检查、文件、Git、上传、环境测试不调用 `open_session`；Worker 调用失败不会落到 SSH
 - [x] 4.4 Worker 在线时，显式重启在 Agent 本地执行，restart 不打开 SSH。deploy 在员工无占用时重载 OpenCode。测试：在线 restart 不调用 `open_session`；WebSocket 断开不增加重启计数；员工被占用时拒绝维护
-- [x] 4.5 LLM Wiki 仍使用现有独立连接；OpenCode 继续听 `127.0.0.1` 和环境上的 `opencode_server_port`（默认 4096）。`install_nexus.sh`、`.env.example`、部署指南和 `REMOTE_EMPLOYEES.md` 不再把 4296 或反向隧道当成远程 OpenCode 的默认。测试：LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`
+- [x] 4.5 LLM Wiki 仍使用现有独立连接；OpenCode 继续听 `127.0.0.1` 和环境上的 `opencode_server_port`（默认 14096）。`install_nexus.sh`、`.env.example`、部署指南和 `REMOTE_EMPLOYEES.md` 不再把 4296 或反向隧道当成远程 OpenCode 的默认。测试：LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`
 - [x] 4.6 `ssh_password` 继续留在环境行上，安装成功后不清空。空白更新保留旧密码，部署前仍检查已存密码，种子仍可写入。测试：部署成功后该列仍是原值
 
 ## 5. 回归与清理
 
-- [ ] 5.1 确认阶段 4 已删除的反向隧道和 ssh 执行分支没有残留调用方。不改 CLI fallback 模块
-- [ ] 5.2 回归进程重启、网络超时和 Task/Session 一致性。epoch 乱序、双 owner、发布后崩溃、消费者崩溃和 ACK 丢失放在阶段 1/2
-- [ ] 5.3 确认 CLI fallback、AgentScope 和状态机语义未被改写
+- [x] 5.1 确认阶段 4 已删除的反向隧道和 ssh 执行分支没有残留调用方。不改 CLI fallback 模块
+- [x] 5.2 回归进程重启、网络超时和 Task/Session 一致性。epoch 乱序、双 owner、发布后崩溃、消费者崩溃和 ACK 丢失放在阶段 1/2
+- [x] 5.3 确认 CLI fallback、AgentScope 和状态机语义未被改写
+
+## 仍未做
+
+1.1–5.3 都已落地。下面这些没有做：
+
+- 规格 `worker-channel` 仍要求 OpenCode 列默认 4096。代码、迁移和 4.5 的默认已是 14096，不改回 4096。
+- 短期凭据、请求头白名单、协议协商。
+- Workspace 代理已把绑定的 `session_id` 写入 Worker 指令。浏览器 URL 不变。

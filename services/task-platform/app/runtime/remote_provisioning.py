@@ -27,14 +27,28 @@ from app.gateway.runtime import RedisRuntimeStore
 from app.gateway.schemas import GatewayKeyCreate
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
-from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment
+from app.models import CodeRepository, DigitalEmployee, Event, GitCredential, OpenCodeExecutionEnvironment
+from app.runtime.capability import (
+    binding_entries,
+    binding_names,
+    binding_revision,
+    discover_names,
+    loads_jsonc,
+    observe_bindings,
+    stored_capability,
+    write_capability,
+)
 from app.runtime.direct_urls import require_direct_url
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
+from app.runtime.repository import cipher, collect_skill_files
 
 PROVIDER_ID = "astra-gateway"
-AGENT_VENV = "/opt/astra/worker/venv"
+E2E_MODEL = "opencode/deepseek-v4.1-flash-free"
+AGENT_VENV = "/opt/nexus/worker/venv"
+WORKER_INSTALL_DIR = "/opt/nexus/worker"
+WORKER_SECRET_DIR = "/etc/nexus"
 AGENT_PYTHON = f"{AGENT_VENV}/bin/python"
 
 
@@ -172,7 +186,7 @@ def agent_wheel() -> tuple[str, bytes]:
         "Metadata-Version: 2.1\n"
         "Name: astra-worker-agent\n"
         f"Version: {version}\n"
-        "Summary: Astra Worker Agent\n"
+        "Summary: Nexus Worker Agent\n"
         "Requires-Python: >=3.11\n"
         "Requires-Dist: httpx>=0.27,<1\n"
         "Requires-Dist: websockets>=12\n"
@@ -194,20 +208,38 @@ def agent_wheel() -> tuple[str, bytes]:
     return f"{dist}-py3-none-any.whl", buffer.getvalue()
 
 
-def managed_config(*, config_path, model, models, gateway_url, gateway_key, mcp_url, mcp_key):
+def managed_config(
+    *,
+    config_path,
+    model,
+    models,
+    gateway_url,
+    gateway_key,
+    mcp_url,
+    mcp_key,
+    e2e=False,
+    skills=None,
+    mcp_refs=None,
+):
     mcp = {"type": "remote", "url": mcp_url, "enabled": True, "oauth": False}
     if mcp_key:
         mcp["headers"] = {"Authorization": f"Bearer {mcp_key}"}
-    return {
-        "config_path": config_path,
-        "model": f"{PROVIDER_ID}/{model}",
-        "provider": {
+    provider = None
+    if not e2e:
+        provider = {
             "npm": "@ai-sdk/openai-compatible",
-            "name": "Astra API 中转",
+            "name": "Nexus API 中转",
             "options": {"baseURL": gateway_url, "apiKey": gateway_key},
             "models": {name: {"name": name} for name in models},
-        },
+        }
+    return {
+        "config_path": config_path,
+        "model": E2E_MODEL if e2e else f"{PROVIDER_ID}/{model}",
+        "provider": provider,
         "mcp": mcp,
+        "mcp_refs": list(mcp_refs or []),
+        "skills": list(skills or []),
+        "e2e": e2e,
     }
 
 
@@ -286,8 +318,9 @@ class RemoteProvisioner:
         content = await self.ssh.read_file(config_path)
         raw = None
         if content:
+            text = content.decode() if isinstance(content, bytes) else content
             try:
-                config = json.loads(content)
+                config = loads_jsonc(text)
                 raw = config.get("provider", {}).get(PROVIDER_ID, {}).get("options", {}).get("apiKey")
             except (ValueError, AttributeError):
                 raise RuntimeError("已有全局配置不是有效 JSON，请人工合并后重试") from None
@@ -323,38 +356,41 @@ class RemoteProvisioner:
 
     async def _install(self, emit):
         await self.step(emit, "部署配置", "running")
-        async with SessionLocal() as db:
-            models = list(
-                await db.scalars(
-                    select(GatewayRoute.model)
-                    .where(GatewayRoute.enabled.is_(True))
-                    .order_by(GatewayRoute.model)
+        e2e = (self.environment.model_name or "").strip() == E2E_MODEL
+        if e2e:
+            models: list[str] = []
+            selected = E2E_MODEL
+        else:
+            async with SessionLocal() as db:
+                models = list(
+                    await db.scalars(
+                        select(GatewayRoute.model)
+                        .where(GatewayRoute.enabled.is_(True))
+                        .order_by(GatewayRoute.model)
+                    )
                 )
-            )
-        if not self.settings.gateway_enabled or not models:
-            raise RuntimeError("请先在 API 中转配置至少一个启用的模型路由")
-        selected = route_model_id(self.environment.model_name) if self.environment.model_name else models[0]
-        if selected not in models:
-            raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
-        paths = (
-            await self._command('printf "%s\\n%s\\n" "$HOME" "${XDG_CONFIG_HOME:-$HOME/.config}"')
-        ).splitlines()
-        if len(paths) != 2 or any(not p.startswith("/") for p in paths):
-            raise RuntimeError("无法确定远程用户全局配置目录")
-        home, config_home = paths
-        config_path = f"{config_home}/opencode/opencode.json"
+            if not self.settings.gateway_enabled or not models:
+                raise RuntimeError("请先在 API 中转配置至少一个启用的模型路由")
+            selected = models[0]
+            if self.environment.model_name:
+                selected = route_model_id(self.environment.model_name)
+            if selected not in models:
+                raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
+        home = (await self._command('printf "%s" "$HOME"')).splitlines()[0]
+        if not home.startswith("/"):
+            raise RuntimeError("无法确定远程用户目录")
+        config_path = f"/etc/nexus/opencode/{self.environment.id}/opencode.jsonc"
         self.config_path = config_path
-        if await self.ssh.read_file(config_path + "c") is not None:
-            raise RuntimeError("已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置")
-        raw = await self._gateway_key(config_path, models)
+        raw = "" if e2e else await self._gateway_key(config_path, models)
         gateway_url, mcp_url = await self._channel_endpoints()
-        self.target_model = f"{PROVIDER_ID}/{selected}"
+        self.target_model = E2E_MODEL if e2e else f"{PROVIDER_ID}/{selected}"
         uid = await self._command("id -u")
         if not self.target_binary.startswith("/"):
             self.target_binary = "/usr/local/bin/opencode" if uid == "0" else f"{home}/.local/bin/opencode"
-        cache = f"{home}/.cache/astra-provision"
+        cache = f"{home}/.cache/nexus-provision"
         await self._command(f"install -d -m 700 {shlex.quote(cache)}")
         stem = f"{cache}/{self.operation['id']}"
+        skill_source = Path(self.settings.workspace_root) / "worker-skills"
         payload = managed_config(
             config_path=config_path,
             model=selected,
@@ -363,8 +399,32 @@ class RemoteProvisioner:
             gateway_key=raw,
             mcp_url=mcp_url,
             mcp_key=self.settings.mcp_api_key,
+            e2e=e2e,
+            skills=collect_skill_files(list(self.environment.skill_refs or []), skill_source),
+            mcp_refs=list(self.environment.mcp_refs or []),
         )
+        token_file = ""
+        if self.environment.repository_id:
+            async with SessionLocal() as db:
+                repository = await db.get(CodeRepository, self.environment.repository_id)
+                credential = await db.scalar(
+                    select(GitCredential).where(GitCredential.repository_id == self.environment.repository_id)
+                )
+            if repository is None or credential is None:
+                raise RuntimeError("绑定的仓库没有凭据")
+            token = cipher().decrypt(credential.token_ciphertext)
+            self.secrets.append(token)
+            token_file = stem + ".token"
+            await self.ssh.write_file(token_file, token.encode(), mode=0o600)
+            payload["repository"] = {
+                "url": repository.url,
+                "branch": self.environment.branch or repository.branch,
+            }
+        jsonc_file = stem + ".jsonc.py"
         await self.ssh.write_file(stem + ".json", json.dumps(payload, ensure_ascii=False).encode())
+        await self.ssh.write_file(
+            jsonc_file, Path(__file__).resolve().parents[1].joinpath("worker_agent", "jsonc.py").read_bytes()
+        )
         await self.ssh.write_file(stem + ".sh", Path(__file__).with_name("remote_install.sh").read_bytes())
         await self.step(emit, "部署配置", "passed", "已准备员工专属中转、数字图书馆与安全连接")
         args = [
@@ -376,6 +436,8 @@ class RemoteProvisioner:
             stem + ".json",
             self.operation["id"],
             self._agent_interpreter(),
+            jsonc_file,
+            token_file,
         ]
         command = (
             f"timeout -k 10 {self.settings.remote_deploy_timeout_seconds} bash {shlex.quote(stem + '.sh')} "
@@ -400,7 +462,10 @@ class RemoteProvisioner:
             await channel.close()
             stderr_task.cancel()
             await asyncio.gather(stderr_task, return_exceptions=True)
-            await self._command(f"rm -f {shlex.quote(stem + '.sh')} {shlex.quote(stem + '.json')}")
+            leftovers = [stem + ".sh", stem + ".json", jsonc_file]
+            if token_file:
+                leftovers.append(token_file)
+            await self._command("rm -f " + " ".join(shlex.quote(path) for path in leftovers))
 
     def _direct_endpoints(self) -> tuple[str, str]:
         return (
@@ -453,20 +518,24 @@ class RemoteProvisioner:
         gateway_url, mcp_url = self._direct_endpoints()
         agent_gateway = require_direct_url(self.settings.worker_agent_gateway_url, "Worker Gateway")
         port = int(self.environment.opencode_server_port)
-        opencode_unit = f"astra-opencode-{self.environment.id}.service"
-        worker_unit = f"astra-worker-{self.environment.id}.service"
-        token_path = f"/etc/astra/worker-{self.environment.id}.env"
+        opencode_unit = f"nexus-opencode-{self.environment.id}.service"
+        worker_unit = f"nexus-worker-{self.environment.id}.service"
+        token_path = f"{WORKER_SECRET_DIR}/worker-{self.environment.id}.env"
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
+        opencode_config = self.config_path or f"/etc/nexus/opencode/{self.environment.id}/opencode.jsonc"
+        opencode_dir = str(Path(opencode_config).parent)
         opencode_unit_text = (
-            "[Unit]\nDescription=Astra OpenCode\nAfter=network-online.target\n"
+            "[Unit]\nDescription=Nexus OpenCode\nAfter=network-online.target\n"
             "[Service]\n"
+            f"Environment=OPENCODE_CONFIG={opencode_config}\n"
+            f"Environment=OPENCODE_CONFIG_DIR={opencode_dir}\n"
             f"ExecStart={self.target_binary} serve --hostname 127.0.0.1 --port {port}\n"
             "Restart=on-failure\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
         agent_unit_text = (
-            "[Unit]\nDescription=Astra Worker Agent\nAfter=network-online.target\n"
+            "[Unit]\nDescription=Nexus Worker Agent\nAfter=network-online.target\n"
             "[Service]\n"
             f"EnvironmentFile={token_path}\n"
             f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n"
@@ -474,9 +543,9 @@ class RemoteProvisioner:
             "[Install]\nWantedBy=multi-user.target\n"
         )
         wheel_name, wheel_bytes = agent_wheel()
-        wheel_path = f"/opt/astra/worker/{wheel_name}"
-        await self._command("install -d -m 755 /opt/astra/worker")
-        await self._command("install -d -m 700 /etc/astra /etc/systemd/system")
+        wheel_path = f"{WORKER_INSTALL_DIR}/{wheel_name}"
+        await self._command(f"install -d -m 755 {WORKER_INSTALL_DIR}")
+        await self._command(f"install -d -m 700 {WORKER_SECRET_DIR} /etc/systemd/system")
         await self.ssh.write_file(wheel_path, wheel_bytes, mode=0o644)
         interpreter = shlex.quote(self._agent_interpreter())
         index = (self.settings.remote_pip_index_url or "").strip()
@@ -486,7 +555,7 @@ class RemoteProvisioner:
             f"{pip_index}{shlex.quote(wheel_path)}"
         )
         await self._command(
-            f"{interpreter} -m venv /opt/astra/worker/venv && {pip}",
+            f"{interpreter} -m venv {AGENT_VENV} && {pip}",
             timeout=300,
         )
         from app.worker_gateway.service import get_gateway
@@ -504,6 +573,8 @@ class RemoteProvisioner:
                 f"ASTRA_MCP_RESOURCE_URL={mcp_url}",
                 f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
                 f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
+                f"OPENCODE_CONFIG={opencode_config}",
+                f"OPENCODE_CONFIG_DIR={opencode_dir}",
                 f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
                 f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
             ]
@@ -568,19 +639,57 @@ class RemoteProvisioner:
 
     async def _restart_offline(self, emit):
         await self.step(emit, "重启 OpenCode Serve", "running")
-        unit = f"astra-opencode-{self.environment.id}.service"
+        unit = f"nexus-opencode-{self.environment.id}.service"
+        worker_unit = f"nexus-worker-{self.environment.id}.service"
         await self._command(
-            f"systemctl restart {shlex.quote(unit)} astra-worker-{self.environment.id}.service"
+            f"systemctl restart {shlex.quote(unit)} {shlex.quote(worker_unit)}"
         )
         await self.step(emit, "重启 OpenCode Serve", "passed", "已通过 SSH 重启单元")
 
-    async def _finish(self, success, error=""):
+    async def _observe_capability(self) -> dict:
+        text = ""
+        skill_names: list[str] = []
+        error = ""
+        try:
+            if self.config_path and self.ssh is not None:
+                content = await self.ssh.read_file(self.config_path)
+                text = content.decode() if isinstance(content, bytes) else (content or "")
+                skill_root = str(Path(self.config_path).parent / "skill")
+                listing = await self._command(
+                    "find "
+                    + shlex.quote(skill_root)
+                    + " -mindepth 2 -maxdepth 2 -name SKILL.md -printf '%h\\n' || true"
+                )
+                skill_names = [Path(line.strip()).name for line in listing.splitlines() if line.strip()]
+            found = discover_names(skill_names, text)
+        except Exception as exc:
+            found = set()
+            error = self.redact(exc)
+        expected = binding_names(self.environment.skill_refs, self.environment.mcp_refs)
+        entries = binding_entries(self.environment.skill_refs, self.environment.mcp_refs)
+        detail = self.environment.status_detail if isinstance(self.environment.status_detail, dict) else {}
+        current = detail.get("capability") if isinstance(detail.get("capability"), dict) else None
+        return observe_bindings(
+            current,
+            desired=binding_revision(entries),
+            found=found,
+            expected=expected,
+            error=error,
+            checked_at=datetime.now(UTC).isoformat(),
+        )
+
+    async def _finish(self, success, error="", capability=None):
         state = "SUCCEEDED" if success else "FAILED"
         operation = {**self.operation, "state": state, "finished_at": datetime.now(UTC).isoformat()}
+        detail = {"operation": operation, "checks": self.steps, "message": self.redact(error)}
+        if capability is None:
+            capability = stored_capability(self.environment.status_detail)
+        if capability is not None:
+            detail = write_capability(detail, capability)
         values = {
             "status": EnvironmentStatus.AVAILABLE if success else EnvironmentStatus.UNAVAILABLE,
             "last_checked_at": datetime.now(UTC),
-            "status_detail": {"operation": operation, "checks": self.steps, "message": self.redact(error)},
+            "status_detail": detail,
         }
         if success:
             values.update(model_name=self.target_model, opencode_path=self.target_binary)
@@ -632,6 +741,7 @@ class RemoteProvisioner:
 
     async def run(self, emit):
         success, error = False, ""
+        capability = None
         try:
             async with asyncio.timeout(self.settings.remote_deploy_timeout_seconds):
                 self._direct_endpoints()
@@ -648,6 +758,7 @@ class RemoteProvisioner:
                         await self._probe_gateway(emit)
                         await self._install_units(emit)
                         await self._mark_inside_operation(emit)
+                        capability = await self._observe_capability()
                     else:
                         await self._restart_offline(emit)
                     success = True
@@ -666,7 +777,8 @@ class RemoteProvisioner:
                 await self.step(emit, current, "failed", error)
             if self.ssh:
                 await self.ssh.close()
-            applied = await self._finish(success, error)
+                self.ssh = None
+            applied = await self._finish(success, error, capability if success else None)
             if not applied:
                 success = False
                 error = "环境配置或操作记录已变化，旧结果未写入；请刷新后核对"

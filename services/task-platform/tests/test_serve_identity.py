@@ -19,7 +19,7 @@ async def test_healthy_serve_check_compares_path_and_owner_without_writing(tmp_p
         opencode_path=str(binary),
         workspace_root=str(workspace),
     )
-    owner = Path(tempfile.gettempdir()) / "astra-employee-serve" / f"{port}.json"
+    owner = Path(tempfile.gettempdir()) / "nexus-employee-serve" / f"{port}.json"
     if owner.exists():
         owner.unlink()
 

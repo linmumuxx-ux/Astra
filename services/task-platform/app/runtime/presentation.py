@@ -9,6 +9,44 @@ EMPLOYEE_LABELS = {
 }
 
 
+def project_channel_health(
+    *,
+    mode: str | None,
+    worker_channel: str | None,
+    environment_status: str | None,
+    worker_status: str | None,
+    repository_id: str | None,
+    employee_status: str | None,
+    task_statuses: list[str],
+    runtime_connections: list[str],
+) -> dict[str, bool | str]:
+    """Split Worker, OpenCode, repository and human-wait facts.
+
+    An offline Worker must not be presented as an available environment.
+    This reads stored facts and does not change Task status.
+    """
+
+    remote_worker = mode == "LINUX_REMOTE" and worker_channel == "worker"
+    worker_online = worker_status == "online"
+    if remote_worker and not worker_online:
+        availability = "offline"
+        opencode_reachable = False
+    else:
+        availability = environment_status or "UNKNOWN"
+        opencode_reachable = availability == "AVAILABLE"
+    if "UNAVAILABLE" in runtime_connections and availability == "AVAILABLE":
+        availability = "UNAVAILABLE"
+        opencode_reachable = False
+    return {
+        "worker_online": worker_online if remote_worker else True,
+        "opencode_reachable": opencode_reachable,
+        "repository_bound": bool(repository_id),
+        "executing": employee_status == "WORKING" or "RUNNING" in task_statuses,
+        "waiting_human": employee_status == "WAIT_HUMAN" or "WAITING" in task_statuses,
+        "availability": availability,
+    }
+
+
 class RuntimeProjection:
     @property
     def runtime_state(self):

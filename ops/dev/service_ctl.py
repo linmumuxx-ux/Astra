@@ -96,7 +96,7 @@ def nexus_api_command() -> list[str]:
         "--host",
         "127.0.0.1",
         "--port",
-        os.environ.get("NEXUS_API_PORT", "8120"),
+        os.environ.get("NEXUS_API_PORT", "18120"),
     ]
 
 
@@ -110,7 +110,7 @@ SERVICES: dict[str, dict[str, Any]] = {
         "log_env": "AGENT_SERVICE_LOG",
         "default_log": "/tmp/nexus-agent-service.log",
         "command": agent_command,
-        "port": lambda: _env_port("AGENTSCOPE_PORT", 8000),
+        "port": lambda: _env_port("AGENTSCOPE_PORT", 18000),
         "health": lambda port: f"http://127.0.0.1:{port}/health",
         "headers": lambda: {"X-User-ID": os.environ.get("NEXUS_AGENTSCOPE_USER_ID", "nexus")},
     },
@@ -119,7 +119,7 @@ SERVICES: dict[str, dict[str, Any]] = {
         "log_env": "TASK_MCP_LOG",
         "default_log": "/tmp/nexus-task-mcp.log",
         "command": task_mcp_command,
-        "port": lambda: _env_port("ASTRA_TASK_MCP_PORT", 8202),
+        "port": lambda: _env_port("ASTRA_TASK_MCP_PORT", 18202),
         "health": lambda port: f"http://127.0.0.1:{port}/health",
         "headers": lambda: {},
     },
@@ -128,7 +128,7 @@ SERVICES: dict[str, dict[str, Any]] = {
         "log_env": "NEXUS_API_LOG",
         "default_log": "/tmp/nexus-api.log",
         "command": nexus_api_command,
-        "port": lambda: _env_port("NEXUS_API_PORT", 8120),
+        "port": lambda: _env_port("NEXUS_API_PORT", 18120),
         "health": lambda port: f"http://127.0.0.1:{port}/api/health",
         "headers": lambda: {},
     },

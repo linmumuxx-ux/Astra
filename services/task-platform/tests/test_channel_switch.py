@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from app.worker_agent.channel_switch import apply_channel_switch
+from app.worker_agent.channel_switch import apply_channel_switch, global_config_path
 from app.worker_agent.connection import AgentConfig, WorkerConnectionManager, handle_command
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_gateway.protocol import envelope
@@ -35,6 +35,11 @@ def _config(path, *, gateway="http://127.0.0.1:19998", mcp="http://127.0.0.1:199
         ),
         encoding="utf-8",
     )
+
+
+def test_global_config_path_prefers_opencode_config(tmp_path):
+    target = tmp_path / "opencode.jsonc"
+    assert global_config_path({"OPENCODE_CONFIG": str(target), "HOME": "/tmp"}) == target
 
 
 def test_switch_writes_direct_urls_and_returns_effective_override(tmp_path):
@@ -78,6 +83,30 @@ def test_switch_writes_direct_urls_and_returns_effective_override(tmp_path):
     assert (path.parent / "opencode.json.astra-backup-switch").is_file()
 
 
+def test_switch_merges_existing_jsonc(tmp_path):
+    path = tmp_path / "opencode.json"
+    _config(path)
+    original = path.read_text(encoding="utf-8")
+    jsonc = path.with_suffix(".jsonc")
+    jsonc.write_text("// note\n" + original, encoding="utf-8")
+    apply_channel_switch(
+        workspace=str(tmp_path),
+        port=4096,
+        config_path=path,
+        environ={
+            "ASTRA_REMOTE_GATEWAY_URL": "http://10.0.0.8:8110",
+            "ASTRA_MCP_RESOURCE_URL": "http://10.0.0.8:8201/mcp",
+        },
+        probe=lambda _url: True,
+        reload=lambda: None,
+        read_effective=lambda: json.loads(jsonc.read_text(encoding="utf-8")),
+    )
+    stored = json.loads(jsonc.read_text(encoding="utf-8"))
+    assert stored["provider"]["astra-gateway"]["options"]["baseURL"] == "http://10.0.0.8:8110"
+    assert stored["provider"]["astra-gateway"]["options"]["apiKey"] == "gw-secret"
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_switch_stops_before_reload_when_probe_or_config_fails(tmp_path):
     path = tmp_path / "opencode.json"
     _config(path)
@@ -94,17 +123,6 @@ def test_switch_stops_before_reload_when_probe_or_config_fails(tmp_path):
         )
     assert path.read_text(encoding="utf-8") == original
 
-    jsonc = path.with_suffix(".jsonc")
-    jsonc.write_text("{}\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="opencode.jsonc"):
-        apply_channel_switch(
-            workspace=str(tmp_path),
-            port=4096,
-            config_path=path,
-            probe=lambda _url: True,
-            reload=lambda: reloads.append(1),
-        )
-    jsonc.unlink()
     path.write_text("{}\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="astra-gateway"):
         apply_channel_switch(

@@ -119,7 +119,7 @@ async def test_unstarted_serve_environment_is_available(serve):
 
 async def test_reserved_assistant_and_global_ports_rejected(serve):
     executor = serve("reserved")
-    for port in (4096, 4097):
+    for port in (executor.settings.opencode_server_port, executor.settings.assistant_opencode_port):
         executor.environment.opencode_server_port = port
         with pytest.raises(RuntimeError, match="公共/助手"):
             await executor.ensure_ready()

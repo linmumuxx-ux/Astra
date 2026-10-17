@@ -87,7 +87,12 @@
             <ElDescriptionsItem label="服务器">{{ employee.execution_environment.mode === 'LINUX_REMOTE' ? `${employee.execution_environment.username}@${employee.execution_environment.host}:${employee.execution_environment.port}` : '本机' }}</ElDescriptionsItem>
             <ElDescriptionsItem label="Agent">{{ employee.execution_environment.opencode_path }}</ElDescriptionsItem>
             <ElDescriptionsItem label="工作空间">{{ employee.execution_environment.workspace_root }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="环境状态"><ElTag size="small" :type="statusTagType(employee.execution_environment.status)">{{ statusLabel(employee.execution_environment.status) }}</ElTag></ElDescriptionsItem>
+            <ElDescriptionsItem label="环境状态"><ElTag size="small" :type="statusTagType(employee.channel_health.availability === 'offline' ? 'OFFLINE' : employee.execution_environment.status)">{{ employee.channel_health.availability === 'offline' ? '离线' : statusLabel(employee.execution_environment.status) }}</ElTag></ElDescriptionsItem>
+            <ElDescriptionsItem label="Worker">{{ employee.channel_health.worker_online ? '在线' : '离线' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="OpenCode">{{ employee.channel_health.opencode_reachable ? '可达' : '不可达' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="仓库">{{ employee.channel_health.repository_bound ? '已绑定' : '未绑定' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="执行">{{ employee.channel_health.executing ? '执行中' : '未在执行' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="人工">{{ employee.channel_health.waiting_human ? '等待人工' : '无需等待' }}</ElDescriptionsItem>
             <ElDescriptionsItem label="最近检查" :span="2">{{ formatTime(employee.execution_environment.last_checked_at) }}</ElDescriptionsItem>
           </ElDescriptions>
           <div v-if="environmentChecks.length" class="employee-detail__checks">

@@ -86,6 +86,7 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         command_request_id: str | None = None,
         attempt_ref: dict[str, Any] | None = None,
         session_id: str | None = None,
+        task_id: str | None = None,
     ) -> tuple[int, bytes, dict[str, str]]:
         payload: dict[str, Any] = {
             "method": method,
@@ -93,6 +94,8 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
             "query": params or {},
             "body": body if body is not None else {},
         }
+        if task_id:
+            payload["task_id"] = task_id
         if attempt_ref:
             payload["attempt_ref"] = attempt_ref
         request_id = command_request_id or f"http_{uuid4().hex}"
@@ -133,6 +136,7 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         command_request_id: str | None = None,
         attempt_ref: dict[str, Any] | None = None,
         session_id: str | None = None,
+        task_id: str | None = None,
     ) -> Any:
         params = dict(query or {})
         if directory:
@@ -145,6 +149,7 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
             command_request_id=command_request_id,
             attempt_ref=attempt_ref,
             session_id=session_id,
+            task_id=task_id,
         )
         if status == 404 and path.startswith("/session/") and path != "/session/status":
             raise OpenCodeSessionNotFound(path.split("/")[2])

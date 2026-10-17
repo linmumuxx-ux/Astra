@@ -55,8 +55,8 @@ load_env_file "$SCRIPT_DIR/../env/.env"
 : "${OPENAI_MODEL:=deepseek-flash}"
 : "${LLM_WIKI_LOCAL_PORT:=19828}"; : "${LLM_WIKI_REMOTE_PORT:=18080}"
 : "${REMOTE_WORKER_ID:=p2-remote}"; : "${REMOTE_WORKER_USER:=root}"; : "${REMOTE_WORKER_PORT:=22}"
-: "${REMOTE_WORKER_OPENCODE_PORT:=4096}"; : "${REMOTE_WORKER_WORKSPACE:=/root/astra-remote}"
-PORTS=(6379 8000 8100 8110 8120 8201 8202 5174 4096 4097)
+: "${REMOTE_WORKER_OPENCODE_PORT:=14096}"; : "${REMOTE_WORKER_WORKSPACE:=/root/nexus-remote}"
+PORTS=(6379 18000 18100 18110 18120 18201 18202 15174 14096 14097)
 [ "$WITH_WIKI" = 1 ] && PORTS+=("$LLM_WIKI_LOCAL_PORT")
 
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
@@ -199,25 +199,26 @@ PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 ASTRA_GATEWAY_PROBE_TIMEOUT_SECONDS=30
 ASTRA_MCP_TRANSPORT=streamable-http
 ASTRA_MCP_HOST=127.0.0.1
-ASTRA_MCP_PORT=8201
-ASTRA_TASK_MCP_PORT=8202
-ASTRA_REDIS_URL=redis://127.0.0.1:6379/0
+ASTRA_MCP_PORT=18201
+ASTRA_TASK_MCP_PORT=18202
+ASTRA_REDIS_URL=redis://127.0.0.1:6379/1
 ASTRA_OUTBOX_INTERVAL=2
 ASTRA_OUTBOX_RETRY_SECONDS=5
 ASTRA_OPENCODE_MODEL=deepseek/deepseek-flash
-ASTRA_NEXUS_API_BASE=http://127.0.0.1:8120
-ASTRA_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000
+ASTRA_NEXUS_API_BASE=http://127.0.0.1:18120
+ASTRA_AGENTSCOPE_BASE_URL=http://127.0.0.1:18000
 ASTRA_AGENTSCOPE_USER_ID=nexus
-NEXUS_API_BASE=http://127.0.0.1:8120
+NEXUS_API_BASE=http://127.0.0.1:18120
 AGENTSCOPE_HOST=$NEXUS_BIND_HOST
-AGENTSCOPE_PORT=8000
+AGENTSCOPE_PORT=18000
 AGENTSCOPE_REDIS_HOST=127.0.0.1
 AGENTSCOPE_REDIS_PORT=6379
+AGENTSCOPE_REDIS_DB=1
 AGENTSCOPE_WORKSPACE_DIR=$R/services/agent-service/data/workspaces
 NEXUS_DATA_DIR=$R/services/nexus-api/data
-NEXUS_AGENTSCOPE_BASE_URL=http://127.0.0.1:8000
+NEXUS_AGENTSCOPE_BASE_URL=http://127.0.0.1:18000
 NEXUS_AGENTSCOPE_USER_ID=nexus
-NEXUS_TASK_MCP_URL=http://127.0.0.1:8202/mcp
+NEXUS_TASK_MCP_URL=http://127.0.0.1:18202/mcp
 NEXUS_CHAT_PROVIDER=openai
 OPENAI_BASE_URL=$OPENAI_BASE_URL
 OPENAI_MODEL=$OPENAI_MODEL
@@ -320,15 +321,15 @@ step_services() {
   log "启动服务（$( [ "$SYSTEMD" = 1 ] && echo systemd || echo python )）"
   local R="$NEXUS_ROOT"
   start_service nexus-astra oneshot "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev restart" "cd $R/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev stop"
-  wait_http http://127.0.0.1:8100/api/health "Task API(8100)" 90
+  wait_http http://127.0.0.1:18100/api/health "Task API(18100)" 90
   # Task MCP 与管理台由 astra_service dev 拉起，这里不再重复启动。
   if [ "$SYSTEMD" = 1 ]; then
     start_service nexus-agent-service simple "exec $R/services/agent-service/.venv-agentscope/bin/python $R/services/agent-service/agent_service.py"
   else
     py_start agent
   fi
-  "$R/services/task-platform/.venv/bin/python" "$NEXUS_ROOT/ops/dev/service_ctl.py" wait-http http://127.0.0.1:8000/health --timeout 120 --header "X-User-ID: nexus" \
-    || die "Agent Service(8000) 未就绪"
+  "$R/services/task-platform/.venv/bin/python" "$NEXUS_ROOT/ops/dev/service_ctl.py" wait-http http://127.0.0.1:18000/health --timeout 120 --header "X-User-ID: nexus" \
+    || die "Agent Service(18000) 未就绪"
   if [ -z "$(get_kv "$RUNENV" NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG)" ]; then
     log "登记聊天模型（bootstrap_chat_model.py）"
     local cfg; cfg="$(set -a; . "$RUNENV"; . "$SECRETS"; set +a; "$R/services/agent-service/.venv-agentscope/bin/python" "$R/services/agent-service/bootstrap_chat_model.py" | grep -E '^\{' | tail -1)"
@@ -336,18 +337,18 @@ step_services() {
     printf 'NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG=%s\n' "$cfg" >> "$RUNENV"
   fi
   if [ "$SYSTEMD" = 1 ]; then
-    start_service nexus-api simple "cd $R/services/nexus-api && exec .venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 8120"
+    start_service nexus-api simple "cd $R/services/nexus-api && exec .venv/bin/uvicorn nexus_api.main:app --host 127.0.0.1 --port 18120"
   else
     py_start nexus-api
   fi
-  wait_http http://127.0.0.1:8120/api/v1/knowledge "Nexus API(8120)" 60
+  wait_http http://127.0.0.1:18120/api/v1/knowledge "Nexus API(18120)" 60
 }
 
 step_gateway_route() {
   log "网关路由 deepseek-flash（已存在则跳过）"
   (set -a; . "$SECRETS"; set +a; "$NEXUS_ROOT/services/task-platform/.venv/bin/python" - <<'PY'
 import os, httpx
-B = "http://127.0.0.1:8100/api/gateway"; c = httpx.Client(timeout=60)
+B = "http://127.0.0.1:18100/api/gateway"; c = httpx.Client(timeout=60)
 items = lambda r: r.json() if isinstance(r.json(), list) else r.json().get("items", [])
 pools = {p["name"]: p for p in items(c.get(B + "/pools"))}
 pool = pools.get("deepseek-pool") or c.post(B + "/pools", json={"name": "deepseek-pool"}).raise_for_status().json()
@@ -448,8 +449,8 @@ PY
   start_service nexus-llm-wiki-pump simple "LLM_WIKI_UI=http://127.0.0.1:$LLM_WIKI_LOCAL_PORT/ exec $pyws $NEXUS_ROOT/tools/llm_wiki/llm_wiki_ingest_pump.py"
   [ -f "$NEXUS_ROOT/tools/llm_wiki/llm_wiki_ingest_pump.py" ] || warn "仓库缺少 tools/llm_wiki/llm_wiki_ingest_pump.py，请从部署机复制"
   start_service nexus-astra oneshot "cd $NEXUS_ROOT/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev restart" "cd $NEXUS_ROOT/services/task-platform && .venv/bin/python $NEXUS_ROOT/ops/dev/astra_service.py dev stop"
-  wait_http http://127.0.0.1:8100/api/health "Task API(8100)" 90
-  curl -fsS -m 30 -X POST http://127.0.0.1:8100/api/library/service/resync >/dev/null || warn "图书馆重新同步请求失败"
+  wait_http http://127.0.0.1:18100/api/health "Task API(18100)" 90
+  curl -fsS -m 30 -X POST http://127.0.0.1:18100/api/library/service/resync >/dev/null || warn "图书馆重新同步请求失败"
 }
 
 step_remote_worker() {
@@ -459,7 +460,7 @@ step_remote_worker() {
    REMOTE_WORKER_OPENCODE_PORT="$REMOTE_WORKER_OPENCODE_PORT" REMOTE_WORKER_WORKSPACE="$REMOTE_WORKER_WORKSPACE" REMOTE_WORKER_SSH_PASSWORD="$REMOTE_WORKER_SSH_PASSWORD" \
    "$NEXUS_ROOT/services/task-platform/.venv/bin/python" - <<'PY'
 import os, httpx
-e = os.environ; B = "http://127.0.0.1:8100/api"; c = httpx.Client(timeout=900)
+e = os.environ; B = "http://127.0.0.1:18100/api"; c = httpx.Client(timeout=900)
 wid = e["REMOTE_WORKER_ID"]
 env = {"mode": "LINUX_REMOTE", "name": wid, "host": e["REMOTE_WORKER"], "port": int(e["REMOTE_WORKER_PORT"]),
        "username": e["REMOTE_WORKER_USER"], "ssh_password": e["REMOTE_WORKER_SSH_PASSWORD"],
@@ -483,16 +484,16 @@ step_health() {
   local fails=0 u
   chk() { if curl -fsS -m 10 ${3:+-H "$3"} -o /dev/null "$1"; then printf '  ✓ %s\n' "$2"; else printf '  ✗ %s (%s)\n' "$2" "$1"; fails=$((fails+1)); fi; }
   redis-cli -p 6379 ping >/dev/null 2>&1 && echo "  ✓ Redis" || { echo "  ✗ Redis"; fails=$((fails+1)); }
-  chk http://127.0.0.1:8100/api/health "Task API 8100"
-  chk http://127.0.0.1:8000/health "Agent Service 8000" "X-User-ID: nexus"
-  chk http://127.0.0.1:8120/api/v1/knowledge "Nexus API 8120"
-  ss -ltn | grep -q ':8110 ' && echo "  ✓ Gateway 8110" || { echo "  ✗ Gateway 8110"; fails=$((fails+1)); }
-  ss -ltn | grep -q ':8201 ' && echo "  ✓ Library MCP 8201" || { echo "  ✗ Library MCP 8201"; fails=$((fails+1)); }
-  ss -ltn | grep -q ':8202 ' && echo "  ✓ Task MCP 8202" || { echo "  ✗ Task MCP 8202"; fails=$((fails+1)); }
-  [ -d "$NEXUS_ROOT/web/nexus/dist" ] && chk http://127.0.0.1:5174/ "Nexus Web 5174"
+  chk http://127.0.0.1:18100/api/health "Task API 18100"
+  chk http://127.0.0.1:18000/health "Agent Service 18000" "X-User-ID: nexus"
+  chk http://127.0.0.1:18120/api/v1/knowledge "Nexus API 18120"
+  ss -ltn | grep -q ':18110 ' && echo "  ✓ Gateway 18110" || { echo "  ✗ Gateway 18110"; fails=$((fails+1)); }
+  ss -ltn | grep -q ':18201 ' && echo "  ✓ Library MCP 18201" || { echo "  ✗ Library MCP 18201"; fails=$((fails+1)); }
+  ss -ltn | grep -q ':18202 ' && echo "  ✓ Task MCP 18202" || { echo "  ✗ Task MCP 18202"; fails=$((fails+1)); }
+  [ -d "$NEXUS_ROOT/web/nexus/dist" ] && chk http://127.0.0.1:15174/ "Nexus Web 15174"
   if [ "$WITH_WIKI" = 1 ]; then
     chk "http://127.0.0.1:$LLM_WIKI_LOCAL_PORT/api/v1/health" "llm_wiki"
-    u="$(curl -fsS -m 30 http://127.0.0.1:8100/api/library/service/status || true)"
+    u="$(curl -fsS -m 30 http://127.0.0.1:18100/api/library/service/status || true)"
     case "$u" in *'"healthy":true'*) echo "  ✓ 图书馆知识服务 healthy";; *) echo "  ✗ 图书馆知识服务未 healthy"; fails=$((fails+1));; esac
   fi
   touch "$NEXUS_STATE_DIR/installed"

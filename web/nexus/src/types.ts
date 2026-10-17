@@ -11,6 +11,7 @@ export interface Employee {
   tools: string[];
   agentscope_agent_id: string | null;
   mailbox_session_id: string | null;
+  model_route_id?: string;
 }
 
 export interface SkillItem {
@@ -33,7 +34,9 @@ export interface Attachment {
 export interface ChatMessage {
   id: string;
   sender: string;
+  speaker?: string;
   text: string;
+  tools?: { id: string; name: string; input: string; output: string; state: string }[];
   attachments: Attachment[];
   created_at: string;
 }

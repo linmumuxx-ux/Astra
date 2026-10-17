@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
 from app.domain import EnvironmentStatus, ExecutionMode
+from app.executors.opencode_local_server import SERVE_LOCK_DIR
 from app.executors.process import (
     local_command,
     process_group_options,
@@ -23,6 +24,14 @@ class CheckItem:
     detail: str
 
 
+def _capability_revision(environment: OpenCodeExecutionEnvironment) -> str:
+    detail = environment.status_detail if isinstance(environment.status_detail, dict) else {}
+    record = detail.get("capability") if isinstance(detail, dict) else None
+    if not isinstance(record, dict):
+        return ""
+    return str(record.get("applied_revision") or "")
+
+
 def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
     return {
         "environment_id": environment.id,
@@ -36,7 +45,9 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "opencode_path": environment.opencode_path,
         "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
+        "repository_id": environment.repository_id,
         "labels": list(environment.labels or []),
+        "capability_revision": _capability_revision(environment),
     }
 
 
@@ -50,7 +61,7 @@ def environment_from_snapshot(snapshot: dict, employee_id: str) -> OpenCodeExecu
         port=snapshot.get("port", 22),
         username=snapshot.get("username"),
         ssh_password=None,
-        opencode_server_port=snapshot.get("opencode_server_port", 4096),
+        opencode_server_port=snapshot.get("opencode_server_port", 14096),
         opencode_path=snapshot["opencode_path"],
         model_name=snapshot.get("model_name"),
         workspace_root=snapshot["workspace_root"],
@@ -116,7 +127,7 @@ class ExecutionEnvironmentRuntime:
         actual = Path(str((paths or {}).get("directory") or "")).resolve()
         if actual != expected:
             return CheckItem("OpenCode Server", False, "Serve 的启动 Workspace 与员工配置不一致")
-        owner_path = Path(tempfile.gettempdir()) / "astra-employee-serve" / f"{port}.json"
+        owner_path = Path(tempfile.gettempdir()) / SERVE_LOCK_DIR / f"{port}.json"
         if owner_path.is_file():
             try:
                 owner = json.loads(owner_path.read_text(encoding="utf-8"))

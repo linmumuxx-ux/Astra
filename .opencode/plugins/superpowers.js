@@ -30,10 +30,10 @@ const superpowersSkillsDir = path.resolve(__dirname, '../skills');
 // the repository root, and never for the platform assistant runtime. The
 // assistant also runs from the repository root (it owns no workspace) but must
 // not receive the developer controller workflow in user-facing sessions, so it
-// marks its server with ASTRA_RUNTIME_ROLE=platform-assistant.
+// marks its server with ASTRA_RUNTIME_ROLE=review-executor.
 const ASTRA_ROOT = path.resolve(__dirname, '..', '..');
 
-const isAssistantRuntime = () => process.env.ASTRA_RUNTIME_ROLE === 'platform-assistant';
+const isAssistantRuntime = () => process.env.ASTRA_RUNTIME_ROLE === 'review-executor';
 
 // Astra project default: skills stay registered for every session, but the
 // using-superpowers bootstrap is opt-in. Injecting it on every turn spends a

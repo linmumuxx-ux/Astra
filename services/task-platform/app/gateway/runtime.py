@@ -46,15 +46,15 @@ PROBE_SUCCESS_THRESHOLD = 2
 CIRCUIT_HALF_OPEN_MAX_TRIALS = 1
 
 # 租约 ZSET、周期用量、节点健康、熔断与实例心跳键。
-LEASE_KEY = "astra:gateway:lease:{scope}:{scope_id}"
-USAGE_KEY = "astra:gateway:usage:{scope}:{scope_id}:{period}:{bucket}"
-HEALTH_KEY = "astra:gateway:health:{node_id}"
-CIRCUIT_KEY = "astra:gateway:circuit:{node_id}"
-INSTANCE_KEY = "astra:gateway:instance:{instance_id}"
+LEASE_KEY = "nexus:gateway:lease:{scope}:{scope_id}"
+USAGE_KEY = "nexus:gateway:usage:{scope}:{scope_id}:{period}:{bucket}"
+HEALTH_KEY = "nexus:gateway:health:{node_id}"
+CIRCUIT_KEY = "nexus:gateway:circuit:{node_id}"
+INSTANCE_KEY = "nexus:gateway:instance:{instance_id}"
 # 实例注册表比心跳保留更久，用于展示已停止心跳的实例（区分 ACTIVE/EXPIRED），
 # 避免崩溃实例从集合里直接消失。
-INSTANCE_REGISTRY_KEY = "astra:gateway:instance_registry:{instance_id}"
-INSTANCES_SET = "astra:gateway:instances"
+INSTANCE_REGISTRY_KEY = "nexus:gateway:instance_registry:{instance_id}"
+INSTANCES_SET = "nexus:gateway:instances"
 INSTANCE_REGISTRY_TTL_SECONDS = 7 * 86400
 
 # 已吊销 Gateway Key 摘要的共享阻断集合：控制面先追加写入，数据面据此在读取请求体
@@ -65,7 +65,7 @@ INSTANCE_REGISTRY_TTL_SECONDS = 7 * 86400
 # ``__ready__``：数据面用一次原子读取先查哨兵再查摘要，哨兵缺失即 fail closed 拒绝
 # 新请求，等待启动/后台周期重新同步。已吊销 Gateway Key 的 DB 行是永久 tombstone，
 # 普通编辑不得删除其吊销状态或重新放行它，否则 Redis 清空后无法从 DB 重建永久吊销。
-REVOKED_KEYS_KEY = "astra:gateway:revoked_keys"
+REVOKED_KEYS_KEY = "nexus:gateway:revoked_keys"
 REVOKED_READY_MEMBER = "__ready__"
 
 # 周期用量 TTL，避免崩溃后残留永久占用；健康键 TTL 需长于最大探测间隔。

@@ -108,7 +108,7 @@ def build_mcp_server() -> MCPServer:
         feedback_type: str,
         comment: str | None = None,
     ) -> dict[str, Any]:
-        """在 Astra 记录 helpful、incorrect、outdated、missing 或 mismatch 反馈。"""
+        """在 Nexus 记录 helpful、incorrect、outdated、missing 或 mismatch 反馈。"""
         try:
             payload = LibraryFeedbackInput(
                 resource_id=resource_id,
