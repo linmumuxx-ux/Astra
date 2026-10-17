@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -17,7 +19,18 @@ from app.worker_gateway.protocol import WorkerGatewayError
 
 MAX_BODY_BYTES = 8 * 1024 * 1024
 MAX_CHUNK_BYTES = 256 * 1024
+MAX_FILE_BYTES = 20 * 1024 * 1024
+MAX_FILE_TEXT_BYTES = ((MAX_FILE_BYTES + 2) // 3) * 4
+FILE_RESULT_COMMANDS = frozenset({"read_file", "git_readonly"})
 _READY = "ready"
+
+
+@dataclass(slots=True)
+class RawBody:
+    """upload_file request bytes. The http JSON shape stays on the other command."""
+
+    content: bytes
+    sha256: str
 
 
 def request_key(request_id: str) -> str:
@@ -69,6 +82,14 @@ class DataChannel:
         ttl = max(1.0, (deadline - utcnow()).total_seconds() + margin)
         await self.gateway.bus.put_text(request_key(command.request_id), body.decode("utf-8"), ttl)
 
+    async def stage_upload(self, request_id: str, content: bytes, ttl: float) -> None:
+        """Store upload bytes before the command is handed to the Worker."""
+
+        if len(content) > MAX_FILE_BYTES:
+            raise WorkerGatewayError("body_too_large", "文件不能超过 20 MB")
+        text = base64.b64encode(content).decode("ascii")
+        await self.gateway.bus.put_text(request_key(request_id), text, ttl)
+
     async def fetch_request(
         self,
         session: AsyncSession,
@@ -76,7 +97,7 @@ class DataChannel:
         request_id: str,
         worker_instance_id: str,
         epoch: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | RawBody:
         command, instance = await self._current_command(
             session, request_id=request_id, worker_instance_id=worker_instance_id, epoch=epoch
         )
@@ -88,8 +109,17 @@ class DataChannel:
         if command.deadline_at is not None and command.deadline_at <= now:
             raise WorkerGatewayError("epoch_conflict", "指令已过期")
         already_fetched = command.body_fetched_at is not None
+        upload = command.name == "upload_file"
         stored = await self.gateway.bus.get_text(request_key(request_id))
-        if stored is None:
+        raw_upload: bytes | None = None
+        if upload:
+            if not stored:
+                raise WorkerGatewayError("unknown_command", "上传正文不存在")
+            try:
+                raw_upload = base64.b64decode(stored, validate=True)
+            except ValueError as exc:
+                raise WorkerGatewayError("invalid_message", "上传正文无效") from exc
+        elif stored is None:
             stored = encoded_body(command.payload or {}).decode("utf-8")
         now = utcnow()
         await self._require_current_attempt(session, command)
@@ -116,6 +146,10 @@ class DataChannel:
             await self.note_task_fetch(session, command, now)
         await session.commit()
         await session.refresh(command)
+        if upload:
+            if raw_upload is None:
+                raise WorkerGatewayError("unknown_command", "上传正文不存在")
+            return RawBody(content=raw_upload, sha256=hashlib.sha256(raw_upload).hexdigest())
         payload = command.payload or {}
         return {
             "request_id": request_id,
@@ -139,6 +173,7 @@ class DataChannel:
         content_type: str | None,
         chunk: str,
         complete: bool,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if len(chunk.encode("utf-8")) > MAX_CHUNK_BYTES:
             raise WorkerGatewayError("response_too_large", "分块超过 256 KiB")
@@ -158,9 +193,12 @@ class DataChannel:
         staged["headers"] = headers
         staged["content_type"] = content_type
         raw = "".join(staged["chunks"])
-        if len(raw.encode("utf-8")) > MAX_BODY_BYTES:
+        file_result = command.name in FILE_RESULT_COMMANDS
+        limit = MAX_FILE_TEXT_BYTES if file_result else MAX_BODY_BYTES
+        if len(raw.encode("utf-8")) > limit:
             await self.gateway.bus.delete_text(response_key(request_id, upload_id))
-            raise WorkerGatewayError("response_too_large", "响应体超过 8 MiB")
+            message = "响应体超过 20 MiB" if file_result else "响应体超过 8 MiB"
+            raise WorkerGatewayError("response_too_large", message)
         ttl = self.gateway.settings.worker_gateway_command_timeout_seconds + (
             self.gateway.settings.worker_gateway_dispatch_lease_seconds
         )
@@ -170,15 +208,32 @@ class DataChannel:
         if not complete:
             await session.rollback()
             return {"status": "partial", "upload_id": upload_id}
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if file_result:
+            try:
+                decoded = base64.b64decode(raw, validate=True)
+            except ValueError as exc:
+                await self.gateway.bus.delete_text(response_key(request_id, upload_id))
+                raise WorkerGatewayError("response_too_large", "响应体无法按原始字节还原") from exc
+            if len(decoded) > MAX_FILE_BYTES:
+                await self.gateway.bus.delete_text(response_key(request_id, upload_id))
+                raise WorkerGatewayError("response_too_large", "响应体超过 20 MiB")
+            digest = hashlib.sha256(decoded).hexdigest()
+            size = len(decoded)
+        else:
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            size = len(raw.encode("utf-8"))
         meta = {
             "http_status": http_status,
-            "size": len(raw.encode("utf-8")),
+            "size": size,
             "sha256": digest,
             "headers": headers,
             "upload_id": upload_id,
             "content_type": content_type,
         }
+        if file_result and isinstance(result, dict):
+            for key, value in result.items():
+                if key not in {"size", "sha256"}:
+                    meta[key] = value
         if command.status == "succeeded" and (command.result or {}).get("sha256") == digest:
             stored = dict(command.result or {})
             await self.gateway.bus.delete_text(response_key(request_id, upload_id))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, WebSocket
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,7 @@ from app.database import get_session
 from app.gateway.security import verify_gateway_key
 from app.models import WorkerCommand, WorkerInstance
 from app.worker_gateway.admin_key import warn_if_admin_key_missing
-from app.worker_gateway.data_channel import DataChannel
+from app.worker_gateway.data_channel import DataChannel, RawBody
 from app.worker_gateway.protocol import WorkerGatewayError
 from app.worker_gateway.service import get_gateway
 
@@ -208,6 +208,17 @@ class UploadBody(BaseModel):
     content_type: str | None = None
     chunk: str = ""
     complete: bool = True
+    result: dict[str, Any] | None = None
+
+
+def request_body_response(body: dict[str, Any] | RawBody) -> dict[str, Any] | Response:
+    if isinstance(body, RawBody):
+        return Response(
+            content=body.content,
+            media_type="application/octet-stream",
+            headers={"X-Astra-Sha256": body.sha256},
+        )
+    return body
 
 
 def _bearer(authorization: str | None) -> str:
@@ -233,17 +244,18 @@ async def fetch_request_body(
     session: AsyncSession = Depends(get_session),
     authorization: Annotated[str | None, Header()] = None,
     epoch: Annotated[int | None, Header(alias="X-Astra-Worker-Epoch")] = None,
-) -> dict[str, Any]:
+) -> Any:
     try:
         if epoch is None:
             raise WorkerGatewayError("unauthorized", "缺少 epoch")
         worker = await _worker_for_token(session, _bearer(authorization))
-        return await DataChannel(get_gateway()).fetch_request(
+        fetched = await DataChannel(get_gateway()).fetch_request(
             session,
             request_id=request_id,
             worker_instance_id=worker.id,
             epoch=epoch,
         )
+        return request_body_response(fetched)
     except WorkerGatewayError as exc:
         _raise(exc)
 
@@ -271,6 +283,7 @@ async def upload_response_body(
             content_type=body.content_type,
             chunk=body.chunk,
             complete=body.complete,
+            result=body.result,
         )
     except WorkerGatewayError as exc:
         _raise(exc)

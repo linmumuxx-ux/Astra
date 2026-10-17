@@ -45,7 +45,7 @@ from app.worker_gateway.protocol import (
 )
 
 # 有副作用且结果未知时不能盲重发。阶段 1 没有 OpenCode 对账，投递成功后就停在原命令上。
-SIDE_EFFECT_COMMANDS = frozenset({"prompt"})
+SIDE_EFFECT_COMMANDS = frozenset({"prompt", "upload_file"})
 
 logger = logging.getLogger(__name__)
 
