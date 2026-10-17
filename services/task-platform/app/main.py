@@ -61,7 +61,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="Astra API",
+    title="Nexus API",
     version="0.4.0",
     description="长期数字员工任务分配、工作观察、人工介入和结果管理 API",
     lifespan=lifespan,

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Astra"
+    app_name: str = "Nexus"
     environment: str = "development"
     timezone: str = "Asia/Shanghai"
 

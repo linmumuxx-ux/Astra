@@ -119,7 +119,7 @@ class LocalOpenCodeServerExecutor(OpenCodeServerExecutor):
                 if discover_workspace_config(self.workspace) is None:
                     raise RuntimeError(
                         f"Workspace 未提供 OpenCode 配置：{self.workspace} 及其父目录/全局 "
-                        "~/.config/opencode/ 下均无 opencode.json；Astra 不会生成临时配置，"
+                        "~/.config/opencode/ 下均无 opencode.json；Nexus 不会生成临时配置，"
                         "请补齐工作区配置后重试"
                     )
                 command = local_command(

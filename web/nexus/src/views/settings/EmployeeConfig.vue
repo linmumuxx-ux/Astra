@@ -123,7 +123,7 @@
           <ElInput v-model.trim="form.environment.workspace_root" :placeholder="form.environment.mode === 'LOCAL' ? 'D:\\code\\nr_test_system' : '/home/nexus/project'" />
         </ElFormItem>
         <ElFormItem prop="environment.opencode_server_port">
-          <template #label>OpenCode Server Port <FieldHelp label="OpenCode Server Port" help="人工配置固定端口，同一主机的 Worker 须使用不同端口，避开平台与助手端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" /></template>
+          <template #label>OpenCode Server Port <FieldHelp label="OpenCode Server Port" help="人工配置固定端口，同一主机的 Worker 须使用不同端口，避开平台占用的端口。仅监听 127.0.0.1；远程通过 SSH 隧道访问。" /></template>
           <ElInput v-model.number="form.environment.opencode_server_port" type="number" min="1" max="65535" />
         </ElFormItem>
         <template v-if="form.environment.mode === 'LINUX_REMOTE'">

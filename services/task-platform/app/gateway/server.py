@@ -1145,7 +1145,7 @@ def create_gateway_app(data_plane: GatewayDataPlane) -> FastAPI:
         finally:
             await data_plane.shutdown()
 
-    application = FastAPI(title="Astra API Gateway", version="0.4.0", lifespan=lifespan)
+    application = FastAPI(title="Nexus API Gateway", version="0.4.0", lifespan=lifespan)
 
     @application.exception_handler(GatewayDataPlaneError)
     async def _handle(_: Request, exc: GatewayDataPlaneError) -> JSONResponse:

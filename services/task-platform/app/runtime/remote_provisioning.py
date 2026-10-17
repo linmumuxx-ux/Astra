@@ -177,7 +177,7 @@ def agent_wheel() -> tuple[str, bytes]:
         "Metadata-Version: 2.1\n"
         "Name: astra-worker-agent\n"
         f"Version: {version}\n"
-        "Summary: Astra Worker Agent\n"
+        "Summary: Nexus Worker Agent\n"
         "Requires-Python: >=3.11\n"
         "Requires-Dist: httpx>=0.27,<1\n"
         "Requires-Dist: websockets>=12\n"
@@ -219,7 +219,7 @@ def managed_config(
     if not e2e:
         provider = {
             "npm": "@ai-sdk/openai-compatible",
-            "name": "Astra API 中转",
+            "name": "Nexus API 中转",
             "options": {"baseURL": gateway_url, "apiKey": gateway_key},
             "models": {name: {"name": name} for name in models},
         }
@@ -492,14 +492,14 @@ class RemoteProvisioner:
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
         opencode_unit_text = (
-            "[Unit]\nDescription=Astra OpenCode\nAfter=network-online.target\n"
+            "[Unit]\nDescription=Nexus OpenCode\nAfter=network-online.target\n"
             "[Service]\n"
             f"ExecStart={self.target_binary} serve --hostname 127.0.0.1 --port {port}\n"
             "Restart=on-failure\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
         agent_unit_text = (
-            "[Unit]\nDescription=Astra Worker Agent\nAfter=network-online.target\n"
+            "[Unit]\nDescription=Nexus Worker Agent\nAfter=network-online.target\n"
             "[Service]\n"
             f"EnvironmentFile={token_path}\n"
             f"ExecStart={AGENT_PYTHON} -m app.worker_agent\n"

@@ -41,7 +41,7 @@ class OpenCodeCLIExecutor(OpenCodeExecutor):
             "--dir",
             str(workspace),
             "--title",
-            f"Astra {task.id}",
+            f"Nexus {task.id}",
         ]
         if self.settings.opencode_agent:
             command.extend(["--agent", self.settings.opencode_agent])

@@ -321,7 +321,7 @@ class OpenCodeServerExecutor(OpenCodeExecutor):
             else:
                 created = await self.client.create_session(
                     workspace,
-                    title=f"Astra {task.id}",
+                    title=f"Nexus {task.id}",
                     model_name=self.model_name,
                     agent=self.settings.opencode_agent or "build",
                 )
