@@ -41,7 +41,7 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：A。S3-09 / PERF-01。
 
-- [ ] P.1 记录热态首开、再次打开、冷启动，以及 HTTP、SSE、iframe 的耗时。热态目标是首开 P95 ≤ 3 秒、再次打开 P95 ≤ 1.5 秒。冷启动单独统计
+- [x] P.1 记录热态首开、再次打开、冷启动，以及 HTTP、SSE、iframe 的耗时。热态目标是首开 P95 ≤ 3 秒、再次打开 P95 ≤ 1.5 秒。冷启动单独统计
   - 验证：同一次打开不新建 Session、不换 Worker、不重启 OpenCode。结果写成可复现的数字，不在未测量时宣称达标
 
 ## B. 私聊绑定与身份

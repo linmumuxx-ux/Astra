@@ -7,7 +7,7 @@ import vue from "@vitejs/plugin-vue";
 const root = fileURLToPath(new URL(".", import.meta.url));
 
 function missingWorkspaceBundle(): Plugin {
-  const reject = (req: { url?: string }, res: { statusCode: number; end: (body: string) => void }, next: () => void) => {
+  const reject = (req: { url?: string }, res: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string) => void }, next: () => void) => {
     const url = (req.url ?? "").split("?")[0];
     if (!url.startsWith("/opencode-workspace/")) return next();
     const file = path.join(root, "public", decodeURIComponent(url));
@@ -16,6 +16,7 @@ function missingWorkspaceBundle(): Plugin {
       res.end("OpenCode Workspace UI bundle is not installed");
       return;
     }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     next();
   };
   return {

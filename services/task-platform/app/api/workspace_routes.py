@@ -107,6 +107,20 @@ def workspace_ui_bundle(version: str) -> Path:
     return REPO_ROOT / "web" / "nexus" / "public" / "opencode-workspace" / version / "index.html"
 
 
+_present_bundles: set[str] = set()
+
+
+def bundle_installed(version: str) -> bool:
+    """已安装的版本包不变，命中后不再查磁盘。缺失不缓存，装上后下一次就能看见。"""
+
+    if version in _present_bundles:
+        return True
+    if workspace_ui_bundle(version).is_file():
+        _present_bundles.add(version)
+        return True
+    return False
+
+
 def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None]:
     """Select the UI for the version already stored on the session.
 
@@ -119,7 +133,7 @@ def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None
     version = str(raw).strip().removeprefix("v")
     if not OPENCODE_VERSION.fullmatch(version):
         return version or "unknown", None, RETIRED_WORKSPACE_UI
-    if not workspace_ui_bundle(version).is_file():
+    if not bundle_installed(version):
         return version, None, f"{RETIRED_WORKSPACE_UI}（{version}）"
     return version, f"/opencode-workspace/{version}/index.html", None
 
