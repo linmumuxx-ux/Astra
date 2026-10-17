@@ -18,31 +18,31 @@
 
 实现以 design.md「阶段 2 契约」为准。本轮只锁定契约，下列项仍未实现。
 
-- [ ] 2.1 抽出远程 OpenCode 传输，在线 Worker 走 Gateway 指令，而不是每调用一次 SSH
-- [ ] 2.2 SSE 事件经 Worker 上报后，由 Nexus 转成现有浏览器事件流
-- [ ] 2.3 断线重连后核对原生 Session、消息、问题和权限；不新建 Session，不重发最后一条 Prompt
+- [ ] 2.1 抽出远程 OpenCode 传输。已标记 `worker` 的环境走 Gateway；`workspace_routes` 直连 `client.base_url` 的请求纳入同一传输
+- [ ] 2.2 OpenCode SSE 用带 seq 的 WebSocket 帧上报，Nexus 转成现有浏览器事件流。超过帧上限只发 `astra.event_gap` 并 refresh
+- [ ] 2.3 断线重连后核对原生 Session、完整分页消息、问题和权限；不新建 Session，不重发最后一条 Prompt
 - [ ] 2.4 通信中断、执行超时和 OpenCode 异常分开记录；投影仍只走 `apply_session_state()`
-- [ ] 2.5 保留 `pending_message_id` / `pending_prompt`（含 `in_flight`）和 Worker 占用规则
-- [ ] 2.6 事件缓冲的消费出口、序号、丢失通知和重新对账
-- [ ] 2.7 HTTP 数据通道：请求关联、认证、流控、取消和大小边界
-- [ ] 2.8 已迁移环境断线进入通信恢复，不回退 SSH，不运行会杀旧进程的启动脚本
-- [ ] 2.9 ACK 丢失时用持久化的原生消息 ID 决定能否重发
-- [ ] 2.10 把 lifecycle 与 remote_provisioning 的占用判断收成一个入口，沿用 dfc5eab
+- [ ] 2.5 保留 `pending_message_id` / `pending_prompt`（含 `in_flight`）和 `pending_attempt`
+- [ ] 2.6 事件日志保留最近 N 条；最慢消费者未读达到 N 时暂停该 directory 的 SSE。http 与 SSE 在独立任务中执行，不阻塞 pong/取消
+- [ ] 2.7 HTTP 承载请求体和响应体：WebSocket 只发就绪通知，Worker GET 请求、PUT 响应。完成记录带上 `x-next-cursor` 等响应头。取消使用独立 request_id
+- [ ] 2.8 显式 `worker_channel` 标记。打标记前由 Worker 探测内网 8110/8201 并写入直连地址。已迁移环境不回退 SSH，不跑会杀旧进程的启动脚本。worktree 与文件 SSH 留到阶段 3
+- [ ] 2.9 拆开首次发送和人工重试。人工重试先检查过期，再 CAS 认领；读失败不清 `in_flight`；重发前要求原指令已终结并核对完整分页。恢复、重连、调度、心跳、超时永不调用它
+- [ ] 2.10 先修占用被提前释放的 bug。一个谓词用于投影、心跳、调度、start、send、维护和取消完成。维护前保留 Session RUNNING/WAITING/UNKNOWN 的第二道检查，并提供人工释放入口
 - [ ] 2.11 幂等身份包含 session_id。相同 request_id 在 Worker、指令名、payload、session_id 不一致时返回 409
-- [ ] 2.12 有副作用的指令用原生消息核对决定能否重发，不新增 Agent 落盘去重账本。内存去重只挡同一进程的重复帧
-- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖 epoch 乱序、双 owner、发布后崩溃、消费者崩溃、ACK 丢失和事件丢失对账
+- [ ] 2.12 有副作用的指令用原生消息核对决定能否重发。OpenCode 1.18.35 不按 messageID 去重。不新增 Agent 落盘去重账本
+- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖八项，包括认领后 epoch 切换和上传中途 epoch 切换
 
 ## 3. Workspace、文件与 Git
 
 - [ ] 3.1 目录准备、worktree、diff、浏览和上传改由 Worker 本地执行
 - [ ] 3.2 浏览器继续使用现有 Workspace HTTP/SSE
-- [ ] 3.3 上传经 Nexus 暂存，Worker 拉取；保留大小、权限和路径边界
+- [ ] 3.3 上传经阶段 2 的 HTTP 拉取/上传端点传输；保留大小、权限、路径和校验和边界
 - [ ] 3.4 Worker 端校验真实路径、符号链接和 TOCTOU，校验上传校验和并清理暂存
 
 ## 4. Gateway、MCP 与部署
 
-- [ ] 4.1 执行期不再打开到 8110/8201 的反向隧道
-- [ ] 4.2 部署写入可达的 Nexus 内网地址，保留 Gateway Key 与 MCP Token
+- [ ] 4.1 删除反向隧道实现。阶段 2 已让 `worker_channel=worker` 的环境不再打开到 8110/8201 的隧道；此处只在没有 `ssh` 环境后删除代码
+- [ ] 4.2 内网 8110/8201 直连地址和 Worker 可达探测已是阶段 2 的迁移门。此处确认未迁移环境不再依赖隧道地址
 - [ ] 4.3 SSH 仅用于安装 Worker Agent、基础环境和故障维护
 - [ ] 4.4 Worker 在线时，日常 OpenCode 重启和健康检查在 Agent 本地执行
 - [ ] 4.5 确认 LLM Wiki 仍使用现有独立连接；处理 4096 与 4296 的端口选择
