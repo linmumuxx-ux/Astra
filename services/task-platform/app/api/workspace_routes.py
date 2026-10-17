@@ -10,7 +10,6 @@ from typing import Annotated
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -28,6 +27,20 @@ from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload,
 from app.schemas import ExecutionStopConfirm, RetrySubmission, TaskRead
 
 router = APIRouter(prefix="/api/tasks/{task_id}")
+
+
+class _Upstream:
+    def __init__(self, status_code: int, content: bytes, headers: dict[str, str]) -> None:
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers
+
+    @property
+    def is_error(self) -> bool:
+        return self.status_code >= 400
+
+    def json(self):
+        return json.loads(self.content) if self.content else None
 # Task Workspace capability model: a task-bound, read-only window onto the
 # employee's OpenCode server plus the native conversation/reply writes below.
 # GET-only paths must be non-mutating and must not create PTYs, processes or
@@ -287,6 +300,10 @@ async def native_events(environment, workspace, root, global_stream):
             info = props.get("info", {})
             if event.get("type") == "session.created" and info.get("parentID") in allowed:
                 allowed.add(info["id"])
+            if event.get("type") == "astra.event_gap":
+                value = {"directory": workspace, "payload": event} if global_stream else event
+                yield f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
+                continue
             sid = event_session(event)
             if sid and sid not in allowed:
                 continue
@@ -454,10 +471,8 @@ async def native_proxy(
                 if key in params and params[key] not in allowed:
                     raise PermissionError("Session 不属于此任务")
             forward_path = "/project/current" if native_path == "/project" else native_path
-            async with httpx.AsyncClient(auth=client.auth, timeout=client._timeout()) as http:
-                upstream = await http.request(
-                    method, client.base_url + forward_path, params=params, json=body
-                )
+            status, content, headers = await client.exchange(method, forward_path, params=params, body=body)
+            upstream = _Upstream(status, content, headers)
             if upstream.is_error:
                 return Response(
                     content=upstream.content,

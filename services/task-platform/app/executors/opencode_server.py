@@ -105,25 +105,37 @@ class OpenCodeServerClient:
         if directory:
             params["directory"] = str(directory)
         try:
-            async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
-                response = await client.request(
-                    method,
-                    f"{self.base_url}{path}",
-                    params=params,
-                    json=body,
-                )
+            status, content, headers = await self.exchange(method, path, params=params, body=body)
         except httpx.TimeoutException as exc:
             raise OpenCodeExecutionTimeout(str(exc)) from exc
         except httpx.TransportError as exc:
             raise OpenCodeServerUnavailable(str(exc)) from exc
-        if response.status_code == 404 and path.startswith("/session/") and path != "/session/status":
+        if status == 404 and path.startswith("/session/") and path != "/session/status":
             raise OpenCodeSessionNotFound(path.split("/")[2])
-        if response.status_code >= 500:
-            raise OpenCodeServerUnavailable(f"OpenCode HTTP {response.status_code}")
-        if response.is_error:
-            raise OpenCodeExecutionError(f"OpenCode HTTP {response.status_code}: {response.text[:1000]}")
-        payload = response.json() if response.content else None
-        return (payload, response.headers) if include_headers else payload
+        if status >= 500:
+            raise OpenCodeServerUnavailable(f"OpenCode HTTP {status}")
+        if status >= 400:
+            raise OpenCodeExecutionError(f"OpenCode HTTP {status}: {content[:1000]!r}")
+        payload = json.loads(content) if content else None
+        return (payload, headers) if include_headers else payload
+
+    async def exchange(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: Any = None,
+    ) -> tuple[int, bytes, dict[str, str]]:
+        async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
+            response = await client.request(
+                method,
+                f"{self.base_url}{path}",
+                params=params,
+                json=body,
+            )
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        return response.status_code, response.content, headers
 
     async def health(self) -> dict[str, Any]:
         try:

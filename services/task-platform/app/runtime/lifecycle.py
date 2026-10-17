@@ -59,6 +59,7 @@ from app.runtime.session_connection import (
 from app.runtime.session_state import SessionState, derive_session_state
 from app.runtime.submission import body_fetched_at, get_attempt, mark_body_fetched, put_attempt
 from app.runtime.wake_outbox import record_wake
+from app.runtime.worker_channel import read_worker_channel
 from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
@@ -858,16 +859,30 @@ class RuntimeService:
         # A previous abort/timeout must not invalidate its eventual ACK.
         await self._sync_session_state(task, SessionState(status=RuntimeSessionStatus.RUNNING.value))
         await self.session.commit()
-        await self._note_body_fetched(task_id, outbound_id, new_attempt)
+        use_worker = await read_worker_channel(self.session, environment.id) == "worker"
+        if not use_worker:
+            await self._note_body_fetched(task_id, outbound_id, new_attempt)
 
         try:
             async with connect(environment, start=True) as client:
                 await client.session(Path(workspace), submitted_session)
+                worker_call = {}
+                if use_worker:
+                    worker_call = {
+                        "command_request_id": request_id,
+                        "attempt_ref": {
+                            "task_id": task_id,
+                            "message_id": outbound_id,
+                            "attempt": new_attempt,
+                        },
+                        "session_id": submitted_session,
+                    }
                 await client.request(
                     "POST",
                     f"/session/{submitted_session}/{native_action}",
                     directory=Path(workspace),
                     body=body,
+                    **worker_call,
                 )
         except Exception as exc:
             await self._settle_failed_submission(task_id, outbound_id, exc)
@@ -1076,6 +1091,9 @@ class RuntimeService:
         workspace = task.workspace
         environment = await resolve_environment(self.session, task)
         await self.session.commit()
+        use_worker = await read_worker_channel(self.session, environment.id) == "worker"
+        record = get_attempt(task, pending_id, attempt) or {}
+        request_id = record.get("request_id")
 
         async with connect(environment, start=True) as client:
             try:
@@ -1093,14 +1111,26 @@ class RuntimeService:
                 return await self.refresh(task_id, client=client)
             sent_now = False
             try:
-                noted = await self._note_body_fetched(task_id, pending_id, attempt)
-                if not noted:
-                    raise RuntimeStateError("提交已经变化，未重发")
+                if use_worker:
+                    if not request_id:
+                        raise RuntimeStateError("没有这次提交的请求记录，不能发送")
+                else:
+                    noted = await self._note_body_fetched(task_id, pending_id, attempt)
+                    if not noted:
+                        raise RuntimeStateError("提交已经变化，未重发")
+                worker_call = {}
+                if use_worker:
+                    worker_call = {
+                        "command_request_id": request_id,
+                        "attempt_ref": {"task_id": task_id, "message_id": pending_id, "attempt": attempt},
+                        "session_id": session_id,
+                    }
                 await client.request(
                     "POST",
                     f"/session/{session_id}/{pending_prompt['action']}",
                     directory=Path(workspace),
                     body=pending_prompt["body"],
+                    **worker_call,
                 )
                 sent_now = True
             except Exception as exc:

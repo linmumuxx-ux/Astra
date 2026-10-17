@@ -88,10 +88,12 @@ class DataChannel:
             command.body_fetched_at = now
             await self.note_task_fetch(session, command, now)
         await session.commit()
+        payload = command.payload or {}
         return {
             "request_id": request_id,
-            "method": (command.payload or {}).get("method") or "GET",
-            "path": (command.payload or {}).get("path") or "/",
+            "method": payload.get("method") or "GET",
+            "path": payload.get("path") or "/",
+            "query": payload.get("query") or {},
             "body": stored,
             "epoch": command.epoch,
         }

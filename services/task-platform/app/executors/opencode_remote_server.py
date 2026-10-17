@@ -144,7 +144,19 @@ class RemoteOpenCodeServerConnection:
         self.client: OpenCodeServerClient | None = None
 
     async def __aenter__(self) -> OpenCodeServerClient:
+        started_by = "SSH"
         try:
+            from app.database import SessionLocal
+            from app.runtime.worker_channel import read_worker_channel
+            from app.runtime.worker_client import WorkerOpenCodeClient
+
+            async with SessionLocal() as session:
+                channel = await read_worker_channel(session, self.environment.id)
+            if channel == "worker":
+                started_by = "Worker"
+                self.client = WorkerOpenCodeClient(self.settings, environment_id=self.environment.id)
+                await self.client.health()
+                return self.client
             self.session = await self.runtime.open_session(self.environment)
             self.tunnel = await self.session.open_tunnel(
                 remote_host="127.0.0.1",
@@ -172,7 +184,7 @@ class RemoteOpenCodeServerConnection:
             raise RuntimeError(
                 f"员工 {self.environment.employee_id}；环境 {self.environment.name} (LINUX_REMOTE)；"
                 f"Workspace={self.environment.workspace_root}；"
-                f"Server Port={self.environment.opencode_server_port}；启动方式=SSH；{exc}"
+                f"Server Port={self.environment.opencode_server_port}；启动方式={started_by}；{exc}"
             ) from exc
 
     async def __aexit__(self, _exc_type, _exc, _traceback) -> None:

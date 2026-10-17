@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+import httpx
 
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import WorkerTransportError
@@ -49,6 +52,7 @@ class AgentConfig:
     max_frame_bytes: int = 262144
     command_dedupe_limit: int = 256
     command_dedupe_ttl_seconds: float = 600
+    opencode_url: str = "http://127.0.0.1:4096"
 
 
 @dataclass(slots=True)
@@ -160,6 +164,7 @@ class WorkerConnectionManager:
         self.ledger = CommandLedger(config.command_dedupe_limit, config.command_dedupe_ttl_seconds)
         self.http_tasks: dict[str, asyncio.Task[None]] = {}
         self.event_tasks: dict[str, asyncio.Task[None]] = {}
+        self.event_seq: dict[str, int] = {}
         self.paused_directories: set[str] = set()
         self.stopped_directories: set[str] = set()
         self.fetch_body = None
@@ -217,6 +222,7 @@ class WorkerConnectionManager:
             epoch = int(reply.payload["epoch"])
             self.epoch = epoch
             self.epochs.append(epoch)
+            self.event_seq.clear()
             ping_seconds = float(reply.payload.get("ping_seconds") or config.ping_seconds)
             ping_timeout = float(reply.payload.get("ping_timeout_seconds") or config.ping_timeout_seconds)
             monitor = HeartbeatMonitor(config.heartbeat_misses)
@@ -240,6 +246,9 @@ class WorkerConnectionManager:
                 if name == "http":
                     self._start_http(transport, incoming, epoch)
                     continue
+                if name == "subscribe_events":
+                    self._start_events(transport, incoming, epoch)
+                    continue
                 if name == "cancel":
                     target = str((incoming.payload.get("data") or {}).get("target_request_id") or "")
                     running = self.http_tasks.get(target)
@@ -249,8 +258,11 @@ class WorkerConnectionManager:
         finally:
             for task in list(self.http_tasks.values()):
                 task.cancel()
-            if self.http_tasks:
-                await asyncio.gather(*self.http_tasks.values(), return_exceptions=True)
+            for task in list(self.event_tasks.values()):
+                task.cancel()
+            pending = [*self.http_tasks.values(), *self.event_tasks.values()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             heartbeat_stop.set()
             if heartbeat is not None:
                 heartbeat.cancel()
@@ -312,6 +324,91 @@ class WorkerConnectionManager:
             return
         finally:
             self.http_tasks.pop(incoming.request_id, None)
+
+    def _start_events(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
+        if not frame_acceptable(incoming, epoch, self.clock()):
+            return
+        data = incoming.payload.get("data") if isinstance(incoming.payload.get("data"), dict) else {}
+        directory = str(data.get("directory") or "")
+        current = self.event_tasks.get(directory)
+        if current is not None and not current.done():
+            asyncio.create_task(self._ack_existing_subscription(transport, incoming))
+            return
+        task = asyncio.create_task(self._stream_events(transport, incoming, epoch, directory))
+        if directory:
+            self.event_tasks[directory] = task
+
+    async def _ack_existing_subscription(self, transport: FrameTransport, incoming: WorkerMessage) -> None:
+        await transport.send(self._response(incoming, "ack", None, None).to_dict())
+        await transport.send(
+            self._response(incoming, "result", {"subscribed": True, "reused": True}, None).to_dict()
+        )
+
+    async def _stream_events(
+        self, transport: FrameTransport, incoming: WorkerMessage, epoch: int, directory: str
+    ) -> None:
+        try:
+            await transport.send(self._response(incoming, "ack", None, None).to_dict())
+            if self.epoch != epoch or not directory:
+                await transport.send(
+                    self._response(incoming, "result", None, "unsupported_command").to_dict()
+                )
+                return
+            await transport.send(
+                self._response(
+                    incoming, "result", {"subscribed": True, "directory": directory}, None
+                ).to_dict()
+            )
+            url = self.config.opencode_url.rstrip("/") + "/event"
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url, params={"directory": directory}) as response:
+                    response.raise_for_status()
+                    lines = response.aiter_lines()
+                    while True:
+                        while directory in self.paused_directories:
+                            await asyncio.sleep(0.05)
+                            if directory in self.stopped_directories or self.epoch != epoch:
+                                return
+                        if directory in self.stopped_directories or self.epoch != epoch:
+                            return
+                        try:
+                            line = await lines.__anext__()
+                        except StopAsyncIteration:
+                            return
+                        if not line.startswith("data: "):
+                            continue
+                        seq = self.event_seq.get(directory, 0) + 1
+                        self.event_seq[directory] = seq
+                        try:
+                            event = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            continue
+                        encoded = line[6:].encode("utf-8")
+                        payload: dict[str, Any] = {"seq": seq, "directory": directory}
+                        if len(encoded) > self.config.max_frame_bytes:
+                            payload.update(
+                                dropped=True,
+                                reason="event_too_large",
+                                event_type=event.get("type") if isinstance(event, dict) else None,
+                            )
+                        else:
+                            payload["event"] = event
+                        message = envelope(
+                            request_id=f"evt-{directory}-{seq}",
+                            worker_instance_id=self.config.worker_instance_id,
+                            environment_id=self.config.environment_id,
+                            session_id=incoming.session_id,
+                            message_type="event",
+                            payload=payload,
+                        )
+                        message.epoch = epoch
+                        message.expires_at = int(self.clock()) + 30
+                        await transport.send(message.to_dict())
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self.event_tasks.get(directory) is asyncio.current_task():
+                self.event_tasks.pop(directory, None)
 
     async def _handle_command(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
         if not frame_acceptable(incoming, epoch, self.clock()):
@@ -478,4 +575,5 @@ def load_agent_config(environ: dict[str, str]) -> AgentConfig:
         environment_id=int(environment),
         token=token,
         agent_version=environ.get("ASTRA_WORKER_AGENT_VERSION", "0.1.0"),
+        opencode_url=environ.get("ASTRA_WORKER_OPENCODE_URL", "http://127.0.0.1:4096"),
     )

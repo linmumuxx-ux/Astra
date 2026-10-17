@@ -81,6 +81,12 @@ class NativeServer:
         messages = await self.messages(directory, sid)
         return {"messages": messages, "next_before": None}
 
+    async def exchange(self, method, path, *, params=None, body=None):
+        async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as http:
+            response = await http.request(method, self.base_url + path, params=params, json=body)
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        return response.status_code, response.content, headers
+
     async def request(self, method, path, *, directory=None, body=None):
         if method == "POST" and path.endswith("/prompt_async"):
             sid = path.split("/")[2]
@@ -1049,7 +1055,7 @@ async def test_shells_read_is_allowed_but_pty_lifecycle_is_denied(runtime, monke
         return httpx.Response(200, json=[{"path": "/bin/bash", "name": "bash", "acceptable": True}])
 
     monkeypatch.setattr(
-        "app.api.workspace_routes.httpx.AsyncClient",
+        "tests.test_session_workspace.httpx.AsyncClient",
         lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
     )
     shells = await runtime.api.get("/api/tasks/T1/opencode/ses_current/pty/shells")
@@ -1127,7 +1133,7 @@ async def test_global_session_status_read_is_allowed_and_scoped(runtime, monkeyp
             assert params["directory"] == str(runtime.workspace)
             return FakeResponse()
 
-    monkeypatch.setattr("app.api.workspace_routes.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr("tests.test_session_workspace.httpx.AsyncClient", FakeClient)
     response = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/status")
     assert response.status_code == 200
     assert response.json() == {"ses_current": "idle"}
@@ -1146,7 +1152,7 @@ async def test_native_config_uses_bound_employee_model_and_status_is_filtered(ru
         return httpx.Response(200, json={"ses_current": {"type": "busy"}, "ses_other": {"type": "busy"}})
 
     monkeypatch.setattr(
-        "app.api.workspace_routes.httpx.AsyncClient",
+        "tests.test_session_workspace.httpx.AsyncClient",
         lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
     )
     config = await runtime.api.get("/api/tasks/T1/opencode/ses_current/config")
@@ -1252,7 +1258,7 @@ async def test_native_permission_reply_is_allowed_only_for_task_session(runtime,
         return httpx.Response(200, json={"ok": True})
 
     monkeypatch.setattr(
-        "app.api.workspace_routes.httpx.AsyncClient",
+        "tests.test_session_workspace.httpx.AsyncClient",
         lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
     )
     response = await runtime.api.post(

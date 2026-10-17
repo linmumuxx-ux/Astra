@@ -325,6 +325,16 @@ class RemoteProvisioner:
         # Use the existing PID/cwd/port ownership checks, never kill by process name.
         self.environment.opencode_path = self.target_binary
         self.environment.model_name = self.target_model
+        from app.runtime.worker_channel import read_worker_channel
+        from app.runtime.worker_client import WorkerOpenCodeClient
+
+        async with SessionLocal() as session:
+            channel = await read_worker_channel(session, self.environment.id)
+        if channel == "worker":
+            client = WorkerOpenCodeClient(self.settings, environment_id=self.environment.id)
+            health = await client.health()
+            await self.step(emit, "重启 OpenCode Serve", "passed", f"健康 · OpenCode {health.get('version')}")
+            return
         connection = RemoteOpenCodeServerConnection(self.environment, self.settings, self.runtime)
         await connection._require_workspace_config(self.ssh)
         if (self.target_model or "").startswith(f"{PROVIDER_ID}/"):

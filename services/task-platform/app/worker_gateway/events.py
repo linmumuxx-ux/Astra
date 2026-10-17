@@ -43,7 +43,10 @@ class EventLog:
         dropped = bool(payload.get("dropped"))
         if not isinstance(seq, int) or seq <= last or (not dropped and seq != last + 1):
             state["gap_refresh"] = True
-            state["events"] = (events + [{"seq": last, "gap": True, "directory": directory}])[-self.limit :]
+            marker = seq if isinstance(seq, int) and seq > last else last
+            state["events"] = (
+                events + [{"seq": marker, "gap": True, "directory": directory, "from": last, "to": seq}]
+            )[-self.limit :]
             await self._save(key, state)
             return {"action": "gap", "from": last, "to": seq}
         if dropped:
