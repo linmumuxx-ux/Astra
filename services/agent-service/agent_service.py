@@ -219,6 +219,37 @@ def without_team_and_task_tools(get_toolkit, mailbox_lookup=None):
     return assembled
 
 
+_memory_error = ""
+
+
+def memory_status() -> dict[str, str | bool]:
+    return {"ok": _memory_error == "", "error": _memory_error}
+
+
+def attach_memory(workspace, factory=None) -> list:
+    """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。"""
+
+    global _memory_error
+    if factory is None:
+        try:
+            from agentscope.middleware import AgenticMemoryMiddleware
+        except Exception as exc:
+            _memory_error = str(exc)
+            return []
+        factory = AgenticMemoryMiddleware
+    try:
+        middleware = factory(workdir=workspace.workdir, backend=workspace.get_backend())
+    except Exception as exc:
+        _memory_error = str(exc)
+        return []
+    _memory_error = ""
+    return [middleware]
+
+
+async def memory_middlewares(user_id: str, agent_id: str, session_id: str, workspace) -> list:
+    return attach_memory(workspace)
+
+
 async def write_record_message(storage, message_bus, message, *, user_id: str, session_id: str, keys) -> None:
     """checkpoint 锁下只 upsert。不调用 ChatService.run，也不占用运行锁。"""
 
@@ -319,6 +350,7 @@ def main() -> None:
         message_bus=message_bus,
         workspace_manager=workspace_manager,
         extra_agent_tools=extra_agent_tools,
+        extra_agent_middlewares=memory_middlewares,
     )
     listen_host = os.environ.get("AGENTSCOPE_HOST", "0.0.0.0")
     listen_port = int(os.environ.get("AGENTSCOPE_PORT", "18000"))
@@ -336,6 +368,10 @@ def main() -> None:
 
     register_task_hint(app, deliver)
     register_record_message(app, storage, message_bus, MessageBusKeys, Msg)
+
+    @app.get("/nexus/memory-status")
+    async def nexus_memory_status() -> dict[str, str | bool]:
+        return memory_status()
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 

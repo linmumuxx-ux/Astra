@@ -1308,13 +1308,20 @@ def create_app() -> FastAPI:
                         UNATTENDED_PERMISSION,
                     )
                 else:
-                    session_id = await ensure_session(
-                        connection,
-                        client,
+                    workspace_id = row["workspace_id"] or f"ws-{conversation_id}"
+                    session_id = await client.create_session(
                         employee["agentscope_agent_id"],
-                        None,
                         row["name"],
+                        workspace_id,
+                    )
+                    await client.set_permission_mode(
+                        employee["agentscope_agent_id"],
+                        session_id,
                         UNATTENDED_PERMISSION,
+                    )
+                    connection.execute(
+                        "UPDATE conversations SET workspace_id = ? WHERE id = ?",
+                        (workspace_id, conversation_id),
                     )
                 connection.execute(
                     "UPDATE conversations SET agentscope_session_id = ?, updated_at = ? WHERE id = ?",
@@ -1343,6 +1350,38 @@ def create_app() -> FastAPI:
             except AgentScopeError as exc:
                 outcome["detail"] = exc.detail
         return {"message": message, "agentscope": outcome}
+
+    @app.post("/api/v1/conversations/{conversation_id}/rebind")
+    async def rebind_private(
+        conversation_id: str,
+        request: Request,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ):
+        row = owned_conversation(connection, conversation_id, owner_id)
+        employee = load_employee(connection, row["employee_id"])
+        workspace_id = row["workspace_id"]
+        if not employee["agentscope_agent_id"] or not workspace_id:
+            raise HTTPException(status_code=409, detail="这条私聊还没有可复用的 workspace")
+        client = client_of(request)
+        try:
+            session_id = await client.create_session(
+                employee["agentscope_agent_id"],
+                row["name"],
+                workspace_id,
+            )
+        except AgentScopeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        connection.execute(
+            """
+            UPDATE conversations
+            SET agentscope_session_id = ?, workspace_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (session_id, workspace_id, utcnow(), conversation_id),
+        )
+        connection.commit()
+        return {"session_id": session_id, "workspace_id": workspace_id}
 
     @app.get("/api/v1/conversations/{conversation_id}/stream")
     async def stream_private(

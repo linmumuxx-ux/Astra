@@ -85,8 +85,8 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B。团队 workspace 隔离依赖 D.3，E 的团队用例排在 D.3 之后。私聊用例只依赖 B。
 
-- [ ] E.1 确认默认 `ContextConfig` 已挂上。压缩后 Session id 不变，消息表仍能读到压缩前的历史
-- [ ] E.2 用官方 workspace 接法装配 `AgenticMemoryMiddleware`
+- [x] E.1 确认默认 `ContextConfig` 已挂上。压缩后 Session id 不变，消息表仍能读到压缩前的历史
+- [x] E.2 用官方 workspace 接法装配 `AgenticMemoryMiddleware`
   - 验证：两个 UID 的私聊记忆互不可见。用同一个 `workspace_id` 重建 Session 后记忆还在。组件不可用时主聊天仍可进行，并返回可诊断错误
 
 ## F. IM 契约

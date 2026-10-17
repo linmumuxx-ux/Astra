@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     kind TEXT NOT NULL DEFAULT 'private',
     name TEXT NOT NULL,
     agentscope_session_id TEXT,
+    workspace_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -110,6 +111,8 @@ def init_db(path: Path) -> None:
         conversation_columns = {row[1] for row in connection.execute("PRAGMA table_info(conversations)")}
         if "kind" not in conversation_columns:
             connection.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'private'")
+        if "workspace_id" not in conversation_columns:
+            connection.execute("ALTER TABLE conversations ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''")
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_private_conversation

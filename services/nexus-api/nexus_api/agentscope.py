@@ -407,11 +407,14 @@ class AgentScopeClient:
 
 
 def _invite_config(description: str) -> dict[str, Any]:
+    """员工 Agent 的对话配置。压缩用默认阈值，邀请说明给 AgentInvite。"""
+
     return {
+        "context_config": {"trigger_ratio": 0.8, "reserve_ratio": 0.1},
         "invite_config": {
             "invitable": True,
             "invite_description": description.strip() or "同事",
-        }
+        },
     }
 
 
