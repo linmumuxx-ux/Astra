@@ -63,15 +63,15 @@ The Worker Agent MUST reconnect with backoff after a socket failure and MUST NOT
 - **THEN** the new session receives a new epoch and the process restart count stays unchanged
 
 ### Requirement: Migrated environments are explicitly marked
-The system MUST store `worker_channel` as `ssh` or `worker` on the execution environment row. Every `connect()` entry and both environment resolvers MUST read that column by `environment_id` and MUST NOT take it from a task or session snapshot. A Worker instance row alone MUST NOT select the Worker transport. Changing the mark MUST be a maintenance operation refused while the employee is occupied. The probe MUST request only the configured Gateway and MCP addresses and MUST NOT accept a URL supplied in a command. After a controlled reload, the system MUST verify the effective OpenCode configuration, including project-level overrides, before storing `worker`. OpenCode MUST keep listening on `127.0.0.1`. For an environment marked `worker`, workspace directory preparation MUST be an Agent command. File browsing, Git reads, and uploads remain on SSH until the worker-local file requirements below are implemented; that implementation MUST NOT open SSH for those calls. An environment still marked `ssh` MUST keep the existing SSH path until phase 4.
+The system MUST store `worker_channel` as `ssh` or `worker` on the execution environment row. Every `connect()` entry and both environment resolvers MUST read that column by `environment_id` and MUST NOT take it from a task or session snapshot. A Worker instance row alone MUST NOT select the Worker transport. Changing the mark MUST be a maintenance operation refused while the employee is occupied. The probe MUST request only the configured Gateway and MCP addresses and MUST NOT accept a URL supplied in a command. After a controlled reload, the system MUST verify the effective OpenCode configuration, including project-level overrides, before storing `worker`. OpenCode MUST keep listening on `127.0.0.1`. For an environment marked `worker`, workspace directory preparation MUST be an Agent command. File browsing, Git reads, and uploads for an environment marked `worker` MUST NOT open SSH. After phase 4, a remote environment that is not marked `worker` MUST NOT use an SSH execution path; remote execution fails without opening SSH until the install mark is `worker`.
 
 #### Scenario: Enrollment alone does not migrate
 - **WHEN** an environment has a Worker instance and `worker_channel` is still `ssh`
-- **THEN** OpenCode HTTP continues to use the existing SSH path
+- **THEN** remote execution fails and does not open an SSH session
 
 #### Scenario: Migration requires a successful intranet probe
 - **WHEN** the Worker cannot reach the configured intranet Gateway or MCP endpoint
-- **THEN** `worker_channel` stays `ssh`
+- **THEN** the environment is not marked `worker` and remote execution does not open SSH
 
 #### Scenario: Snapshot does not select the transport
 - **WHEN** a stored environment snapshot omits `worker_channel` or contains a stale value
@@ -167,7 +167,7 @@ Authorization to fetch or execute a command MUST come from the database epoch an
 - **THEN** the final update does not succeed, the waiter does not receive that body, and the task status stays unchanged
 
 ### Requirement: Migrated file, Git, and upload work runs on the Worker
-For an environment marked `worker`, path checks, read-only Git, worktree file reads, and uploads MUST be Worker commands and MUST NOT call `open_session` or `run_remote`. The commands are `validate_path`, `git_readonly`, `read_file`, and `upload_file`. An environment marked `ssh` MUST keep the existing SFTP and remote-command path until phase 4. Directory and worktree preparation stays the phase 2 `prepare_workspace` command. The Worker Agent MUST NOT treat these commands as Task or Session transitions. Migrated file, Git, and upload calls MUST NOT read the SSH password copied by `session_connection.py` at the environment resolvers.
+For an environment marked `worker`, path checks, read-only Git, worktree file reads, and uploads MUST be Worker commands and MUST NOT call `open_session` or `run_remote`. The commands are `validate_path`, `git_readonly`, `read_file`, and `upload_file`. A remote environment that is not marked `worker` MUST fail these calls without opening SSH. `LOCAL` mode MUST keep its local filesystem path. Directory and worktree preparation stays the phase 2 `prepare_workspace` command. The Worker Agent MUST NOT treat these commands as Task or Session transitions. Migrated file, Git, and upload calls MUST NOT read the SSH password copied by `session_connection.py` at the environment resolvers.
 
 `validate_path` carries `workspace` and `path` and returns `{relative}`. It MUST first open the full relative path from the workspace directory fd with `openat2` using `O_PATH`, `RESOLVE_BENEATH`, and `RESOLVE_NO_MAGICLINKS`. Only when that open returns `ENOENT` MAY it open the parent the same way, and it MUST return `{relative}` when the parent opens. A final component that is a symlink to a path outside the workspace MUST fail as `symlink_escape` and MUST NOT succeed merely because its parent opened. `EXDEV` or `ELOOP` MUST be `symlink_escape`. `ENOSYS`, or `EPERM` caused by seccomp, MUST be `io`. `git_readonly` carries `workspace`, a closed `operation` name, and only the revision, baseline, or path that operation uses. Its result is `{code, size, sha256}`. `read_file` carries `workspace` and `path` and returns `{size, sha256, missing}`. `upload_file` carries `workspace`, `filename`, `size`, and `sha256`, and returns `{path}` in the existing `{workspace}/uploads/{id}-{filename}` shape. A missing worktree file on `read_file` MUST return `missing=true` and an empty body. A non-zero Git status on `GET /repo` MUST still become an empty string, except that `too_large` from `status_porcelain` MUST set `dirty` to true.
 
@@ -181,9 +181,9 @@ File API routes `/file`, `/file/content`, `/file/status`, and `/find/file` MUST 
 - **WHEN** a worker-channel environment lists files, reads a diff, or loads the task repo
 - **THEN** the platform dispatches Worker commands and does not open an SSH session or read the copied SSH password
 
-#### Scenario: SSH environments keep the old path
-- **WHEN** the environment is still marked `ssh`
-- **THEN** file and Git calls use the existing SFTP and remote-command path
+#### Scenario: An unmarked remote environment does not open SSH
+- **WHEN** a remote environment is still marked `ssh`
+- **THEN** file and Git calls fail and do not open an SSH session or SFTP channel
 
 #### Scenario: A deleted file still has a diff
 - **WHEN** a diff lists a file whose final path component is missing
@@ -248,3 +248,65 @@ Read commands MAY be dispatched again after the same-epoch lease expires, and a 
 #### Scenario: A dropped upload is not sent again
 - **WHEN** the Worker socket closes before the partial file is created, including while the blocking function is still running and the connection epoch is unchanged
 - **THEN** no file is created, the upload is not dispatched again, and the task status is unchanged
+
+### Requirement: Remote execution uses only the worker channel
+`LINUX_REMOTE` execution MUST use `worker_channel=worker`. Any other stored value, including `ssh`, means the environment is not installed for execution and MUST NOT select an SSH transport. `connect()`, task start, health checks, workspace preparation, file calls, Git calls, uploads, and the environment test endpoint MUST NOT call `open_session` or `run_remote` for that environment. `LOCAL` mode MUST stay on the local OpenCode client and the local filesystem. The channel mark MUST stay a one-way install mark: a failed probe MUST NOT enable SSH execution. No migration is added for this column.
+
+#### Scenario: An unmarked remote connect does not open SSH
+- **WHEN** `connect()` runs for a `LINUX_REMOTE` environment whose `worker_channel` is not `worker`
+- **THEN** the call fails and does not open an SSH session or a tunnel
+
+#### Scenario: Local execution stays local
+- **WHEN** a `LOCAL` environment starts a task or reads a workspace file
+- **THEN** the platform uses the local client and the local filesystem and does not open SSH
+
+### Requirement: Reverse tunnels are removed
+The platform MUST NOT open an SSH reverse tunnel to the Gateway or the library MCP, and MUST NOT open a local forward from Astra to the remote OpenCode port. `ensure_remote_mcp_tunnel`, `ensure_remote_gateway_tunnel`, `_ensure_service_tunnel`, `open_reverse_tunnel`, and `close_remote_mcp_tunnels` MUST have no callers. Process shutdown MUST NOT depend on a process-local tunnel table.
+
+#### Scenario: Execution does not create a service tunnel
+- **WHEN** a migrated Worker handles an OpenCode request that uses the Gateway or the library MCP
+- **THEN** no reverse tunnel is opened and the process-local tunnel table is not used
+
+### Requirement: Install writes the intranet Gateway and library MCP
+Deployment MUST write the configured intranet Gateway base URL and library MCP URL into the global OpenCode config used by OpenCode 1.18.35. Those addresses MUST be `remote_gateway_local_url` and `mcp_resource_server_url`, not a loopback address produced by a tunnel. An existing global `opencode.jsonc` MUST still be left untouched for a person to merge. The Gateway key and MCP token MUST be kept. The reachability check MUST be the phase-2 migration gate: the Worker probes only the configured addresses, reloads OpenCode only while the employee is unoccupied, and the mark becomes `worker` only when the effective config matches. A probe or config mismatch MUST leave the environment unmarked. `LINUX_REMOTE` model selection MUST remain `gateway_model`. Gateway routing, keys, and providers MUST stay unchanged.
+
+#### Scenario: Install config is not a tunnel address
+- **WHEN** deployment writes the OpenCode provider and MCP config
+- **THEN** the Gateway base URL and MCP URL are the configured intranet addresses and no reverse tunnel is created
+
+#### Scenario: A failed probe does not mark the environment
+- **WHEN** the Worker cannot reach the configured Gateway or MCP address during install
+- **THEN** `worker_channel` is not set to `worker` and remote execution does not open SSH
+
+### Requirement: SSH is limited to install and admin maintenance
+The only SSH entry MUST be an admin-triggered install or fault-maintenance operation on `POST /api/employees/{id}/environment/{action}`. That operation MUST hold the same reservation as channel marking: no concurrent environment operation, the occupancy predicate is false, and no blocking Session remains. A failed Worker call, a failed health check, a task start, and a socket disconnect MUST NOT call `open_session`. Maintenance MUST NOT send a prompt, create a Session, call `apply_session_state()`, or change `Task.status`. The SSH password MUST be supplied on that request, MUST be redacted in logs, and MUST NOT be written to `ssh_password`. A successful install MUST set `ssh_password` to null. Daily resolvers MUST NOT copy the stored password. The environment write API MUST NOT persist a new SSH password.
+
+#### Scenario: A dropped Worker does not open SSH
+- **WHEN** a Worker call fails or the Worker is offline during task start
+- **THEN** the platform does not open an SSH session and the task status stays unchanged
+
+#### Scenario: Install does not keep the password
+- **WHEN** an admin install succeeds and the migration gate passes
+- **THEN** `ssh_password` is null and the password from that request is not stored
+
+### Requirement: Online restart and health run on the agent
+While the Worker is online, OpenCode health checks and an explicit restart MUST run on the Worker Agent. `connect(start=True)` MUST only check health and MUST NOT start or kill OpenCode. A restart MUST occur only when the employee is unoccupied and an admin explicitly requested maintenance. The ordinary command route MUST reject that restart with `403` and `maintenance_command`. The Agent MUST use `systemctl restart` when `ASTRA_WORKER_OPENCODE_UNIT` is set; otherwise it MUST signal the process only after the listener command line contains `opencode` and `serve`. It MUST NOT use the SSH script that kills a process because its working directory matches. A WebSocket disconnect MUST NOT restart a healthy OpenCode. When the Worker is offline, admin SSH maintenance MAY repair the Worker Agent unit; it MUST restart OpenCode only when the admin action is an explicit restart and the employee is unoccupied. A healthy OpenCode MUST be left running when the admin action only repairs the Agent.
+
+#### Scenario: Disconnect does not restart a healthy OpenCode
+- **WHEN** the Worker socket closes while OpenCode is healthy
+- **THEN** the Agent reconnects, the restart count stays unchanged, and OpenCode is not signaled
+
+#### Scenario: An occupied employee rejects restart
+- **WHEN** an admin requests an OpenCode restart while the employee is occupied
+- **THEN** the restart is refused and OpenCode keeps running
+
+#### Scenario: The ordinary command route cannot restart OpenCode
+- **WHEN** a caller posts the restart command to the ordinary Worker command route
+- **THEN** the platform returns 403 `maintenance_command` and does not restart OpenCode
+
+### Requirement: OpenCode port and LLM Wiki stay separate
+OpenCode MUST keep listening on `127.0.0.1` and on the environment's `opencode_server_port`. The column default MUST remain 4096. The platform MUST NOT add 4296 as a second default listener. An operator MAY store another port in that same column. LLM Wiki MUST keep using `llm_wiki_api_base_url` and MUST NOT be pointed at the OpenCode port, the Gateway port, or the library MCP port. The LLM Wiki client and its business operations MUST stay unchanged.
+
+#### Scenario: A new install keeps the environment port
+- **WHEN** deployment starts OpenCode for an environment whose `opencode_server_port` is the default
+- **THEN** OpenCode listens on `127.0.0.1:4096` and LLM Wiki is still addressed by `llm_wiki_api_base_url`

@@ -24,5 +24,5 @@
 - 新增 `app/worker_gateway`、`app/worker_agent`、表 `worker_instances` / `worker_connections` / `worker_commands` 和迁移 `0039_worker_gateway`。
 - 阶段 2 起才会改 `session_connection.py`、`opencode_remote_server.py`、`recovery.py` 的传输方式。`lifecycle.py` 只适配连接，不改投影。
 - 阶段 3 改 `workspace_files.py`、`workspace_changes.py`、`workspace_routes.py` 的远程文件与 Git。
-- 阶段 4 改 `remote_provisioning.py`，去掉执行期对 8110/8201 反向隧道的依赖。
+- 阶段 4 改 `remote_provisioning.py`：安装 Worker Agent 与 OpenCode 配置，删除执行期反向隧道和 `ssh` 执行路径。SSH 只留安装和故障维护。
 - 数字员工别名 `/api/workers` 保持不变。新通道使用 `/api/worker-gateway`。

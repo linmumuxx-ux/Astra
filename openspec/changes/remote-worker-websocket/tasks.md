@@ -41,15 +41,17 @@
 
 ## 4. Gateway、MCP 与部署
 
-- [ ] 4.1 删除反向隧道实现。阶段 2 已让 `worker_channel=worker` 的环境不再打开到 8110/8201 的隧道；此处只在没有 `ssh` 环境后删除代码
-- [ ] 4.2 内网 8110/8201 直连地址和 Worker 可达探测已是阶段 2 的迁移门。此处确认未迁移环境不再依赖隧道地址
-- [ ] 4.3 SSH 仅用于安装 Worker Agent、基础环境和故障维护
-- [ ] 4.4 Worker 在线时，日常 OpenCode 重启和健康检查在 Agent 本地执行
-- [ ] 4.5 确认 LLM Wiki 仍使用现有独立连接；处理 4096 与 4296 的端口选择
-- [ ] 4.6 在去掉执行期 SSH 之前，验证 Gateway 与 MCP 地址从 Worker 可达；部署仍要求 SSH 地址和密码直到替换完成
+实现以 design.md「阶段 4」为准。默认采纳通道选项 A 和密码选项 1：远程执行只留 `worker`，安装成功后不持久保存 SSH 密码。OpenCode 继续用环境上的 `opencode_server_port`（默认 4096）。不新增迁移。
+
+- [ ] 4.1 删除反向隧道和 `ssh` 执行分支。测试：`ensure_remote_mcp_tunnel`、`ensure_remote_gateway_tunnel`、`_ensure_service_tunnel`、`open_reverse_tunnel`、`close_remote_mcp_tunnels` 无调用方；`LINUX_REMOTE` 在通道不是 `worker` 时 `connect()` 失败且不调用 `open_session`；LOCAL 的启动、文件和 Git 仍不使用 SSH
+- [ ] 4.2 安装写入内网 Gateway 与图书馆 MCP，探测复用阶段 2 的迁移门。测试：写出的地址是 `remote_gateway_local_url` 与 `mcp_resource_server_url`，不是 `127.0.0.1:8110` 或 `127.0.0.1:8201`；探测失败不写成 `worker`；`lifecycle.py` 的 `LINUX_REMOTE` 模型映射仍是 `gateway_model`
+- [ ] 4.3 SSH 只用于安装 Worker Agent、基础环境和故障维护。测试：`connect`、任务启动、健康检查、文件、Git、上传、环境测试不调用 `open_session`；Worker 调用失败不会落到 SSH
+- [ ] 4.4 Worker 在线时，显式重启和健康检查在 Agent 本地执行。测试：WebSocket 断开不增加重启计数、不调用 `systemctl`；员工被占用时拒绝维护重启；普通指令接口对维护重启返回 403 `maintenance_command`；显式重启不使用 `_start_server` 的 kill 脚本；健康的 OpenCode 不因套接字断开被重启
+- [ ] 4.5 LLM Wiki 仍使用现有独立连接；OpenCode 继续听 `127.0.0.1` 和环境上的 `opencode_server_port`（默认 4096），不把 4296 写成新的默认值。测试：LLM Wiki 客户端仍使用 `llm_wiki_api_base_url`
+- [ ] 4.6 安装成功后不持久保存 SSH 密码。测试：部署成功后 `ssh_password` 为 `NULL`；当次维护请求里的密码不写回该列；日常 resolver 不读取该列。部署在 Worker 在线且迁移门通过之前，不把环境标成可执行
 
 ## 5. 回归与清理
 
-- [ ] 5.1 调用方切换完成后再删除不再使用的业务隧道
+- [ ] 5.1 确认阶段 4 已删除的反向隧道和 ssh 执行分支没有残留调用方。不改 CLI fallback 模块
 - [ ] 5.2 回归进程重启、网络超时和 Task/Session 一致性。epoch 乱序、双 owner、发布后崩溃、消费者崩溃和 ACK 丢失放在阶段 1/2
 - [ ] 5.3 确认 CLI fallback、AgentScope 和状态机语义未被改写
