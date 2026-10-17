@@ -164,20 +164,38 @@ const fs = require('fs'), path = require('path');
 const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const target = payload.config_path;
 fs.mkdirSync(path.dirname(target), { recursive:true, mode:0o700 });
-if (fs.existsSync(target+'c')) throw Error('已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置');
-let config={};
-if(fs.existsSync(target)) {
-  try { config=JSON.parse(fs.readFileSync(target,'utf8')); } catch { throw Error('全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置'); }
-  if(!config || Array.isArray(config) || typeof config!=='object') throw Error('全局配置必须是 JSON 对象');
-  fs.copyFileSync(target, target+'.astra-backup-'+process.argv[3]);
-  fs.chmodSync(target+'.astra-backup-'+process.argv[3],0o600);
+function load(file) {
+  const text = fs.readFileSync(file, 'utf8').split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
+  let config;
+  try { config = JSON.parse(text); } catch { throw Error('全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置'); }
+  if (!config || Array.isArray(config) || typeof config !== 'object') throw Error('全局配置必须是 JSON 对象');
+  return config;
 }
-config.$schema='https://opencode.ai/config.json';
-config.provider={...config.provider,'astra-gateway':payload.provider};
-config.mcp={...config.mcp,'nexus-library':payload.mcp};
-config.model=payload.model;
-const tmp=target+'.tmp-'+process.argv[3];
-fs.writeFileSync(tmp,JSON.stringify(config,null,2)+'\n',{mode:0o600});
-fs.renameSync(tmp,target);
+let config = {};
+if (fs.existsSync(target)) {
+  config = load(target);
+  const backup = target + '.astra-backup-' + process.argv[3];
+  fs.copyFileSync(target, backup);
+  fs.chmodSync(backup, 0o600);
+}
+config.$schema = 'https://opencode.ai/config.json';
+if (payload.provider) config.provider = {...(config.provider || {}), 'astra-gateway': payload.provider};
+config.mcp = {...(config.mcp || {}), 'nexus-library': payload.mcp};
+for (const item of payload.mcp_refs || []) {
+  if (item && item.name && item.url) {
+    config.mcp[item.name] = {type: 'remote', url: item.url, enabled: true, oauth: false};
+  }
+}
+config.model = payload.model;
+const tmp = target + '.tmp-' + process.argv[3];
+fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', {mode: 0o600});
+fs.renameSync(tmp, target);
+const skillRoot = path.join(path.dirname(target), 'skill');
+for (const skill of payload.skills || []) {
+  if (!skill || !skill.name || skill.body == null) continue;
+  const dir = path.join(skillRoot, skill.name);
+  fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), skill.body, {mode: 0o600});
+}
 NODE
 step '全局 OpenCode 配置' passed

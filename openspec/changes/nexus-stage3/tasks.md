@@ -120,11 +120,11 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：A 和 S。
 
-- [ ] H.1 `code_repositories` 与 `git_credentials`。PAT 用现有 Fernet。环境和 Task 增加 `repository_id`。git 用进程内 askpass。URL、日志和配置不含 PAT
+- [x] H.1 `code_repositories` 与 `git_credentials`。PAT 用现有 Fernet。环境和 Task 增加 `repository_id`。git 用进程内 askpass。URL、日志和配置不含 PAT
   - 验证：错误 token 克隆失败且错误文本不含 PAT
-- [ ] H.2 复制 Worker 只复制仓库、分支、模型、技能和 MCP 引用、运行参数。不复制 token、PAT、密码、端口、任务和工作区
+- [x] H.2 复制 Worker 只复制仓库、分支、模型、技能和 MCP 引用、运行参数。不复制 token、PAT、密码、端口、任务和工作区
   - 验证：同仓两个 Worker 各自 worktree。一个 Worker 不改绑仓库
-- [ ] H.3 部署写入 Worker 全局 `config_home/opencode/opencode.jsonc` 的网关 provider 和该 Worker 的 MCP。技能装到 Worker 专用目录。不改仓库 `.opencode/` 和项目配置。不再写平台根 `opencode.json`
+- [x] H.3 部署写入 Worker 全局 `config_home/opencode/opencode.jsonc` 的网关 provider 和该 Worker 的 MCP。技能装到 Worker 专用目录。不改仓库 `.opencode/` 和项目配置。不再写平台根 `opencode.json`
   - 验证：生产配置指向现有网关。本地 e2e 模型为 `opencode/deepseek-v4.1-flash-free`，不读网关 Key
 - [ ] H.4 分配时记录 base commit 和 S 的配置快照。跨仓拆成多条带 `repository_id` 的关联 Task，并按依赖汇总。未指定仓库不派单。占用中的 Worker 不被另一条 Task 领走
 

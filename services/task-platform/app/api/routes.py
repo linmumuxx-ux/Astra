@@ -25,6 +25,7 @@ from app.database import SessionLocal, get_session
 from app.domain import EmployeeStatus, EnvironmentStatus, RuntimeSessionStatus, TaskStatus
 from app.library_service import KnowledgeService, LibraryPrincipal
 from app.models import (
+    CodeRepository,
     DigitalEmployee,
     Event,
     ExperienceEvidence,
@@ -114,10 +115,8 @@ async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> Emp
     base = EmployeeRead.model_validate(employee)
     environment = employee.execution_environment
     worker_status = None
-    repository_id = None
+    repository_id = environment.repository_id if environment is not None else None
     if environment is not None:
-        detail = environment.status_detail or {}
-        repository_id = detail.get("repository_id")
         instance = await session.scalar(
             select(WorkerInstance).where(WorkerInstance.environment_id == environment.id)
         )
@@ -558,6 +557,8 @@ async def create_task(payload: TaskCreate, session: AsyncSession = Depends(get_s
     category = await session.get(TaskCategory, payload.category_id)
     if not category or not category.enabled:
         raise HTTPException(status_code=422, detail="请选择已启用的任务分类")
+    if payload.repository_id and await session.get(CodeRepository, payload.repository_id) is None:
+        raise HTTPException(status_code=422, detail="仓库不存在")
     if payload.employee_id:
         employee = await require_employee(payload.employee_id, session)
         if not employee.enabled:

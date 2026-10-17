@@ -70,6 +70,10 @@ class ExecutionEnvironmentRead(ORMModel):
     opencode_path: str
     model_name: str | None
     workspace_root: str
+    repository_id: str | None = None
+    branch: str | None = None
+    skill_refs: list[str] = Field(default_factory=list)
+    mcp_refs: list[dict[str, Any]] = Field(default_factory=list)
     status: str
     status_detail: dict[str, Any]
     labels: list[str]
@@ -241,6 +245,7 @@ class TaskCreate(BaseModel):
     source_conversation_id: str | None = None
     source_channel_id: str | None = None
     idempotency_key: str | None = None
+    repository_id: str | None = None
     priority: Priority = Priority.MEDIUM
     # Kept in the API for stored tasks; all new tasks close explicitly.
     completion_policy: CompletionPolicy = CompletionPolicy.MANUAL_CONFIRM
@@ -283,6 +288,7 @@ class TaskRead(RuntimeRead):
     source_conversation_id: str | None = None
     source_channel_id: str | None = None
     idempotency_key: str | None = None
+    repository_id: str | None = None
     current_session_id: str | None
     session_status: str | None = None
     session_terminal_reason: str | None = None

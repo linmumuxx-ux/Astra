@@ -38,8 +38,14 @@ def global_config_path(environ: dict[str, str] | None = None) -> Path:
     env = environ if environ is not None else os.environ
     home = env.get("XDG_CONFIG_HOME")
     if home:
-        return Path(home) / "opencode" / "opencode.json"
-    return Path(env.get("HOME") or str(Path.home())) / ".config" / "opencode" / "opencode.json"
+        root = Path(home) / "opencode"
+    else:
+        root = Path(env.get("HOME") or str(Path.home())) / ".config" / "opencode"
+    jsonc = root / "opencode.jsonc"
+    legacy = root / "opencode.json"
+    if jsonc.is_file() or not legacy.is_file():
+        return jsonc
+    return legacy
 
 
 def direct_urls(environ: dict[str, str] | None = None) -> tuple[str, str]:
@@ -59,35 +65,52 @@ def probe_url(url: str, *, timeout: float = 3) -> bool:
         return False
 
 
-def write_direct_config(path: Path, *, gateway_url: str, mcp_url: str) -> None:
-    """Replace only the two direct addresses. Keep the Gateway key and MCP token."""
-
-    jsonc = path.with_suffix(".jsonc")
-    if jsonc.exists():
-        raise RuntimeError("已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置")
-    if not path.is_file():
-        raise RuntimeError("全局 OpenCode 配置不存在，未重载")
+def _read_config(path: Path) -> dict:
+    text = "\n".join(
+        line for line in path.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//")
+    )
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        config = json.loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError("全局 OpenCode 配置不是有效 JSON，请人工处理，未覆盖配置") from exc
     if not isinstance(config, dict):
         raise RuntimeError("全局配置必须是 JSON 对象")
+    return config
+
+
+def write_direct_config(path: Path, *, gateway_url: str, mcp_url: str) -> None:
+    """Replace only the two direct addresses. Keep the Gateway key and MCP token.
+
+    An existing opencode.jsonc is merged. It is not a reason to stop.
+    """
+
+    jsonc = path if path.suffix == ".jsonc" else path.with_suffix(".jsonc")
+    if jsonc.is_file():
+        config = _read_config(jsonc)
+        target = jsonc
+        gateway = _mapping(_mapping(_mapping(config, "provider"), "astra-gateway"), "options")
+        if gateway is None and path.is_file() and path != jsonc:
+            config = _read_config(path)
+    elif path.is_file():
+        config = _read_config(path)
+        target = path
+    else:
+        raise RuntimeError("全局 OpenCode 配置不存在，未重载")
     options = _mapping(_mapping(_mapping(config, "provider"), "astra-gateway"), "options")
     library = _mapping(_mapping(config, "mcp"), "nexus-library")
     if options is None or "apiKey" not in options or "baseURL" not in options:
         raise RuntimeError("全局配置缺少 astra-gateway，未重载")
     if library is None or "url" not in library:
         raise RuntimeError("全局配置缺少 nexus-library，未重载")
-    backup = path.with_name(path.name + ".astra-backup-switch")
-    shutil.copy2(path, backup)
+    backup = target.with_name(target.name + ".astra-backup-switch")
+    shutil.copy2(target if target.is_file() else path, backup)
     os.chmod(backup, 0o600)
     options["baseURL"] = gateway_url
     library["url"] = mcp_url
-    temporary = path.with_name(path.name + ".tmp-switch")
+    temporary = target.with_name(target.name + ".tmp-switch")
     temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    os.replace(temporary, target)
 
 
 def read_effective_config(port: int, workspace: str, *, timeout: float = 5) -> dict:

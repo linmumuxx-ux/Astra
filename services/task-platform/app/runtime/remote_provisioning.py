@@ -28,12 +28,15 @@ from app.gateway.schemas import GatewayKeyCreate
 from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
 from app.models import DigitalEmployee, Event, OpenCodeExecutionEnvironment
+from app.runtime.capability import loads_jsonc
 from app.runtime.direct_urls import require_direct_url
 from app.runtime.environment import ExecutionEnvironmentRuntime
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
 from app.runtime.opencode_model import route_model_id
+from app.runtime.repository import collect_skill_files
 
 PROVIDER_ID = "astra-gateway"
+E2E_MODEL = "opencode/deepseek-v4.1-flash-free"
 AGENT_VENV = "/opt/nexus/worker/venv"
 WORKER_INSTALL_DIR = "/opt/nexus/worker"
 WORKER_SECRET_DIR = "/etc/nexus"
@@ -196,20 +199,38 @@ def agent_wheel() -> tuple[str, bytes]:
     return f"{dist}-py3-none-any.whl", buffer.getvalue()
 
 
-def managed_config(*, config_path, model, models, gateway_url, gateway_key, mcp_url, mcp_key):
+def managed_config(
+    *,
+    config_path,
+    model,
+    models,
+    gateway_url,
+    gateway_key,
+    mcp_url,
+    mcp_key,
+    e2e=False,
+    skills=None,
+    mcp_refs=None,
+):
     mcp = {"type": "remote", "url": mcp_url, "enabled": True, "oauth": False}
     if mcp_key:
         mcp["headers"] = {"Authorization": f"Bearer {mcp_key}"}
-    return {
-        "config_path": config_path,
-        "model": f"{PROVIDER_ID}/{model}",
-        "provider": {
+    provider = None
+    if not e2e:
+        provider = {
             "npm": "@ai-sdk/openai-compatible",
             "name": "Astra API 中转",
             "options": {"baseURL": gateway_url, "apiKey": gateway_key},
             "models": {name: {"name": name} for name in models},
-        },
+        }
+    return {
+        "config_path": config_path,
+        "model": E2E_MODEL if e2e else f"{PROVIDER_ID}/{model}",
+        "provider": provider,
         "mcp": mcp,
+        "mcp_refs": list(mcp_refs or []),
+        "skills": list(skills or []),
+        "e2e": e2e,
     }
 
 
@@ -288,8 +309,9 @@ class RemoteProvisioner:
         content = await self.ssh.read_file(config_path)
         raw = None
         if content:
+            text = content.decode() if isinstance(content, bytes) else content
             try:
-                config = json.loads(content)
+                config = loads_jsonc(text)
                 raw = config.get("provider", {}).get(PROVIDER_ID, {}).get("options", {}).get("apiKey")
             except (ValueError, AttributeError):
                 raise RuntimeError("已有全局配置不是有效 JSON，请人工合并后重试") from None
@@ -325,38 +347,44 @@ class RemoteProvisioner:
 
     async def _install(self, emit):
         await self.step(emit, "部署配置", "running")
-        async with SessionLocal() as db:
-            models = list(
-                await db.scalars(
-                    select(GatewayRoute.model)
-                    .where(GatewayRoute.enabled.is_(True))
-                    .order_by(GatewayRoute.model)
+        e2e = (self.environment.model_name or "").strip() == E2E_MODEL
+        if e2e:
+            models: list[str] = []
+            selected = E2E_MODEL
+        else:
+            async with SessionLocal() as db:
+                models = list(
+                    await db.scalars(
+                        select(GatewayRoute.model)
+                        .where(GatewayRoute.enabled.is_(True))
+                        .order_by(GatewayRoute.model)
+                    )
                 )
-            )
-        if not self.settings.gateway_enabled or not models:
-            raise RuntimeError("请先在 API 中转配置至少一个启用的模型路由")
-        selected = route_model_id(self.environment.model_name) if self.environment.model_name else models[0]
-        if selected not in models:
-            raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
+            if not self.settings.gateway_enabled or not models:
+                raise RuntimeError("请先在 API 中转配置至少一个启用的模型路由")
+            selected = models[0]
+            if self.environment.model_name:
+                selected = route_model_id(self.environment.model_name)
+            if selected not in models:
+                raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
         paths = (
             await self._command('printf "%s\\n%s\\n" "$HOME" "${XDG_CONFIG_HOME:-$HOME/.config}"')
         ).splitlines()
         if len(paths) != 2 or any(not p.startswith("/") for p in paths):
             raise RuntimeError("无法确定远程用户全局配置目录")
         home, config_home = paths
-        config_path = f"{config_home}/opencode/opencode.json"
+        config_path = f"{config_home}/opencode/opencode.jsonc"
         self.config_path = config_path
-        if await self.ssh.read_file(config_path + "c") is not None:
-            raise RuntimeError("已有全局 opencode.jsonc，请人工合并后重试，未覆盖配置")
-        raw = await self._gateway_key(config_path, models)
+        raw = "" if e2e else await self._gateway_key(config_path, models)
         gateway_url, mcp_url = await self._channel_endpoints()
-        self.target_model = f"{PROVIDER_ID}/{selected}"
+        self.target_model = E2E_MODEL if e2e else f"{PROVIDER_ID}/{selected}"
         uid = await self._command("id -u")
         if not self.target_binary.startswith("/"):
             self.target_binary = "/usr/local/bin/opencode" if uid == "0" else f"{home}/.local/bin/opencode"
         cache = f"{home}/.cache/astra-provision"
         await self._command(f"install -d -m 700 {shlex.quote(cache)}")
         stem = f"{cache}/{self.operation['id']}"
+        skill_source = Path(self.settings.workspace_root) / "worker-skills"
         payload = managed_config(
             config_path=config_path,
             model=selected,
@@ -365,6 +393,9 @@ class RemoteProvisioner:
             gateway_key=raw,
             mcp_url=mcp_url,
             mcp_key=self.settings.mcp_api_key,
+            e2e=e2e,
+            skills=collect_skill_files(list(self.environment.skill_refs or []), skill_source),
+            mcp_refs=list(self.environment.mcp_refs or []),
         )
         await self.ssh.write_file(stem + ".json", json.dumps(payload, ensure_ascii=False).encode())
         await self.ssh.write_file(stem + ".sh", Path(__file__).with_name("remote_install.sh").read_bytes())

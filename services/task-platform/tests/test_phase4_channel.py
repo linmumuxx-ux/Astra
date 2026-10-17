@@ -273,7 +273,7 @@ async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, mon
         async def read_file(self, path):
             if path in files:
                 return files[path]
-            if path.endswith("opencode.json"):
+            if path.endswith("opencode.json") or path.endswith("opencode.jsonc"):
                 return json.dumps(
                     {"provider": {"astra-gateway": {"options": {"apiKey": RAW_KEY}}}}
                 ).encode()
