@@ -279,15 +279,19 @@ Deployment MUST write the configured intranet Gateway base URL and library MCP U
 - **THEN** `worker_channel` is not set to `worker` and remote execution does not open SSH
 
 ### Requirement: SSH is limited to install and admin maintenance
-The only SSH entry MUST be an admin-triggered install or fault-maintenance operation on `POST /api/employees/{id}/environment/{action}`. That operation MUST hold the same reservation as channel marking: no concurrent environment operation, the occupancy predicate is false, and no blocking Session remains. A failed Worker call, a failed health check, a task start, and a socket disconnect MUST NOT call `open_session`. Maintenance MUST NOT send a prompt, create a Session, call `apply_session_state()`, or change `Task.status`. The SSH password MUST be supplied on that request, MUST be redacted in logs, and MUST NOT be written to `ssh_password`. A successful install MUST set `ssh_password` to null. Daily resolvers MUST NOT copy the stored password. The environment write API MUST NOT persist a new SSH password.
+The only SSH entry MUST be an admin-triggered install or fault-maintenance operation on `POST /api/employees/{id}/environment/{action}`. That operation MUST hold the same reservation as channel marking: no concurrent environment operation, the occupancy predicate is false, and no blocking Session remains. A failed Worker call, a failed health check, a task start, and a socket disconnect MUST NOT call `open_session`. Maintenance MUST NOT send a prompt, create a Session, call `apply_session_state()`, or change `Task.status`. `ssh_password` MUST remain on the environment row. A successful install MUST NOT clear it. The environment write API MUST keep storing a non-empty password and MUST keep the stored value when an update omits it. Responses MUST continue to expose only `has_ssh_password`. Logs MUST redact the password. `connect()`, task start, health checks, file calls, Git calls, uploads, workspace preparation, and the environment test MUST NOT read `ssh_password`. `open_session` MUST read the column only after the maintenance reservation is held and the employee is unoccupied. Without that reservation it MUST refuse without reading the password. The maintenance request body MUST NOT carry a separate password.
 
 #### Scenario: A dropped Worker does not open SSH
 - **WHEN** a Worker call fails or the Worker is offline during task start
-- **THEN** the platform does not open an SSH session and the task status stays unchanged
+- **THEN** the platform does not open an SSH session, does not read `ssh_password`, and the task status stays unchanged
 
-#### Scenario: Install does not keep the password
+#### Scenario: Install keeps the stored password
 - **WHEN** an admin install succeeds and the migration gate passes
-- **THEN** `ssh_password` is null and the password from that request is not stored
+- **THEN** `ssh_password` is unchanged and daily execution does not read it
+
+#### Scenario: Open session without the maintenance lock does not read the password
+- **WHEN** `open_session` is reached without the maintenance reservation or while the employee is occupied
+- **THEN** the call is refused and `ssh_password` is not read
 
 ### Requirement: Online restart and health run on the agent
 While the Worker is online, OpenCode health checks and an explicit restart MUST run on the Worker Agent. `connect(start=True)` MUST only check health and MUST NOT start or kill OpenCode. A restart MUST occur only when the employee is unoccupied and an admin explicitly requested maintenance. The ordinary command route MUST reject that restart with `403` and `maintenance_command`. The Agent MUST use `systemctl restart` when `ASTRA_WORKER_OPENCODE_UNIT` is set; otherwise it MUST signal the process only after the listener command line contains `opencode` and `serve`. It MUST NOT use the SSH script that kills a process because its working directory matches. A WebSocket disconnect MUST NOT restart a healthy OpenCode. When the Worker is offline, admin SSH maintenance MAY repair the Worker Agent unit; it MUST restart OpenCode only when the admin action is an explicit restart and the employee is unoccupied. A healthy OpenCode MUST be left running when the admin action only repairs the Agent.
