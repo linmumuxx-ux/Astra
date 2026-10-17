@@ -30,8 +30,7 @@
 - 内嵌工作区前端只提供上游 `v1.18.35`。历史 Session 仍保留当时写入的版本号；该版本没有界面包时页面显示「版本未知/界面已退役」，不会改写成 1.18.35。
 - CentOS 7 使用独立 Vault repo 配置安装依赖，不改原 yum 源；旧 glibc x86_64 使用 Node glibc-217 构建、npm 包自动选择的 OpenCode 平台二进制和隔离的 Alpine musl/C++ 运行库。仅为 musl 加载器增加运行库路径，不替换系统 glibc。Git 低于 2.20 时编译 2.43.7。CentOS 7 已停止维护，且系统 Python 不能运行 Worker Agent，建议后续迁移到自带 Python ≥ 3.11 的系统。
 - 工程目录为空时初始化 Git 和初始提交；非空且不是 Git 仓库时拒绝，已有仓库保留原内容。
-- 在远端用户的 `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json` 合并 `astra-gateway` provider、默认模型和 `nexus-library` MCP。写入前备份为 `.astra-backup-<操作ID>`，配置及备份权限为 0600，其他 provider/MCP/字段保留。已有 JSONC 或无效 JSON 时拒绝覆盖，需人工合并。
-- 同一 SSH 用户的全局配置对该用户的其他 OpenCode 工程也生效；需要独立配置时使用独立 Linux 账号。
+- 在 `/etc/nexus/opencode/<环境 id>/opencode.jsonc` 合并 `astra-gateway` provider、默认模型和 `nexus-library` MCP。`nexus-opencode` 单元用 `OPENCODE_CONFIG` 指向这份文件，通道切换和能力发现也读它。不写用户全局 `~/.config/opencode/opencode.jsonc`。写入前备份为 `.astra-backup-<操作ID>`，配置及备份权限为 0600。已有 JSONC 或无效 JSON 时拒绝覆盖，需人工合并。安装缓存放在 `~/.cache/nexus-provision`。
 - 平台 API 不回显 SSH 密码，维护日志隐藏服务密钥；远端全局配置含访问凭据，请保护该 Linux 账号和配置备份。
 
 ## 维护与恢复

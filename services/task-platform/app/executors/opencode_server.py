@@ -101,13 +101,14 @@ class OpenCodeServerClient:
         query: dict[str, Any] | None = None,
         include_headers: bool = False,
         session_id: str | None = None,
+        task_id: str | None = None,
     ) -> Any:
         params = dict(query or {})
         if directory:
             params["directory"] = str(directory)
         try:
             status, content, headers = await self.exchange(
-                method, path, params=params, body=body, session_id=session_id
+                method, path, params=params, body=body, session_id=session_id, task_id=task_id
             )
         except httpx.TimeoutException as exc:
             raise OpenCodeExecutionTimeout(str(exc)) from exc
@@ -130,6 +131,7 @@ class OpenCodeServerClient:
         params: dict[str, Any] | None = None,
         body: Any = None,
         session_id: str | None = None,
+        task_id: str | None = None,
     ) -> tuple[int, bytes, dict[str, str]]:
         async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as client:
             response = await client.request(

@@ -9,7 +9,7 @@ opencode_version=$4
 npm_registry=$5
 payload=$6
 operation=$7
-cache="$HOME/.cache/astra-provision"
+cache="$HOME/.cache/nexus-provision"
 mkdir -p "$cache"
 exec 9>"$cache/install.lock"
 flock -n 9 || { echo '同一 SSH 用户已有部署操作，请等待远端操作结束后重试' >&2; exit 75; }

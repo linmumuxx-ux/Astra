@@ -37,6 +37,9 @@ ReadEffective = Callable[[], dict]
 
 def global_config_path(environ: dict[str, str] | None = None) -> Path:
     env = environ if environ is not None else os.environ
+    explicit = (env.get("OPENCODE_CONFIG") or "").strip()
+    if explicit:
+        return Path(explicit)
     home = env.get("XDG_CONFIG_HOME")
     if home:
         root = Path(home) / "opencode"

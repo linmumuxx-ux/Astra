@@ -1,4 +1,4 @@
-"""记忆 hook 只在下游还没开始时降级。handler 开始之后的错误直接抛出。"""
+"""记忆 hook 在下游还没开始，或回复已经成功之后，标成 degraded。handler 中途出错直接抛出。"""
 
 import asyncio
 
@@ -15,13 +15,28 @@ class _After:
     async def on_reply(self, _agent, input_kwargs, next_handler):
         async for item in next_handler(**input_kwargs):
             yield item
-        raise RuntimeError("模型 429")
+        raise RuntimeError("记忆没写上")
+
+
+class _Pass:
+    async def on_reply(self, _agent, input_kwargs, next_handler):
+        async for item in next_handler(**input_kwargs):
+            yield item
 
 
 def _handler(calls):
     async def handler(**_kwargs):
         calls["n"] += 1
         yield "ok"
+
+    return handler
+
+
+def _failing_handler(calls):
+    async def handler(**_kwargs):
+        calls["n"] += 1
+        raise RuntimeError("模型 429")
+        yield  # pragma: no cover
 
     return handler
 
@@ -42,8 +57,20 @@ def test_memory_degrades_only_before_the_handler_starts():
 
     calls["n"] = 0
 
+    async def written():
+        items = []
+        async for item in GuardedMemory(_After(), "agent-b").on_reply(None, {}, _handler(calls)):
+            items.append(item)
+        return items
+
+    assert asyncio.run(written()) == ["ok"]
+    assert calls["n"] == 1
+    assert memory_status("agent-b")["status"] == "degraded"
+
+    calls["n"] = 0
+
     async def downstream():
-        async for _item in GuardedMemory(_After(), "agent-b").on_reply(None, {}, _handler(calls)):
+        async for _item in GuardedMemory(_Pass(), "agent-c").on_reply(None, {}, _failing_handler(calls)):
             pass
 
     try:
@@ -53,4 +80,4 @@ def test_memory_degrades_only_before_the_handler_starts():
     else:
         raise AssertionError("下游错误应该抛出")
     assert calls["n"] == 1
-    assert memory_status("agent-b")["status"] == "ok"
+    assert memory_status("agent-c")["status"] == "ok"

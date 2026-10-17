@@ -79,9 +79,7 @@ class Dispatcher:
                 if parent is not None:
                     parent_status = parent.status.value if hasattr(parent.status, "value") else parent.status
                 if parent_status == TaskStatus.CANCELED.value:
-                    task.status = TaskStatus.CANCELED
-                    task.runtime_error = "父任务已取消，子任务已跳过"
-                    task.current_progress = "父任务已取消，子任务已跳过"
+                    task.current_progress = "父任务已取消，阻塞中"
                     await self.session.commit()
                     continue
                 if parent is None or _parent_open(parent.status):

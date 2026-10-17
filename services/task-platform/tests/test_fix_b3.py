@@ -105,7 +105,7 @@ def test_bindings_without_a_revision_record_are_not_applied():
     )
     assert binding_revision(same) != desired
     assert binding_revision(same) != binding_revision(other)
-    assert binding_revision(same) != binding_revision(configured)
+    assert binding_revision(same) == binding_revision(configured)
 
 
 @pytest.mark.asyncio
@@ -261,8 +261,9 @@ async def test_canceled_parent_skips_the_child_with_a_reason(session, monkeypatc
     await session.commit()
     assert await Dispatcher(session).claim_once() is None
     child = await session.get(Task, "child")
-    assert child.status == TaskStatus.CANCELED
-    assert child.runtime_error == "父任务已取消，子任务已跳过"
+    assert child.status == TaskStatus.PENDING
+    assert child.current_progress == "父任务已取消，阻塞中"
+    assert child.runtime_error is None
     assert await Dispatcher(session).claim_once() is None
 
 

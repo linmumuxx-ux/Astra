@@ -376,13 +376,10 @@ class RemoteProvisioner:
                 selected = route_model_id(self.environment.model_name)
             if selected not in models:
                 raise RuntimeError("员工模型未匹配启用的中转路由，请留空或选择 astra-gateway/<路由模型>")
-        paths = (
-            await self._command('printf "%s\\n%s\\n" "$HOME" "${XDG_CONFIG_HOME:-$HOME/.config}"')
-        ).splitlines()
-        if len(paths) != 2 or any(not p.startswith("/") for p in paths):
-            raise RuntimeError("无法确定远程用户全局配置目录")
-        home, config_home = paths
-        config_path = f"{config_home}/opencode/opencode.jsonc"
+        home = (await self._command('printf "%s" "$HOME"')).splitlines()[0]
+        if not home.startswith("/"):
+            raise RuntimeError("无法确定远程用户目录")
+        config_path = f"/etc/nexus/opencode/{self.environment.id}/opencode.jsonc"
         self.config_path = config_path
         raw = "" if e2e else await self._gateway_key(config_path, models)
         gateway_url, mcp_url = await self._channel_endpoints()
@@ -390,7 +387,7 @@ class RemoteProvisioner:
         uid = await self._command("id -u")
         if not self.target_binary.startswith("/"):
             self.target_binary = "/usr/local/bin/opencode" if uid == "0" else f"{home}/.local/bin/opencode"
-        cache = f"{home}/.cache/astra-provision"
+        cache = f"{home}/.cache/nexus-provision"
         await self._command(f"install -d -m 700 {shlex.quote(cache)}")
         stem = f"{cache}/{self.operation['id']}"
         skill_source = Path(self.settings.workspace_root) / "worker-skills"
@@ -526,9 +523,11 @@ class RemoteProvisioner:
         token_path = f"{WORKER_SECRET_DIR}/worker-{self.environment.id}.env"
         opencode_url = f"http://127.0.0.1:{port}"
         timeout = int(self.settings.opencode_control_timeout_seconds)
+        opencode_config = self.config_path or f"/etc/nexus/opencode/{self.environment.id}/opencode.jsonc"
         opencode_unit_text = (
             "[Unit]\nDescription=Nexus OpenCode\nAfter=network-online.target\n"
             "[Service]\n"
+            f"Environment=OPENCODE_CONFIG={opencode_config}\n"
             f"ExecStart={self.target_binary} serve --hostname 127.0.0.1 --port {port}\n"
             "Restart=on-failure\n"
             "[Install]\nWantedBy=multi-user.target\n"
@@ -572,6 +571,7 @@ class RemoteProvisioner:
                 f"ASTRA_MCP_RESOURCE_URL={mcp_url}",
                 f"ASTRA_WORKER_OPENCODE_URL={opencode_url}",
                 f"ASTRA_WORKER_OPENCODE_UNIT={opencode_unit}",
+                f"OPENCODE_CONFIG={opencode_config}",
                 f"ASTRA_WORKER_WORKSPACE_ROOT={self.environment.workspace_root}",
                 f"ASTRA_OPENCODE_CONTROL_TIMEOUT_SECONDS={timeout}",
             ]

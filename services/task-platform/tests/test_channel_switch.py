@@ -6,7 +6,7 @@ import random
 
 import pytest
 
-from app.worker_agent.channel_switch import apply_channel_switch
+from app.worker_agent.channel_switch import apply_channel_switch, global_config_path
 from app.worker_agent.connection import AgentConfig, WorkerConnectionManager, handle_command
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_gateway.protocol import envelope
@@ -35,6 +35,11 @@ def _config(path, *, gateway="http://127.0.0.1:19998", mcp="http://127.0.0.1:199
         ),
         encoding="utf-8",
     )
+
+
+def test_global_config_path_prefers_opencode_config(tmp_path):
+    target = tmp_path / "opencode.jsonc"
+    assert global_config_path({"OPENCODE_CONFIG": str(target), "HOME": "/tmp"}) == target
 
 
 def test_switch_writes_direct_urls_and_returns_effective_override(tmp_path):

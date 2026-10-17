@@ -131,6 +131,17 @@ async def accept_inbound(
             }
         raise ImError("这个事件正在处理", 409)
     try:
+        current = connection.execute(
+            "SELECT claim_token FROM im_events WHERE provider = ? AND event_id = ?",
+            (provider, event_id),
+        ).fetchone()
+        if current is None or current["claim_token"] != token:
+            return {
+                "accepted": True,
+                "duplicate": True,
+                "session_id": session_id,
+                "employee_id": employee_id,
+            }
         await accept(employee_id, session_id, text)
     except Exception:
         connection.execute(
@@ -142,7 +153,7 @@ async def accept_inbound(
         )
         connection.commit()
         raise
-    connection.execute(
+    finished = connection.execute(
         """
         UPDATE im_events SET accepted = 1, claim_token = '', claim_until = ''
         WHERE provider = ? AND event_id = ? AND claim_token = ?
@@ -150,6 +161,13 @@ async def accept_inbound(
         (provider, event_id, token),
     )
     connection.commit()
+    if finished.rowcount != 1:
+        return {
+            "accepted": True,
+            "duplicate": True,
+            "session_id": session_id,
+            "employee_id": employee_id,
+        }
     return {"accepted": True, "duplicate": False, "session_id": session_id, "employee_id": employee_id}
 
 

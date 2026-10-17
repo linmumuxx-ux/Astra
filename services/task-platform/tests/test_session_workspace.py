@@ -83,14 +83,14 @@ class NativeServer:
         messages = await self.messages(directory, sid)
         return {"messages": messages, "next_before": None}
 
-    async def exchange(self, method, path, *, params=None, body=None, session_id=None):
+    async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
         self.exchange_sessions.append(session_id)
         async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as http:
             response = await http.request(method, self.base_url + path, params=params, json=body)
         headers = {key.lower(): value for key, value in response.headers.items()}
         return response.status_code, response.content, headers
 
-    async def request(self, method, path, *, directory=None, body=None, session_id=None):
+    async def request(self, method, path, *, directory=None, body=None, session_id=None, task_id=None):
         if method == "POST" and path.endswith("/prompt_async"):
             sid = path.split("/")[2]
             self.sent.append((sid, body))

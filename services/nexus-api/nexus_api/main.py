@@ -2398,12 +2398,25 @@ def create_app() -> FastAPI:
                 )
                 return claim_private_session(connection, conversation_id, session_id, workspace_id)
 
+        prior_reply: dict[str, Any] = {"cursor": None, "known": set()}
+
         async def accept(employee_id: str, session_id: str, text: str) -> None:
             employee = load_employee(connection, employee_id)
-            if not client.configured or not employee["agentscope_agent_id"]:
+            agent_id = employee["agentscope_agent_id"]
+            if not client.configured or not agent_id:
                 raise ImError("AgentScope 还没有接受这次输入", 503)
+            prior_reply["cursor"] = await client.latest_event_cursor(agent_id, session_id)
+            try:
+                existing = await client.list_session_messages(agent_id, session_id)
+            except AgentScopeError:
+                existing = []
+            prior_reply["known"] = {
+                str(item.get("id"))
+                for item in existing
+                if isinstance(item, dict) and item.get("role") == "assistant" and item.get("id")
+            }
             await client.trigger_chat(
-                employee["agentscope_agent_id"],
+                agent_id,
                 session_id,
                 [{"type": "text", "text": text}],
                 body.sender_uid or "im",
@@ -2430,7 +2443,15 @@ def create_app() -> FastAPI:
         if not result.get("duplicate"):
             key = body.conversation_key.strip() or body.external_key.strip() or body.sender_uid.strip()
             employee = load_employee(connection, result["employee_id"])
-            await capture_im_reply(connection, client, employee, result["session_id"], key)
+            await capture_im_reply(
+                connection,
+                client,
+                employee,
+                result["session_id"],
+                key,
+                after=prior_reply["cursor"],
+                known_reply_ids=prior_reply["known"],
+            )
         return result
 
     @app.get("/api/v1/im/outbox")
@@ -2563,16 +2584,19 @@ async def capture_im_reply(
     employee: dict[str, Any],
     session_id: str,
     conversation_key: str,
+    after: str | None = None,
+    known_reply_ids: set[str] | None = None,
 ) -> None:
-    """IM 触发的这一轮在 REPLY_END 时把助手回复写入 outbox。"""
+    """从触发 chat 之前的游标订阅。重放里的上一轮 reply end 不入队。"""
 
     agent_id = employee.get("agentscope_agent_id")
     if not client.configured or not agent_id or not conversation_key or not session_id:
         return
+    known = known_reply_ids or set()
     started = 0
     pending = b""
     try:
-        async with client.stream_session(agent_id, session_id) as response:
+        async with client.stream_session(agent_id, session_id, after=after) as response:
             if response.status_code >= 400:
                 return
             async for chunk in response.aiter_bytes():
@@ -2583,6 +2607,8 @@ async def capture_im_reply(
                     if not close or not terminal:
                         continue
                     reply_id = str(terminal.get("reply_id") or "")
+                    if reply_id and reply_id in known:
+                        continue
                     messages = await client.list_session_messages(agent_id, session_id)
                     body = ""
                     for message in messages:

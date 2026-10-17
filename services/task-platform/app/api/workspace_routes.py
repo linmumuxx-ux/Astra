@@ -480,7 +480,11 @@ async def native_proxy(
                 raise PermissionError("不允许覆盖任务绑定")
             if pending:
                 items = await client.request(
-                    "GET", f"/{pending[0]}", directory=Path(workspace), session_id=session_id
+                    "GET",
+                    f"/{pending[0]}",
+                    directory=Path(workspace),
+                    session_id=session_id,
+                    task_id=task.id,
                 )
                 if not any(item["id"] == pending[1] and item.get("sessionID") in allowed for item in items):
                     raise PermissionError("请求不属于此任务 Session")
@@ -507,7 +511,12 @@ async def native_proxy(
                     raise PermissionError("Session 不属于此任务")
             forward_path = "/project/current" if native_path == "/project" else native_path
             status, content, headers = await client.exchange(
-                method, forward_path, params=params, body=body, session_id=session_id
+                method,
+                forward_path,
+                params=params,
+                body=body,
+                session_id=session_id,
+                task_id=task.id,
             )
             upstream = _Upstream(status, content, headers)
             if upstream.is_error:

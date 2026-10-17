@@ -12,18 +12,15 @@ def binding_entries(
     skill_refs: list[str] | None,
     mcp_refs: list[dict[str, Any]] | None,
 ) -> list[Any]:
-    """修订号的材料。MCP 带上 URL 和配置，只有名字时仍是名字。"""
+    """修订号只算安装脚本会写入的字段：技能名，以及带 URL 的 MCP 名和 URL。"""
 
     entries: list[Any] = [str(name) for name in (skill_refs or []) if name]
     for item in mcp_refs or []:
         if not isinstance(item, dict) or not item.get("name"):
             continue
         url = str(item.get("url") or "")
-        config = item.get("config") if isinstance(item.get("config"), dict) else {}
-        extra = {key: value for key, value in item.items() if key not in {"name", "url", "config"}}
-        merged = {**extra, **config}
-        if url or merged:
-            entries.append({"name": str(item["name"]), "url": url, "config": merged})
+        if url:
+            entries.append({"name": str(item["name"]), "url": url})
         else:
             entries.append(str(item["name"]))
     return entries

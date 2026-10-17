@@ -366,7 +366,11 @@ class RuntimeService:
             await self.session.commit()
             return
         if state.status == RuntimeSessionStatus.UNKNOWN.value:
-            # 通信失败和 UNKNOWN 不写 waiting_reason，也不改 Task 状态。
+            # 通信失败不改 Task 状态。缺失和传输未知的原因在这里写。
+            if state.terminal_reason == SessionTerminalReason.SESSION_MISSING.value:
+                task.waiting_reason = "SESSION_MISSING"
+            elif state.terminal_reason == SessionTerminalReason.TRANSPORT_UNKNOWN.value:
+                task.waiting_reason = "TRANSPORT_RECOVERY"
             await self.session.commit()
             return
         if state.terminal_reason == SessionTerminalReason.UNCONFIRMED.value:
@@ -1381,6 +1385,7 @@ class RuntimeService:
         task.pending_prompt = None
         task.runtime_error = None
         if cancel_task:
+            # 投影之外只在确认和取消时清空 waiting_reason。
             task.waiting_reason = None
         await self.project(
             task,
@@ -1619,16 +1624,19 @@ class RuntimeService:
                 await self.session.rollback()
                 return await self._complete_cancel(task_id, submission_id=pending_id)
             if task.current_session_id == session_id:
-                runtime_session = await self._runtime_session(task)
-                if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
-                    runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
-                    runtime_session.terminal_reason = SessionTerminalReason.SESSION_MISSING.value
                 task.runtime_connection = "UNAVAILABLE"
                 task.runtime_error = (
                     "Session 不存在，连接异常，状态待确认。Worker 与 Workspace 仍保留，请人工处理。"
                 )
-                task.waiting_reason = "SESSION_MISSING"
-                await self.session.commit()
+                runtime_session = await self._runtime_session(task)
+                missing = SessionState(
+                    status=RuntimeSessionStatus.UNKNOWN.value,
+                    terminal_reason=SessionTerminalReason.SESSION_MISSING.value,
+                )
+                if runtime_session and runtime_session.status in _TERMINAL_SESSION_STATUSES:
+                    await self._project_session_state(task, missing)
+                else:
+                    await self.apply_session_state(task, missing)
             else:
                 await self.session.rollback()
             raise
@@ -1885,6 +1893,7 @@ class RuntimeService:
         task.completed_at = task.completed_at or task.confirmed_at
         task.human_required_reason = None
         task.human_intervention = None
+        # 投影之外只在确认和取消时清空 waiting_reason。
         task.waiting_reason = None
         await self.project(task, TaskStatus.SUCCEEDED, detail="任务已人工确认完成")
         return task
@@ -1899,14 +1908,17 @@ class RuntimeService:
                 "OpenCode Runtime 连接中断，保留任务状态",
                 commit=False,
             )
-        runtime_session = await self._runtime_session(task)
-        if runtime_session and runtime_session.status not in _TERMINAL_SESSION_STATUSES:
-            runtime_session.status = RuntimeSessionStatus.UNKNOWN.value
-            runtime_session.terminal_reason = SessionTerminalReason.TRANSPORT_UNKNOWN.value
         task.runtime_connection = "UNAVAILABLE"
         task.runtime_error = f"连接异常，状态待确认：{error}"
-        task.waiting_reason = "TRANSPORT_RECOVERY"
-        await self.session.commit()
+        runtime_session = await self._runtime_session(task)
+        lost = SessionState(
+            status=RuntimeSessionStatus.UNKNOWN.value,
+            terminal_reason=SessionTerminalReason.TRANSPORT_UNKNOWN.value,
+        )
+        if runtime_session and runtime_session.status in _TERMINAL_SESSION_STATUSES:
+            await self._project_session_state(task, lost)
+        else:
+            await self.apply_session_state(task, lost)
 
     async def confirm_execution_stop(self, task_id: str, *, operator: str, reason: str) -> Task:
         """Record a human stop confirmation. This does not change Task status."""

@@ -14,11 +14,6 @@ from nexus_api.db import connect, init_db
 from nexus_api.im import accept_inbound, bind_bot, claim_outbox, contact_human
 from nexus_api.main import capture_im_reply, create_app
 
-REPLY = (
-    'data: {"type":"REPLY_START","id":"s1","reply_id":"r1"}\n\n'
-    'data: {"type":"REPLY_END","id":"e1","reply_id":"r1","finished_reason":"completed"}\n\n'
-)
-
 
 def employee_body(**overrides):
     payload = {
@@ -36,9 +31,17 @@ def employee_body(**overrides):
     return payload
 
 
+def _reply_frame(reply_id: str) -> bytes:
+    return (
+        f'data: {{"type":"REPLY_START","id":"s","reply_id":"{reply_id}"}}\n\n'
+        f'data: {{"type":"REPLY_END","id":"e","reply_id":"{reply_id}","finished_reason":"completed"}}\n\n'
+    ).encode()
+
+
 def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
     chats: list[dict] = []
+    turns: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/agent/" and request.method == "POST":
@@ -50,21 +53,28 @@ def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
         if request.url.path == "/chat/":
             body = json.loads(request.content.decode())
             chats.append(body)
+            turns.append({"id": f"r{len(turns) + 1}", "text": "已经收到"})
             return httpx.Response(200, json={"status": "started", "session_id": body["session_id"]})
         if request.url.path == "/sessions/ses-private/stream":
-            return httpx.Response(200, content=REPLY.encode())
+            current = turns[-1] if turns else {"id": "r1", "text": "已经收到"}
+            return httpx.Response(200, content=_reply_frame(current["id"]))
         if request.url.path == "/sessions/ses-private/messages":
+            messages = [
+                {"id": "user-1", "role": "user", "content": [{"type": "text", "text": "你好"}]},
+                *[
+                    {
+                        "id": item["id"],
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": item["text"]}],
+                    }
+                    for item in turns
+                ],
+            ]
             return httpx.Response(
                 200,
                 json={
-                    "messages": [
-                        {"id": "user-1", "role": "user", "content": [{"type": "text", "text": "你好"}]},
-                        {
-                            "id": "r1",
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "已经收到"}],
-                        },
-                    ],
+                    "messages": messages,
+                    "event_cursor": f"c{len(turns)}",
                     "has_more": False,
                 },
             )
@@ -169,6 +179,77 @@ def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
         reply = test_client.get("/api/v1/im/outbox")
         assert reply.json()["body"] == "已经收到"
         assert reply.json()["delivery_id"] != first["delivery_id"]
+
+
+def test_im_reply_ignores_a_replayed_previous_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    started = {"chat": False}
+    streamed_after: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            return httpx.Response(201, json={"agent_id": "agent-1"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            return httpx.Response(201, json={"session_id": "ses-private"})
+        if request.url.path == "/chat/":
+            started["chat"] = True
+            return httpx.Response(200, json={"status": "started", "session_id": "ses-private"})
+        if request.url.path == "/sessions/ses-private/stream":
+            streamed_after.append(request.url.params.get("after"))
+            previous = _reply_frame("old")
+            current = _reply_frame("new")
+            return httpx.Response(200, content=previous + current)
+        if request.url.path == "/sessions/ses-private/messages":
+            messages = [
+                {
+                    "id": "old",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "上一轮"}],
+                }
+            ]
+            if started["chat"] and request.url.params.get("limit") != "1":
+                messages.append(
+                    {
+                        "id": "new",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "这一轮"}],
+                    }
+                )
+            return httpx.Response(
+                200,
+                json={"messages": messages, "event_cursor": "c-old", "has_more": False},
+            )
+        if request.method == "PATCH":
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={})
+
+    with TestClient(create_app()) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        employee = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        saved = test_client.post(
+            "/api/v1/im/bots",
+            json={"employee_id": employee["id"], "provider": "mock", "bot_id": "bot-1"},
+        )
+        assert saved.status_code == 200
+        accepted = test_client.post(
+            "/api/v1/im/events",
+            json={
+                "provider": "mock",
+                "event_id": "evt-replay",
+                "bot_id": "bot-1",
+                "sender_uid": "u9",
+                "text": "现在说",
+            },
+        )
+        assert accepted.status_code == 200, accepted.text
+        claimed = test_client.get("/api/v1/im/outbox")
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["body"] == "这一轮"
+        assert streamed_after == ["c-old"]
 
 
 def test_concurrent_im_event_accepts_once(tmp_path, monkeypatch):
@@ -455,6 +536,46 @@ def test_expired_event_claim_can_be_taken_again(tmp_path):
     assert calls["n"] == 1
 
 
+def test_stolen_event_claim_does_not_record_the_first_handler(tmp_path):
+    path = tmp_path / "im.sqlite3"
+    init_db(path)
+    connection = connect(path)
+    now = datetime.now(UTC).isoformat()
+    connection.execute(
+        """
+        INSERT INTO conversations (
+            id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
+        ) VALUES ('c1', 'E1', 'u1', 'private', '私聊', 'ses', ?, ?)
+        """,
+        (now, now),
+    )
+    bind_bot(connection, "E1", "mock", "bot-1")
+
+    async def accept(_employee_id, _session_id, _text):
+        connection.execute(
+            "UPDATE im_events SET claim_token = 'other' WHERE provider = 'mock' AND event_id = 'evt-steal'"
+        )
+        connection.commit()
+
+    result = asyncio.run(
+        accept_inbound(
+            connection,
+            provider="mock",
+            event_id="evt-steal",
+            bot_id="bot-1",
+            sender_uid="u1",
+            text="再来",
+            accept=accept,
+        )
+    )
+    assert result["duplicate"] is True
+    row = connection.execute(
+        "SELECT accepted, claim_token FROM im_events WHERE provider = 'mock' AND event_id = 'evt-steal'"
+    ).fetchone()
+    assert row["accepted"] == 0
+    assert row["claim_token"] == "other"
+
+
 class _EmptyStream:
     status_code = 200
 
@@ -474,7 +595,7 @@ class _EmptyStream:
 class _QuietClient:
     configured = True
 
-    def stream_session(self, _agent_id, _session_id):
+    def stream_session(self, _agent_id, _session_id, after=None):
         return _EmptyStream()
 
     async def list_session_messages(self, _agent_id, _session_id):

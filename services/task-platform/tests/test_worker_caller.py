@@ -136,6 +136,7 @@ async def test_worker_http_records_the_session_and_keeps_the_body_off_the_frame(
         assert frame["session_id"] == "ses_bound"
         data = frame["payload"]["data"]
         assert data["ready"] is True
+        assert data["task_id"] == "task-1"
         assert "body" not in data
         async with SessionLocal() as session:
             fetched = await DataChannel(gateway).fetch_request(
@@ -167,6 +168,7 @@ async def test_worker_http_records_the_session_and_keeps_the_body_off_the_frame(
         params={"directory": "/ws"},
         body={"hidden": True},
         session_id="ses_bound",
+        task_id="task-1",
     )
     await running
     assert status == 200

@@ -81,6 +81,10 @@ def collect() -> list[tuple[bool, str, str]]:
     provisioning = (
         TASK_PLATFORM / "app" / "runtime" / "remote_provisioning.py"
     ).read_text(encoding="utf-8")
+    install_script = (TASK_PLATFORM / "app" / "runtime" / "remote_install.sh").read_text(encoding="utf-8")
+    channel_switch = (
+        TASK_PLATFORM / "app" / "worker_agent" / "channel_switch.py"
+    ).read_text(encoding="utf-8")
     rows: list[tuple[bool, str, str]] = []
 
     def add(ok: bool, label: str, detail: str) -> None:
@@ -175,6 +179,23 @@ def collect() -> list[tuple[bool, str, str]]:
         SERVE_LOCK_DIR == "nexus-employee-serve" and SERVE_LOCK_DIR != V09_LOCK_DIR,
         "lock directory",
         SERVE_LOCK_DIR,
+    )
+    add(
+        ".cache/nexus-provision" in provisioning
+        and ".cache/nexus-provision" in install_script
+        and ".cache/astra-provision" not in provisioning
+        and ".cache/astra-provision" not in install_script,
+        "provision cache",
+        "nexus-provision",
+    )
+    add(
+        "/etc/nexus/opencode/" in provisioning
+        and "Environment=OPENCODE_CONFIG=" in provisioning
+        and "OPENCODE_CONFIG" in channel_switch
+        and "${XDG_CONFIG_HOME:-$HOME/.config}" not in provisioning
+        and "${XDG_CONFIG_HOME:-$HOME/.config}" not in install_script,
+        "opencode config",
+        "/etc/nexus/opencode/{id}/opencode.jsonc",
     )
     return rows
 

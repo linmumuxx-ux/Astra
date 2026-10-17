@@ -113,7 +113,7 @@ ReMe 的搜索覆盖整个 workspace（`middleware/_longterm_memory/_reme/_middl
 - Session `FAILED` / `INTERRUPTED` 也投影为 `WAITING`，文案来自 `_RECOVERY_REASON`（207–215 行），不自动把 Task 设为 `FAILED`。
 - `UNKNOWN` 保持原业务状态。
 
-`waiting_reason` 只在 `_project_session_state` 同一次写入里设置，对照现有 `SessionTerminalReason`：
+`waiting_reason` 在 `_project_session_state` 里按下表写入。确认和取消时清空是投影之外的例外：
 
 | Session 事实 | Task | `waiting_reason` |
 |---|---|---|
@@ -124,8 +124,10 @@ ReMe 的搜索覆盖整个 workspace（`middleware/_longterm_memory/_reme/_middl
 | `ABORTED` | `WAITING` | `MANUAL_INTERVENTION` |
 | `TIMEOUT` | 保持现有投影为 `WAITING` | 不从耗时推断 retry 耗尽。投影不调用 OpenCode abort，也不代它重试 |
 | `UNCONFIRMED`（`session_state.py` 148–157 行，服务空闲且锚点不在记录里） | **不改变 Task 状态** | `TRANSPORT_RECOVERY` |
+| `UNKNOWN` 且 `session_missing` | **不改变 Task 状态** | `SESSION_MISSING` |
+| `UNKNOWN` 且 `transport_unknown` | **不改变 Task 状态** | `TRANSPORT_RECOVERY` |
 
-通信失败、心跳丢失和 `UNKNOWN` 不进入这张表，也不写 `TRANSPORT_RECOVERY`。人工确认、取消和关闭失败仍走现有 Task 接口，执行停止且没有待处理 HITL 之后才释放 Worker。分配时记下 base commit，以及当时的能力与模型 revision 快照。
+没有这两种原因的 `UNKNOWN` 不改已有的 `waiting_reason`，也不改 Task 状态。`refresh` 发现 Session 不存在，以及 `disconnected`，都把 RuntimeSession 标成 `UNKNOWN` 后走这次投影。确认完成和取消任务时清空 `waiting_reason`，这两处在 `apply_session_state` 之外，只负责清空。人工确认、取消和关闭失败仍走现有 Task 接口，执行停止且没有待处理 HITL 之后才释放 Worker。分配时记下 base commit，以及当时的能力与模型 revision 快照。
 
 ### 7. Worker 通道沿用已落地的实现
 
@@ -139,7 +141,7 @@ S3-10 剩下的缺口见 tasks.md 批次 A。规格里的短期 Worker 凭据和
 
 Stage 3 增加仓库表和 `repository_id`，挂到现有执行环境和 Task 上，不另建 Worker 平台。PAT 复用 `app/gateway/security.py` 的 Fernet，密文入库。git 在 Worker 进程内用内存 askpass 取一次明文，不写入 remote URL、命令日志、`git config` 或 `opencode.jsonc`。不做短时凭据服务，也不做独立的 Git 写进程。
 
-部署写的是 Worker 用户全局配置目录里的 `opencode.jsonc`（`config_home/opencode/opencode.jsonc`），不是仓库里的项目配置。这一份里包含网关 provider，以及该 Worker 绑定的 MCP。MCP 也可以经 `OPENCODE_CONFIG_CONTENT` 注入，二选一，不写两份。技能装到 Worker 专用目录，不改仓库自带的 `.opencode/`。不再生成平台根目录 `opencode.json`，也不再因为 jsonc 已存在而失败。Gateway 路由和模型映射代码不动。本地与 e2e 把 OpenCode 模型设为 `opencode/deepseek-v4.1-flash-free`，不读网关。生产 Worker 仍指向已验证的网关。
+部署写的是 `/etc/nexus/opencode/{id}/opencode.jsonc`，不是用户全局配置，也不是仓库里的项目配置。`nexus-opencode` 单元用 `OPENCODE_CONFIG` 指向它，通道切换和能力发现读同一份。这一份里包含网关 provider，以及该 Worker 绑定的 MCP。技能装到该文件旁边，不改仓库自带的 `.opencode/`。不再生成平台根目录 `opencode.json`，也不再因为 jsonc 已存在而失败。Gateway 路由和模型映射代码不动。本地与 e2e 把 OpenCode 模型设为 `opencode/deepseek-v4.1-flash-free`，不读网关。生产 Worker 仍指向已验证的网关。
 
 ## 源码复用矩阵
 
@@ -150,8 +152,8 @@ Stage 3 增加仓库表和 `repository_id`，挂到现有执行环境和 Task �
 | Team / 职责请求 | `TeamCreate`、`AgentInvite`、`TeamSay`、`TeamDelete` 在 `app/_tool/`。投递走 `deliver_to_inbox`。官方 UI 只切换成员 Session。没有 HTTP 建团队路由 | 员工协作：当前 Session 当 leader，岗位员工用改过 workspace 来源的 `AgentInvite`，定向和广播用 `TeamSay` | 人类群仍是 `channels` 加投递游标。`contact_employee` 只做单向通知 | 不把人类群建成 Team。`AgentCreate` 继续卸掉。不把 `source=team` 的临时 Agent 登记成员工 |
 | Memory / 压缩 | `ContextConfig` 与 `compress_context` 已在默认 Agent 上。三种长期记忆都在 `middleware/_longterm_memory/`，当前进程未装配 | 压缩零开发。长期记忆用官方 workspace 接法挂 `AgenticMemoryMiddleware` | 私聊重新绑定时传入原 `workspace_id`。不可用时主聊天继续，错误可见 | 不写自定义记忆目录。不接 ReMe 和 Mem0 |
 | Knowledge | 路由 `app/_router/_knowledge_base.py`。运行时 `RAGMiddleware`（`middleware/_rag.py`）。图书馆已有 `knowledge_items` 及审核发布 | 图书馆仍是已审核原文。Agent 检索走原生 KB | `knowledge_items` 增加 AgentScope KB / document 映射列。命中结果带来源 | 不替换 LLM Wiki，不把个人记忆写成图书馆资产 |
-| Skill / MCP | AgentScope：`/skill`、`/workspace/skill`、`/mcp`。OpenCode 1.18.35 有自己的发现规则。员工行已有 `skills_json` / `tools_json` | 员工走 AgentScope API。Worker 把技能装进专用目录，MCP 写入该 Worker 的全局 `opencode.jsonc` 或 `OPENCODE_CONFIG_CONTENT` | 现有 JSON 和 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。发现通过后才算 applied。Task 分配时记快照 | 不新建能力中心页面或表。不改仓库里的 `.opencode/` |
-| 模型 | Gateway 表 `gateway_pools` / `gateway_nodes` / `gateway_routes` / `gateway_keys` 已加密。AgentScope 凭据接口 `POST /credential/`。现有 `bootstrap_chat_model.py` | 生产员工和 Worker 都指向现有网关 `/v1`。页面只列已启用路由 | 员工增加 `model_route_id`。部署只改 Worker 的 `opencode.jsonc` provider | 不改 Gateway 与模型映射代码。不在页面收集厂商 Key。本地 e2e 不走网关 |
+| Skill / MCP | AgentScope：`/skill`、`/workspace/skill`、`/mcp`。OpenCode 1.18.35 有自己的发现规则。员工行已有 `skills_json` / `tools_json` | 员工走 AgentScope API。Worker 把技能装进专用目录，MCP 写入 `/etc/nexus/opencode/{id}/opencode.jsonc` | 现有 JSON 和 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。发现通过后才算 applied。Task 分配时记快照 | 不新建能力中心页面或表。不改仓库里的 `.opencode/` |
+| 模型 | Gateway 表 `gateway_pools` / `gateway_nodes` / `gateway_routes` / `gateway_keys` 已加密。AgentScope 凭据接口 `POST /credential/`。现有 `bootstrap_chat_model.py` | 生产员工和 Worker 都指向现有网关 `/v1`。页面只列已启用路由 | 员工增加 `model_route_id`。部署只改 `/etc/nexus` 下该 Worker 的 `opencode.jsonc` provider | 不改 Gateway 与模型映射代码。不在页面收集厂商 Key。本地 e2e 不走网关 |
 | OpenCode 工作区 | 官方 UI 已在 `web/workspace-ui`。Task 详情 iframe。传输已走 Worker HTTP/SSE | 浏览器仍用现有 Workspace URL | 首屏按需加载、静态资源缓存。授权仍按 Task 归属 | 不重写编辑器、Diff、终端 |
 | Task / Worker | Task 状态机 `app/state_machine.py`。投影 `lifecycle.py`。占用在执行员工槽。通道表 `worker_instances` / `worker_connections` / `worker_commands` | 终态、重连、独占、人工确认都沿用 | `waiting_reason`、`repository_id`、关联任务。健康展示分开「Worker 离线」和「环境可用」 | 不新增状态机，不在断线时释放 Worker，不自动 `SUCCEEDED` / `FAILED` |
 | 复盘 | `review.py` 现在依赖 `assistant_enabled`、`AssistantOpenCodeClient`（334、366、419–431 行）和根目录 `opencode.json` 里的 `nexus-assistant` MCP | 保留这个 OpenCode 进程，改成只听 `127.0.0.1` 的内部复盘执行器。启动配置只带复盘 MCP 和只读工具，不再看 `assistant_enabled` | 先迁好执行器并跑通总结和候选，再删产品入口、`/api/assistant` 的用户路径和根目录 `opencode.json` | 不把复盘失败写回已关闭的 Task。不先删执行器 |
@@ -248,7 +250,7 @@ API 对应关系：
 4. 身份映射接口不做。入站直接收 `sender_uid`。
 5. 规格 `worker-channel` 仍写 OpenCode 列默认 4096。运行默认已是 14096。
 
-5.1–5.3、通道健康拆分和 Workspace 代理已落地。代理指令带上绑定的 `session_id`，响应体不进 WebSocket 帧。
+5.1–5.3、通道健康拆分和 Workspace 代理已落地。代理指令带上绑定的 `session_id` 和 `task_id`，响应体不进 WebSocket 帧。
 
 ## Risks / Trade-offs
 
@@ -258,7 +260,7 @@ API 对应关系：
 - `AgentInvite` 要求 `invitable=true` 且 `invite_description` 非空。员工保存时写入这两项。薄子类只替换 workspace 来源。
 - 单服务用户意味着 AgentScope 本身不区分人类。授权边界在 Nexus 绑定。Agent Service 不能被浏览器直连。
 - AgenticMemory 跟 workspace 走。私聊重建时若没传原 `workspace_id`，记忆不在。批次 E 用两个 UID，以及一次带原 workspace 的重建来验证。
-- Worker 全局 `opencode.jsonc` 可以写 provider 和 MCP。仓库自带的项目配置和 `.opencode/` 不动。
+- `/etc/nexus/opencode/{id}/opencode.jsonc` 写 provider 和 MCP，不写用户全局配置。仓库自带的项目配置和 `.opencode/` 不动。
 - 本设计修订后的实现从 phase2 `5a7ce999` 开始。
 
 ## 已接受的决定
