@@ -49,6 +49,7 @@ class NativeServer:
         self.abort_count = 0
         self.auth = None
         self.base_url = "http://native"
+        self.exchange_sessions: list[str | None] = []
 
     def _timeout(self):
         return 5
@@ -82,13 +83,14 @@ class NativeServer:
         messages = await self.messages(directory, sid)
         return {"messages": messages, "next_before": None}
 
-    async def exchange(self, method, path, *, params=None, body=None):
+    async def exchange(self, method, path, *, params=None, body=None, session_id=None):
+        self.exchange_sessions.append(session_id)
         async with httpx.AsyncClient(auth=self.auth, timeout=self._timeout()) as http:
             response = await http.request(method, self.base_url + path, params=params, json=body)
         headers = {key.lower(): value for key, value in response.headers.items()}
         return response.status_code, response.content, headers
 
-    async def request(self, method, path, *, directory=None, body=None):
+    async def request(self, method, path, *, directory=None, body=None, session_id=None):
         if method == "POST" and path.endswith("/prompt_async"):
             sid = path.split("/")[2]
             self.sent.append((sid, body))
@@ -1109,6 +1111,9 @@ async def test_task_list_and_detail_have_identical_status(runtime):
 
 
 async def test_global_session_status_read_is_allowed_and_scoped(runtime, monkeypatch):
+    from app.database import init_database
+
+    await init_database()
     # "/session/status" textually matches the per-session read pattern. It is a global
     # read and must be forwarded + scoped to the task's sessions, never rejected as a
     # foreign session id literally named "status".
@@ -1138,8 +1143,9 @@ async def test_global_session_status_read_is_allowed_and_scoped(runtime, monkeyp
 
     monkeypatch.setattr("tests.test_session_workspace.httpx.AsyncClient", FakeClient)
     response = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/status")
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json() == {"ses_current": "idle"}
+    assert runtime.native.exchange_sessions == ["ses_current"]
 
 
 async def test_native_config_uses_bound_employee_model_and_status_is_filtered(runtime, monkeypatch):

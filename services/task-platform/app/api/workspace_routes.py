@@ -479,7 +479,9 @@ async def native_proxy(
             if body and {"directory", "sessionID", "workspace", "location"}.intersection(body):
                 raise PermissionError("不允许覆盖任务绑定")
             if pending:
-                items = await client.request("GET", f"/{pending[0]}", directory=Path(workspace))
+                items = await client.request(
+                    "GET", f"/{pending[0]}", directory=Path(workspace), session_id=session_id
+                )
                 if not any(item["id"] == pending[1] and item.get("sessionID") in allowed for item in items):
                     raise PermissionError("请求不属于此任务 Session")
             if native_path.endswith(("/prompt_async", "/message", "/command")) and method == "POST":
@@ -504,7 +506,9 @@ async def native_proxy(
                 if key in params and params[key] not in allowed:
                     raise PermissionError("Session 不属于此任务")
             forward_path = "/project/current" if native_path == "/project" else native_path
-            status, content, headers = await client.exchange(method, forward_path, params=params, body=body)
+            status, content, headers = await client.exchange(
+                method, forward_path, params=params, body=body, session_id=session_id
+            )
             upstream = _Upstream(status, content, headers)
             if upstream.is_error:
                 return Response(
