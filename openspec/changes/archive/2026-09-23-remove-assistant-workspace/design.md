@@ -1,6 +1,6 @@
 ## Context
 
-当前数字助手以独立目录 `nexus-assistant/` 作为专属 OpenCode Workspace：`backend/app/assistant/server.py` 启动 OpenCode Server 前 `os.chdir(resolved_assistant_workspace)`，由该目录下的 `opencode.json`（权限 + `nexus-assistant` MCP）与 `.opencode/`（`platform-assistant` Agent、`nexus-task-experience-review` Skill）提供能力。该目录还包含未使用的 `assistant-context/` 占位。
+当前数字助手以独立目录 `nexus-assistant/` 作为专属 OpenCode Workspace：`services/task-platform/app/assistant/server.py` 启动 OpenCode Server 前 `os.chdir(resolved_assistant_workspace)`，由该目录下的 `opencode.json`（权限 + `nexus-assistant` MCP）与 `.opencode/`（`platform-assistant` Agent、`nexus-task-experience-review` Skill）提供能力。该目录还包含未使用的 `assistant-context/` 占位。
 
 关键事实：
 

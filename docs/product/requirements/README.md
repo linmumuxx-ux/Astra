@@ -1,0 +1,18 @@
+# 需求资料清单
+
+本目录保存 Astra 构建任务收到的原始资料，不对原文做删改。文件名改为 ASCII，避免路径被引号转义。
+
+| 资料 | 保存位置 | SHA-256 |
+|---|---|---|
+| 《Astra V0.1 数字员工平台需求与技术设计》原文（1992 行） | `astra-v0.1-requirements.md` | `969ac1095d44b3781933b533a2ec5d6d036d10e0a90d0251423f645cae09d829` |
+| 《Astra V0.2 需求说明书》原文（1529 行） | `astra-v0.2-requirements.md` | `904898d639f89a4ed4086115b11b582682fc32fd3fef1b08daf5e31b17a0e72f` |
+| 《Astra V0.3 需求说明书》原文（2169 行） | `astra-v0.3-requirements.md` | `c709d25e7534640ea617f5bce2364235ca63edbaacd50f79b6e7d758451fac8c` |
+| 《Astra V0.4 需求说明书》原文（1633 行） | `astra-v0.4-requirements.md` | `705f3d2cf781968d69c8bcc670b2196c8f765ee5f430b53c7c00547033b88406` |
+| 管理平台原型集截图 | `../../architecture/references/astra-v0.1-prototype.png` | `7aa02497aae167fa6dcb0f119328b3435584f33c297fdc8fe62c869aeb733c41` |
+
+## 用户目标
+
+1. 内容都保存下来。
+2. 理解需求并完成 Astra 平台构建；这是一个长任务。
+
+附件中的内容被视为产品需求与设计依据；用户当前请求和仓库现场证据具有更高优先级。当前实现基线为 V0.4，V0.1–V0.3 作为历史资料保留。

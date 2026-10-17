@@ -20,8 +20,8 @@
 - [x] 3.1 持久化调用日志与健康记录，提供 Token/延迟/吞吐/实例统计查询。
 - [x] 3.2 新增 API 中转导航、总览、节点抽屉和详情、Pool/Route/Key/日志/版本管理页面。
 - [x] 3.3 纳入统一服务脚本、部署示例与运维说明。
-  - `scripts/astra_service.py` 在 dev/pro 以独立进程启动 `app.gateway.server:app`（默认 `127.0.0.1:8110`），统一 status/stop/restart 与 `/healthz` 就绪等待；正式模式强制校验主密钥与 Redis。
-  - 新增 `deploy/systemd/astra-gateway.service`；nginx 反代 `/v1` 并关闭缓冲；根与 deploy 的 `.env.example` 补网关变量；`docs/DEPLOYMENT.md` 增加部署、运维与 OpenCode baseURL/API Key/Model 示例。
+  - `ops/dev/astra_service.py` 在 dev/pro 以独立进程启动 `app.gateway.server:app`（默认 `127.0.0.1:8110`），统一 status/stop/restart 与 `/healthz` 就绪等待；正式模式强制校验主密钥与 Redis。
+  - 新增 `deploy/systemd/astra-gateway.service`；nginx 反代 `/v1` 并关闭缓冲；根与 deploy 的 `.env.example` 补网关变量；当时的 `docs/deploy/DEPLOYMENT.md` 增加部署、运维与 OpenCode baseURL/API Key/Model 示例（该手册已删除，现行说明是 `ops/deploy/DEPLOYMENT_GUIDE.md`）。
 
 ## 4. 验证
 

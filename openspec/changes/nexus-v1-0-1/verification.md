@@ -5,19 +5,19 @@
 环境：
 
 - Redis：本机 `redis-server` 7，`redis-cli ping` 为 `PONG`。这台机器没有 Docker，所以没有用 compose。
-- Agent Service：`nexus/deploy/.venv-agentscope` 里的官方 `agentscope==2.0.10`，`GET /health` 的 `version` 为 `2.0.10`，`storage` 与 `message_bus` 为 `ok`。
+- Agent Service：`services/agent-service/.venv-agentscope` 里的官方 `agentscope==2.0.10`，`GET /health` 的 `version` 为 `2.0.10`，`storage` 与 `message_bus` 为 `ok`。
 - 模型：Ollama `qwen2.5:3b`，经 `bootstrap_chat_model.py` 登记为 `ollama_credential`，再写入 `NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG`。Nexus 页面没有模型字段。
 
 命令：
 
 ```bash
-bash nexus/deploy/redis.sh
-nexus/deploy/.venv-agentscope/bin/python nexus/deploy/agent_service.py
-nexus/deploy/.venv-agentscope/bin/python nexus/deploy/bootstrap_chat_model.py
+bash services/agent-service/redis.sh
+services/agent-service/.venv-agentscope/bin/python services/agent-service/agent_service.py
+services/agent-service/.venv-agentscope/bin/python services/agent-service/bootstrap_chat_model.py
 # 将打印的 JSON 设为 NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG 后启动 Nexus API
-bash nexus/deploy/healthcheck.sh
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest nexus/api/tests/test_live_agentscope.py -s
+bash services/agent-service/healthcheck.sh
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api \
+  services/nexus-api/.venv/bin/pytest services/nexus-api/tests/test_live_agentscope.py -s
 ```
 
 结果：`1 passed in 31.48s`。测试打印：
@@ -48,9 +48,9 @@ curl -sS http://127.0.0.1:8120/api/v1/tools
 curl -sS http://127.0.0.1:8120/api/v1/skills
 # {"available":true,"items":[]}
 
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest \
-  nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api \
+  services/nexus-api/.venv/bin/pytest \
+  services/nexus-api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope -s
 ```
 
 结果：`1 passed in 0.36s`。测试打印：
@@ -70,10 +70,10 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 命令：
 
 ```bash
-PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_api.py -q
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest \
-  nexus/api/tests/test_live_agentscope.py::test_private_chat_streams_and_isolates_anonymous_owners -s
+PYTHONPATH=services/nexus-api services/nexus-api/.venv/bin/pytest services/nexus-api/tests/test_api.py -q
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api \
+  services/nexus-api/.venv/bin/pytest \
+  services/nexus-api/tests/test_live_agentscope.py::test_private_chat_streams_and_isolates_anonymous_owners -s
 ```
 
 单元测试 19 passed。实跑 `1 passed in 25.17s`。打印：
@@ -93,7 +93,7 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 单元测试：
 
 ```bash
-PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_api.py -q
+PYTHONPATH=services/nexus-api services/nexus-api/.venv/bin/pytest services/nexus-api/tests/test_api.py -q
 ```
 
 `21 passed`。其中：只点名的员工会收到 `POST /chat`；日志正文进入该员工的内容块；尚未被点名的同事在 `contact_employee` 解析时得到这条讨论自己的 Session，而不是邮箱；同一句话再次解析返回 409；同一发送方第三次联系被拒绝；另一位同事仍可以再联系下一位；禁用同事返回 404。读回的助手句标的是自动化工程师的员工 id，消息表里仍然只有 `user`。
@@ -101,9 +101,9 @@ PYTHONPATH=nexus/api nexus/api/.venv/bin/pytest nexus/api/tests/test_api.py -q
 实跑：
 
 ```bash
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest \
-  nexus/api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact -s
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api \
+  services/nexus-api/.venv/bin/pytest \
+  services/nexus-api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact -s
 ```
 
 `1 passed in 34.51s`。打印：
@@ -143,11 +143,11 @@ NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
 团队实跑命令：
 
 ```bash
-NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=nexus/api \
-  nexus/api/.venv/bin/pytest \
-  nexus/api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact \
-  nexus/api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope \
-  nexus/api/tests/test_live_agentscope.py::test_private_chat_streams_and_isolates_anonymous_owners -s
+NEXUS_LIVE_AGENTSCOPE=1 PYTHONPATH=services/nexus-api \
+  services/nexus-api/.venv/bin/pytest \
+  services/nexus-api/tests/test_live_agentscope.py::test_team_discussion_shows_peer_identities_and_stops_repeat_contact \
+  services/nexus-api/tests/test_live_agentscope.py::test_employee_management_against_live_agentscope \
+  services/nexus-api/tests/test_live_agentscope.py::test_private_chat_streams_and_isolates_anonymous_owners -s
 ```
 
 `3 passed in 92.51s`。团队打印：
@@ -191,9 +191,9 @@ openai 需要 OPENAI_MODEL，以及 OPENAI_API_KEY 或 DEEPSEEK_API_KEY
 {"type": "ollama_credential", "credential_id": "3dac2b14d6604d319e73b41190b57ff7", "model": "qwen2.5:3b", "parameters": {}}
 ```
 
-打印里没有密钥。单元测试 `pytest nexus/api/tests/test_bootstrap_chat_model.py nexus/api/tests/test_api.py`：`27 passed`。
+打印里没有密钥。单元测试 `pytest services/nexus-api/tests/test_bootstrap_chat_model.py services/nexus-api/tests/test_api.py`：`27 passed`。
 
-嵌入冒烟单独使用 `nexus/deploy/.venv-embedding`，没有装进 Agent Service，也没有安装 `pymilvus`。`embedding_smoke.py` 的输出：
+嵌入冒烟单独使用 `services/agent-service/.venv-embedding`，没有装进 Agent Service，也没有安装 `pymilvus`。`embedding_smoke.py` 的输出：
 
 ```json
 {"model": "all-MiniLM-L6-v2", "dims": 384, "similar": 0.6079, "dissimilar": 0.0187}
@@ -207,7 +207,7 @@ openai 需要 OPENAI_MODEL，以及 OPENAI_API_KEY 或 DEEPSEEK_API_KEY
 
 邮箱会话可以再联系下一位同事，次数算在发起那场私聊的 `private:{conversation_id}` 里，不按员工累计。同事写在自己邮箱里的正文，读私聊时带回来，发送方不代写。邮箱和团队 Session 设为 `dont_ask`。未设置 `NEXUS_DATA_DIR` 时目录在 API 包旁边；相对路径按仓库根目录解析。SSE 先从上一轮已落盘的 `event_cursor` 之后开始，本轮 `REPLY_END` 之后写 `NEXUS_RUN_FINISHED` 并结束连接。
 
-`pytest nexus/api/tests/test_api.py nexus/api/tests/test_bootstrap_chat_model.py`：`31 passed`。
+`pytest services/nexus-api/tests/test_api.py services/nexus-api/tests/test_bootstrap_chat_model.py`：`31 passed`。
 
 Ollama 实跑 `test_task_6_1_agent_sessions_sse_and_peer_wakeup`：`1 passed in 86.01s`。
 

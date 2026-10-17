@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/anomalyco/opencode",
+  "tag": "v1.18.35",
+  "commit": "53d1eabb61e21162157817bf677da0a4ad3332e3",
+  "packages": [
+    "packages/app",
+    "packages/ui",
+    "packages/sdk/js",
+    "packages/core",
+    "packages/schema",
+    "packages/session-ui",
+    "packages/effect-drizzle-sqlite",
+    "packages/effect-sqlite-node",
+    "packages/llm",
+    "packages/plugin",
+    "packages/http-recorder"
+  ],
+  "modifications": [
+    "packages/app/src/config/workspace-capabilities.ts (added): unified sessionManagementEnabled capability switch",
+    "packages/app/src/index.ts: export workspace capability config",
+    "packages/app/src/context/tabs.tsx: block newDraft/closeTab/reopenClosedTab when session management is disabled",
+    "packages/app/src/components/titlebar.tsx: gate tab.new/tab.close/tab.reopenClosed commands, + button, edit button",
+    "packages/app/src/components/titlebar-tab-nav.tsx: gate session tab close button and close-tab menu item",
+    "packages/app/src/components/windows-app-menu.tsx: hide new-session menu entry when disabled",
+    "packages/app/src/pages/layout.tsx: gate sidebar new-session button and reset-workspace toast action",
+    "packages/app/src/pages/session/use-session-commands.tsx: gate session.new/session.fork/session.archive commands when disabled"
+  ]
+}
