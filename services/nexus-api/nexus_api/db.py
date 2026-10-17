@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS im_events (
     session_id TEXT NOT NULL DEFAULT '',
     accepted INTEGER NOT NULL DEFAULT 0,
     claim_token TEXT NOT NULL DEFAULT '',
+    claim_until TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (provider, event_id)
 );
 CREATE TABLE IF NOT EXISTS im_bindings (
@@ -183,6 +184,8 @@ def init_db(path: Path) -> None:
         event_columns = {row[1] for row in connection.execute("PRAGMA table_info(im_events)")}
         if "claim_token" not in event_columns:
             connection.execute("ALTER TABLE im_events ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''")
+        if "claim_until" not in event_columns:
+            connection.execute("ALTER TABLE im_events ADD COLUMN claim_until TEXT NOT NULL DEFAULT ''")
         outbox_columns = {row[1] for row in connection.execute("PRAGMA table_info(im_outbox)")}
         if "lease_until" not in outbox_columns:
             connection.execute("ALTER TABLE im_outbox ADD COLUMN lease_until TEXT NOT NULL DEFAULT ''")

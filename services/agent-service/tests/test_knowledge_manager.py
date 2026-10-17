@@ -11,7 +11,8 @@ def test_launcher_passes_a_knowledge_base_manager_and_keeps_memory_local():
     assert "knowledge_base_manager=knowledge_base_manager" in main
     assert "CollectionPerKbManager" in main
     memory = source.split("def attach_memory", 1)[1].split("async def memory_middlewares", 1)[0]
-    middlewares = source.split("async def memory_middlewares", 1)[1].split("async def write_record_message", 1)[0]
+    middlewares = source.split("async def memory_middlewares", 1)[1]
+    middlewares = middlewares.split("async def write_record_message", 1)[0]
     block = memory + middlewares
     assert "KnowledgeItem" not in block
     assert "knowledge_items" not in block

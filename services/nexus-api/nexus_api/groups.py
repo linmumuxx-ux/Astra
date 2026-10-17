@@ -207,9 +207,13 @@ def merge_timeline(
             }
         )
     rows.sort(key=lambda item: (item["created_at"], item["session_id"], item["id"]))
-    visible = [row for row in rows if _after(row, cursor)]
-    page = visible[:limit]
-    next_cursor = _cursor(page[-1]) if len(visible) > limit and page else ""
+    if cursor:
+        visible = [row for row in rows if _after(row, cursor)]
+        page = visible[:limit]
+        next_cursor = _cursor(page[-1]) if len(visible) > limit and page else ""
+    else:
+        page = rows[-limit:] if limit else list(rows)
+        next_cursor = ""
     return {"items": page, "next_cursor": next_cursor}
 
 

@@ -268,10 +268,20 @@ class GuardedMemory:
             async for item in next_handler(**input_kwargs):
                 yield item
             return
+        started = False
+
+        async def tracked(**kwargs):
+            nonlocal started
+            started = True
+            async for item in next_handler(**kwargs):
+                yield item
+
         try:
-            async for item in method(agent, input_kwargs, next_handler):
+            async for item in method(agent, input_kwargs, tracked):
                 yield item
         except Exception as exc:
+            if started:
+                raise
             self._mark(exc)
             async for item in next_handler(**input_kwargs):
                 yield item

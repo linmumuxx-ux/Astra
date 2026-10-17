@@ -130,11 +130,14 @@ def test_timeline_dedupes_humans_and_team_hints_and_pages():
         },
     ]
     page = merge_timeline(streams, limit=2)
-    assert [item["id"] for item in page["items"]] == ["u1", "h-ask"]
-    assert page["items"][0]["text"] == "先说一件事"
-    assert page["items"][1]["speaker"] == "星河→知微"
-    rest = merge_timeline(streams, cursor=page["next_cursor"], limit=10)
-    assert [item["speaker"] for item in rest["items"]] == ["知微→星河", "星河→全体"]
+    assert [item["id"] for item in page["items"]] == ["h-back", "h-all"]
+    assert page["next_cursor"] == ""
+    assert page["items"][0]["speaker"] == "知微→星河"
+    assert page["items"][1]["speaker"] == "星河→全体"
+    forward = merge_timeline(streams, cursor="2026-01-01T00:00:00+00:00|ses-a|u1", limit=2)
+    assert [item["id"] for item in forward["items"]] == ["h-ask", "h-back"]
+    rest = merge_timeline(streams, cursor=forward["next_cursor"], limit=10)
+    assert [item["id"] for item in rest["items"]] == ["h-all"]
     assert rest["next_cursor"] == ""
     mailbox = {
         "session_id": "mail-b",

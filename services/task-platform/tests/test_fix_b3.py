@@ -22,6 +22,7 @@ from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
 from app.main import app
 from app.models import Base, DigitalEmployee, OpenCodeExecutionEnvironment, Task, TaskCategory
 from app.runtime.capability import (
+    binding_entries,
     binding_revision,
     discover_names,
     dispatch_allowed,
@@ -96,6 +97,15 @@ def test_bindings_without_a_revision_record_are_not_applied():
     )
     assert record["applied_revision"] == desired
     assert record["runtime_status"] == "applied"
+    same = binding_entries(["review"], [{"name": "library", "url": "http://127.0.0.1/a"}])
+    other = binding_entries(["review"], [{"name": "library", "url": "http://127.0.0.1/b"}])
+    configured = binding_entries(
+        ["review"],
+        [{"name": "library", "url": "http://127.0.0.1/a", "config": {"timeout": 1}}],
+    )
+    assert binding_revision(same) != desired
+    assert binding_revision(same) != binding_revision(other)
+    assert binding_revision(same) != binding_revision(configured)
 
 
 @pytest.mark.asyncio
@@ -236,6 +246,24 @@ async def test_child_waits_until_the_parent_succeeds(session, monkeypatch):
     claimed = await Dispatcher(session).claim_once()
     assert claimed is not None
     assert claimed.id == "child"
+
+
+@pytest.mark.asyncio
+async def test_canceled_parent_skips_the_child_with_a_reason(session, monkeypatch):
+    async def uses(environment):
+        return getattr(environment, "worker_channel", None) == "worker"
+
+    monkeypatch.setattr("app.runtime.dispatcher.environment_uses_worker", uses)
+    session.add(_employee())
+    session.add(_environment())
+    session.add(_task("parent", status=TaskStatus.CANCELED))
+    session.add(_task("child", related_task_id="parent"))
+    await session.commit()
+    assert await Dispatcher(session).claim_once() is None
+    child = await session.get(Task, "child")
+    assert child.status == TaskStatus.CANCELED
+    assert child.runtime_error == "父任务已取消，子任务已跳过"
+    assert await Dispatcher(session).claim_once() is None
 
 
 @pytest.mark.asyncio
@@ -632,7 +660,8 @@ async def test_cancel_clears_waiting_reason_and_unknown_failure_does_too(session
         task,
         SessionState(status="FAILED", terminal_reason="session_missing"),
     )
-    assert task.waiting_reason is None
+    assert task.waiting_reason == "SESSION_MISSING"
+    assert task.status == TaskStatus.WAITING
     task.waiting_reason = "TIMEOUT"
     task.status = TaskStatus.WAITING
     await session.commit()

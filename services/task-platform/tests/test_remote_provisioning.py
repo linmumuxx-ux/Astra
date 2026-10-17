@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.config.settings import get_settings
 from app.database import SessionLocal, init_database
@@ -68,6 +68,75 @@ async def employee(**overrides):
 async def reserve(employee_id):
     async with SessionLocal() as db:
         return await reserve_operation(employee_id, "deploy", db)
+
+
+@pytest.mark.asyncio
+async def test_restart_finish_keeps_the_capability_record():
+    record = {
+        "desired_revision": "rev",
+        "applied_revision": "rev",
+        "runtime_status": "applied",
+        "error": "",
+    }
+    employee_id = await employee(status_detail={"capability": record})
+    env, op = await reserve(employee_id)
+    assert env.status_detail["capability"] == record
+    applied = await RemoteProvisioner(env, {**op, "action": "restart"})._finish(True)
+    assert applied
+    async with SessionLocal() as db:
+        current = await db.get(OpenCodeExecutionEnvironment, env.id)
+        assert current.status_detail["capability"] == record
+
+
+@pytest.mark.asyncio
+async def test_channel_switch_keeps_capability(monkeypatch):
+    from app.runtime.worker_channel import mark_worker_channel
+
+    record = {
+        "desired_revision": "rev",
+        "applied_revision": "rev",
+        "runtime_status": "applied",
+        "error": "",
+    }
+    employee_id = await employee(status_detail={"capability": record})
+
+    async def environment_id():
+        async with SessionLocal() as db:
+            environment = await db.scalar(
+                select(OpenCodeExecutionEnvironment).where(
+                    OpenCodeExecutionEnvironment.employee_id == employee_id
+                )
+            )
+            return environment.id
+
+    target = await environment_id()
+
+    async def switch():
+        return {"reloaded": True}
+
+    monkeypatch.setattr("app.runtime.worker_channel._mismatch", lambda _result: None)
+    async with SessionLocal() as db:
+        stored = await mark_worker_channel(db, target, switch=switch)
+        assert stored.worker_channel == "worker"
+        assert stored.status_detail["capability"] == record
+
+    employee_id = await employee(status_detail={"capability": record})
+    target = await environment_id()
+
+    async def fail():
+        raise RuntimeError("switch failed")
+
+    with pytest.raises(HTTPException):
+        async with SessionLocal() as db:
+            await mark_worker_channel(db, target, switch=fail)
+    async with SessionLocal() as db:
+        current = await db.scalar(
+            select(OpenCodeExecutionEnvironment).where(
+                OpenCodeExecutionEnvironment.employee_id == employee_id
+            )
+        )
+        assert current.worker_channel == "ssh"
+        assert current.status_detail["capability"] == record
 
 
 @pytest.mark.asyncio

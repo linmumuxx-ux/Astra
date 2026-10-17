@@ -1538,6 +1538,7 @@ async def test_disconnect_marks_session_unknown_without_failing_task(runtime):
     assert session.status == "UNKNOWN"
     assert session.terminal_reason == "transport_unknown"
     assert r.task.status == "RUNNING"
+    assert r.task.waiting_reason == "TRANSPORT_RECOVERY"
 
 
 async def test_refresh_recovers_unknown_session_to_terminal(runtime):

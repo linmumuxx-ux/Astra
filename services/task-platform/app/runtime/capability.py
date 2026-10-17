@@ -8,9 +8,55 @@ from pathlib import Path
 from typing import Any
 
 
-def binding_revision(names: list[str]) -> str:
-    payload = json.dumps(sorted({name for name in names if name}), ensure_ascii=False, separators=(",", ":"))
+def binding_entries(
+    skill_refs: list[str] | None,
+    mcp_refs: list[dict[str, Any]] | None,
+) -> list[Any]:
+    """修订号的材料。MCP 带上 URL 和配置，只有名字时仍是名字。"""
+
+    entries: list[Any] = [str(name) for name in (skill_refs or []) if name]
+    for item in mcp_refs or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        url = str(item.get("url") or "")
+        config = item.get("config") if isinstance(item.get("config"), dict) else {}
+        extra = {key: value for key, value in item.items() if key not in {"name", "url", "config"}}
+        merged = {**extra, **config}
+        if url or merged:
+            entries.append({"name": str(item["name"]), "url": url, "config": merged})
+        else:
+            entries.append(str(item["name"]))
+    return entries
+
+
+def binding_revision(entries: list[Any]) -> str:
+    textual = [item for item in entries if isinstance(item, str) and item]
+    structured = [item for item in entries if isinstance(item, dict) and item.get("name")]
+    if not structured:
+        payload = json.dumps(sorted(set(textual)), ensure_ascii=False, separators=(",", ":"))
+    else:
+        rows = [{"name": name} for name in textual]
+        for item in structured:
+            config = item.get("config")
+            rows.append(
+                {
+                    "name": str(item["name"]),
+                    "url": str(item.get("url") or ""),
+                    "config": config if isinstance(config, dict) else {},
+                }
+            )
+        rows.sort(
+            key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
+        payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def stored_capability(status_detail: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(status_detail, dict):
+        return None
+    record = status_detail.get("capability")
+    return record if isinstance(record, dict) else None
 
 
 def loads_jsonc(text: str) -> dict[str, Any]:
@@ -30,7 +76,7 @@ def binding_names(skill_refs: list[str] | None, mcp_refs: list[dict[str, Any]] |
 
 def stamp_desired(
     status_detail: dict[str, Any] | None,
-    names: list[str],
+    entries: list[Any],
     *,
     previous: dict[str, Any] | None = None,
     checked_at: str,
@@ -40,13 +86,13 @@ def stamp_desired(
     detail = dict(status_detail or {})
     source = previous if isinstance(previous, dict) else {}
     record = dict(source.get("capability") or {}) if isinstance(source.get("capability"), dict) else {}
-    desired = binding_revision(names) if names else ""
+    desired = binding_revision(entries) if entries else ""
     record["desired_revision"] = desired
     record["checked_at"] = checked_at
-    if names and record.get("applied_revision") != desired:
+    if entries and record.get("applied_revision") != desired:
         record["runtime_status"] = "pending"
         record["error"] = ""
-    elif not names:
+    elif not entries:
         record["runtime_status"] = "applied"
         record["error"] = ""
     detail["capability"] = record

@@ -22,7 +22,7 @@ from app.config.settings import get_settings
 from app.domain import EmployeeStatus, EnvironmentStatus
 from app.gateway.security import CredentialCipher
 from app.models import CodeRepository, DigitalEmployee, GitCredential, OpenCodeExecutionEnvironment, Task
-from app.runtime.capability import binding_names, stamp_desired
+from app.runtime.capability import binding_entries, stamp_desired
 
 Runner = Callable[[list[str], dict[str, str]], tuple[int, str, str]]
 
@@ -258,8 +258,8 @@ async def copy_worker(
     session.add(employee)
     await session.flush()
     chosen_port = port if port is not None else await free_opencode_port(session, environment.host)
-    names = binding_names(environment.skill_refs, environment.mcp_refs)
-    detail = stamp_desired({}, names, checked_at=datetime.now(UTC).isoformat()) if names else {}
+    entries = binding_entries(environment.skill_refs, environment.mcp_refs)
+    detail = stamp_desired({}, entries, checked_at=datetime.now(UTC).isoformat()) if entries else {}
     session.add(
         OpenCodeExecutionEnvironment(
             employee_id=employee.id,

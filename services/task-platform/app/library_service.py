@@ -804,11 +804,14 @@ class KnowledgeService:
         if item.type == "experience" and "content_md" in values:
             item.fingerprint = experience_fingerprint(item.content_md)
         item.updated_by = principal.user_id
+        if item.status == "published":
+            item.agentscope_sync_status = "pending"
         await self._audit(item, "updated", principal, {"fields": sorted(values)})
         await self.session.commit()
         if item.status == "published":
             # A published edit re-exports the same stable source path.
             await self._prepare_sync(item)
+            await self._map_agentscope(item)
         return await self.get_detail(item.id, principal)
 
     async def move_knowledge(

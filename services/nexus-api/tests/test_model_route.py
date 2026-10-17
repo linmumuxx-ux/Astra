@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -143,3 +144,45 @@ def test_route_is_injected_and_a_change_keeps_the_private_session(tmp_path, monk
         assert patched["chat_model_config"]["model"] == "gpt-4.1"
         listed = client.get(f"/api/v1/employees/{employee_id}/conversations", headers=headers).json()
         assert listed["items"][0]["agentscope_session_id"] == private_id
+
+
+def test_gateway_credential_updates_when_the_key_changes():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "credentials": [
+                        {
+                            "id": "cred-1",
+                            "data": {
+                                "type": "openai_credential",
+                                "base_url": "http://127.0.0.1:18110/v1",
+                                "api_key": "old-key",
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"id": "cred-1", "credential_id": "cred-1"})
+
+    client = AgentScopeClient(
+        "http://agentscope.test",
+        "nexus",
+        httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+    )
+
+    async def once(key: str) -> str:
+        return await client.ensure_gateway_credential(key, "http://127.0.0.1:18110/v1")
+
+    assert asyncio.run(once("old-key")) == "cred-1"
+    assert [item.method for item in seen] == ["GET"]
+    seen.clear()
+    assert asyncio.run(once("new-key")) == "cred-1"
+    assert [item.method for item in seen] == ["GET", "PATCH"]
+    body = json.loads(seen[1].content.decode())
+    assert body["data"]["api_key"] == "new-key"
+    assert body["data"]["base_url"] == "http://127.0.0.1:18110/v1"

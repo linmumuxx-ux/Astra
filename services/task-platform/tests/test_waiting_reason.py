@@ -151,6 +151,35 @@ async def test_projection_writes_waiting_reason_without_closing_or_retrying(sess
     assert task.waiting_reason is None
 
 
+@pytest.mark.asyncio
+async def test_missing_transport_and_completed_set_waiting_reason(session):
+    task = await _ready(session)
+    service = RuntimeService(session)
+    await service.apply_session_state(
+        task,
+        SessionState(status="FAILED", terminal_reason="session_missing"),
+    )
+    assert task.status == TaskStatus.WAITING
+    assert task.waiting_reason == "SESSION_MISSING"
+    task.status = TaskStatus.RUNNING
+    await session.commit()
+    await service.apply_session_state(
+        task,
+        SessionState(status="INTERRUPTED", terminal_reason="transport_unknown"),
+    )
+    assert task.status == TaskStatus.WAITING
+    assert task.waiting_reason == "TRANSPORT_RECOVERY"
+    task.status = TaskStatus.RUNNING
+    await session.commit()
+    await service.apply_session_state(
+        task,
+        SessionState(status="FAILED", terminal_reason="completed"),
+    )
+    assert task.status == TaskStatus.WAITING
+    assert task.waiting_reason == "EXECUTION_RESULT_REVIEW"
+    assert task.status != TaskStatus.FAILED
+
+
 def test_retry_stays_running_and_timeout_does_not_choose_retry_exhausted():
     running = derive_session_state(
         messages=[],

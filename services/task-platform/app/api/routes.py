@@ -42,7 +42,7 @@ from app.models import (
     TaskWakeOutbox,
     WorkerInstance,
 )
-from app.runtime.capability import binding_names, stamp_desired
+from app.runtime.capability import binding_entries, stamp_desired
 from app.runtime.environment import (
     CheckItem,
     ExecutionEnvironmentRuntime,
@@ -312,9 +312,9 @@ async def create_employee(payload: EmployeeCreate, session: AsyncSession = Depen
             environment.skill_refs = skill_refs
         if mcp_refs is not None:
             environment.mcp_refs = mcp_refs
-        names = binding_names(environment.skill_refs, environment.mcp_refs)
-        if names:
-            environment.status_detail = stamp_desired({}, names, checked_at=datetime.now(UTC).isoformat())
+        entries = binding_entries(environment.skill_refs, environment.mcp_refs)
+        if entries:
+            environment.status_detail = stamp_desired({}, entries, checked_at=datetime.now(UTC).isoformat())
         session.add(environment)
         session.add(
             Event(
@@ -385,9 +385,9 @@ async def update_employee_environment(
         "message": "配置已更新，等待测试连接",
         "applies_to": "future_tasks" if employee.current_task_count else "all_new_runs",
     }
-    names = binding_names(environment.skill_refs, environment.mcp_refs)
-    if bindings_changed or names or (isinstance(previous.get("capability"), dict)):
-        detail = stamp_desired(detail, names, previous=previous, checked_at=datetime.now(UTC).isoformat())
+    entries = binding_entries(environment.skill_refs, environment.mcp_refs)
+    if bindings_changed or entries or (isinstance(previous.get("capability"), dict)):
+        detail = stamp_desired(detail, entries, previous=previous, checked_at=datetime.now(UTC).isoformat())
     environment.status_detail = detail
     await session.commit()
     await session.refresh(environment)

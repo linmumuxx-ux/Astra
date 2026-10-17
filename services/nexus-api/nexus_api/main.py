@@ -2579,17 +2579,20 @@ async def capture_im_reply(
                 pending += chunk
                 frames, pending = split_sse(pending)
                 for frame in frames:
-                    started, _terminal, close = observe_stream_event(started, sse_payload(frame))
-                    if not close:
+                    started, terminal, close = observe_stream_event(started, sse_payload(frame))
+                    if not close or not terminal:
                         continue
+                    reply_id = str(terminal.get("reply_id") or "")
                     messages = await client.list_session_messages(agent_id, session_id)
                     body = ""
-                    for message in reversed(messages):
-                        if isinstance(message, dict) and message.get("role") == "assistant":
-                            body = block_text(message.get("content"))
-                            if body:
-                                break
-                    if body:
+                    for message in messages:
+                        if not isinstance(message, dict) or message.get("role") != "assistant":
+                            continue
+                        if str(message.get("id") or "") != reply_id:
+                            continue
+                        body = block_text(message.get("content"))
+                        break
+                    if body.strip():
                         contact_human(
                             connection,
                             employee_id=employee["id"],

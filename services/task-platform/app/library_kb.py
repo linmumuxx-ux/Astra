@@ -99,6 +99,9 @@ class AgentScopeKnowledgeApi:
             raise KnowledgeMapError("AgentScope 没有返回 document id")
         return str(document_id)
 
+    async def delete_document(self, kb_id: str, document_id: str) -> None:
+        await self._request("DELETE", f"/knowledge_bases/{kb_id}/documents/{document_id}")
+
     async def search(self, kb_id: str, query: str) -> list[dict[str, Any]]:
         payload = await self._request(
             "POST",
@@ -131,9 +134,13 @@ async def map_published_item(item, api: AgentScopeKnowledgeApi) -> None:
         return
     if item.agentscope_sync_status == "synced" and item.agentscope_kb_id and item.agentscope_document_id:
         return
+    old_document = item.agentscope_document_id or ""
     try:
         kb_id = item.agentscope_kb_id or await api.create_knowledge_base(item.title, item.summary or "")
         item.agentscope_kb_id = kb_id
+        if old_document:
+            await api.delete_document(kb_id, old_document)
+            item.agentscope_document_id = None
         document_id = await api.upload_document(kb_id, f"{item.id}.md", item.content_md or item.title)
     except KnowledgeMapError as exc:
         item.agentscope_sync_status = "failed"

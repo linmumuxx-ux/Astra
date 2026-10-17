@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi.testclient import TestClient
 
 from nexus_api.agentscope import AgentScopeClient
-from nexus_api.main import create_app
+from nexus_api.db import connect, init_db
+from nexus_api.im import accept_inbound, bind_bot, claim_outbox, contact_human
+from nexus_api.main import capture_im_reply, create_app
 
 REPLY = (
     'data: {"type":"REPLY_START","id":"s1","reply_id":"r1"}\n\n'
@@ -57,7 +60,7 @@ def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
                     "messages": [
                         {"id": "user-1", "role": "user", "content": [{"type": "text", "text": "你好"}]},
                         {
-                            "id": "asst-1",
+                            "id": "r1",
                             "role": "assistant",
                             "content": [{"type": "text", "text": "已经收到"}],
                         },
@@ -111,9 +114,8 @@ def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
         assert first["state"] == "inflight"
         assert first["conversation_key"] == "u9"
         assert first["lease_until"]
-        retried = test_client.get("/api/v1/im/outbox")
-        assert retried.json()["delivery_id"] == first["delivery_id"]
-        assert retried.json()["lease_until"]
+        held = test_client.get("/api/v1/im/outbox")
+        assert held.status_code == 404
         queued = test_client.post(
             "/api/v1/im/contacts",
             json={
@@ -132,7 +134,7 @@ def test_im_http_round_trip_claims_and_acks_the_reply(tmp_path, monkeypatch):
         assert nxt.json()["body"] == "工具发出的第二句"
         assert nxt.json()["delivery_id"] == queued.json()["delivery_id"]
         again = test_client.get("/api/v1/im/outbox")
-        assert again.json()["delivery_id"] == nxt.json()["delivery_id"]
+        assert again.status_code == 404
         test_client.post("/api/v1/im/acks", json={"delivery_id": nxt.json()["delivery_id"]})
         empty = test_client.get("/api/v1/im/outbox")
         assert empty.status_code == 404
@@ -374,3 +376,125 @@ def test_im_http_waits_for_agentscope_and_web_stays_available(tmp_path, monkeypa
         )
         assert group_event.json()["session_id"] == "ses-group"
         assert chats[-1]["session_id"] == "ses-group"
+
+
+def test_outbox_reclaims_only_an_expired_lease(tmp_path):
+    path = tmp_path / "im.sqlite3"
+    init_db(path)
+    connection = connect(path)
+    first = contact_human(
+        connection,
+        employee_id="E1",
+        conversation_key="u1",
+        session_id="ses",
+        body="第一句",
+    )
+    second = contact_human(
+        connection,
+        employee_id="E1",
+        conversation_key="u2",
+        session_id="ses-2",
+        body="另一路",
+    )
+    claimed = claim_outbox(connection)
+    assert claimed["delivery_id"] == first["delivery_id"]
+    assert claim_outbox(connection)["delivery_id"] == second["delivery_id"]
+    assert claim_outbox(connection) is None
+    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    connection.execute(
+        "UPDATE im_outbox SET lease_until = ? WHERE delivery_id = ?",
+        (past, first["delivery_id"]),
+    )
+    connection.commit()
+    again = claim_outbox(connection)
+    assert again["delivery_id"] == first["delivery_id"]
+    assert again["lease_until"] != past
+
+
+def test_expired_event_claim_can_be_taken_again(tmp_path):
+    path = tmp_path / "im.sqlite3"
+    init_db(path)
+    connection = connect(path)
+    now = datetime.now(UTC).isoformat()
+    connection.execute(
+        """
+        INSERT INTO conversations (
+            id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
+        ) VALUES ('c1', 'E1', 'u1', 'private', '私聊', 'ses', ?, ?)
+        """,
+        (now, now),
+    )
+    bind_bot(connection, "E1", "mock", "bot-1")
+    calls = {"n": 0}
+
+    async def accept(employee_id, session_id, text):
+        calls["n"] += 1
+
+    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    connection.execute(
+        """
+        INSERT INTO im_events (
+            provider, event_id, employee_id, session_id, accepted, claim_token, claim_until
+        ) VALUES ('mock', 'evt-crash', 'E1', 'ses', 0, 'stuck', ?)
+        """,
+        (past,),
+    )
+    connection.commit()
+    result = asyncio.run(
+        accept_inbound(
+            connection,
+            provider="mock",
+            event_id="evt-crash",
+            bot_id="bot-1",
+            sender_uid="u1",
+            text="再来",
+            accept=accept,
+        )
+    )
+    assert result["duplicate"] is False
+    assert calls["n"] == 1
+
+
+class _EmptyStream:
+    status_code = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def aiter_bytes(self):
+        yield (
+            b'data: {"type":"REPLY_START","reply_id":"r2"}\n\n'
+            b'data: {"type":"REPLY_END","reply_id":"r2"}\n\n'
+        )
+
+
+class _QuietClient:
+    configured = True
+
+    def stream_session(self, _agent_id, _session_id):
+        return _EmptyStream()
+
+    async def list_session_messages(self, _agent_id, _session_id):
+        return [
+            {"id": "r1", "role": "assistant", "content": [{"type": "text", "text": "上一轮"}]},
+            {"id": "r2", "role": "assistant", "content": []},
+        ]
+
+
+def test_silent_im_turn_does_not_repeat_the_previous_reply(tmp_path):
+    path = tmp_path / "im.sqlite3"
+    init_db(path)
+    connection = connect(path)
+    asyncio.run(
+        capture_im_reply(
+            connection,
+            _QuietClient(),
+            {"id": "E1", "agentscope_agent_id": "agent-1"},
+            "ses",
+            "u1",
+        )
+    )
+    assert claim_outbox(connection) is None

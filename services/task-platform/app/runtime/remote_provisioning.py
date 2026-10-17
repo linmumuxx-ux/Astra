@@ -29,11 +29,13 @@ from app.gateway.security import CredentialCipher, gateway_key_digest
 from app.gateway.service import GatewayControlService
 from app.models import CodeRepository, DigitalEmployee, Event, GitCredential, OpenCodeExecutionEnvironment
 from app.runtime.capability import (
+    binding_entries,
     binding_names,
     binding_revision,
     discover_names,
     loads_jsonc,
     observe_bindings,
+    stored_capability,
     write_capability,
 )
 from app.runtime.direct_urls import require_direct_url
@@ -661,11 +663,12 @@ class RemoteProvisioner:
             found = set()
             error = self.redact(exc)
         expected = binding_names(self.environment.skill_refs, self.environment.mcp_refs)
+        entries = binding_entries(self.environment.skill_refs, self.environment.mcp_refs)
         detail = self.environment.status_detail if isinstance(self.environment.status_detail, dict) else {}
         current = detail.get("capability") if isinstance(detail.get("capability"), dict) else None
         return observe_bindings(
             current,
-            desired=binding_revision(expected),
+            desired=binding_revision(entries),
             found=found,
             expected=expected,
             error=error,
@@ -676,7 +679,9 @@ class RemoteProvisioner:
         state = "SUCCEEDED" if success else "FAILED"
         operation = {**self.operation, "state": state, "finished_at": datetime.now(UTC).isoformat()}
         detail = {"operation": operation, "checks": self.steps, "message": self.redact(error)}
-        if capability:
+        if capability is None:
+            capability = stored_capability(self.environment.status_detail)
+        if capability is not None:
             detail = write_capability(detail, capability)
         values = {
             "status": EnvironmentStatus.AVAILABLE if success else EnvironmentStatus.UNAVAILABLE,

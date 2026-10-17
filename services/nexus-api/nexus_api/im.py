@@ -105,13 +105,16 @@ async def accept_inbound(
         """,
         (provider, event_id, employee_id, session_id),
     )
+    now = datetime.now(UTC).isoformat()
+    expiry = (datetime.now(UTC) + timedelta(seconds=LEASE_SECONDS)).isoformat()
     claimed = connection.execute(
         """
         UPDATE im_events
-        SET claim_token = ?, session_id = ?, employee_id = ?
-        WHERE provider = ? AND event_id = ? AND accepted = 0 AND claim_token = ''
+        SET claim_token = ?, session_id = ?, employee_id = ?, claim_until = ?
+        WHERE provider = ? AND event_id = ? AND accepted = 0
+          AND (claim_token = '' OR claim_until = '' OR claim_until <= ?)
         """,
-        (token, session_id, employee_id, provider, event_id),
+        (token, session_id, employee_id, expiry, provider, event_id, now),
     )
     connection.commit()
     if claimed.rowcount != 1:
@@ -132,7 +135,7 @@ async def accept_inbound(
     except Exception:
         connection.execute(
             """
-            UPDATE im_events SET claim_token = ''
+            UPDATE im_events SET claim_token = '', claim_until = ''
             WHERE provider = ? AND event_id = ? AND claim_token = ?
             """,
             (provider, event_id, token),
@@ -141,7 +144,7 @@ async def accept_inbound(
         raise
     connection.execute(
         """
-        UPDATE im_events SET accepted = 1, claim_token = ''
+        UPDATE im_events SET accepted = 1, claim_token = '', claim_until = ''
         WHERE provider = ? AND event_id = ? AND claim_token = ?
         """,
         (provider, event_id, token),
@@ -184,16 +187,18 @@ def contact_human(
 
 
 def claim_outbox(connection, *, lease_seconds: int = LEASE_SECONDS) -> dict[str, str] | None:
-    """认领一条出站。同一条在租约内重试时仍是原来的 delivery_id。"""
+    """认领一条出站。只重新认领租约已过期的在途行，仍用原来的 delivery_id。"""
 
+    now = datetime.now(UTC).isoformat()
     expiry = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
     current = connection.execute(
         """
         SELECT delivery_id FROM im_outbox
-        WHERE state = 'inflight'
+        WHERE state = 'inflight' AND (lease_until = '' OR lease_until <= ?)
         ORDER BY created_at, delivery_id
         LIMIT 1
-        """
+        """,
+        (now,),
     ).fetchone()
     if current is not None:
         connection.execute(

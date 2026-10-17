@@ -114,6 +114,7 @@ class AgentScopeClient:
     async def ensure_gateway_credential(self, api_key: str, base_url: str) -> str:
         """登记指向网关 /v1 的 credential。密钥只出现在这次请求体里。"""
 
+        payload = {"type": "openai_credential", "api_key": api_key, "base_url": base_url}
         try:
             listed = await self.request("GET", "/credential/")
             for item in listed.json().get("credentials", []):
@@ -122,12 +123,11 @@ class AgentScopeClient:
                     data.get("type") == "openai_credential" and (data.get("base_url") or "") == base_url
                 )
                 if same_gateway and item.get("id"):
+                    if (data.get("api_key") or "") == api_key:
+                        return str(item["id"])
+                    await self.request("PATCH", f"/credential/{item['id']}", json={"data": payload})
                     return str(item["id"])
-            created = await self.request(
-                "POST",
-                "/credential/",
-                json={"data": {"type": "openai_credential", "api_key": api_key, "base_url": base_url}},
-            )
+            created = await self.request("POST", "/credential/", json={"data": payload})
         except AgentScopeError as exc:
             if api_key and api_key in exc.detail:
                 raise AgentScopeError(exc.detail.replace(api_key, "[redacted]"), exc.status_code) from exc

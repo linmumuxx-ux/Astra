@@ -414,6 +414,12 @@ class RuntimeService:
                 SessionTerminalReason.INCOMPLETE.value,
             }:
                 task.waiting_reason = "RETRY_EXHAUSTED"
+            elif reason == SessionTerminalReason.COMPLETED.value:
+                task.waiting_reason = "EXECUTION_RESULT_REVIEW"
+            elif reason == SessionTerminalReason.SESSION_MISSING.value:
+                task.waiting_reason = "SESSION_MISSING"
+            elif reason == SessionTerminalReason.TRANSPORT_UNKNOWN.value:
+                task.waiting_reason = "TRANSPORT_RECOVERY"
             else:
                 task.waiting_reason = None
         else:
@@ -1621,6 +1627,7 @@ class RuntimeService:
                 task.runtime_error = (
                     "Session 不存在，连接异常，状态待确认。Worker 与 Workspace 仍保留，请人工处理。"
                 )
+                task.waiting_reason = "SESSION_MISSING"
                 await self.session.commit()
             else:
                 await self.session.rollback()
@@ -1898,6 +1905,7 @@ class RuntimeService:
             runtime_session.terminal_reason = SessionTerminalReason.TRANSPORT_UNKNOWN.value
         task.runtime_connection = "UNAVAILABLE"
         task.runtime_error = f"连接异常，状态待确认：{error}"
+        task.waiting_reason = "TRANSPORT_RECOVERY"
         await self.session.commit()
 
     async def confirm_execution_stop(self, task_id: str, *, operator: str, reason: str) -> Task:
