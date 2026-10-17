@@ -92,8 +92,20 @@ async def test_file_commands_do_not_take_http_slots_and_upload_is_not_republishe
     for name in ("validate_path", "read_file", "git_readonly", "upload_file"):
         await _dispatch(gateway, enrolled, name, f"req-{name}", {"workspace": "/ws"})
     async with SessionLocal() as session:
-        slots = (await session.scalars(select(WorkerHttpSlot))).all()
-        rows = (await session.scalars(select(WorkerCommand))).all()
+        slots = (
+            await session.scalars(
+                select(WorkerHttpSlot).where(
+                    WorkerHttpSlot.worker_instance_id == enrolled.worker_instance_id
+                )
+            )
+        ).all()
+        rows = (
+            await session.scalars(
+                select(WorkerCommand).where(
+                    WorkerCommand.worker_instance_id == enrolled.worker_instance_id
+                )
+            )
+        ).all()
     assert slots == []
     assert {row.slot_held for row in rows} == {False}
     upload = next(row for row in rows if row.name == "upload_file")

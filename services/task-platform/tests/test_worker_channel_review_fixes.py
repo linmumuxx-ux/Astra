@@ -578,8 +578,16 @@ async def test_worker_prompt_path_check_does_not_open_ssh(monkeypatch):
         environment, "/srv/app", ".", native_path="/session/ses/prompt_async"
     )
     assert checked == "."
-    with pytest.raises(AssertionError):
-        await check_request_path(environment, "/srv/app", ".", native_path="/file")
+    calls = []
+
+    async def validate(environment, workspace, value):
+        calls.append((workspace, value))
+        return "."
+
+    monkeypatch.setattr("app.runtime.worker_files.worker_validate_path", validate)
+    checked = await check_request_path(environment, "/srv/app", ".", native_path="/file")
+    assert checked == "."
+    assert calls == [("/srv/app", ".")]
 
 
 @pytest.mark.asyncio
