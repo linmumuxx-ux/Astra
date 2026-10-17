@@ -26,11 +26,16 @@ OpenCode 1.18.35 的事件（vendored SDK）是 `session.status`（`idle` / `bus
 4. SSE 只触发对账。`session.error` 不再直接写入 `failure_reason`。对账读取真实消息，并用 `last_message_id` 与 `turn_started_at` 丢弃过期观察。
 5. 确认完成只接受本轮 Session SUCCEEDED。消息重读失败时，仅当绑定 Session 已经是 SUCCEEDED 才允许确认，并且不把 UNKNOWN 改写成成功。
 6. 取消先 abort，再等待 Session 树离开 busy/retry。等不到则保持占用并报错。
+7. 取消与发送预留互斥。`stop` 在接触 OpenCode 之前，于短事务里记下本轮锚点（Session、`last_message_id`、`pending_message_id`、`turn_started_at`），并把 `suspension.cancel_token` 提交为带截止时间的预留。截止时间覆盖 abort 等待，进程崩溃后预留会过期，不新增列。`send` 与 `retry_submission` 在持有行锁、写入新预留之前看到有效预留就拒绝。最终事务再次核对锚点与预留标识都未变，才清空预留、写入取消并释放 Worker。锚点已变时只去掉自己的预留，保留新的 `pending_message_id`，不释放 Worker。SQLite 与 MySQL 都只在短事务里 `with_for_update`，不把行锁留在 OpenCode I/O 上。
+8. idle 快捷路径在 Session 已是 SUCCEEDED、Task 仍是 RUNNING 或待验收文案未对齐时，先幂等投影到待验收并最多唤醒一次。已经对齐的重复 refresh 不再读历史、也不再发事件。
+9. 同一轮里 Task 一直是 WAITING 时，有效等待原因第一次变化仍写 `TASK_WAITING` 事件、复用 outbox，并更新 `current_progress`。原因不变的 refresh 不新增事件。
+10. `unconfirmed` 不是可以跳过历史读取的确定终态。消息重新出现后按当前轮重新推导，可以回到 SUCCEEDED 并进入待验收。
 
 ## Risks / Trade-offs
 
-- [历史数据里 Session 已成功但 Task 仍是 RUNNING] → 下一次对账会把 Task 收到 WAITING，并唤醒一次责任员工。
+- [历史数据里 Session 已成功但 Task 仍是 RUNNING] → 下一次对账会把 Task 收到 WAITING，并唤醒一次责任员工。快捷路径会先做这次投影，而不是直接返回。
 - [确认完成比以前更严] → 读不到本轮且 Session 还不是 SUCCEEDED 时不能确认。避免把未知执行收成业务成功。
+- [取消预留写在现有 suspension JSON] → 只读写 `cancel_token` 这一键，挂起现场等其他键保持不动。预留过期前崩溃会暂时拒绝新输入，过期后发送恢复。
 
 ## Migration Plan
 

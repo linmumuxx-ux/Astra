@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import socket
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -445,18 +446,23 @@ def test_probe_network_performs_real_dns_and_tcp():
         refused = (
             await client.probe(SimpleNamespace(base_url=f"http://127.0.0.1:{port}"), ["NETWORK"], None)
         )[0]
-        unresolved = (
-            await client.probe(
-                SimpleNamespace(base_url="http://astra-no-such-host.invalid:80"), ["NETWORK"], None
-            )
-        )[0]
-        return reachable, refused, unresolved
+        return reachable, refused
 
-    reachable, refused, unresolved = asyncio.run(scenario())
+    reachable, refused = asyncio.run(scenario())
     assert reachable.success is True
     assert reachable.detail["port"] > 0
     assert refused.success is False
-    assert unresolved.success is False
+    try:
+        socket.getaddrinfo("astra-no-such-host.invalid", 80)
+    except socket.gaierror:
+        unresolved = asyncio.run(
+            HttpGatewayProbeClient(2.0).probe(
+                SimpleNamespace(base_url="http://astra-no-such-host.invalid:80"), ["NETWORK"], None
+            )
+        )[0]
+        assert unresolved.success is False
+    else:
+        pytest.skip("本机 DNS 将 astra-no-such-host.invalid 解析为地址，跳过无法解析的负向断言")
 
 
 def test_probe_service_model_and_stream_use_node_configuration():

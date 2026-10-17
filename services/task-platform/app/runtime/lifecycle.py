@@ -10,7 +10,7 @@ import asyncio
 import logging
 import re
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from secrets import token_hex
 from time import time_ns
@@ -56,6 +56,7 @@ from app.runtime.session_connection import (
     session_tree,
 )
 from app.runtime.session_state import SessionState, derive_session_state
+from app.runtime.wake_outbox import record_wake
 from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
 from app.services import TaskService
@@ -83,7 +84,52 @@ def _confirm_blocked(session_status: str) -> str:
     return "当前轮尚未正常结束，不能确认任务完成"
 
 
+_CANCEL_TOKEN = "cancel_token"
 _ACCEPTANCE_REASON = "执行结束，待确认"
+
+
+def _suspension(task: Task) -> dict:
+    return dict(task.suspension) if isinstance(task.suspension, dict) else {}
+
+
+def _cancel_record(task: Task) -> dict | None:
+    record = _suspension(task).get(_CANCEL_TOKEN)
+    return record if isinstance(record, dict) and record.get("id") else None
+
+
+def _cancel_active(task: Task, now: datetime | None = None) -> bool:
+    record = _cancel_record(task)
+    if not record:
+        return False
+    try:
+        deadline = datetime.fromisoformat(str(record.get("until")))
+    except ValueError:
+        return False
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    return deadline > (now or datetime.now(UTC))
+
+
+def _set_cancel_token(task: Task, token: str | None, *, hold_seconds: int = 0) -> None:
+    data = _suspension(task)
+    if token:
+        deadline = datetime.now(UTC) + timedelta(seconds=hold_seconds)
+        data[_CANCEL_TOKEN] = {"id": token, "until": deadline.isoformat()}
+    else:
+        data.pop(_CANCEL_TOKEN, None)
+    task.suspension = data or None
+
+
+def _same_observed_turn(task: Task, observed: tuple) -> bool:
+    session_id, anchor, pending, started = observed
+    return (
+        task.current_session_id == session_id
+        and task.last_message_id == anchor
+        and task.pending_message_id == pending
+        and         task.turn_started_at == started
+    )
+
+
 _QUESTION_REASON = "请在 Workspace 回答问题或权限请求"
 _RECOVERY_REASON = {
     SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode 返回执行错误，可在 Workspace 继续",
@@ -258,34 +304,63 @@ class RuntimeService:
         if _task_result_concluded(task):
             await self.session.commit()
             return
+        previous_status = TaskStatus(task.status)
+        previous_reason = task.human_required_reason
         if state.status == RuntimeSessionStatus.RUNNING.value:
             task.failure_reason = None
             task.execution_error = None
             await self.project(task, TaskStatus.RUNNING)
-        elif state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            return
+        if state.status == RuntimeSessionStatus.SUCCEEDED.value:
+            detail = _ACCEPTANCE_REASON
             task.failure_reason = None
             task.execution_error = None
-            task.human_required_reason = _ACCEPTANCE_REASON
-            await self.project(task, TaskStatus.WAITING, detail=_ACCEPTANCE_REASON)
         elif state.status == RuntimeSessionStatus.WAITING.value:
+            detail = _QUESTION_REASON
             task.failure_reason = None
             task.execution_error = None
-            task.human_required_reason = _QUESTION_REASON
-            await self.project(task, TaskStatus.WAITING, detail=_QUESTION_REASON)
         elif state.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}:
-            message = _RECOVERY_REASON.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
-            task.failure_reason = message
+            detail = _RECOVERY_REASON.get(state.terminal_reason, "当前轮执行异常，可在 Workspace 继续")
+            task.failure_reason = detail
             task.execution_error = {
                 "code": state.terminal_reason or "session_failed",
-                "message": message,
+                "message": detail,
                 "source": "opencode_session",
                 "session_id": task.current_session_id,
             }
-            task.human_required_reason = message
-            await self.project(task, TaskStatus.WAITING, detail=message)
         else:
             # UNKNOWN keeps the business status. The caller records why it is unconfirmed.
             await self.session.commit()
+            return
+        task.human_required_reason = detail
+        if task.status == TaskStatus.WAITING:
+            task.current_progress = detail
+        await self._project_waiting(task, previous_status, previous_reason, detail)
+
+    async def _project_waiting(
+        self,
+        task: Task,
+        previous_status: TaskStatus,
+        previous_reason: str | None,
+        detail: str,
+    ) -> None:
+        """Project WAITING, and wake again when the same-round reason changes."""
+        event = None
+        if previous_status is TaskStatus.WAITING and previous_reason != detail:
+            event = await TaskService(self.session).add_event(
+                task,
+                "TASK_WAITING",
+                "work",
+                f"等待原因变为{detail}",
+                {"from_reason": previous_reason, "to_reason": detail},
+                commit=False,
+            )
+            await record_wake(self.session, task, event, TaskStatus.WAITING, TaskStatus.WAITING)
+        await self.project(task, TaskStatus.WAITING, detail=detail)
+        if event is not None:
+            await event_bus.publish(
+                {"type": "TASK_WAITING", "task_id": task.id, "event_id": event.id}
+            )
 
     async def _supersede_session(self, old_id: str | None, new_id: str, *, interrupted: bool) -> None:
         if not old_id or old_id == new_id:
@@ -653,6 +728,8 @@ class RuntimeService:
             raise RuntimeStateError("上次输入尚未确认，请重连核对 Session 后再发送")
         if _task_result_concluded(task):
             raise RuntimeStateError("任务已结束；如需重新执行，请显式重新开始")
+        if _cancel_active(task):
+            raise RuntimeStateError("任务正在取消，不能提交新输入")
         submitted_session = task.current_session_id
         workspace = task.workspace
         employee_id = task.employee_id
@@ -681,6 +758,9 @@ class RuntimeService:
         if task.pending_message_id:
             await self.session.rollback()
             raise RuntimeStateError("已有待确认输入")
+        if _cancel_active(task):
+            await self.session.rollback()
+            raise RuntimeStateError("任务正在取消，不能提交新输入")
         employee = await self.session.scalar(
             select(DigitalEmployee)
             .where(DigitalEmployee.id == employee_id)
@@ -811,6 +891,8 @@ class RuntimeService:
             raise RuntimeStateError("任务不存在")
         if _task_result_concluded(task):
             raise RuntimeStateError("任务已结束，不能重试输入")
+        if _cancel_active(task):
+            raise RuntimeStateError("任务正在取消，不能提交新输入")
         if not task.pending_message_id or not task.pending_prompt:
             raise RuntimeStateError("没有待确认输入")
         pending_id = task.pending_message_id
@@ -840,6 +922,17 @@ class RuntimeService:
             # submission. Only a session switch, an interrupted bound Session, or
             # a different reservation is a real control-operation failure.
             background_acked = task.pending_message_id is None
+            if _cancel_active(task):
+                await self.session.rollback()
+                if sent_now or acknowledged:
+                    try:
+                        await client.abort(Path(workspace), session_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to abort submission blocked by cancel for task %s",
+                            task_id,
+                        )
+                raise RuntimeStateError("任务正在取消，不能提交新输入")
             stale = await self._submission_invalidated(
                 task, submitted_session=session_id, pending_id=pending_id
             )
@@ -894,14 +987,42 @@ class RuntimeService:
             logger.exception("Failed to collect final usage for Session %s", session_id)
             return None, None
 
+    async def _release_cancel_token(self, task_id: str, token: str) -> None:
+        """Drop this cancel reservation after the stop attempt leaves the critical section."""
+        await self.session.rollback()
+        task = await self.lock_task(task_id)
+        record = _cancel_record(task)
+        if record and record.get("id") == token:
+            _set_cancel_token(task, None)
+            await self.session.commit()
+        else:
+            await self.session.rollback()
+
+    async def _abandon_cancel(self, task: Task, token: str) -> None:
+        """Clear only this cancel reservation. A newer submission stays reserved."""
+        record = _cancel_record(task)
+        if record and record.get("id") == token:
+            _set_cancel_token(task, None)
+            await self.session.commit()
+        else:
+            await self.session.rollback()
+
     async def stop(self, task_id, *, cancel_task: bool = True):
-        task = await self.session.get(Task, task_id)
-        if not task:
-            raise RuntimeStateError("任务不存在")
+        task = await self.lock_task(task_id)
         if _task_result_concluded(task):
+            await self.session.rollback()
             raise RuntimeStateError("任务已结束，没有正在执行的任务可终止")
         session_id = task.current_session_id
         workspace = task.workspace
+        observed = (
+            session_id,
+            task.last_message_id,
+            task.pending_message_id,
+            task.turn_started_at,
+        )
+        token = token_hex(16)
+        hold = get_settings().opencode_restart_abort_timeout_seconds + 300
+        _set_cancel_token(task, token, hold_seconds=hold)
         environment = await resolve_environment(self.session, task) if session_id else None
         await self.session.commit()
 
@@ -909,81 +1030,101 @@ class RuntimeService:
         stop_error = None
         usage_messages: list[dict] | None = None
         native_session_count: int | None = None
-        if session_id and environment:
-            try:
-                async with connect(environment, start=True) as client:
-                    directory = Path(workspace)
-                    await client.abort(directory, session_id)
-                    try:
-                        watched = await session_tree(client, directory, session_id)
-                    except OpenCodeSessionNotFound:
-                        watched = set()
-                    for watched_id in sorted(watched or {session_id}):
-                        await self._wait_for_session_stop(
-                            client,
-                            directory,
-                            watched_id,
-                            message="执行尚未停止，未取消任务，也未释放 Worker",
+        token_held = True
+        try:
+            if session_id and environment:
+                try:
+                    async with connect(environment, start=True) as client:
+                        directory = Path(workspace)
+                        await client.abort(directory, session_id)
+                        try:
+                            watched = await session_tree(client, directory, session_id)
+                        except OpenCodeSessionNotFound:
+                            watched = set()
+                        for watched_id in sorted(watched or {session_id}):
+                            await self._wait_for_session_stop(
+                                client,
+                                directory,
+                                watched_id,
+                                message="执行尚未停止，未取消任务，也未释放 Worker",
+                            )
+                        usage_messages, native_session_count = await self._collect_final_usage(
+                            client, directory, session_id
                         )
-                    usage_messages, native_session_count = await self._collect_final_usage(
-                        client, directory, session_id
-                    )
-            except RuntimeStateError:
-                raise
-            except OpenCodeSessionNotFound:
-                # A restarted Serve that cannot find the Session proves there is
-                # no live execution attached to this binding.
-                forced_offline_cancel = True
-            except Exception as exc:
-                stop_error = exc
-                # Only LOCAL + no listener is safe to force-cancel. For remote
-                # transport loss or an occupied-but-unhealthy local port we cannot
-                # prove the Agent has stopped writing the Workspace.
-                if (
-                    environment.mode == ExecutionMode.LOCAL
-                    and not self._local_port_in_use(environment.opencode_server_port)
-                ):
-                    forced_offline_cancel = True
-                else:
-                    await self.disconnected(task_id, exc)
+                except RuntimeStateError:
                     raise
+                except OpenCodeSessionNotFound:
+                    # A restarted Serve that cannot find the Session proves there is
+                    # no live execution attached to this binding.
+                    forced_offline_cancel = True
+                except Exception as exc:
+                    stop_error = exc
+                    # Only LOCAL + no listener is safe to force-cancel. For remote
+                    # transport loss or an occupied-but-unhealthy local port we cannot
+                    # prove the Agent has stopped writing the Workspace.
+                    if (
+                        environment.mode == ExecutionMode.LOCAL
+                        and not self._local_port_in_use(environment.opencode_server_port)
+                    ):
+                        forced_offline_cancel = True
+                    else:
+                        raise
 
-        task = await self.lock_task(task_id)
-        if session_id and task.current_session_id != session_id:
-            await self.session.rollback()
-            raise RuntimeStateError("取消期间 Session 已切换，请刷新后重试")
-        runtime_session = await self._runtime_session(task)
-        if _task_result_concluded(task):
-            await self.session.rollback()
-            raise RuntimeStateError("任务已结束")
-        if usage_messages is not None:
-            await self._update_session_usage(
-                task, usage_messages, native_session_count=native_session_count
+            task = await self.lock_task(task_id)
+            if session_id and task.current_session_id != session_id:
+                await self._abandon_cancel(task, token)
+                token_held = False
+                raise RuntimeStateError("取消期间 Session 已切换，请刷新后重试")
+            if not _same_observed_turn(task, observed) or not _cancel_active(task):
+                await self._abandon_cancel(task, token)
+                token_held = False
+                raise RuntimeStateError("取消期间已有新的输入，未取消任务，也未释放 Worker")
+            record = _cancel_record(task)
+            if not record or record.get("id") != token:
+                await self._abandon_cancel(task, token)
+                token_held = False
+                raise RuntimeStateError("取消期间已有新的输入，未取消任务，也未释放 Worker")
+            runtime_session = await self._runtime_session(task)
+            if _task_result_concluded(task):
+                await self._abandon_cancel(task, token)
+                token_held = False
+                raise RuntimeStateError("任务已结束")
+            if usage_messages is not None:
+                await self._update_session_usage(
+                    task, usage_messages, native_session_count=native_session_count
+                )
+            if runtime_session and (
+                runtime_session.status not in _TERMINAL_SESSION_STATUSES
+                or task.pending_message_id or task.pending_prompt
+            ):
+                runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
+                runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
+                runtime_session.finished_at = datetime.now(UTC)
+            if forced_offline_cancel and cancel_task:
+                await TaskService(self.session).add_event(
+                    task,
+                    "RUNTIME_OFFLINE_CANCELED",
+                    "runtime",
+                    "Runtime 已不可执行，按明确取消意图收敛任务",
+                    {"error": str(stop_error) if stop_error else "session missing"},
+                    commit=False,
+                )
+            _set_cancel_token(task, None)
+            task.pending_message_id = None
+            task.pending_prompt = None
+            task.runtime_error = None
+            await self.project(
+                task, TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
+                detail="任务已终止" if cancel_task else "当前回复已停止，可在 Workspace 继续",
             )
-        if runtime_session and (
-            runtime_session.status not in _TERMINAL_SESSION_STATUSES
-            or task.pending_message_id or task.pending_prompt
-        ):
-            runtime_session.status = RuntimeSessionStatus.INTERRUPTED.value
-            runtime_session.terminal_reason = SessionTerminalReason.ABORTED.value
-            runtime_session.finished_at = datetime.now(UTC)
-        if forced_offline_cancel and cancel_task:
-            await TaskService(self.session).add_event(
-                task,
-                "RUNTIME_OFFLINE_CANCELED",
-                "runtime",
-                "Runtime 已不可执行，按明确取消意图收敛任务",
-                {"error": str(stop_error) if stop_error else "session missing"},
-                commit=False,
-            )
-        task.pending_message_id = None
-        task.pending_prompt = None
-        task.runtime_error = None
-        await self.project(
-            task, TaskStatus.CANCELED if cancel_task else TaskStatus.WAITING,
-            detail="任务已终止" if cancel_task else "当前回复已停止，可在 Workspace 继续",
-        )
-        return task
+            token_held = False
+            return task
+        except Exception as exc:
+            if token_held:
+                await self._release_cancel_token(task_id, token)
+            if stop_error is not None and not isinstance(exc, RuntimeStateError):
+                await self.disconnected(task_id, stop_error)
+            raise
 
     async def refresh(self, task_id, *, client=None):
         task = await self.session.get(Task, task_id)
@@ -1039,16 +1180,42 @@ class RuntimeService:
             await self.session.rollback()
             return task_snapshot
         binding = await self._runtime_session(task_snapshot)
-        if status == "idle" and not has_pending and not task_snapshot.pending_message_id and binding and (
-            # WAITING here means a pause after the turn already finished; re-reading
-            # the history would project the old SUCCEEDED turn back to RUNNING.
-            (binding.status == RuntimeSessionStatus.SUCCEEDED.value
-             and task_snapshot.status in {TaskStatus.RUNNING, TaskStatus.WAITING})
-            or (binding.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}
-                and task_snapshot.status == TaskStatus.WAITING)
+        settled = (
+            status == "idle"
+            and not has_pending
+            and not task_snapshot.pending_message_id
+            and binding is not None
+        )
+        if settled and binding.status == RuntimeSessionStatus.SUCCEEDED.value and (
+            task_snapshot.status in {TaskStatus.RUNNING, TaskStatus.WAITING}
         ):
-            # No new input has been reserved; an idle completed/interrupted turn
-            # needs no repeated full-history read. A new prompt marks it RUNNING.
+            # A stored success still has to correct a stale business projection.
+            # Once Task is already waiting for acceptance, skip another history read.
+            task_snapshot.runtime_connection = "CONNECTED"
+            task_snapshot.runtime_error = None
+            projected = (
+                task_snapshot.status == TaskStatus.WAITING
+                and task_snapshot.human_required_reason == _ACCEPTANCE_REASON
+                and task_snapshot.current_progress == _ACCEPTANCE_REASON
+            )
+            if projected:
+                await self.session.commit()
+            else:
+                await self._project_session_state(
+                    task_snapshot,
+                    SessionState(
+                        status=RuntimeSessionStatus.SUCCEEDED.value,
+                        terminal_reason=binding.terminal_reason or SessionTerminalReason.COMPLETED.value,
+                        finish_reason=binding.finish_reason,
+                    ),
+                )
+            return task_snapshot
+        confirmed_terminal = binding and binding.terminal_reason != SessionTerminalReason.UNCONFIRMED.value
+        if settled and confirmed_terminal and task_snapshot.status == TaskStatus.WAITING and (
+            binding.status in {RuntimeSessionStatus.FAILED.value, RuntimeSessionStatus.INTERRUPTED.value}
+        ):
+            # unconfirmed is not a settled fact: a later transcript can still
+            # show that this same round actually finished.
             task_snapshot.runtime_connection = "CONNECTED"
             task_snapshot.runtime_error = None
             await self.session.commit()

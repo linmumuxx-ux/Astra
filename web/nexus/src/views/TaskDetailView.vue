@@ -245,6 +245,7 @@ const sessionFact = computed(() => {
   const current = currentSession.value
   if (!current && task.value?.runtime_connection !== 'UNAVAILABLE') return ''
   if (task.value?.runtime_connection === 'UNAVAILABLE' || current?.status === 'UNKNOWN') return '连接异常/状态待确认'
+  if (task.value?.status === 'SUCCEEDED') return '已确认完成'
   if (current?.status === 'SUCCEEDED') return '本轮已完成，待确认'
   if (current?.status === 'FAILED' || current?.status === 'INTERRUPTED') return task.value?.human_required_reason || '执行异常，待恢复'
   if (current?.status === 'WAITING') return task.value?.human_required_reason || '等待回答或授权'
