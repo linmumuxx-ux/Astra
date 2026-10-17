@@ -175,6 +175,15 @@ class EmployeePatch(BaseModel):
     auto_execute: bool | None = None
 
 
+class ChannelHealth(BaseModel):
+    worker_online: bool
+    opencode_reachable: bool
+    repository_bound: bool
+    executing: bool
+    waiting_human: bool
+    availability: str
+
+
 class EmployeeRead(RuntimeRead):
     id: str
     name: str
@@ -194,6 +203,16 @@ class EmployeeRead(RuntimeRead):
     created_at: datetime
     updated_at: datetime
     execution_environment: ExecutionEnvironmentRead | None = None
+    channel_health: ChannelHealth = Field(
+        default_factory=lambda: ChannelHealth(
+            worker_online=True,
+            opencode_reachable=False,
+            repository_bound=False,
+            executing=False,
+            waiting_human=False,
+            availability="UNKNOWN",
+        )
+    )
     today_usage: UsageSummary = Field(default_factory=UsageSummary)
     today_completed: int = 0
 

@@ -38,12 +38,14 @@ from app.models import (
     TaskReview,
     TaskSummary,
     TaskWakeOutbox,
+    WorkerInstance,
 )
 from app.runtime.environment import (
     CheckItem,
     ExecutionEnvironmentRuntime,
     checks_status,
 )
+from app.runtime.presentation import project_channel_health
 from app.schemas import (
     EmployeeCreate,
     EmployeePatch,
@@ -110,11 +112,41 @@ async def employee_read(employee: DigitalEmployee, session: AsyncSession) -> Emp
         session, employee_id=employee.id, start=start, end=end
     )
     base = EmployeeRead.model_validate(employee)
+    environment = employee.execution_environment
+    worker_status = None
+    repository_id = None
+    if environment is not None:
+        detail = environment.status_detail or {}
+        repository_id = detail.get("repository_id")
+        instance = await session.scalar(
+            select(WorkerInstance).where(WorkerInstance.environment_id == environment.id)
+        )
+        if instance is not None:
+            worker_status = instance.status
+    rows = (
+        await session.execute(
+            select(Task.status, Task.runtime_connection).where(
+                Task.employee_id == employee.id,
+                Task.status.in_(["RUNNING", "WAITING"]),
+            )
+        )
+    ).all()
+    health = project_channel_health(
+        mode=environment.mode if environment is not None else None,
+        worker_channel=environment.worker_channel if environment is not None else None,
+        environment_status=environment.status if environment is not None else None,
+        worker_status=worker_status,
+        repository_id=str(repository_id) if repository_id else None,
+        employee_status=employee.status,
+        task_statuses=[row.status for row in rows],
+        runtime_connections=[row.runtime_connection for row in rows],
+    )
     return EmployeeRead.model_validate(
         {
             **base.model_dump(),
             "today_usage": usage,
             "today_completed": completed,
+            "channel_health": health,
         }
     )
 

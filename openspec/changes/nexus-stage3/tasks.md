@@ -27,12 +27,12 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：0。不重写已落地的 Worker 通道。
 
-- [ ] A.1 业务路径不再调用 `run_remote` / `open_session`。允许的只剩安装维护和 `opencode_remote.py` 的 CLI fallback
+- [x] A.1 业务路径不再调用 `run_remote` / `open_session`。允许的只剩安装维护和 `opencode_remote.py` 的 CLI fallback
   - 验证：测试列出调用点，Workspace、健康检查和 Session 不在其中
-- [ ] A.2 Worker 离线、OpenCode 可达、仓库已绑定、执行中、等待人工分开显示。离线不得显示成环境可用
+- [x] A.2 Worker 离线、OpenCode 可达、仓库已绑定、执行中、等待人工分开显示。离线不得显示成环境可用
   - 完成：读 `worker_instances.status`、环境状态、Task 状态和 `runtime_connection`。不新增状态机
   - 验证：Worker 标成 offline 后 Task 状态不变，占用仍在，接口里的可用性不是 `AVAILABLE`
-- [ ] A.3 进程重启、网络超时、epoch 乱序不新建 Session、不重发 Prompt、不改 `apply_session_state()` 的含义
+- [x] A.3 进程重启、网络超时、epoch 乱序不新建 Session、不重发 Prompt、不改 `apply_session_state()` 的含义
   - 验证：现有 Worker Gateway 与 lifecycle 测试，加上一条断线不改 Task 的回归
 
 不做：短期凭据、请求头白名单、协议协商。

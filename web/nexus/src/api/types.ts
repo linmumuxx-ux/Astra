@@ -116,6 +116,14 @@ export interface Employee extends RuntimeProjection {
   created_at: string
   updated_at: string
   execution_environment: ExecutionEnvironment | null
+  channel_health: {
+    worker_online: boolean
+    opencode_reachable: boolean
+    repository_bound: boolean
+    executing: boolean
+    waiting_human: boolean
+    availability: string
+  }
   today_usage: UsageSummary
   today_completed: number
 }
