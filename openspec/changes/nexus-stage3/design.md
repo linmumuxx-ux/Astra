@@ -52,9 +52,9 @@ Nexus 现在的部署已经使用 `PER_SESSION`。Stage 3 继续这样做，并�
 
 ### 2. 人类身份放在 Nexus 绑定和消息 metadata，AgentScope 继续使用一个服务用户
 
-`X-User-ID` 是 AgentScope 的占位身份，缺少或为空则 401（`app/deps.py` 35–57 行）。默认资源策略是 `DenyAllResourceAccessPolicy`（`app/_app.py` 290–295 行）。`Msg` 只有 `name`、`role`（`user` / `assistant` / `system`）和自由形式的 `metadata`，没有 `sender_uid`（`message/_base.py` 70–92 行）。
+`X-User-ID` 是 AgentScope 的占位身份。头为空时源码返回 401（`app/deps.py` 52–56 行）；头缺失时走 FastAPI 的参数校验，通常是 422。默认资源策略 `DenyAllResourceAccessPolicy` 只拒绝另一个 AgentScope 用户的资源（`app/_app.py` 290–295 行），不区分共用 `nexus` 的人类 UID。`Msg` 含 `name`、`content`、`role`、`id`、`metadata`、`created_at`（`message/_base.py` 70–94 行），没有 `sender_uid`。
 
-推荐默认做法见待拍板 D2：所有 Agent 和 Session 仍由服务用户 `nexus` 拥有，避免按 UID 复制岗位员工。真实 UID 写入 Nexus 绑定，以及写入 AgentScope 消息时放进 `metadata.verified_uid`。`role` 仍是 `user`，因为模型只接受这三种角色；展示和审计读 `metadata`，不再把所有人显示成匿名 `user`。Nexus 在代理读历史、订阅 SSE、发消息和读附件之前检查私聊所有者或群成员。内网不做签名断言、不做 SSO、不做逐接口的独立授权框架。`?uid=` 只作展示，不参与授权。
+审查已接受 D2，附加条件如下。所有 Agent 和 Session 仍由服务用户 `nexus` 拥有。会话绑定是授权事实，消息 metadata 不是。私聊和群消息的 `Msg.name` 写成人类显示名（没有显示名时用 UID），`metadata.verified_uid` 同时写入，供审计。`role` 仍是 `user`。Nexus 在读历史、订阅 SSE、发消息和下载附件之前检查所有者或成员。浏览器不直连 Agent Service。`?uid=` 不参与授权。附件表增加 `owner_uid`，下载按该列校验。
 
 ### 3. 原生 HTTP 不能写入一条不触发推理的消息
 
@@ -62,9 +62,20 @@ Nexus 现在的部署已经使用 `PER_SESSION`。Stage 3 继续这样做，并�
 
 `TeamSay` 把 `HintBlock` 交给 `deliver_to_inbox`（`app/_tool/_team_say.py` 269 行起，`app/_bus_ops.py` 163–199 行）。inbox 没有消费者时会 `enqueue_run_trigger`，从而启动推理。它适合员工之间的职责消息，不适合「群里一句普通人类消息，谁也不 @」。
 
-因此最小适配放在 `services/agent-service`：增加一个只调用 `storage.upsert_message` 的内部接口，写入 `UserMsg`，带上 `metadata.verified_uid`，不调用 `ChatService.run`。被 @ 的员工才额外 `POST /chat/`，并带上同一条消息 id，让存储按 id 原地替换而不是再插一行。Nexus 不保存消息正文。
+只写入消息表不会进入模型上下文。`ChatService` 用 `session_record.state` 组装 Agent，不从消息表重建上下文（`app/_service/_chat.py` 1176–1187 行）。因此：
 
-官方 Team UI 的 `TeamPanel` 是成员 Session 切换器，点击后导航到该成员自己的 Session（`examples/web_ui/frontend/src/components/panel/TeamPanel.tsx` 23–31 行）。没有跨 Session 的共享时间线 API。群视图由 Nexus 读取各成员 `GET /sessions/{id}/messages`，按消息 id 和 `created_at` 合并。这是投影，不是第二份历史。
+- 人类群里没被 @ 的消息，只写入该群的记录 Session 一次，使用 `storage.upsert_message`，不调用 `ChatService.run`。写入前拿与聊天相同的 session checkpoint 锁；Session 正在运行则拒绝这次纯写入。写完后 Nexus 向其他人类成员推一条轻量 SSE「有新消息」，因为这条路径没有 AgentScope 事件。
+- 每个成员在 `channel_members.last_delivered_message_id` 记下已经送进该员工上下文的位置。
+- 被 @ 时，`POST /chat/` 的 `input` 是列表：该成员游标之后的积压消息，加上这一条 @。沿用原来的消息 id。`ChatService.run` 会按 id 原地 upsert，并把这些 `Msg` 送进 `reply_stream`。然后推进游标。
+- 私聊不走这条积压。`POST /chat/` 直接带 `Msg.name` 和 `metadata.verified_uid`。
+
+官方 `TeamPanel` 只切换成员 Session（`examples/web_ui/frontend/src/components/panel/TeamPanel.tsx` 23–31 行）。`TeamSay` 会在发送方留下工具调用，并在每个接收方的回复消息里各放一份 `HintBlock`（`app/middleware/_inbox_middleware.py` 99–133 行），两边的消息 id 不同。群时间线按块投影，不按整条消息 id 去重：
+
+- 人类 `UserMsg` 相同 id 只显示一次。
+- `TeamSay` 工具调用显示为「A→B」或「A→全体」，键用 HintBlock id。接收方回复里的 HintBlock 隐藏。
+- 排序键是 `(created_at, session_id, id)`。
+- 分页用每个 Session 自己的游标做 k 路合并。
+- 人类群的记录 Session 和员工协作 Team 的 leader/member Session 都纳入这个投影。这是读时投影，不是第二份历史。
 
 ### 4. 协作使用原生 Team，临时员工工具继续卸掉
 
@@ -72,7 +83,13 @@ Nexus 现在的部署已经使用 `PER_SESSION`。Stage 3 继续这样做，并�
 
 `AgentInvite` 在已有 `AgentRecord` 上新建 team-scoped Session，不复制岗位定义（`app/_tool/_agent_invite.py` 1–15 行）。`delete_team` 对 `invited` 成员只删借来的 Session，`AgentRecord` 保留；`created` 成员会整份删除（`app/_service/_session.py` 432–470 行）。所以岗位员工必须走 `AgentInvite`，不能走 `AgentCreate`。
 
-当前 `services/agent-service/agent_service.py` 113–128 行把 `TeamCreate`、`AgentInvite`、`TeamSay`、`TeamDelete`、`AgentCreate` 全部卸掉，对等联系只走 `contact_employee`。这和 S3-02 冲突，处理见待拍板 D1。推荐默认：协作群恢复前四个工具，继续卸掉 `AgentCreate`，避免模型造出 `source=team` 的临时员工并被当成第二个岗位。
+当前 `services/agent-service/agent_service.py` 113–128 行把这些工具全部卸掉。审查后的分工是两种模式，而不是把人类群直接当成一个 Team：
+
+- **人类群**沿用 Nexus `channels`。普通消息走上面的纯写入和投递游标，`@` 才 `POST /chat/`。这里只路由人类输入，不另做成员之间的消息引擎。`channels` 增加 `owner_uid`。`channel_members` 增加人类成员和 `last_delivered_message_id`。
+- **员工协作**使用原生 `TeamCreate`、`AgentInvite`、`TeamSay`。发起员工的当前 Session 就是 leader。没有 HTTP 建团队接口，团队只能在那次运行里由工具创建。成员 `TeamSay` 回 leader 会原生唤醒 leader，这就是 E2E-07。从私聊 Session 当 leader 可以，该团队只对该 UID 可见。继续卸掉 `AgentCreate`。
+- `contact_employee` 只做单向邮箱通知。它投到对方的 mailbox Session，回信到不了发起人的上下文，所以不能当作 E2E-07。
+
+`AgentInvite` 在单一用户 `nexus` 下会取 `list_sessions(user_id, agent_id)` 的第一条，SQL/Redis 都是新到旧（`app/_tool/_agent_invite.py` 351–360、404–414 行）。那通常是某个人的私聊 workspace，文件、技能、MCP 和 workspace 记忆会跨 UID 泄露。`agent_service.py` 在组装 toolkit 时把 `AgentInvite` 换成一个薄子类，只改 workspace 和模型来源：用该员工自己的 `mailbox_session_id` 上的 workspace，没有 mailbox 时新建一个 workspace。绝不选用私聊或其他团队的 Session。AgentScope 包本身不改。
 
 ### 5. 压缩用原生 `ContextConfig`，长期记忆只装配一种
 
@@ -80,7 +97,9 @@ Nexus 现在的部署已经使用 `PER_SESSION`。Stage 3 继续这样做，并�
 
 默认中间件只有 `InboxMiddleware`、`StateChangeMiddleware`、`ToolOffloadMiddleware`，外加可选的团队循环和调用方工厂（`_chat.py` 984–1015 行）。`ReMeMiddleware`、`AgenticMemoryMiddleware`、`Mem0Middleware` 都要经 `extra_agent_middlewares` 才会挂上。当前 `agent_service.py` 没有传入这个工厂，所以长期记忆代码在包里，运行时没有装配。
 
-ReMe 的写入按 `session_id`，搜索覆盖整个 workspace（`middleware/_longterm_memory/_reme/_middleware.py` 28–31 行）。在 10 人内网里要做可靠的跨 UID 隔离，成本高于收益。推荐默认见 D3：装配 `AgenticMemoryMiddleware`，记忆目录按 `employee_id` 加 UID 分开。不接 Mem0。不自建记忆库。
+ReMe 的搜索覆盖整个 workspace（`middleware/_longterm_memory/_reme/_middleware.py` 28–31 行）。不接 ReMe，也不接 Mem0。
+
+`extra_agent_middlewares` 每次运行调用，参数是 `(user_id, agent_id, session_id, workspace)`，看不到消息 metadata。AgenticMemory 的官方接法是 `workdir=workspace.workdir`、`backend=workspace.get_backend()`（`examples/agent_service/main.py` 57–72 行）。私聊绑定在 `PER_SESSION` 下已经是「一个 UID 加一个员工一个 workspace」，这个 workspace 就是记忆范围。邀请子类修好之后，团队 Session 各自有 workspace，不会读到私聊记忆。重新绑定私聊时必须把原来的 `workspace_id` 传进 `POST /sessions/`，记忆才还在。不另做 `employee_id/uid` 目录。
 
 知识库同理：`RAGMiddleware` 只在 Session 的 `knowledge_config.knowledge_base_ids` 非空且进程持有 `knowledge_base_manager` 时注入（`_chat.py` 1044–1085 行）。当前启动没有传入 manager，`/knowledge_bases` 不可用。S3-07 是 P1，映射放在现有 `knowledge_items` 上，不新做图书馆。
 
@@ -94,7 +113,19 @@ ReMe 的写入按 `session_id`，搜索覆盖整个 workspace（`middleware/_lon
 - Session `FAILED` / `INTERRUPTED` 也投影为 `WAITING`，文案来自 `_RECOVERY_REASON`（207–215 行），不自动把 Task 设为 `FAILED`。
 - `UNKNOWN` 保持原业务状态。
 
-Stage 3 在同一次投影里写入结构化 `waiting_reason`：`EXECUTION_RESULT_REVIEW`、`HITL_QUESTION`、`HITL_PERMISSION`、`RETRY_EXHAUSTED`、`TRANSPORT_RECOVERY`、`MANUAL_INTERVENTION`。通信失败继续只记连接异常，不进这个投影。人工确认、取消和关闭失败仍走现有 Task 接口，并在执行确实停止后才释放 Worker。OpenCode 自己的 retry 保持 `RUNNING`。
+`waiting_reason` 只在 `_project_session_state` 同一次写入里设置，对照现有 `SessionTerminalReason`：
+
+| Session 事实 | Task | `waiting_reason` |
+|---|---|---|
+| `WAITING` 且是问题 | `WAITING` | `HITL_QUESTION` |
+| `WAITING` 且是权限 | `WAITING` | `HITL_PERMISSION` |
+| `SUCCEEDED` | `WAITING` | `EXECUTION_RESULT_REVIEW` |
+| `ASSISTANT_ERROR` / `NO_REPLY` / `INCOMPLETE`，且是 OpenCode 自己停住 | `WAITING` | `RETRY_EXHAUSTED` |
+| `ABORTED` | `WAITING` | `MANUAL_INTERVENTION` |
+| `TIMEOUT` | 保持现有投影为 `WAITING` | 不从耗时推断 retry 耗尽。投影不调用 OpenCode abort，也不代它重试 |
+| `UNCONFIRMED`（`session_state.py` 148–157 行，服务空闲且锚点不在记录里） | **不改变 Task 状态** | `TRANSPORT_RECOVERY` |
+
+通信失败、心跳丢失和 `UNKNOWN` 不进入这张表，也不写 `TRANSPORT_RECOVERY`。人工确认、取消和关闭失败仍走现有 Task 接口，执行停止且没有待处理 HITL 之后才释放 Worker。分配时记下 base commit，以及当时的能力与模型 revision 快照。
 
 ### 7. Worker 通道沿用已落地的实现
 
@@ -108,7 +139,7 @@ S3-10 剩下的缺口见 tasks.md 批次 A。规格里的短期 Worker 凭据和
 
 Stage 3 增加仓库表和 `repository_id`，挂到现有执行环境和 Task 上，不另建 Worker 平台。PAT 复用 `app/gateway/security.py` 的 Fernet，密文入库。git 在 Worker 进程内用内存 askpass 取一次明文，不写入 remote URL、命令日志、`git config` 或 `opencode.jsonc`。不做短时凭据服务，也不做独立的 Git 写进程。
 
-部署改为只写 `opencode.jsonc` 的网关 provider，不再生成平台级 `opencode.json`，也不再因为 jsonc 已存在而失败。Gateway 路由和模型映射代码不动。本地与 e2e 把 OpenCode 模型设为 `opencode/deepseek-v4.1-flash-free`，不读网关。生产 Worker 仍指向已验证的网关。
+部署写的是 Worker 用户全局配置目录里的 `opencode.jsonc`（`config_home/opencode/opencode.jsonc`），不是仓库里的项目配置。这一份里包含网关 provider，以及该 Worker 绑定的 MCP。MCP 也可以经 `OPENCODE_CONFIG_CONTENT` 注入，二选一，不写两份。技能装到 Worker 专用目录，不改仓库自带的 `.opencode/`。不再生成平台根目录 `opencode.json`，也不再因为 jsonc 已存在而失败。Gateway 路由和模型映射代码不动。本地与 e2e 把 OpenCode 模型设为 `opencode/deepseek-v4.1-flash-free`，不读网关。生产 Worker 仍指向已验证的网关。
 
 ## 源码复用矩阵
 
@@ -116,14 +147,14 @@ Stage 3 增加仓库表和 `repository_id`，挂到现有执行环境和 Task �
 |---|---|---|---|---|
 | Session / 消息 / UI | 创建、列表、SSE、中断在 `app/_router/_session.py`、`_chat.py`。消息只读 `GET /sessions/{id}/messages`（586 行起）。Vue 页面在 `web/nexus/src/views/ChatView.vue`。事件类型在 AgentScope `event/_event.py` | Nexus 继续代理 `POST /chat/` 和 `GET .../stream`、`GET .../messages`。页面用原生事件增量，重连先拿历史和游标再续流 | 私聊唯一绑定；`metadata.verified_uid`；去掉新建会话按钮；群消息来源 | Nexus `messages` 不再作为历史正文。不建第二套聊天库 |
 | 纯消息 | 无公开「只落库」接口。`upsert_message` 位于 `app/storage/_base.py` 738 行，实际写入发生在推理运行内 | 适配层直接调用该存储方法 | `services/agent-service` 一个内部写入接口，不 `spawn` 推理 | 不把未 @ 的话写进 Nexus `messages` |
-| Team / 职责请求 | `TeamCreate`、`AgentInvite`、`TeamSay`、`TeamDelete` 在 `app/_tool/`。投递走 `deliver_to_inbox`。官方 UI 只切换成员 Session | 协作群启用这些工具。岗位员工用 `AgentInvite`。定向和广播用 `TeamSay` | 业务成员、ACL、可见性放在现有 `channels` / `channel_members`。群视图合并各 Session 消息 | 不保留第二套群路由。`AgentCreate` 继续卸掉。不把 `source=team` 的临时 Agent 登记成员工 |
-| Memory / 压缩 | `ContextConfig` 与 `compress_context` 已在默认 Agent 上。三种长期记忆都在 `middleware/_longterm_memory/`，当前进程未装配 | 压缩零开发，只验证 Session id 和消息表。长期记忆经 `create_app(..., extra_agent_middlewares=)` | 选定一种中间件，目录按员工和 UID 分开。不可用时主聊天继续，错误可见 | 不写 Nexus 记忆表或抽取器。不接 Mem0 服务 |
+| Team / 职责请求 | `TeamCreate`、`AgentInvite`、`TeamSay`、`TeamDelete` 在 `app/_tool/`。投递走 `deliver_to_inbox`。官方 UI 只切换成员 Session。没有 HTTP 建团队路由 | 员工协作：当前 Session 当 leader，岗位员工用改过 workspace 来源的 `AgentInvite`，定向和广播用 `TeamSay` | 人类群仍是 `channels` 加投递游标。`contact_employee` 只做单向通知 | 不把人类群建成 Team。`AgentCreate` 继续卸掉。不把 `source=team` 的临时 Agent 登记成员工 |
+| Memory / 压缩 | `ContextConfig` 与 `compress_context` 已在默认 Agent 上。三种长期记忆都在 `middleware/_longterm_memory/`，当前进程未装配 | 压缩零开发。长期记忆用官方 workspace 接法挂 `AgenticMemoryMiddleware` | 私聊重新绑定时传入原 `workspace_id`。不可用时主聊天继续，错误可见 | 不写自定义记忆目录。不接 ReMe 和 Mem0 |
 | Knowledge | 路由 `app/_router/_knowledge_base.py`。运行时 `RAGMiddleware`（`middleware/_rag.py`）。图书馆已有 `knowledge_items` 及审核发布 | 图书馆仍是已审核原文。Agent 检索走原生 KB | `knowledge_items` 增加 AgentScope KB / document 映射列。命中结果带来源 | 不替换 LLM Wiki，不把个人记忆写成图书馆资产 |
-| Skill / MCP | AgentScope：`/skill`、`/workspace/skill`、`/mcp`、hub 安装。OpenCode：Worker 上的 `opencode.jsonc` 与 `.opencode/skills`。员工行已有 `skills_json` / `tools_json` | 讨论技能走 AgentScope API。工程技能和 MCP 写 Worker 配置并做发现检查 | 绑定结果记到现有员工 JSON 和环境 `status_detail`，区分已保存和已生效 | 不建平行能力目录、不假设两种配置格式互通 |
+| Skill / MCP | AgentScope：`/skill`、`/workspace/skill`、`/mcp`。OpenCode 1.18.35 有自己的发现规则。员工行已有 `skills_json` / `tools_json` | 员工走 AgentScope API。Worker 把技能装进专用目录，MCP 写入该 Worker 的全局 `opencode.jsonc` 或 `OPENCODE_CONFIG_CONTENT` | 现有 JSON 和 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。发现通过后才算 applied。Task 分配时记快照 | 不新建能力中心页面或表。不改仓库里的 `.opencode/` |
 | 模型 | Gateway 表 `gateway_pools` / `gateway_nodes` / `gateway_routes` / `gateway_keys` 已加密。AgentScope 凭据接口 `POST /credential/`。现有 `bootstrap_chat_model.py` | 生产员工和 Worker 都指向现有网关 `/v1`。页面只列已启用路由 | 员工增加 `model_route_id`。部署只改 Worker 的 `opencode.jsonc` provider | 不改 Gateway 与模型映射代码。不在页面收集厂商 Key。本地 e2e 不走网关 |
 | OpenCode 工作区 | 官方 UI 已在 `web/workspace-ui`。Task 详情 iframe。传输已走 Worker HTTP/SSE | 浏览器仍用现有 Workspace URL | 首屏按需加载、静态资源缓存。授权仍按 Task 归属 | 不重写编辑器、Diff、终端 |
 | Task / Worker | Task 状态机 `app/state_machine.py`。投影 `lifecycle.py`。占用在执行员工槽。通道表 `worker_instances` / `worker_connections` / `worker_commands` | 终态、重连、独占、人工确认都沿用 | `waiting_reason`、`repository_id`、关联任务。健康展示分开「Worker 离线」和「环境可用」 | 不新增状态机，不在断线时释放 Worker，不自动 `SUCCEEDED` / `FAILED` |
-| 复盘 | `task_summaries`、`task_reviews`、`app/assistant/review.py`、经验技能和图书馆审核 | 闭环后仍走这套总结和候选经验 | 去掉旧助手产品入口和它专属的 OpenCode Server。复盘失败只改复盘行 | 不把复盘失败写回已关闭的 Task。不先删复盘再补 |
+| 复盘 | `review.py` 现在依赖 `assistant_enabled`、`AssistantOpenCodeClient`（334、366、419–431 行）和根目录 `opencode.json` 里的 `nexus-assistant` MCP | 保留这个 OpenCode 进程，改成只听 `127.0.0.1` 的内部复盘执行器。启动配置只带复盘 MCP 和只读工具，不再看 `assistant_enabled` | 先迁好执行器并跑通总结和候选，再删产品入口、`/api/assistant` 的用户路径和根目录 `opencode.json` | 不把复盘失败写回已关闭的 Task。不先删执行器 |
 | IM | AgentScope 自带钉钉 / 飞书 / Discord channel（`app/channel/`）。Nexus 已有 `peer_deliveries` 和 `task_wake_outbox`，职责都不是外部 IM | 不启用 AgentScope 的厂商 channel，避免把公司 IM 写进 Agent 进程 | Nexus 提供事件、出站、ACK、身份映射。测试用模拟 Adapter | 不把 WeTalks / 钉钉 / 飞书 SDK 放进 Core。Outbox 不当永久聊天记录 |
 
 ## 现有表、API、事件到新职责
@@ -135,8 +166,8 @@ Stage 3 增加仓库表和 `repository_id`，挂到现有执行环境和 Task �
 | `employees` | 长期岗位。一岗一员工 | 增加 `model_route_id`。`agentscope_agent_id` 继续指向同一个 `AgentRecord`。不按 UID 复制行 |
 | `conversations` | 私聊绑定：`owner_uid + employee_id + kind=private → agentscope_session_id` | `owner_id` 改为可信 UID。私聊加唯一约束。不存消息正文 |
 | `messages` | 不再承担历史 | 停止写入。读历史改走 AgentScope。表可以留着，不做回放、双写退出或归档作业 |
-| `channels`、`channel_members` | 协作群的业务索引：成员、各自的 team session、ACL | 增加 `agentscope_team_id`。人类 UID 作为成员。正文仍在 AgentScope |
-| `attachments` | 附件元数据 | 下载前做同一次归属校验 |
+| `channels`、`channel_members` | 人类群的业务索引。员工协作 Team 另由 AgentScope 保存，群视图只引用其 Session | `channels.owner_uid`。成员可以是员工或人类 UID。员工成员有 `last_delivered_message_id`。不把 `agentscope_team_id` 当成人类群的必填字段 |
+| `attachments` | 附件元数据 | 增加 `owner_uid`。下载前按所有者或会话成员校验 |
 | `peer_deliveries` | 仅作 `contact_employee` 的次数账 | 协作群改走 TeamSay 后，它不再当群消息引擎 |
 | `digital_employees` + `opencode_execution_environments` | Worker 槽，不是岗位员工 | 增加 `repository_id`。一个 Worker 一个仓库。复制时新行，不复制 token、PAT、端口、任务和工作区 |
 | `worker_instances` 及连接、指令、HTTP 槽 | S3-10 的连接身份和投递 | 不换一套表。离线只改 `status=offline`，不改 Task |
@@ -183,16 +214,16 @@ API 对应关系：
 |---|---|---|
 | S3-01 第 7 条：消息迁移、只读回放、退出双写 | 停止把新消息写入 Nexus `messages`。不写迁移和回放 | 没有发布数据。历史改读 AgentScope |
 | S3-04：签名断言、逐接口授权、租户模型 | 可信请求头加所有者/成员校验。单租户 | 用户要求最简 ACL。公司登录不在本仓 |
-| S3-05：租约、死信、乱序框架 | 幂等键、重试和 ACK。模拟 Adapter 覆盖重复事件 | 10 人轮询够用。不先做完整投递平台 |
-| S3-06：独立能力中心和 revision 多表 | 复用员工 JSON、AgentScope API 和环境 `status_detail` | 规格允许复用。平行目录会变成第二套登记 |
+| S3-05：租约、死信平台 | 幂等键、按会话串行投递、ACK 丢失后按 `delivery_id` 重投。入站要等 AgentScope 接受输入再返回成功。含员工主动 `contact_human` | 10 人不做完整投递平台。主动联系和丢 ACK 仍是功能，不能省 |
+| S3-06：独立能力中心页面和新表 | 不建页面、导航和表。revision、发现检查和快照仍要做，字段放进现有 JSON 和 `status_detail` | 规格允许复用存储。不能因此丢掉 desired/applied 和发现检查 |
 | S3-08：配额、限流、上下文长度平台 | 使用网关已有能力。失败直接可见，不直连厂商。不改网关代码 | 网关已验证。本地 e2e 按拍板绕过网关 |
 | S3-10：短期凭据、协议版本协商、请求头白名单、任意流控框架 | 沿用登记 token 摘要、epoch、8 路 HTTP 和帧大小限制 | 用户明确不要另做短时凭据通道 |
 | S3-11：短时凭据通道、独立 Git 写进程、Push 的另一套鉴权 | Fernet 密文加进程内 askpass。Push 跟随任务人工确认 | 用户明确不要短时凭据通道 |
 | S3-11 / S3-16：凭据轮换审计、回滚编排 | 支持更换 PAT 密文。不写轮换仪式和自动回滚器 | 未发布，换密文即可 |
-| S3-14：助手历史归档后再删 | 直接去掉产品入口和专属 Server。复盘代码和表保留 | 没有要保住的旧助手数据 |
-| S3-15：一次性迁移工具、Fernet 主密钥迁移、`ASTRA_*` 双读 | 不做迁移器，不轮换主密钥，不双读旧变量名 | 只为兼容旧配置。可见文案随改到的页面更新 |
+| S3-14：历史归档 | 不归档旧助手数据。内部复盘执行器先迁好，再删产品入口和根目录 `opencode.json` | 没有发布数据。执行器本身不能先删 |
+| S3-15：一次性迁移工具、Fernet 主密钥迁移、`ASTRA_*` 双读 | 不做迁移器，不轮换主密钥，不改环境变量名。例外清单见下文。E2E-19 只验收「没有旧产品入口和运行功能」 | D4 已接受。隔离靠端口、库、Redis 和路径，不靠改名 |
 | S3-16：SQLite 消息表的核验、映射、回放、关写、归档 | 只关写 | 同 S3-01 |
-| S3-16：与 v0.9 同机的切换回滚流程 | 文档说明端口、库和进程分开。不写切换脚本 | 验收前不切换现网。隔离靠另起进程，不靠迁移 |
+| S3-16：切换和回滚脚本 | 不做切换脚本。同机并行要改的是 Celery 任务名、Redis 前缀和库号、临时目录、systemd 单元名、端口、数据库名。这是第一批代码，不是最后的说明 | 验收前不切换现网。名字相同会在共享 Redis 上互相消费任务 |
 | 故障注入里的跨租户、密钥迁移、发布冲突 | 保留跨 UID、断线、脏仓库、复盘重试。跨租户和密钥迁移不单测 | 单租户，且没有旧密钥要迁 |
 
 性能目标 P95 仍要测量，不在文档里宣称已经达到。测量失败不改 Task 状态机。
@@ -219,43 +250,45 @@ API 对应关系：
 ## Risks / Trade-offs
 
 - 官方创建接口的文档写 upsert，实现是每次新建。绑定若丢失，再调用创建会得到另一条 Session。恢复必须凭已保存的 `session_id`，找不到就返回错误，不能按 UID 去猜别人的 Session。
-- 群时间线是读时合并。成员 Session 写入失败时，该成员的历史会缺这一条，页面要显示写入错误，不能静默当成已经广播。
-- `AgentInvite` 要求目标 Agent `invitable=true` 且 `invite_description` 非空。员工保存时要写入这两项，否则 Leader 工具列表里不会出现邀请。
-- 单服务用户意味着 AgentScope 本身不区分人类。授权边界在 Nexus。Agent Service 不能被浏览器直连。
-- AgenticMemory 的跨 Session 回忆取决于目录是否按员工加 UID 共享。目录设错会串记忆。批次 D 要用两个 UID 验证隔离。
-- 部署改写 `opencode.jsonc` 的 provider 时，必须保留仓库自带的项目配置。平台不再维护根目录 `opencode.json`。
-- Phase 2 上若继续有修复，Stage 3 要再 rebase 到那个 HEAD，再开始对应批次。本审计不包含那些尚未进入 `5215f6e3` 的提交。
+- 官方创建接口的文档写 upsert，实现是每次新建。绑定若丢失，再调用创建会得到另一条 Session。恢复必须凭已保存的 `session_id`，找不到就返回错误。
+- 纯写入被拒绝或某个成员的 `POST /chat/` 失败时，页面显示错误，游标不前移。
+- `AgentInvite` 要求 `invitable=true` 且 `invite_description` 非空。员工保存时写入这两项。薄子类只替换 workspace 来源。
+- 单服务用户意味着 AgentScope 本身不区分人类。授权边界在 Nexus 绑定。Agent Service 不能被浏览器直连。
+- AgenticMemory 跟 workspace 走。私聊重建时若没传原 `workspace_id`，记忆不在。批次 E 用两个 UID，以及一次带原 workspace 的重建来验证。
+- Worker 全局 `opencode.jsonc` 可以写 provider 和 MCP。仓库自带的项目配置和 `.opencode/` 不动。
+- 本设计修订后的实现从 phase2 `5a7ce999` 开始。
 
-## 待拍板
+## 已接受的决定
 
-未拍板时按推荐默认实施。审查若否定某一项，只改对应批次。
+审查已接受 D1–D5，并加上下面的约束。实现按此执行。
 
-### D1. 协作群用原生 Team，还是继续只用 `contact_employee`
+### D1. 两种会话，一种 Team
 
-Phase 1 的 OpenSpec 约定写明不使用 Agent Team。S3-02 要求使用 `TeamCreate`、`AgentInvite`、`TeamSay`。两者不能同时当唯一的群消息路径。
+人类群是 Nexus channel，加上纯写入和 `@` 时的积压投递。员工之间的协作才用 `TeamCreate` / `AgentInvite` / `TeamSay`，leader 是发起员工的当前 Session。`AgentCreate` 继续卸掉。`contact_employee` 只做单向通知。E2E-07 走 Team，不走 `contact_employee`。
 
-推荐默认：协作群启用原生 Team，岗位员工只通过 `AgentInvite` 进入。继续卸掉 `AgentCreate`。`contact_employee` 只保留「还不在团队里时，往对方邮箱 Session 投一条 Hint」这一种职责通知，不再负责群聊。`openspec/config.yaml` 里那句「不使用 Agent Team」在实现该批次时改成这个边界。
+### D2. 服务用户 `nexus`
 
-### D2. AgentScope 用一个服务用户，还是每个企业 UID 一个 `user_id`
+AgentScope 固定 `X-User-ID: nexus`。人类隔离靠会话绑定、`Msg.name` 和附件 `owner_uid`。`metadata.verified_uid` 只作审计。不实现 `ResourceAccessPolicy`。邀请子类不得复用私聊 workspace。
 
-规格希望 UID 稳定映射到 AgentScope `user_id`，避免互相覆盖 Session。按 UID 建用户会碰到默认的拒绝共享策略，岗位 Agent 也无法被另一个 UID 邀请，除非再做一套资源共享。
+### D3. 只用官方 workspace 上的 AgenticMemory
 
-推荐默认：AgentScope 固定 `X-User-ID: nexus`。人类隔离放在 Nexus 绑定和 `metadata.verified_uid`。不实现 `ResourceAccessPolicy`。
+不接 ReMe，不接 Mem0，不做自定义记忆目录。压缩仍用默认 `ContextConfig`。
 
-### D3. 长期记忆用哪一种
+### D4. 不改 `ASTRA_*` 变量名
 
-规格要求在 ReMe、AgenticMemory、Mem0 里选一种并真正装配。ReMe 搜索默认扫整个 workspace。Mem0 需要外部服务。
+不双读，不迁移 Fernet 主密钥，不把 `ASTRA_GATEWAY_MASTER_KEY` 改名。E2E-19 收窄为：没有旧产品入口，也没有依赖旧助手页面的运行功能。全库可见文案不单开一轮。
 
-推荐默认：只装配 `AgenticMemoryMiddleware`。记忆文件目录按 `employee_id/uid` 分开。不启用 ReMe 和 Mem0。压缩仍用默认 `ContextConfig`。
+例外清单（这些名字刻意留下，隔离不靠改它们）：
 
-### D4. `ASTRA_*` 和可见旧名清到什么程度
+| 留下的名字 | 原因 |
+|---|---|
+| 环境变量前缀 `ASTRA_` | 改名会碰到 Gateway 主密钥和大量设置。D4 明确不改 |
+| `ASTRA_GATEWAY_MASTER_KEY` | 硬性要求不改 Gateway |
+| Celery 代码里的历史注释、已归档 OpenSpec | 不是运行入口 |
+| 测试夹具里为了断言旧字符串而保留的样本 | 只存在于测试 |
 
-S3-15 要求扫完全库并提供迁移工具。用户要求不做旧配置兼容，也不做重量级改造。
+同机隔离改的是值，不是这些变量名：Celery 任务名、Redis 前缀和库号、`/tmp` 目录、systemd 单元名、监听端口、数据库名。
 
-推荐默认：本阶段不改环境变量前缀，不双读，不迁移 Fernet 主密钥。页面、错误文案和部署文档里用户能看到的 Astra 产品名，在改到该文件时换成 Nexus。不单开一轮全库改名。
+### D5. 不建能力中心，但保留绑定跟踪
 
-### D5. 能力中心要不要新页面和新表
-
-规格允许新建或复用。新建目录会和 AgentScope 的 Skill、MCP、KB 接口并列。
-
-推荐默认：员工配置页继续选择技能、工具和知识；Worker 配置页选择仓库、模型和要装进 OpenCode 的技能与 MCP。生效状态写在现有 JSON 和 `status_detail`。不新增能力中心表，也不新增独立导航。
+不新增页面、导航和表。员工 JSON 与环境 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。发现检查通过才把 applied 写成 desired。调度要求两者相等。Session 创建和 Task 分配时记下当时的 revision。

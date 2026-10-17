@@ -1,166 +1,175 @@
 # Stage 3 实施批次
 
-审查通过前不开始这些批次。每批结束时都能单独验证，不依赖后面的批次已经完成。对话链和执行链在批次 B 之后可以并行，汇合点是批次 H。
+审查结论已写入 `design.md`。每批结束时单独验证。对话链和执行链在批次 0 之后可以并行。`waiting_reason` 不依赖仓库表，批次 I 跟在 A 后面即可。能力绑定 S 要早于 H 的安装和调度。K 依赖 E 和 G，不依赖 J。
 
-验证命令按仓库现状：
+验证：
 
 ```bash
-# task-platform
-cd services/task-platform && pytest tests/<本批相关测试>
-cd services/task-platform && ruff check app tests
-
-# nexus-api / agent-service
-cd services/nexus-api && pytest tests/<本批相关测试>
-
-# web
+cd services/task-platform && ASTRA_REDIS_URL=redis://127.0.0.1:6379/15 ASTRA_TEST_REDIS_URL=redis://127.0.0.1:6379/15 pytest tests && ruff check app tests
+cd services/nexus-api && pytest tests && ruff check nexus_api tests
 cd web/nexus && npm run type-check && npm run build
 ```
 
-OpenCode 相关 e2e 使用模型 `opencode/deepseek-v4.1-flash-free`，不经过网关。
+OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关。Agent Service 集成测试使用仓库里已钉住的 AgentScope 2.0.10。
 
-## A. S3-10 缺口确认
+## 0. 与 v0.9 并行的进程隔离
 
-依赖：无。`remote-worker-websocket` 的 1.1–4.6 已完成，本批不重写通道。
+依赖：无。早于任何同机验证。不改 `ASTRA_*` 变量名，只改会撞车的默认值。
 
-- [ ] A.1 核对业务路径不再调用 `ExecutionEnvironmentRuntime.run_remote` / `open_session`。允许的调用只剩 `remote_provisioning` 的安装维护，以及 `opencode_remote.py` 的 CLI fallback
-  - 完成：调用点列表写进本批验证说明。若发现日常 Workspace、健康检查或 Session 仍走 SSH，只改那一处调用，不改投影
-  - 验证：`pytest` 覆盖已迁移环境的连接、文件和 Git 不打开 SSH
-- [ ] A.2 把 Worker 离线、OpenCode 可达、仓库已绑定、执行中、等待人工分开显示。离线不得显示成环境可用
-  - 完成：展示读取 `worker_instances.status`、环境状态、Task 状态和 `runtime_connection`，不新增状态机
-  - 验证：断开 WebSocket 后 Task 状态不变，Worker 仍被原 Task 占用，页面显示离线
-- [ ] A.3 补上 `remote-worker-websocket` tasks 5.1–5.3 的回归：进程重启、网络超时、epoch 乱序不新建 Session、不重发 Prompt、不改 `apply_session_state()` 的含义
-  - 验证：现有 Worker Gateway 与 lifecycle 测试通过
+- [ ] 0.1 Celery 应用和任务名改为 `nexus.*`（dispatch、task-review、task-wake、scout、heartbeat）。v0.9 仍消费 `astra.*` 时两边互不领取
+- [ ] 0.2 Redis 键前缀改为 `nexus:`。默认库号离开 0。测试使用 db 15
+- [ ] 0.3 本地 OpenCode 锁目录改为 `/tmp/nexus-employee-serve`。systemd 单元默认名改为 `nexus-opencode.service`
+- [ ] 0.4 本分支默认端口和数据库名与 v0.9 错开：Task API、Nexus API、Agent Service、MCP、Task MCP、Web、网关、助手 OpenCode，以及数据库名 `nexus`
+- [ ] 0.5 冒烟：默认值里不再出现会和 v0.9 共用的 Celery 任务名、Redis 前缀、临时目录和数据库名
+  - 验证：`pytest` 覆盖上述默认值。不要求在这台机器上同时拉起 v0.9
+
+## A. S3-10 缺口
+
+依赖：0。不重写已落地的 Worker 通道。
+
+- [ ] A.1 业务路径不再调用 `run_remote` / `open_session`。允许的只剩安装维护和 `opencode_remote.py` 的 CLI fallback
+  - 验证：测试列出调用点，Workspace、健康检查和 Session 不在其中
+- [ ] A.2 Worker 离线、OpenCode 可达、仓库已绑定、执行中、等待人工分开显示。离线不得显示成环境可用
+  - 完成：读 `worker_instances.status`、环境状态、Task 状态和 `runtime_connection`。不新增状态机
+  - 验证：Worker 标成 offline 后 Task 状态不变，占用仍在，接口里的可用性不是 `AVAILABLE`
+- [ ] A.3 进程重启、网络超时、epoch 乱序不新建 Session、不重发 Prompt、不改 `apply_session_state()` 的含义
+  - 验证：现有 Worker Gateway 与 lifecycle 测试，加上一条断线不改 Task 的回归
 
 不做：短期凭据、请求头白名单、协议协商。
 
+## P. 工作区性能
+
+依赖：A。S3-09 / PERF-01。
+
+- [ ] P.1 记录热态首开、再次打开、冷启动，以及 HTTP、SSE、iframe 的耗时。热态目标是首开 P95 ≤ 3 秒、再次打开 P95 ≤ 1.5 秒。冷启动单独统计
+  - 验证：同一次打开不新建 Session、不换 Worker、不重启 OpenCode。结果写成可复现的数字，不在未测量时宣称达标
+
 ## B. 私聊绑定与身份
 
-依赖：无。可与 A 并行。
+依赖：0。可与 A 并行。
 
-- [ ] B.1 请求身份改为可信头里的 UID。`?uid=` 不参与授权。私聊、历史、SSE、附件按所有者校验
-  - 完成：按 D2 的默认，AgentScope 仍使用服务用户 `nexus`。人类 UID 存在绑定上
-  - 验证：两个 UID 访问同一员工得到两条 Session；伪造 query 读不到对方历史
-- [ ] B.2 私聊 `(owner_uid, employee_id, kind=private)` 唯一。页面去掉新建会话。已有绑定只复用 `agentscope_session_id`
-  - 完成：刷新不调用 `POST /sessions/`。找不到原 Session 时返回明确错误
-  - 验证：同一 UID 换浏览器仍是原 Session。接口层仍可按管理需要删除绑定
-- [ ] B.3 停止向 Nexus `messages` 写聊天正文。历史和流改读 AgentScope
-  - 完成：不写回放、双写退出或归档脚本。`metadata.verified_uid` 随用户消息写入
-  - 验证：刷新后的发言人不是匿名 `user`。重连不重复渲染同一事件 id
+- [ ] B.1 身份来自可信头 `X-Verified-UID`（内网开发可沿用已有的 `X-Owner-Id`，两者是同一个值）。`?uid=` 不参与授权。私聊、历史、SSE、附件按所有者校验
+  - 完成：AgentScope 仍使用服务用户 `nexus`。绑定是授权事实
+  - 验证：两个 UID 访问同一员工得到两条 Session。伪造 query 读不到对方历史和附件
+- [ ] B.2 私聊 `(owner_uid, employee_id, kind=private)` 唯一。页面去掉新建会话和会话切换。已有绑定只复用 `agentscope_session_id`
+  - 完成：刷新不再次 `POST /sessions/`。找不到原 Session 时返回明确错误
+  - 验证：同一 UID 再次进入仍是原绑定
+- [ ] B.3 私聊停止写入 Nexus `messages`。历史改读 AgentScope。`POST /chat/` 的 `Msg.name` 是人类显示名或 UID，`metadata.verified_uid` 同时写入
+  - 完成：附件增加 `owner_uid`。不写回放脚本
+  - 验证：发言人不是匿名 `user`。另一个 UID 不能下载这条附件
 
 ## C. 消息 UI
 
 依赖：B。
 
-- [ ] C.1 用 AgentScope 事件投影流式增量、Markdown、工具调用和工具结果、错误与中断
-  - 完成：不新写一套 SSE 合并规则。离开页面不取消服务端运行
-  - 验证：工具卡和历史一致；断流后先拉历史再续接，顺序不乱
+- [ ] C.1 投影 AgentScope 事件：流式增量、Markdown、工具调用和工具结果、错误与中断
+  - 完成：离开页面只断开浏览器连接，不取消服务端运行。重连先读历史和游标，再用事件 id 去重
+  - 验证：工具卡和历史一致。断流后续接不重复、不乱序
 
-## D. Team 与纯消息
+## D. 人类群与员工协作
 
-依赖：B，以及待拍板 D1 维持推荐默认。
+依赖：B。按 design 的两种模式。
 
-- [ ] D.1 在 Agent Service 增加只调用 `storage.upsert_message` 的写入。不调用 `ChatService.run`
-  - 完成：消息带 `metadata.verified_uid`。写入失败对调用方可见
-  - 验证：写入后 `GET /sessions/{id}/messages` 能读到，且该 Session 没有新的回复运行
-- [ ] D.2 协作群复用 `channels` / `channel_members`，启用 `TeamCreate`、`AgentInvite`、`TeamSay`、`TeamDelete`。员工保存时设置 `invitable` 和 `invite_description`
-  - 完成：继续卸掉 `AgentCreate`。解散团队后岗位员工仍在。`contact_employee` 不再承担群聊
-  - 验证：邀请后 Agent 配置不变；定向和广播可送达；未 @ 的人类消息只落库；@ 只唤醒被点名的员工
-- [ ] D.3 群页面按消息 id 和 `created_at` 合并各成员 Session。职责请求的回复回到发起协作上下文并唤醒对方
-  - 完成：不把「转告 BUG」写成数字任务
-  - 验证：成员看到的历史顺序一致；不同 UID 不能读非成员频道
+- [ ] D.1 群记录 Session 上的纯写入：checkpoint 锁，运行中拒绝，不调用 `ChatService.run`。写完向其他人类成员推 SSE
+  - 验证：写入后消息列表可见，且没有新的回复运行
+- [ ] D.2 人类群沿用 `channels`。成员保存 `last_delivered_message_id`。被 @ 时把积压和这条 @ 以原 id 经 `POST /chat/` 送进该员工 Session，然后推进游标
+  - 验证：先说一件事且不 @，再 @ 并追问，重启后该员工上下文里仍有那件事。第一次写入没有推理
+- [ ] D.3 员工协作启用 `TeamCreate`、`TeamSay`、`TeamDelete`，以及只改 workspace 来源的 `AgentInvite` 子类。workspace 来自该员工的 mailbox Session，或新建。继续卸掉 `AgentCreate`。`contact_employee` 只做单向通知
+  - 验证：两个 UID 的私聊 workspace 与两个团队的 workspace 互不相同。邀请后员工定义还在。解散团队不删员工
+- [ ] D.4 群时间线按块合并：人类消息按 id 只显示一次；TeamSay 用 HintBlock id 显示为 A→B 或 A→全体，隐藏接收方副本；按 `(created_at, session, id)` 做带游标的 k 路合并
+  - 验证：广播、定向和分页不重复、不丢
+- [ ] D.5 E2E-07：A 的当前 Session 当 leader，邀请 B，B 用 `TeamSay` 回到 A 并唤醒 A。不创建数字任务
+  - 验证：一条 A→B→A 的跟踪。`contact_employee` 的回信不会出现在 A 的上下文里
 
 ## E. 压缩与长期记忆
 
-依赖：B。可与 D 并行。按 D3 的默认只接 AgenticMemory。
+依赖：B。团队 workspace 隔离依赖 D.3，E 的团队用例排在 D.3 之后。私聊用例只依赖 B。
 
-- [ ] E.1 确认默认 `ContextConfig` 已挂到员工 Agent。补一个压缩后的检查：Session id 不变，消息表仍能读到压缩前的历史
-  - 验证：不另写压缩器。摘要失败时行为跟原生 `compression_fallback_to_truncation` 一致
-- [ ] E.2 用 `extra_agent_middlewares` 装配 `AgenticMemoryMiddleware`。目录按 `employee_id/uid` 隔离
-  - 完成：当前启动路径能看到中间件已加载。组件不可用时聊天仍可进行，并返回可诊断错误
-  - 验证：同一员工、同一 UID 的另一条已授权 Session 能读到记忆。另一个 UID 的目录不被检索
+- [ ] E.1 确认默认 `ContextConfig` 已挂上。压缩后 Session id 不变，消息表仍能读到压缩前的历史
+- [ ] E.2 用官方 workspace 接法装配 `AgenticMemoryMiddleware`
+  - 验证：两个 UID 的私聊记忆互不可见。用同一个 `workspace_id` 重建 Session 后记忆还在。组件不可用时主聊天仍可进行，并返回可诊断错误
 
 ## F. IM 契约
 
 依赖：B 和 D。公司 SDK 不在本批。
 
-- [ ] F.1 实现入站事件、出站读取、ACK 和外部身份映射。幂等键为 `provider + event_id`
-  - 完成：新增 `im_outbox` 与 `im_identity_map`。不复用 `task_wake_outbox`。每个员工有自己的外部机器人映射；未绑定则 IM 状态为不可用，Web 仍可用
-  - 验证：模拟 Adapter 完成人到机器人、回复、再回到同一私聊 Session。重复事件不产生第二次推理。ACK 前不显示投递成功
-- [ ] F.2 同一 UID、同一员工、同一作用域复用 B 的绑定。外部群使用独立协作绑定
-  - 验证：Web 与模拟 IM 的历史一致。两个外部群不因为机器人相同而合并
+- [ ] F.1 入站事件、出站、ACK、身份映射。幂等键 `provider + event_id`。AgentScope 接受输入之后才向 Adapter 返回成功。每个员工自己的机器人映射；未绑定则 IM 不可用，Web 仍可用
+- [ ] F.2 同一 UID、同一员工复用 B 的绑定。外部群使用独立协作绑定，不因机器人相同而合并
+- [ ] F.3 `contact_human`：员工发起 → outbox → ACK → 人类回复进入同一 Session。同一会话串行投递。ACK 丢失时按 `delivery_id` 重投，不第二次推理
+  - 验证：模拟 Adapter 走完主动联系和丢 ACK。重复入站事件不产生第二次回复
 
 ## G. 员工模型路由
 
 依赖：B。不改 Gateway 代码。
 
-- [ ] G.1 员工增加 `model_route_id`。页面只列出网关已启用路由。创建或更新 Session 时注入指向网关 `/v1` 的 AgentScope credential
-  - 完成：Key 不出现在页面和日志。没有路由时不改成直连厂商
-  - 验证：错误路由能看到失败原因。空闲时更换路由不新建用户的私聊 Session
+- [ ] G.1 员工增加 `model_route_id`。页面只列已启用路由。Session 注入指向网关 `/v1` 的 credential。Key 不出现在页面和日志。没有路由时不改成直连厂商
+  - 验证：空闲时更换路由不新建私聊 Session。错误路由的原因可见
 
-本地和 e2e 的 OpenCode 不使用这条路由，见批次 H。
+本地和 e2e 的 OpenCode 不使用这条路由，见 H.3。
 
-## H. 仓库、PAT、Worker 复制与单仓
+## S. 能力绑定跟踪
 
-依赖：A。可与 B–G 并行，完成后才进入 I。
+依赖：B 和 G。早于 H.3、H.4。不新建页面和表。
 
-- [ ] H.1 新增 `code_repositories` 与 `git_credentials`。PAT 用现有 Fernet 加密。执行环境和 Task 增加 `repository_id`
-  - 完成：URL 不内嵌 token。日志和 `opencode.jsonc` 不含 PAT。Worker 用进程内 askpass
-  - 验证：错误或过期 token 克隆失败且错误文本不含 PAT。正确 token 能克隆真实 HTTPS 仓库
-- [ ] H.2 复制 Worker 只复制仓库、分支、模型、技能和 MCP 引用、运行参数。新实例单独指定主机、路径和端口
-  - 完成：不复制 token、PAT、SSH 密码、任务和工作区。一个 Worker 只绑定一个仓库
-  - 验证：复制出来的实例没有源实例的连接凭据。同仓两个 Worker 使用各自 worktree。未指定仓库的任务不派单
-- [ ] H.3 部署只写 `opencode.jsonc` 的网关 provider，并装上已绑定的 OpenCode 技能和 MCP。保留仓库自己的项目配置
-  - 完成：不再写平台根 `opencode.json`，不再因 jsonc 已存在而失败。OpenCode 仍听 `127.0.0.1`，版本仍是 1.18.35
-  - 验证：生产配置指向现有网关。本地 e2e 配置模型为 `opencode/deepseek-v4.1-flash-free` 且不读取网关 Key
-- [ ] H.4 跨仓需求创建多条带 `repository_id` 的关联 Task，各自派给匹配仓库的空闲 Worker
-  - 验证：单个 Worker 不会在执行中改绑仓库。占用中的 Worker 不会被另一条 Task 领走
+- [ ] S.1 员工 JSON 和环境 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。desired 是绑定集合的哈希
+- [ ] S.2 员工侧调用原生 `/skill`、`/workspace/skill`、`/mcp`，再检查该 Session 的 toolkit 是否列出它们。Worker 侧安装后按 OpenCode 1.18.35 的发现规则检查
+- [ ] S.3 `applied_revision == desired_revision` 才允许分配。Session 创建和 Task 分配时记下 revision 快照
+  - 验证：未生效的绑定不会派到任务上。发现失败时 `runtime_status` 和 `error` 可见，已在跑的任务不被改掉
+
+## H. 仓库、PAT、复制与单仓
+
+依赖：A 和 S。
+
+- [ ] H.1 `code_repositories` 与 `git_credentials`。PAT 用现有 Fernet。环境和 Task 增加 `repository_id`。git 用进程内 askpass。URL、日志和配置不含 PAT
+  - 验证：错误 token 克隆失败且错误文本不含 PAT
+- [ ] H.2 复制 Worker 只复制仓库、分支、模型、技能和 MCP 引用、运行参数。不复制 token、PAT、密码、端口、任务和工作区
+  - 验证：同仓两个 Worker 各自 worktree。一个 Worker 不改绑仓库
+- [ ] H.3 部署写入 Worker 全局 `config_home/opencode/opencode.jsonc` 的网关 provider 和该 Worker 的 MCP。技能装到 Worker 专用目录。不改仓库 `.opencode/` 和项目配置。不再写平台根 `opencode.json`
+  - 验证：生产配置指向现有网关。本地 e2e 模型为 `opencode/deepseek-v4.1-flash-free`，不读网关 Key
+- [ ] H.4 分配时记录 base commit 和 S 的配置快照。跨仓拆成多条带 `repository_id` 的关联 Task，并按依赖汇总。未指定仓库不派单。占用中的 Worker 不被另一条 Task 领走
 
 ## I. 等待原因与人工终态
 
-依赖：A 与 H。投影代码只改 `apply_session_state()` 及其直接的等待字段。
+依赖：A。不依赖 H。
 
-- [ ] I.1 在同一次投影里写 `waiting_reason`。retry 进行中保持 `RUNNING`。retry 耗尽或执行停住写 `RETRY_EXHAUSTED` 并继续占用。问题、权限、执行结束分别写对应原因
-  - 完成：通信失败不写 Task 状态。不自动 `SUCCEEDED` 或 `FAILED`
-  - 验证：断线重连后原 OpenCode Session 仍在；人工确认结果后才 `SUCCEEDED` 并释放；取消和确认失败同样要等执行停止
-- [ ] I.2 人工继续执行复用原 Worker、worktree 和 Session
-  - 验证：继续不会新建 Session，也不会把未结束的 Task 派给另一个 Worker
+- [ ] I.1 按 design 的映射表写 `waiting_reason`。`UNCONFIRMED` 只记 `TRANSPORT_RECOVERY`，不改变 Task 状态。`TIMEOUT` 不触发平台 abort 或重试。retry 进行中保持 `RUNNING`。OpenCode 自己停住才写 `RETRY_EXHAUSTED`
+  - 验证：断线不改 Task。问题、权限、正常结束、retry 耗尽分别落到对应原因。没有待处理 HITL 且执行已停止，人工确认后才 `SUCCEEDED` 并释放。取消和确认失败同样要等执行停止
+- [ ] I.2 人工继续复用原 Worker、worktree 和 Session
+  - 验证：不新建 Session，也不把未结束的 Task 派给另一个 Worker
 
-## J. 去掉旧助手并保留复盘
+## J. 复盘执行器，然后去掉产品入口
 
-依赖：I。必须先有可用的复盘调用，再关助手入口。
+依赖：I。先迁执行器，再删入口。
 
-- [ ] J.1 移除 `nexus-assistant` 的产品入口、`/api/assistant` 的用户路径，以及助手专属 OpenCode Server 的启动
-  - 完成：`task_summaries`、`task_reviews`、`app/assistant/review.py` 和经验技能保留。Task 进入人工确认后的终态时由后台触发复盘
-  - 验证：复盘失败只更新复盘状态。已关闭的 Task 不被改回。重试复盘不覆盖已发布经验
+- [ ] J.1 把现有助手 OpenCode 收成内部复盘执行器：只听 `127.0.0.1`，启动配置只带复盘 MCP（含 `nexus_task_review_submit` 和只读工具）。不再依赖 `assistant_enabled` 和根目录 `opencode.json`
+  - 验证：产品助手入口关闭时，仍能生成一条任务总结和一个候选经验。失败只更新复盘行
+- [ ] J.2 删除 `/api/assistant` 的用户路径、任务创建/取消类助手工具和根目录 `opencode.json`
+  - 验证：页面没有旧助手入口。重试复盘不覆盖已发布经验
 
 ## K. 图书馆映射
 
-依赖：E 和 G。P1，可晚于 J。
+依赖：E 和 G。
 
-- [ ] K.1 在 `knowledge_items` 上记录 AgentScope knowledge base / document id 和同步状态。员工绑定后，Session 的 `knowledge_config` 指向这些 id
-  - 完成：启动 Agent Service 时传入 `knowledge_base_manager`。检索结果带来源。个人记忆目录不写入图书馆
-  - 验证：一篇已审核文档可被绑定员工检索。未绑定员工检索不到。索引失败可见
+- [ ] K.1 `knowledge_items` 记录 AgentScope knowledge base / document id 和同步状态。启动时传入 `knowledge_base_manager`
+  - 验证：已审核文档可被绑定员工检索，未绑定员工检索不到。个人记忆不写入图书馆
 
-## L. 命名与并行部署说明
+## L. 可见旧名
 
-依赖：J。不阻塞功能批次。按 D4 的默认。
+依赖：J。不阻塞功能。变量名按 D4 例外清单留下。
 
-- [ ] L.1 把本阶段改到的页面、错误文案和部署文档中的 Astra 产品名改为 Nexus
-  - 完成：不改 `ASTRA_*` 变量名，不写配置迁移器，不轮换 Fernet 主密钥
-  - 验证：抽查任务、Worker、聊天页面没有旧产品入口。`rg` 结果里保留的 Astra 字样有注释说明是环境变量或历史契约
-- [ ] L.2 写明 Stage 3 进程、端口、数据库和 Worker 目录与 v0.9 分开
-  - 完成：不写切换和回滚脚本
-  - 验证：文档能让另一套进程同时留在机器上。验收步骤不要求停掉 v0.9
+- [ ] L.1 本阶段改到的页面和错误文案里，用户能看到的 Astra 产品入口改为 Nexus
+  - 验证：E2E-19 只检查没有旧产品入口和依赖该入口的运行功能。`ASTRA_*` 仍在
 
-## 批次依赖
+## 依赖
 
 ```text
-A ─┬─> H ─> I ─> J ─> L
-   │              └─> K（还要等 E、G）
-B ─┬─> C
-   ├─> D ─> F
-   ├─> E ───────> K
-   └─> G ───────> K
+0 ─┬─> A ─┬─> P
+   │      └─> I ─> J ─> L
+   └─> B ─┬─> C
+          ├─> D ─> F
+          │    └─> E（团队用例）
+          ├─> E（私聊用例）
+          └─> G ─> S ─> H
+                    E ─> K
+                    G ─> K
 ```
-
-A/B 可以第一天同时开始。F 不能早于私聊绑定和纯消息写入。J 不能早于人工终态。任何批次都不重置已有 Gateway Key。

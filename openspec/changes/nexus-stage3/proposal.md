@@ -23,6 +23,7 @@ Stage 3 要把已经跑起来的数字员工对话、任务和 Worker 收成一�
 - `employee-memory`：装配一种原生长期记忆，并沿用 `ContextConfig` 压缩。
 - `im-contract`：渠道无关的入站事件、出站投递和 ACK。公司 IM SDK 不在本仓。
 - `repository-worker`：GitHub 仓库、加密 PAT、Worker 单仓绑定与配置复制。
+- `employee-capability-binding`：在现有员工 JSON 和 Worker `status_detail` 里跟踪 desired/applied revision、发现结果和任务快照。不新建能力中心。
 - `task-acceptance`：在现有投影上补齐结构化等待原因和人工终态。
 
 ### Modified Capabilities
