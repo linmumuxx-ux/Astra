@@ -152,10 +152,15 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         self, directory: WorkspacePath, *, consumer: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         folder = str(directory)
-        await self.run_command("subscribe_events", {"directory": folder})
         worker_id, epoch = await self._online()
         log = self._event_log()
         holder = consumer or f"browser:{uuid4().hex}"
+        # A live cursor must exist before the first frame, or control() treats
+        # the directory as unused and deletes the log.
+        await log.touch_cursor(
+            worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=0
+        )
+        await self.run_command("subscribe_events", {"directory": folder})
         seen = 0
         while True:
             state = await log._load(log._key(worker_id, epoch, folder))
