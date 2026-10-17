@@ -132,14 +132,24 @@ class AgentScopeClient:
         session_id: str,
         content: list[dict[str, Any]],
         user_name: str,
+        verified_uid: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str:
+        message: dict[str, Any] = {"name": user_name, "role": "user", "content": content}
+        metadata: dict[str, Any] = {}
+        if verified_uid:
+            metadata["verified_uid"] = verified_uid
+        if attachments:
+            metadata["attachments"] = attachments
+        if metadata:
+            message["metadata"] = metadata
         response = await self.request(
             "POST",
             "/chat/",
             json={
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "input": {"name": user_name, "role": "user", "content": content},
+                "input": message,
             },
         )
         payload = response.json()

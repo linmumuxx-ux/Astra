@@ -25,19 +25,14 @@
             <h2 style="margin: 0 0 4px">{{ current.name }} · {{ current.domain }}</h2>
             <p class="muted" style="margin: 0">{{ current.description }}</p>
           </div>
-          <div style="display: flex; gap: 8px; align-items: center">
-            <el-select :model-value="conversationId" style="width: 180px" @change="selectConversation">
-              <el-option v-for="item in conversations" :key="item.id" :label="item.name" :value="item.id" />
-            </el-select>
-            <el-button size="small" @click="startConversation">＋ 新对话</el-button>
-          </div>
+          <span class="muted">同一人与该员工只有一条私聊</span>
         </div>
         <div v-else class="chat-head"><h2>尚未创建员工</h2></div>
         <div class="chat-messages" ref="messageBox">
           <div v-if="!messages.length && !notice" class="empty">{{ current ? `与 ${current.name} 开始交流` : "还没有员工可以交流" }}</div>
           <div v-for="message in messages" :key="message.id" class="msg" :class="{ user: message.sender === 'user' }">
             <div>
-              <div class="muted">{{ message.sender === "user" ? "你" : speakerName(message.sender) }}</div>
+              <div class="muted">{{ message.sender === "user" ? (message.speaker || "你") : speakerName(message.sender) }}</div>
               <div v-if="message.text" class="bubble">{{ message.text }}</div>
               <div class="message-attachments">
                 <a v-for="file in message.attachments" :key="file.id" class="sent-attachment" :class="{ image: isImage(file.type) }" :href="attachmentUrl(file.id)" :download="file.name" target="_blank">
@@ -131,7 +126,6 @@ import {
   getKnowledge,
   getSkills,
   getTools,
-  listConversations,
   listEmployees,
   readEventStream,
   sendConversation,
@@ -201,29 +195,9 @@ async function selectEmployee(id: string) {
   currentId.value = id;
   notice.value = "";
   liveText.value = "";
-  const items = await listConversations(id);
-  conversations.value = items;
-  if (!items.length && employees.value.find((item) => item.id === id)) {
-    const created = await createConversation(id);
-    conversations.value = [created];
-  }
-  conversationId.value = conversations.value.at(-1)?.id ?? null;
-}
-
-async function selectConversation(id: string) {
-  conversationId.value = id;
-  notice.value = "";
-  liveText.value = "";
-}
-
-async function startConversation() {
-  if (!currentId.value) return;
-  const created = await createConversation(currentId.value);
-  conversations.value = [...conversations.value, created];
+  const created = await createConversation(id);
+  conversations.value = [created];
   conversationId.value = created.id;
-  messages.value = [];
-  notice.value = "";
-  liveText.value = "";
 }
 
 async function addFileList(files: File[]) {

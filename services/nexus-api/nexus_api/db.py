@@ -30,11 +30,14 @@ CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     employee_id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'private',
     name TEXT NOT NULL,
     agentscope_session_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_private_conversation
+    ON conversations(owner_id, employee_id, kind);
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     conversation_id TEXT,
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS channel_members (
 );
 CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
+    owner_uid TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     media_type TEXT NOT NULL,
     size INTEGER NOT NULL,
@@ -94,6 +98,18 @@ def init_db(path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
         if "accepted" not in columns:
             connection.execute("ALTER TABLE messages ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0")
+        conversation_columns = {row[1] for row in connection.execute("PRAGMA table_info(conversations)")}
+        if "kind" not in conversation_columns:
+            connection.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'private'")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_private_conversation
+            ON conversations(owner_id, employee_id, kind)
+            """
+        )
+        attachment_columns = {row[1] for row in connection.execute("PRAGMA table_info(attachments)")}
+        if "owner_uid" not in attachment_columns:
+            connection.execute("ALTER TABLE attachments ADD COLUMN owner_uid TEXT NOT NULL DEFAULT ''")
 
 
 def new_id(prefix: str) -> str:

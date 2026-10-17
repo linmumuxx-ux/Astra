@@ -48,13 +48,13 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：0。可与 A 并行。
 
-- [ ] B.1 身份来自可信头 `X-Verified-UID`（内网开发可沿用已有的 `X-Owner-Id`，两者是同一个值）。`?uid=` 不参与授权。私聊、历史、SSE、附件按所有者校验
+- [x] B.1 身份来自可信头 `X-Verified-UID`（内网开发可沿用已有的 `X-Owner-Id`，两者是同一个值）。`?uid=` 不参与授权。私聊、历史、SSE、附件按所有者校验
   - 完成：AgentScope 仍使用服务用户 `nexus`。绑定是授权事实
   - 验证：两个 UID 访问同一员工得到两条 Session。伪造 query 读不到对方历史和附件
-- [ ] B.2 私聊 `(owner_uid, employee_id, kind=private)` 唯一。页面去掉新建会话和会话切换。已有绑定只复用 `agentscope_session_id`
+- [x] B.2 私聊 `(owner_uid, employee_id, kind=private)` 唯一。页面去掉新建会话和会话切换。已有绑定只复用 `agentscope_session_id`
   - 完成：刷新不再次 `POST /sessions/`。找不到原 Session 时返回明确错误
   - 验证：同一 UID 再次进入仍是原绑定
-- [ ] B.3 私聊停止写入 Nexus `messages`。历史改读 AgentScope。`POST /chat/` 的 `Msg.name` 是人类显示名或 UID，`metadata.verified_uid` 同时写入
+- [x] B.3 私聊停止写入 Nexus `messages`。历史改读 AgentScope。`POST /chat/` 的 `Msg.name` 是人类显示名或 UID，`metadata.verified_uid` 同时写入
   - 完成：附件增加 `owner_uid`。不写回放脚本
   - 验证：发言人不是匿名 `user`。另一个 UID 不能下载这条附件
 

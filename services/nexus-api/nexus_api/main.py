@@ -11,7 +11,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -353,6 +364,38 @@ def merge_transcript(
     return merged
 
 
+def session_transcript(remote: list[Any], employee_id: str) -> list[dict[str, Any]]:
+    """私聊历史只读 AgentScope。发言人取 Msg.name，不回退成匿名 user。"""
+
+    found: list[dict[str, Any]] = []
+    for message in remote:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = block_text(message.get("content"))
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+        if role == "assistant" and not text:
+            continue
+        raw_id = message.get("id")
+        name = message.get("name") if isinstance(message.get("name"), str) else ""
+        created = message.get("created_at")
+        found.append(
+            {
+                "id": raw_id if isinstance(raw_id, str) and raw_id else f"remote_{len(found)}",
+                "sender": "user" if role == "user" else employee_id,
+                "speaker": name or str(metadata.get("verified_uid") or ""),
+                "text": text,
+                "attachments": [item for item in attachments if isinstance(item, dict)],
+                "accepted": True,
+                "created_at": canonical_timestamp(created) if isinstance(created, str) else "",
+            }
+        )
+    return found
+
+
 def assistant_messages(remote: list[Any], employee_id: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for message in remote:
@@ -550,10 +593,19 @@ def lines(values: list[str]) -> list[str]:
     return cleaned
 
 
-def require_owner(x_owner_id: str | None = Header(default=None)) -> str:
-    if not x_owner_id or not x_owner_id.strip():
-        raise HTTPException(status_code=400, detail="缺少 X-Owner-Id")
-    return x_owner_id.strip()
+def require_owner(
+    x_verified_uid: str | None = Header(default=None, alias="X-Verified-UID"),
+    x_owner_id: str | None = Header(default=None, alias="X-Owner-Id"),
+    nexus_uid: str | None = Cookie(default=None, alias="nexus_uid"),
+    uid: str | None = Query(default=None),
+) -> str:
+    """身份来自可信头。`?uid=` 不参与授权。Cookie 只给页面里的图片和下载使用。"""
+
+    del uid
+    value = (x_verified_uid or x_owner_id or nexus_uid or "").strip()
+    if not value:
+        raise HTTPException(status_code=401, detail="缺少 X-Verified-UID")
+    return value
 
 
 def create_app() -> FastAPI:
@@ -788,13 +840,17 @@ def create_app() -> FastAPI:
             ).fetchall()
         return [message_from_row(row) for row in rows]
 
-    def load_attachments(connection, attachment_ids: list[str]) -> list[dict[str, Any]]:
+    def load_attachments(
+        connection,
+        attachment_ids: list[str],
+        owner_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if len(attachment_ids) > MAX_ATTACHMENTS:
             raise HTTPException(status_code=400, detail="每条消息最多添加 6 个附件")
         found: list[dict[str, Any]] = []
         for attachment_id in attachment_ids:
             row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-            if row is None:
+            if row is None or (owner_id is not None and row["owner_uid"] != owner_id):
                 raise HTTPException(status_code=404, detail="附件不存在")
             found.append(
                 {
@@ -1002,7 +1058,11 @@ def create_app() -> FastAPI:
         return {"deleted": True}
 
     @app.post("/api/v1/attachments", status_code=201)
-    async def upload_attachment(file: UploadFile = File(...), connection=Depends(database)) -> dict[str, Any]:
+    async def upload_attachment(
+        file: UploadFile = File(...),
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ) -> dict[str, Any]:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="不能添加空文件")
@@ -1015,18 +1075,22 @@ def create_app() -> FastAPI:
         filename = file.filename or "未命名文件"
         connection.execute(
             """
-            INSERT INTO attachments (id, name, media_type, size, path, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO attachments (id, owner_uid, name, media_type, size, path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (attachment_id, filename, media_type, len(content), str(target), utcnow()),
+            (attachment_id, owner_id, filename, media_type, len(content), str(target), utcnow()),
         )
         connection.commit()
         return {"id": attachment_id, "name": filename, "type": media_type, "size": len(content)}
 
     @app.get("/api/v1/attachments/{attachment_id}")
-    def download_attachment(attachment_id: str, connection=Depends(database)) -> FileResponse:
+    def download_attachment(
+        attachment_id: str,
+        owner_id: str = Depends(require_owner),
+        connection=Depends(database),
+    ) -> FileResponse:
         row = connection.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-        if row is None or not Path(row["path"]).is_file():
+        if row is None or row["owner_uid"] != owner_id or not Path(row["path"]).is_file():
             raise HTTPException(status_code=404, detail="附件内容不存在")
         disposition = "inline" if str(row["media_type"]).startswith("image/") else "attachment"
         return FileResponse(
@@ -1069,22 +1133,38 @@ def create_app() -> FastAPI:
     def create_conversation(
         employee_id: str,
         body: ConversationBody,
+        response: Response,
         owner_id: str = Depends(require_owner),
         connection=Depends(database),
     ):
         load_employee(connection, employee_id)
+        existing = connection.execute(
+            """
+            SELECT * FROM conversations
+            WHERE employee_id = ? AND owner_id = ? AND kind = 'private'
+            """,
+            (employee_id, owner_id),
+        ).fetchone()
+        if existing is not None:
+            response.status_code = 200
+            return {
+                "id": existing["id"],
+                "name": existing["name"],
+                "agentscope_session_id": existing["agentscope_session_id"],
+            }
         conversation_id = new_id("conv")
         now = utcnow()
+        name = body.name.strip() or "私聊"
         connection.execute(
             """
             INSERT INTO conversations (
-                id, employee_id, owner_id, name, agentscope_session_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, NULL, ?, ?)
+                id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
+            ) VALUES (?, ?, ?, 'private', ?, NULL, ?, ?)
             """,
-            (conversation_id, employee_id, owner_id, body.name.strip() or "新对话", now, now),
+            (conversation_id, employee_id, owner_id, name, now, now),
         )
         connection.commit()
-        return {"id": conversation_id, "name": body.name.strip() or "新对话", "agentscope_session_id": None}
+        return {"id": conversation_id, "name": name, "agentscope_session_id": None}
 
     def owned_conversation(connection, conversation_id: str, owner_id: str):
         row = connection.execute(
@@ -1104,8 +1184,7 @@ def create_app() -> FastAPI:
     ):
         row = owned_conversation(connection, conversation_id, owner_id)
         employee = load_employee(connection, row["employee_id"])
-        local = list_messages(connection, conversation_id=conversation_id)
-        turns: list[list[str]] = []
+        history: list[dict[str, Any]] = []
         history_error = ""
         if row["agentscope_session_id"] and employee["agentscope_agent_id"]:
             try:
@@ -1113,7 +1192,7 @@ def create_app() -> FastAPI:
                     employee["agentscope_agent_id"],
                     row["agentscope_session_id"],
                 )
-                turns = assistant_turns(remote)
+                history = session_transcript(remote, employee["id"])
             except AgentScopeError as exc:
                 history_error = exc.detail
         return {
@@ -1122,7 +1201,7 @@ def create_app() -> FastAPI:
             "name": row["name"],
             "agentscope_session_id": row["agentscope_session_id"],
             "messages": interleave_messages(
-                merge_transcript(local, turns, employee["id"]),
+                history,
                 await peer_replies_for_conversation(connection, client_of(request), conversation_id),
             ),
             "history_error": history_error,
@@ -1140,25 +1219,27 @@ def create_app() -> FastAPI:
         employee = load_employee(connection, row["employee_id"])
         if not employee["enabled"]:
             raise HTTPException(status_code=409, detail="该员工已禁用")
-        attachments = load_attachments(connection, body.attachment_ids)
-        message = store_user_message(
-            connection,
-            body.text,
-            attachments,
-            conversation_id=conversation_id,
-            channel_id=None,
-        )
-        if message["text"] and row["name"] == "新对话":
+        attachments = load_attachments(connection, body.attachment_ids, owner_id)
+        visible = [
+            {"id": item["id"], "name": item["name"], "type": item["type"], "size": item["size"]}
+            for item in attachments
+        ]
+        if not body.text.strip() and not attachments:
+            raise HTTPException(status_code=400, detail="请输入消息或添加附件")
+        message = {
+            "id": new_id("msg"),
+            "sender": "user",
+            "speaker": owner_id,
+            "text": body.text.strip(),
+            "attachments": visible,
+            "accepted": False,
+            "created_at": utcnow(),
+        }
+        if message["text"] and row["name"] in {"新对话", "私聊"}:
             title = message["text"] if len(message["text"]) <= 20 else message["text"][:20] + "…"
             connection.execute(
                 "UPDATE conversations SET name = ?, updated_at = ? WHERE id = ?",
                 (title, utcnow(), conversation_id),
-            )
-            connection.commit()
-        elif attachments and row["name"] == "新对话":
-            connection.execute(
-                "UPDATE conversations SET name = ?, updated_at = ? WHERE id = ?",
-                (attachments[0]["name"], utcnow(), conversation_id),
             )
             connection.commit()
         client = client_of(request)
@@ -1171,14 +1252,22 @@ def create_app() -> FastAPI:
             outcome["detail"] = "AgentScope 尚未创建该员工，没有生成回复"
         else:
             try:
-                session_id = await ensure_session(
-                    connection,
-                    client,
-                    employee["agentscope_agent_id"],
-                    row["agentscope_session_id"],
-                    row["name"],
-                    UNATTENDED_PERMISSION,
-                )
+                if row["agentscope_session_id"]:
+                    session_id = row["agentscope_session_id"]
+                    await client.set_permission_mode(
+                        employee["agentscope_agent_id"],
+                        session_id,
+                        UNATTENDED_PERMISSION,
+                    )
+                else:
+                    session_id = await ensure_session(
+                        connection,
+                        client,
+                        employee["agentscope_agent_id"],
+                        None,
+                        row["name"],
+                        UNATTENDED_PERMISSION,
+                    )
                 connection.execute(
                     "UPDATE conversations SET agentscope_session_id = ?, updated_at = ? WHERE id = ?",
                     (session_id, utcnow(), conversation_id),
@@ -1198,12 +1287,10 @@ def create_app() -> FastAPI:
                     session_id,
                     model_input_blocks(body.text, files),
                     owner_id,
+                    verified_uid=owner_id,
+                    attachments=visible,
                 )
-                connection.execute("UPDATE messages SET accepted = 1 WHERE id = ?", (message["id"],))
-                connection.commit()
-                message = message_from_row(
-                    connection.execute("SELECT * FROM messages WHERE id = ?", (message["id"],)).fetchone()
-                )
+                message["accepted"] = True
                 outcome = {"accepted": True, "detail": "", "session_id": session_id}
             except AgentScopeError as exc:
                 outcome["detail"] = exc.detail

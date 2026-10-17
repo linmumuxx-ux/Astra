@@ -17,13 +17,16 @@ export function ownerId(): string {
     value = `browser_${crypto.randomUUID?.() ?? `${Date.now()}`}`;
     localStorage.setItem(OWNER_KEY, value);
   }
+  document.cookie = `nexus_uid=${encodeURIComponent(value)}; Path=/; SameSite=Lax`;
   return value;
 }
 
 function headers(json = true): HeadersInit {
+  const uid = ownerId();
   return {
     ...(json ? { "Content-Type": "application/json" } : {}),
-    "X-Owner-Id": ownerId(),
+    "X-Verified-UID": uid,
+    "X-Owner-Id": uid,
   };
 }
 
@@ -80,7 +83,11 @@ export async function deleteEmployee(id: string): Promise<void> {
 export async function uploadAttachment(file: File): Promise<Attachment> {
   const form = new FormData();
   form.append("file", file);
-  return read(await fetch("/api/v1/attachments", { method: "POST", body: form }));
+  return read(await fetch("/api/v1/attachments", {
+    method: "POST",
+    headers: { "X-Verified-UID": ownerId() },
+    body: form,
+  }));
 }
 
 export function attachmentUrl(id: string): string {

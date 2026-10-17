@@ -472,7 +472,7 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 headers=owner_a,
                 json={"name": "新对话"},
             ).json()
-            assert first["id"] != second["id"]
+            assert first["id"] == second["id"]
             hidden = client.get(
                 f"{NEXUS}/api/v1/employees/{employee['id']}/conversations",
                 headers=owner_b,
@@ -512,10 +512,14 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
 
             uploaded = client.post(
                 f"{NEXUS}/api/v1/attachments",
+                headers=owner_a,
                 files={"file": ("run.log", b"LOG-TOKEN-88\n", "text/plain")},
             )
             assert uploaded.status_code == 201, uploaded.text
-            downloaded = client.get(f"{NEXUS}/api/v1/attachments/{uploaded.json()['id']}")
+            downloaded = client.get(
+                f"{NEXUS}/api/v1/attachments/{uploaded.json()['id']}",
+                headers=owner_a,
+            )
             assert downloaded.content == b"LOG-TOKEN-88\n"
             with_file = client.post(
                 f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
@@ -536,12 +540,12 @@ def test_private_chat_streams_and_isolates_anonymous_owners():
                 time.sleep(1)
             assert remote is not None and "LOG-TOKEN-88" in remote.text
             other = client.post(
-                f"{NEXUS}/api/v1/conversations/{second['id']}/messages",
+                f"{NEXUS}/api/v1/conversations/{first['id']}/messages",
                 headers=owner_a,
-                json={"text": "这是另一条对话。", "attachment_ids": []},
+                json={"text": "还是这一条私聊。", "attachment_ids": []},
             )
             assert other.json()["agentscope"]["accepted"] is True, other.text
-            assert other.json()["agentscope"]["session_id"] != first_session
+            assert other.json()["agentscope"]["session_id"] == first_session
             restored = client.get(f"{NEXUS}/api/v1/conversations/{first['id']}", headers=owner_a)
             assert restored.status_code == 200, restored.text
             assert restored.json()["agentscope_session_id"] == first_session
@@ -652,6 +656,7 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             channel_id = channel.json()["id"]
             uploaded = client.post(
                 f"{NEXUS}/api/v1/attachments",
+                headers={"X-Owner-Id": f"channel-{suffix}"},
                 files={"file": ("fail.log", b"FAIL-TOKEN-55\n", "text/plain")},
             )
             assert uploaded.status_code == 201, uploaded.text

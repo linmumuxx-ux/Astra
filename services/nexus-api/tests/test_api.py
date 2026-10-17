@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.main import (
     assistant_messages,
@@ -116,7 +117,7 @@ def test_private_chat_keeps_threads_and_does_not_invent_replies(client):
         headers=headers,
         json={"name": "新对话"},
     )
-    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["id"] == second.json()["id"]
     sent = client.post(
         f"/api/v1/conversations/{first.json()['id']}/messages",
         headers=headers,
@@ -125,12 +126,16 @@ def test_private_chat_keeps_threads_and_does_not_invent_replies(client):
     assert sent.status_code == 200
     body = sent.json()
     assert body["message"]["sender"] == "user"
+    assert body["message"]["speaker"] == "browser-a"
     assert body["agentscope"]["accepted"] is False
     assert "assistant" not in body
     stored = client.get(f"/api/v1/conversations/{first.json()['id']}", headers=headers).json()["messages"]
-    assert [item["sender"] for item in stored] == ["user"]
-    other = client.get(f"/api/v1/conversations/{second.json()['id']}", headers=headers).json()["messages"]
-    assert other == []
+    assert stored == []
+    forged = client.get(
+        f"/api/v1/conversations/{first.json()['id']}?uid=browser-a",
+        headers={"X-Owner-Id": "browser-b"},
+    )
+    assert forged.status_code == 404
 
 
 def test_disabled_employee_cannot_receive_private_message(client):
@@ -207,7 +212,7 @@ def test_owners_keep_separate_conversations_across_restart(tmp_path, monkeypatch
             headers=owner_a,
             json={"name": "新对话"},
         ).json()
-        assert first["id"] != second["id"]
+        assert first["id"] == second["id"]
         sent = test_client.post(
             f"/api/v1/conversations/{first['id']}/messages",
             headers=owner_a,
@@ -218,16 +223,17 @@ def test_owners_keep_separate_conversations_across_restart(tmp_path, monkeypatch
         assert hidden.json()["items"] == []
         missing = test_client.get(f"/api/v1/conversations/{first['id']}", headers=owner_b)
         assert missing.status_code == 404
+        query_only = test_client.get(f"/api/v1/conversations/{first['id']}?uid=anon-a")
+        assert query_only.status_code == 401
     restarted = create_app()
     with TestClient(restarted) as again:
         listed = again.get(
             f"/api/v1/employees/{employee['id']}/conversations",
             headers=owner_a,
         ).json()["items"]
-        assert [item["id"] for item in listed] == [first["id"], second["id"]]
+        assert [item["id"] for item in listed] == [first["id"]]
         restored = again.get(f"/api/v1/conversations/{first['id']}", headers=owner_a).json()
-        assert [item["text"] for item in restored["messages"]] == ["只属于 a"]
-        assert restored["messages"][0]["sender"] == "user"
+        assert restored["messages"] == []
 
 
 def test_new_skills_are_rejected_when_catalog_is_unavailable(client):
@@ -459,13 +465,16 @@ def test_live_client_posts_chat_without_writing_a_reply(tmp_path, monkeypatch):
         payload = json.loads(chat_calls[0].content.decode())
         assert payload["agent_id"] == "agent-1"
         assert payload["input"]["role"] == "user"
+        assert payload["input"]["name"] == "browser-a"
+        assert payload["input"]["metadata"]["verified_uid"] == "browser-a"
         assert payload["input"]["content"] == [{"type": "text", "text": "看一下失败日志"}]
         assert chat_calls[0].headers["x-user-id"] == "nexus"
         session_calls = [request for request in seen if request.url.path == "/sessions/"]
         # 邮箱一次，私聊一次。第二条消息复用私聊 Session。
         assert len(session_calls) == 2
         stored = test_client.get(f"/api/v1/conversations/{conversation['id']}", headers=headers).json()
-        assert [item["sender"] for item in stored["messages"]] == ["user", "user"]
+        assert stored["messages"] == []
+        assert stored["history_error"]
 
 
 def test_mention_triggers_only_the_named_employee(tmp_path, monkeypatch):
@@ -577,6 +586,7 @@ def test_channel_peer_contact_creates_session_caps_and_keeps_identity(tmp_path, 
         ).json()
         uploaded = test_client.post(
             "/api/v1/attachments",
+            headers={"X-Owner-Id": "channel-user"},
             files={"file": ("run.log", b"LOG-TOKEN-88", "text/plain")},
         )
         sent = test_client.post(
@@ -905,7 +915,13 @@ def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path,
                 200,
                 json={
                     "messages": [
-                        {"id": "u1", "role": "user", "content": [{"type": "text", "text": "看日志"}]},
+                        {
+                            "id": "u1",
+                            "role": "user",
+                            "name": "anon-a",
+                            "metadata": {"verified_uid": "anon-a"},
+                            "content": [{"type": "text", "text": "看日志"}],
+                        },
                         {
                             "id": "a1",
                             "role": "assistant",
@@ -936,15 +952,22 @@ def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path,
         ).json()
         log_file = test_client.post(
             "/api/v1/attachments",
+            headers=headers,
             files={"file": ("run.log", b"LOG-TOKEN-88", "text/plain")},
         )
         image = test_client.post(
             "/api/v1/attachments",
+            headers=headers,
             files={"file": ("shot.png", png, "image/png")},
         )
         assert log_file.status_code == 201
         assert image.status_code == 201
-        downloaded = test_client.get(f"/api/v1/attachments/{log_file.json()['id']}")
+        denied = test_client.get(
+            f"/api/v1/attachments/{log_file.json()['id']}?uid=anon-a",
+            headers={"X-Owner-Id": "anon-b"},
+        )
+        assert denied.status_code == 404
+        downloaded = test_client.get(f"/api/v1/attachments/{log_file.json()['id']}", headers=headers)
         assert downloaded.status_code == 200
         assert downloaded.content == b"LOG-TOKEN-88"
         sent = test_client.post(
@@ -969,8 +992,11 @@ def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path,
         assert image_block["source"]["type"] == "base64"
         restored = test_client.get(f"/api/v1/conversations/{conversation['id']}", headers=headers).json()
         assert [item["sender"] for item in restored["messages"]] == ["user", employee["id"]]
+        assert restored["messages"][0]["speaker"] == "anon-a"
         assert restored["messages"][1]["text"] == "模型自己的回复"
-        assert restored["messages"][0]["attachments"][0]["name"] == "run.log"
+        assert seen[0]["input"]["name"] == "anon-a"
+        assert seen[0]["input"]["metadata"]["verified_uid"] == "anon-a"
+        assert seen[0]["input"]["metadata"]["attachments"][0]["name"] == "run.log"
         assert "已解析" not in json.dumps(restored, ensure_ascii=False)
 
 
@@ -1175,21 +1201,27 @@ def test_mailbox_hop_is_scoped_to_the_conversation_and_reply_is_visible(tmp_path
             headers=headers,
             json={"name": "第一条"},
         ).json()
-        second = test_client.post(
+        again_private = test_client.post(
             f"/api/v1/employees/{star['id']}/conversations",
             headers=headers,
             json={"name": "第二条"},
         ).json()
-        from nexus_api.db import connect
+        assert again_private["id"] == first["id"]
+        from nexus_api.db import connect, utcnow
 
         connection = connect(tmp_path / "nexus.sqlite3")
         connection.execute(
             "UPDATE conversations SET agentscope_session_id = ? WHERE id = ?",
             ("session-private", first["id"]),
         )
+        now = utcnow()
         connection.execute(
-            "UPDATE conversations SET agentscope_session_id = ? WHERE id = ?",
-            ("session-other", second["id"]),
+            """
+            INSERT INTO conversations (
+                id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
+            ) VALUES ('conv_other', ?, 'browser-a', 'note', '另一范围', 'session-other', ?, ?)
+            """,
+            (star["id"], now, now),
         )
         connection.commit()
         connection.close()

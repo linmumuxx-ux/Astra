@@ -33,6 +33,7 @@ export interface Attachment {
 export interface ChatMessage {
   id: string;
   sender: string;
+  speaker?: string;
   text: string;
   attachments: Attachment[];
   created_at: string;
