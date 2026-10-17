@@ -210,6 +210,24 @@ class AgentScopeClient:
             },
         )
 
+    async def list_user_mcp(self) -> list[dict[str, str]]:
+        response = await self.request("GET", "/mcp")
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise AgentScopeError("AgentScope MCP 返回的不是列表")
+        return _named_items(payload, "id", "name")
+
+    async def list_workspace_mcp(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
+        response = await self.request(
+            "GET",
+            "/workspace/mcp",
+            params={"agent_id": agent_id, "session_id": session_id},
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise AgentScopeError("AgentScope 工作区 MCP 返回的不是列表")
+        return [item for item in payload if isinstance(item, dict)]
+
     async def list_skills(self) -> list[dict[str, str]]:
         response = await self.request("GET", "/skill")
         payload = response.json()

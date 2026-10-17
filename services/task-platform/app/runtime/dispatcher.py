@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from app.domain import EmployeeStatus, EnvironmentStatus, TaskStatus
 from app.event_bus import event_bus
 from app.models import DigitalEmployee, Task
+from app.runtime.capability import dispatch_allowed
 from app.runtime.environment import environment_snapshot
 from app.runtime.occupancy import occupying_exists, sync_employee_occupancy
 from app.services import TaskService
@@ -77,6 +78,7 @@ class Dispatcher:
                 for employee in employees
                 if employee.execution_environment
                 and employee.execution_environment.status == EnvironmentStatus.AVAILABLE
+                and dispatch_allowed(employee.execution_environment.status_detail)
                 and task.task_type in employee.task_types
                 and task.category_id in employee.category_ids
             ]

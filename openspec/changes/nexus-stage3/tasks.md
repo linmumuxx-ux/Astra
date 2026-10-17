@@ -111,9 +111,9 @@ OpenCode 相关 e2e 使用 `opencode/deepseek-v4.1-flash-free`，不经过网关
 
 依赖：B 和 G。早于 H.3、H.4。不新建页面和表。
 
-- [ ] S.1 员工 JSON 和环境 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。desired 是绑定集合的哈希
-- [ ] S.2 员工侧调用原生 `/skill`、`/workspace/skill`、`/mcp`，再检查该 Session 的 toolkit 是否列出它们。Worker 侧安装后按 OpenCode 1.18.35 的发现规则检查
-- [ ] S.3 `applied_revision == desired_revision` 才允许分配。Session 创建和 Task 分配时记下 revision 快照
+- [x] S.1 员工 JSON 和环境 `status_detail` 保存 `desired_revision`、`applied_revision`、`runtime_status`、`error`、`checked_at`。desired 是绑定集合的哈希
+- [x] S.2 员工侧调用原生 `/skill`、`/workspace/skill`、`/mcp`，再检查该 Session 的 toolkit 是否列出它们。Worker 侧安装后按 OpenCode 1.18.35 的发现规则检查
+- [x] S.3 `applied_revision == desired_revision` 才允许分配。Session 创建和 Task 分配时记下 revision 快照
   - 验证：未生效的绑定不会派到任务上。发现失败时 `runtime_status` 和 `error` 可见，已在跑的任务不被改掉
 
 ## H. 仓库、PAT、复制与单仓

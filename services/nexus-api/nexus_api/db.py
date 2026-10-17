@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS employees (
     tools_json TEXT NOT NULL,
     agentscope_agent_id TEXT,
     mailbox_session_id TEXT,
+    capability_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -163,6 +164,9 @@ def init_db(path: Path) -> None:
         if "record_session_id" not in channel_columns:
             connection.execute("ALTER TABLE channels ADD COLUMN record_agent_id TEXT NOT NULL DEFAULT ''")
             connection.execute("ALTER TABLE channels ADD COLUMN record_session_id TEXT NOT NULL DEFAULT ''")
+        employee_columns = {row[1] for row in connection.execute("PRAGMA table_info(employees)")}
+        if "capability_json" not in employee_columns:
+            connection.execute("ALTER TABLE employees ADD COLUMN capability_json TEXT NOT NULL DEFAULT '{}'")
         member_columns = {row[1] for row in connection.execute("PRAGMA table_info(channel_members)")}
         if "last_delivered_message_id" not in member_columns:
             connection.execute(
@@ -172,6 +176,13 @@ def init_db(path: Path) -> None:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _object(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    data = json.loads(value)
+    return data if isinstance(data, dict) else {}
 
 
 def _loads(value: str) -> list[Any]:
@@ -193,6 +204,7 @@ def employee_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "tools": _loads(row["tools_json"]),
         "agentscope_agent_id": row["agentscope_agent_id"],
         "mailbox_session_id": row["mailbox_session_id"],
+        "capability": _object(row["capability_json"]) if "capability_json" in row.keys() else {},
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

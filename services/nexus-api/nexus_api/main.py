@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .agentscope import PINNED_VERSION, AgentScopeClient, AgentScopeError
+from .capability import inspect_employee
 from .db import connect, employee_from_row, init_db, message_from_row, new_id, utcnow
 from .groups import HumanEvents, chat_inputs, merge_timeline, messages_since
 from .im import (
@@ -916,6 +917,14 @@ def create_app() -> FastAPI:
         except AgentScopeError as exc:
             return {"ok": False, "agent_id": agent_id, "mailbox_session_id": mailbox, "detail": exc.detail}
 
+    async def store_capability(connection, client: AgentScopeClient, employee: dict[str, Any]) -> None:
+        record = await inspect_employee(client, employee, utcnow())
+        connection.execute(
+            "UPDATE employees SET capability_json = ? WHERE id = ?",
+            (json.dumps(record, ensure_ascii=False), employee["id"]),
+        )
+        connection.commit()
+
     def save_agent_link(connection, employee_id: str, sync: dict[str, Any]) -> None:
         connection.execute(
             """
@@ -1143,6 +1152,8 @@ def create_app() -> FastAPI:
         sync = await sync_agent(client, employee, connection)
         save_agent_link(connection, employee["id"], sync)
         employee = load_employee(connection, employee["id"])
+        await store_capability(connection, client, employee)
+        employee = load_employee(connection, employee["id"])
         return {"employee": employee, "agentscope": {"ok": sync["ok"], "detail": sync["detail"]}}
 
     @app.patch("/api/v1/employees/{employee_id}")
@@ -1183,6 +1194,8 @@ def create_app() -> FastAPI:
         employee = load_employee(connection, employee_id)
         sync = await sync_agent(client, employee, connection)
         save_agent_link(connection, employee_id, sync)
+        employee = load_employee(connection, employee_id)
+        await store_capability(connection, client, employee)
         return {
             "employee": load_employee(connection, employee_id),
             "agentscope": {"ok": sync["ok"], "detail": sync["detail"]},

@@ -24,6 +24,14 @@ class CheckItem:
     detail: str
 
 
+def _capability_revision(environment: OpenCodeExecutionEnvironment) -> str:
+    detail = environment.status_detail if isinstance(environment.status_detail, dict) else {}
+    record = detail.get("capability") if isinstance(detail, dict) else None
+    if not isinstance(record, dict):
+        return ""
+    return str(record.get("applied_revision") or "")
+
+
 def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
     return {
         "environment_id": environment.id,
@@ -38,6 +46,7 @@ def environment_snapshot(environment: OpenCodeExecutionEnvironment) -> dict:
         "model_name": environment.model_name,
         "workspace_root": environment.workspace_root,
         "labels": list(environment.labels or []),
+        "capability_revision": _capability_revision(environment),
     }
 
 
