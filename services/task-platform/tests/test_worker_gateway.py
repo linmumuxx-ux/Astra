@@ -719,7 +719,7 @@ async def test_memory_response_route_matches_owner_expiry():
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_owner_epoch_and_bounded_command_list():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     owner = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=1, event_limit=1)
     other = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=1, event_limit=1)
     worker_id = f"wrk_{uuid4().hex}"
@@ -765,7 +765,7 @@ async def test_redis_owner_epoch_and_bounded_command_list():
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_lease_and_result_expire_like_memory():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = RedisRouteBus(
         REDIS_URL, prefix=prefix, owner_ttl_seconds=1, result_ttl_seconds=1
     )

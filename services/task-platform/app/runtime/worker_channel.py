@@ -18,6 +18,7 @@ from app.database import SessionLocal
 from app.domain import EnvironmentStatus
 from app.models import OpenCodeExecutionEnvironment, WorkerInstance
 from app.runtime.occupancy import blocking_session_exists, occupying_exists
+from app.runtime.remote_provisioning import no_active_operation, require_no_operation
 
 Switch = Callable[[], Awaitable[dict[str, Any]]]
 
@@ -46,6 +47,11 @@ async def mark_worker_channel(
     if environment is None:
         raise HTTPException(404, "环境不存在")
     await session.refresh(environment)
+    try:
+        require_no_operation(environment)
+    except HTTPException:
+        await session.rollback()
+        raise
     employee_id = environment.employee_id
     previous_status = environment.status
     workspace = environment.workspace_root
@@ -68,6 +74,7 @@ async def mark_worker_channel(
         .where(
             OpenCodeExecutionEnvironment.id == environment_id,
             OpenCodeExecutionEnvironment.status_detail == environment.status_detail,
+            no_active_operation(now),
             ~occupying_exists(employee_id),
             ~blocking_session_exists(employee_id),
         )

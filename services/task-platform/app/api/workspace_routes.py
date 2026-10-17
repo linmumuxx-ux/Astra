@@ -312,6 +312,9 @@ async def native_events(environment, workspace, root, global_stream):
             info = props.get("info", {})
             if event.get("type") == "session.created" and info.get("parentID") in allowed:
                 allowed.add(info["id"])
+            if event.get("type") == "astra.keepalive":
+                yield ": keepalive\n\n"
+                continue
             if event.get("type") == "astra.event_gap":
                 value = {"directory": workspace, "payload": event} if global_stream else event
                 yield f"data: {json.dumps(value, ensure_ascii=False)}\n\n"

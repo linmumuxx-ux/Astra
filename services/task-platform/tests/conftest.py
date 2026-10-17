@@ -1,9 +1,14 @@
 import asyncio
 import os
+import re
 import tempfile
 from pathlib import Path
 
 import pytest
+
+SESSION_REDIS_PREFIX = f"astra:worker-gateway:test:{os.getpid()}"
+SESSION_REVOKED_MEMBER_PREFIX = f"astra-test-revoked:{os.getpid()}:"
+_OLD_REVOKED_MEMBER = re.compile(r"rev-[0-9a-f]{8}-[abc]")
 
 TEMP_ROOT = Path(tempfile.gettempdir())
 TEST_DB = TEMP_ROOT / f"astra-test-{os.getpid()}.db"
@@ -40,10 +45,18 @@ def pytest_sessionfinish(session, exitstatus):
     try:
         cursor = 0
         while True:
-            cursor, keys = client.scan(cursor=cursor, match="astra:worker-gateway:test:*", count=500)
+            cursor, keys = client.scan(cursor=cursor, match=f"{SESSION_REDIS_PREFIX}:*", count=500)
             if keys:
                 client.delete(*keys)
             if cursor == 0:
                 break
+        members = client.smembers("astra:gateway:revoked_keys")
+        stale = []
+        for member in members:
+            text = member.decode() if isinstance(member, bytes) else str(member)
+            if text.startswith(SESSION_REVOKED_MEMBER_PREFIX) or _OLD_REVOKED_MEMBER.fullmatch(text):
+                stale.append(member)
+        if stale:
+            client.srem("astra:gateway:revoked_keys", *stale)
     finally:
         client.close()

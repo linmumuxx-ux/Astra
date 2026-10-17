@@ -39,7 +39,7 @@ from app.executors.usage import (
     parse_opencode_usage,
     parse_usage_breakdowns,
 )
-from app.models import DigitalEmployee, RuntimeSession, Task, TaskCategory
+from app.models import DigitalEmployee, OpenCodeExecutionEnvironment, RuntimeSession, Task, TaskCategory
 from app.runtime.environment import environment_snapshot
 from app.runtime.occupancy import clear_execution_stop, occupying_clause, sync_employee_occupancy
 from app.runtime.opencode_model import direct_model, gateway_model
@@ -453,6 +453,29 @@ class RuntimeService:
             await asyncio.sleep(0.2)
         raise RuntimeStateError(message or "旧 Session 未在超时时间内停止，未创建新 Session")
 
+    async def _reject_maintenance(self, environment) -> None:
+        """Refuse start/send while a maintenance reservation is active.
+
+        The check is a conditional update on the environment row in the caller's
+        transaction, so it cannot pass on a stale identity-map copy.
+        """
+
+        environment_id = getattr(environment, "id", None)
+        if environment_id is None:
+            return
+        from fastapi import HTTPException
+
+        from app.runtime.remote_provisioning import guard_environment_write
+
+        stored = await self.session.get(OpenCodeExecutionEnvironment, environment_id)
+        if stored is None:
+            return
+        try:
+            await guard_environment_write(self.session, stored)
+        except HTTPException as exc:
+            await self.session.rollback()
+            raise RuntimeStateError(str(exc.detail)) from exc
+
     async def start(self, task_id: str, *, restart: bool = False):
         task = await self.lock_task(task_id)
         if task.current_session_id and not restart:
@@ -788,6 +811,7 @@ class RuntimeService:
         workspace = task.workspace
         employee_id = task.employee_id
         environment = await resolve_environment(self.session, task)
+        await self._reject_maintenance(environment)
         await self.session.commit()
 
         outbound_id = body.get("messageID") or message_id()
@@ -826,6 +850,7 @@ class RuntimeService:
         if occupied:
             await self.session.rollback()
             raise RuntimeStateError("员工正在处理其他任务")
+        await self._reject_maintenance(environment)
         clear_execution_stop(task)
         task.last_message_id = outbound_id
         started = datetime.now(UTC)

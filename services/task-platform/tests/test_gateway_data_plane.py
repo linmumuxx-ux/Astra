@@ -2019,7 +2019,8 @@ def test_redis_revocation_set_is_append_only_and_marked_ready():
     async def scenario():
         store = RedisRuntimeStore(REDIS_URL)
         suffix = uuid4().hex[:8]
-        first, second, third = (f"rev-{suffix}-{name}" for name in ("a", "b", "c"))
+        member_prefix = f"astra-test-revoked:{os.getpid()}:"
+        first, second, third = (f"{member_prefix}{suffix}-{name}" for name in ("a", "b", "c"))
         try:
             await store.sync_revoked_key_digests([first, second])
             assert await store.revocation_state_ready() is True

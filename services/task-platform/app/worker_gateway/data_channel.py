@@ -180,8 +180,10 @@ class DataChannel:
             "content_type": content_type,
         }
         if command.status == "succeeded" and (command.result or {}).get("sha256") == digest:
+            stored = dict(command.result or {})
+            await self.gateway.bus.delete_text(response_key(request_id, upload_id))
             await session.rollback()
-            return {"status": "stored", "result": command.result}
+            return {"status": "stored", "result": stored}
         current_instance = (
             select(WorkerInstance.id)
             .where(WorkerInstance.id == worker_instance_id, WorkerInstance.epoch == epoch)

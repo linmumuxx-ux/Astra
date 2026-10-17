@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import errno
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -51,15 +51,89 @@ def prepare_workspace_local(
         created = True
     _validate_registered_worktree(source, destination)
     if created or not any((destination / name).exists() for name in _CONFIG_NAMES):
+        planned: list[tuple[Path, Path]] = []
         for name in _CONFIG_NAMES:
             origin = source / name
             if origin.is_symlink():
                 raise RuntimeError("拒绝复制符号链接配置")
-            if origin.is_file():
-                copied = destination / name
-                copied.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(origin, copied, follow_symlinks=False)
+            if not origin.is_file():
+                continue
+            copied = destination / name
+            _reject_symlink_components(copied)
+            planned.append((origin, copied))
+        for origin, copied in planned:
+            _write_regular_nofollow(origin, copied)
     return {"root": str(source), "target": str(destination), "created": str(created).lower()}
+
+
+def _reject_symlink_components(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    cursor = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise RuntimeError("拒绝复制符号链接配置")
+
+
+def _enter_dir(dir_fd: int, name: str) -> int:
+    if name in {"", ".", ".."}:
+        raise RuntimeError("拒绝复制符号链接配置")
+    try:
+        child = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=dir_fd,
+        )
+    except FileNotFoundError:
+        try:
+            os.mkdir(name, dir_fd=dir_fd)
+        except FileExistsError as exc:
+            raise RuntimeError("拒绝复制符号链接配置") from exc
+        try:
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise RuntimeError("拒绝复制符号链接配置") from exc
+            raise
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError("拒绝复制符号链接配置") from exc
+        raise
+    os.close(dir_fd)
+    return child
+
+
+def _write_regular_nofollow(origin: Path, copied: Path) -> None:
+    """Write a regular file. O_NOFOLLOW refuses a symlink at every component."""
+
+    data = origin.read_bytes()
+    absolute = Path(os.path.abspath(copied))
+    dir_fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        parts = absolute.parts[1:]
+        for part in parts[:-1]:
+            dir_fd = _enter_dir(dir_fd, part)
+        try:
+            file_fd = os.open(
+                parts[-1],
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise RuntimeError("拒绝复制符号链接配置") from exc
+            raise
+    finally:
+        os.close(dir_fd)
+    try:
+        os.write(file_fd, data)
+    finally:
+        os.close(file_fd)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 
 from app.config.settings import get_settings
 from app.database import SessionLocal
@@ -51,10 +51,29 @@ def require_no_operation(environment: OpenCodeExecutionEnvironment | None) -> No
         raise HTTPException(409, "远程环境正在部署或重启，请等待或取消当前操作")
 
 
+def no_active_operation(now: datetime | None = None):
+    """SQL form of operation_active: true when no maintenance reservation is running.
+
+    A missing or unparseable expiry stays reserved. NULL state is not an operation,
+    because ``NULL != 'RUNNING'`` is unknown and would reject every idle row.
+    """
+
+    current = now or datetime.now(UTC)
+    detail = OpenCodeExecutionEnvironment.status_detail
+    state = detail["operation"]["state"].as_string()
+    expires = detail["operation"]["expires_at"].as_string()
+    return or_(
+        state.is_(None),
+        state != "RUNNING",
+        and_(expires.is_not(None), expires <= current.isoformat()),
+    )
+
+
 async def guard_environment_write(session, environment):
-    require_no_operation(environment)
     if environment is None:
         return
+    await session.refresh(environment)
+    require_no_operation(environment)
     # A conditional no-op write takes the row/write lock only until this short
     # transaction commits, including SQLite where SELECT FOR UPDATE is ignored.
     result = await session.execute(
@@ -63,11 +82,14 @@ async def guard_environment_write(session, environment):
             OpenCodeExecutionEnvironment.id == environment.id,
             OpenCodeExecutionEnvironment.status_detail == environment.status_detail,
             OpenCodeExecutionEnvironment.status == environment.status,
+            no_active_operation(),
         )
         .values(updated_at=OpenCodeExecutionEnvironment.updated_at)
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
+        await session.refresh(environment)
+        require_no_operation(environment)
         raise HTTPException(409, "环境状态已变化，请刷新后重试")
 
 
@@ -108,6 +130,7 @@ async def reserve_operation(employee_id: str, action: str, session):
         .where(
             OpenCodeExecutionEnvironment.id == environment.id,
             OpenCodeExecutionEnvironment.status_detail == environment.status_detail,
+            no_active_operation(now),
             ~occupied,
             ~active_session,
         )

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from datetime import timedelta
 from uuid import uuid4
 
@@ -406,7 +407,7 @@ async def test_expired_event_cursor_releases_pause(environment_id):
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_crashed_consumer_releases_capacity_and_drops_the_old_list(environment_id):
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=1, event_limit=1)
     gateway = gateway_for(bus, worker_gateway_dispatch_lease_seconds=10)
     try:

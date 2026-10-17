@@ -44,23 +44,45 @@ class EventLog:
         if not isinstance(seq, int) or seq <= last or (not dropped and seq != last + 1):
             state["gap_refresh"] = True
             marker = seq if isinstance(seq, int) and seq > last else last
-            state["events"] = (
-                events + [{"seq": marker, "gap": True, "directory": directory, "from": last, "to": seq}]
-            )[-self.limit :]
+            state["events"] = self._retain(
+                events + [{"seq": marker, "gap": True, "directory": directory, "from": last, "to": seq}],
+                directory,
+            )
             await self._save(key, state)
             return {"action": "gap", "from": last, "to": seq}
         if dropped:
             state["gap_refresh"] = True
-            state["events"] = (
-                events + [{"seq": seq, "gap": True, "directory": directory, "reason": payload.get("reason")}]
-            )[-self.limit :]
+            state["events"] = self._retain(
+                events + [{"seq": seq, "gap": True, "directory": directory, "reason": payload.get("reason")}],
+                directory,
+            )
             await self._save(key, state)
             return {"action": "gap", "from": last, "to": seq}
-        state["events"] = (
-            events + [{"seq": seq, "directory": directory, "event": payload.get("event")}]
-        )[-self.limit :]
+        state["events"] = self._retain(
+            events + [{"seq": seq, "directory": directory, "event": payload.get("event")}],
+            directory,
+        )
         await self._save(key, state)
         return {"action": "store", "seq": seq}
+
+    def _retain(self, events: list[dict[str, Any]], directory: str) -> list[dict[str, Any]]:
+        """Keep the newest events. A trim leaves a gap a lagging cursor can observe."""
+
+        if len(events) <= self.limit:
+            return events
+        dropped = events[: len(events) - self.limit]
+        kept = list(events[len(events) - self.limit :])
+        start = dropped[0].get("from") if dropped[0].get("gap") else dropped[0].get("seq")
+        end = kept[0].get("seq")
+        gap = {
+            "seq": end,
+            "gap": True,
+            "directory": directory,
+            "from": start,
+            "to": end,
+            "reason": "log_trimmed",
+        }
+        return [gap, *kept[1:]]
 
     async def touch_cursor(
         self, *, worker_id: str, epoch: int, directory: str, consumer: str, seq: int

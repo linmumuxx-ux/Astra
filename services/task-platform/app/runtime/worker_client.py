@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
@@ -50,6 +52,7 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         )
         self.environment_id = environment_id
         self.gateway = gateway or get_gateway()
+        self.offline_grace_seconds = float(self.settings.worker_event_offline_grace_seconds)
 
     async def exchange(
         self,
@@ -182,18 +185,38 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
         )
         await self.run_command("subscribe_events", {"directory": folder})
         seen = 0
+        offline_deadline: float | None = None
         while True:
-            current_id, current_epoch = await self._online()
+            try:
+                current_id, current_epoch = await self._online()
+            except OpenCodeServerUnavailable:
+                now = time.monotonic()
+                if offline_deadline is None:
+                    offline_deadline = now + self.offline_grace_seconds
+                if now >= offline_deadline:
+                    yield {
+                        "type": "astra.event_gap",
+                        "directory": folder,
+                        "reason": "worker_offline",
+                        "from": seen,
+                        "to": None,
+                    }
+                    return
+                yield {"type": "astra.keepalive", "directory": folder}
+                await asyncio.sleep(min(0.5, max(0.0, offline_deadline - now)))
+                continue
+            offline_deadline = None
             if current_id != worker_id or current_epoch != epoch:
+                previous = seen
+                worker_id, epoch = current_id, current_epoch
+                seen = 0
                 yield {
                     "type": "astra.event_gap",
                     "directory": folder,
                     "reason": "worker_reconnected",
-                    "from": seen,
+                    "from": previous,
                     "to": None,
                 }
-                worker_id, epoch = current_id, current_epoch
-                seen = 0
                 await log.touch_cursor(
                     worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=0
                 )
@@ -211,12 +234,15 @@ class WorkerOpenCodeClient(OpenCodeServerClient):
                     worker_id=worker_id, epoch=epoch, directory=folder, consumer=holder, seq=seq
                 )
                 if item.get("gap"):
-                    yield {
+                    gap = {
                         "type": "astra.event_gap",
                         "directory": folder,
                         "from": item.get("from"),
                         "to": item.get("to"),
                     }
+                    if item.get("reason"):
+                        gap["reason"] = item["reason"]
+                    yield gap
                 elif isinstance(item.get("event"), dict):
                     yield item["event"]
             if not delivered:

@@ -317,6 +317,9 @@ class WorkerConnectionManager:
     def _start_http(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
         if not frame_acceptable(incoming, epoch, self.clock()):
             return
+        current = self.http_tasks.get(incoming.request_id)
+        if current is not None and not current.done():
+            return
         task = asyncio.create_task(self._execute_http(transport, incoming, epoch))
         self.http_tasks[incoming.request_id] = task
 
@@ -344,7 +347,9 @@ class WorkerConnectionManager:
         except asyncio.CancelledError:
             return
         finally:
-            self.http_tasks.pop(incoming.request_id, None)
+            task = asyncio.current_task()
+            if self.http_tasks.get(incoming.request_id) is task:
+                self.http_tasks.pop(incoming.request_id, None)
 
     def _start_events(self, transport: FrameTransport, incoming: WorkerMessage, epoch: int) -> None:
         if not frame_acceptable(incoming, epoch, self.clock()):

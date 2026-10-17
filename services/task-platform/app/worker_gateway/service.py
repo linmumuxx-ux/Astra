@@ -50,6 +50,20 @@ SIDE_EFFECT_COMMANDS = frozenset({"prompt"})
 logger = logging.getLogger(__name__)
 
 
+def held_slot_expire_statement(command_id: str, due: tuple, values: dict[str, Any]):
+    """Conditional expire of one held command. MySQL cannot run UPDATE … RETURNING."""
+
+    return (
+        update(WorkerCommand)
+        .where(WorkerCommand.id == command_id, WorkerCommand.slot_held.is_(True), *due)
+        .values(**values)
+    )
+
+
+def expire_due_commands_statement(due: tuple, values: dict[str, Any]):
+    return update(WorkerCommand).where(*due).values(**values)
+
+
 @dataclass(slots=True)
 class AuthOk:
     worker_instance_id: str
@@ -135,6 +149,10 @@ class WorkerGateway:
             self.bus_mode = getattr(bus, "mode", "memory")
             self.bus_warning = "仅单进程可用" if self.bus_mode == "memory" else None
         self.sockets: dict[str, _SocketLease] = {}
+        # Last database epoch observed for a worker. Replaced whenever a read
+        # disagrees, so a socket authenticated at an older epoch cannot keep
+        # appending after the row moves.
+        self._db_epochs: dict[str, int] = {}
 
     async def enroll(self, session: AsyncSession, environment_id: int) -> EnrollResult:
         environment = await session.get(OpenCodeExecutionEnvironment, environment_id)
@@ -174,6 +192,7 @@ class WorkerGateway:
         await session.commit()
         await self.bus.clear_owner(worker_id, previous_epoch, None)
         self._close_local_socket(worker_id, previous_epoch)
+        self._db_epochs[worker_id] = new_epoch
         return EnrollResult(worker_id, environment_id, token, new_epoch, True)
 
     async def authenticate(self, session: AsyncSession, message: WorkerMessage, token: str) -> AuthOk:
@@ -212,6 +231,7 @@ class WorkerGateway:
             WorkerConnection(worker_instance_id=worker_id, epoch=new_epoch, state="active", opened_at=now)
         )
         await session.commit()
+        self._db_epochs[worker_id] = new_epoch
         ack = envelope(
             request_id=message.request_id,
             worker_instance_id=worker_id,
@@ -614,6 +634,36 @@ class WorkerGateway:
         instance = await session.get(WorkerInstance, worker_instance_id)
         return instance is not None and instance.epoch == epoch
 
+    async def database_epoch(self, worker_instance_id: str) -> int | None:
+        """Read the row epoch and drop a cached value that no longer matches."""
+
+        async with SessionLocal() as session:
+            instance = await session.get(WorkerInstance, worker_instance_id)
+        epoch = None if instance is None else instance.epoch
+        cached = self._db_epochs.get(worker_instance_id)
+        if cached != epoch:
+            self._db_epochs.pop(worker_instance_id, None)
+            if epoch is not None:
+                self._db_epochs[worker_instance_id] = epoch
+        return epoch
+
+    async def record_worker_event(self, auth: AuthOk, message: WorkerMessage) -> bool:
+        payload = message.payload if isinstance(message.payload, dict) else {}
+        directory = str(payload.get("directory") or "")
+        if not directory or message.epoch != auth.epoch:
+            return False
+        if await self.database_epoch(auth.worker_instance_id) != message.epoch:
+            return False
+        from app.worker_gateway.events import EventLog
+
+        await EventLog(self.bus, limit=self.settings.worker_gateway_event_queue_size).append(
+            worker_id=auth.worker_instance_id,
+            epoch=message.epoch,
+            directory=directory,
+            payload=payload,
+        )
+        return True
+
     async def sweep(self, *, now=None) -> int:
         current = now or utcnow()
         stale_after = timedelta(
@@ -649,19 +699,23 @@ class WorkerGateway:
                 WorkerCommand.deadline_at.is_not(None),
                 WorkerCommand.deadline_at <= current,
             )
-            released_slots = (
+            held_rows = (
                 await session.execute(
-                    update(WorkerCommand)
-                    .where(*due, WorkerCommand.slot_held.is_(True))
-                    .values(**expired_values)
-                    .returning(WorkerCommand.worker_instance_id, WorkerCommand.epoch)
+                    select(WorkerCommand.id, WorkerCommand.worker_instance_id, WorkerCommand.epoch).where(
+                        *due, WorkerCommand.slot_held.is_(True)
+                    )
                 )
             ).all()
-            expired = await session.execute(
-                update(WorkerCommand).where(*due).values(**expired_values)
-            )
-            for worker_id, epoch in released_slots:
+            released_slots: list[tuple[str, int]] = []
+            for command_id, worker_id, epoch in held_rows:
+                released = await session.execute(
+                    held_slot_expire_statement(command_id, due, expired_values)
+                )
+                if released.rowcount != 1:
+                    continue
+                released_slots.append((worker_id, epoch))
                 await release_http_slot(session, worker_id, epoch)
+            expired = await session.execute(expire_due_commands_statement(due, expired_values))
             await session.commit()
             offlined: list[tuple[str, int]] = []
             if stale_rows:
@@ -794,20 +848,9 @@ class WorkerGateway:
                 continue
             if message.type == "event":
                 lease.buffer_event(message.to_dict())
-                payload = message.payload if isinstance(message.payload, dict) else {}
-                directory = str(payload.get("directory") or "")
-                if directory and message.epoch == auth.epoch:
-                    from app.worker_gateway.events import EventLog
-
-                    await EventLog(
-                        self.bus, limit=self.settings.worker_gateway_event_queue_size
-                    ).append(
-                        worker_id=auth.worker_instance_id,
-                        epoch=auth.epoch,
-                        directory=directory,
-                        payload=payload,
-                    )
-                    await self.publish_event_control(auth, directory)
+                if await self.record_worker_event(auth, message):
+                    payload = message.payload if isinstance(message.payload, dict) else {}
+                    await self.publish_event_control(auth, str(payload.get("directory") or ""))
                 continue
             if message.type != "response":
                 continue

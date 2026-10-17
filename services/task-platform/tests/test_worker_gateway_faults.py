@@ -504,7 +504,7 @@ async def test_agent_dedupes_commands_and_ping_timeout_reconnects():
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_old_consumer_stops_after_newer_epoch():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     older = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=4)
     newer = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=4)
     worker_id = f"wrk_{uuid4().hex}"
@@ -856,7 +856,7 @@ async def test_auth_failure_closes_transport_and_ack_failure_skips_ledger():
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_floor_survives_clear_and_expiry():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = RedisRouteBus(REDIS_URL, prefix=prefix, owner_ttl_seconds=1)
     worker_id = f"wrk_{uuid4().hex}"
     try:
@@ -879,7 +879,7 @@ async def test_redis_floor_survives_clear_and_expiry():
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_local_heartbeats_do_not_release_redis_capacity_and_unbind_deletes_list():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = RedisRouteBus(REDIS_URL, prefix=prefix, control_limit=2)
     worker_id = f"wrk_{uuid4().hex}"
     try:
@@ -1016,7 +1016,7 @@ class _DyingPull(RedisRouteBus):
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_redis_pull_failure_closes_the_socket(environment_id: int):
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = _DyingPull(REDIS_URL, prefix=prefix)
     gateway = gateway_for(
         bus,
@@ -1042,7 +1042,7 @@ async def test_redis_pull_failure_closes_the_socket(environment_id: int):
     reason="未提供 ASTRA_TEST_REDIS_URL：Worker 路由未在真实 Redis 上联调，默认验证进程内等价语义",
 )
 async def test_restore_refreshes_queue_ttl():
-    prefix = f"astra:worker-gateway:test:{uuid4().hex}"
+    prefix = f"astra:worker-gateway:test:{os.getpid()}:{uuid4().hex}"
     bus = RedisRouteBus(REDIS_URL, prefix=prefix, owner_ttl_seconds=60)
     worker_id = f"wrk_{uuid4().hex}"
     try:
