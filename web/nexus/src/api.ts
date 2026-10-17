@@ -19,6 +19,10 @@ export function storedOwnerId(): string {
   return value.startsWith("browser_") ? "" : value;
 }
 
+export function currentUid(): string {
+  return resolvedUid || storedOwnerId();
+}
+
 function rememberCookie(uid: string) {
   document.cookie = `nexus_uid=${encodeURIComponent(uid)}; Path=/; SameSite=Lax`;
 }
@@ -173,6 +177,19 @@ export async function saveChannel(body: { name: string; description: string; mem
 
 export async function channelMessages(id: string): Promise<Channel & { messages: ChatMessage[]; history_error?: string }> {
   return read(await fetch(`/api/v1/channels/${id}/messages`, { headers: headers(false) }));
+}
+
+export interface TimelineItem {
+  id: string;
+  speaker: string;
+  text: string;
+  kind: string;
+  created_at: string;
+  attachments?: Attachment[];
+}
+
+export async function channelTimeline(id: string): Promise<{ items: TimelineItem[] }> {
+  return read(await fetch(`/api/v1/channels/${id}/timeline`, { headers: headers(false) }));
 }
 
 export async function sendChannel(id: string, text: string, attachmentIds: string[]) {

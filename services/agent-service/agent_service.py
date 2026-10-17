@@ -219,11 +219,70 @@ def without_team_and_task_tools(get_toolkit, mailbox_lookup=None):
     return assembled
 
 
-_memory_error = ""
+_memory_state: dict[str, str] = {}
 
 
-def memory_status() -> dict[str, str | bool]:
-    return {"ok": _memory_error == "", "error": _memory_error}
+def memory_status(key: str | None = None) -> dict[str, str | bool | dict]:
+    """按 agent 或 workspace 记录。没有进程级的一份状态。"""
+
+    if key is None:
+        return {
+            "items": {
+                name: {"ok": False, "status": "degraded", "error": error}
+                for name, error in _memory_state.items()
+                if error
+            }
+        }
+    error = _memory_state.get(key, "")
+    if error:
+        return {"ok": False, "status": "degraded", "error": error}
+    return {"ok": True, "status": "ok", "error": ""}
+
+
+class GuardedMemory:
+    """记忆 hook 抛错时继续后面的对话，并把这一份标成 degraded。"""
+
+    def __init__(self, inner, key: str) -> None:
+        self._inner = inner
+        self._key = key
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def _mark(self, exc: Exception) -> None:
+        _memory_state[self._key] = str(exc)
+
+    async def on_system_prompt(self, agent, current_prompt: str) -> str:
+        method = getattr(self._inner, "on_system_prompt", None)
+        if method is None:
+            return current_prompt
+        try:
+            return await method(agent, current_prompt)
+        except Exception as exc:
+            self._mark(exc)
+            return current_prompt
+
+    async def _guard(self, name: str, agent, input_kwargs, next_handler):
+        method = getattr(self._inner, name, None)
+        if method is None:
+            async for item in next_handler(**input_kwargs):
+                yield item
+            return
+        try:
+            async for item in method(agent, input_kwargs, next_handler):
+                yield item
+        except Exception as exc:
+            self._mark(exc)
+            async for item in next_handler(**input_kwargs):
+                yield item
+
+    async def on_reply(self, agent, input_kwargs, next_handler):
+        async for item in self._guard("on_reply", agent, input_kwargs, next_handler):
+            yield item
+
+    async def on_reasoning(self, agent, input_kwargs, next_handler):
+        async for item in self._guard("on_reasoning", agent, input_kwargs, next_handler):
+            yield item
 
 
 def card_context_size(model_name: str, classes) -> int | None:
@@ -293,31 +352,32 @@ def install_card_context_size() -> None:
     chat_service.get_model = get_model
 
 
-def attach_memory(workspace, factory=None) -> list:
+def attach_memory(workspace, factory=None, key: str = "") -> list:
     """官方接法：workdir 和 backend 都来自这次运行的 workspace。失败时主聊天继续。
 
     个人记忆只留在这个 workspace，不写入图书馆。
     """
 
-    global _memory_error
+    state_key = key or str(getattr(workspace, "workdir", "") or "memory")
     if factory is None:
         try:
             from agentscope.middleware import AgenticMemoryMiddleware
         except Exception as exc:
-            _memory_error = str(exc)
+            _memory_state[state_key] = str(exc)
             return []
         factory = AgenticMemoryMiddleware
     try:
         middleware = factory(workdir=workspace.workdir, backend=workspace.get_backend())
     except Exception as exc:
-        _memory_error = str(exc)
+        _memory_state[state_key] = str(exc)
         return []
-    _memory_error = ""
-    return [middleware]
+    _memory_state.pop(state_key, None)
+    return [GuardedMemory(middleware, state_key)]
 
 
 async def memory_middlewares(user_id: str, agent_id: str, session_id: str, workspace) -> list:
-    return attach_memory(workspace)
+    workdir = str(getattr(workspace, "workdir", "") or "")
+    return attach_memory(workspace, key=agent_id or workdir)
 
 
 async def write_record_message(storage, message_bus, message, *, user_id: str, session_id: str, keys) -> None:
@@ -415,6 +475,26 @@ def main() -> None:
                 message,
             )
 
+        async def contact_human(conversation_key: str, message: str) -> str:
+            """把一条消息交给人类。同一会话按原来的 delivery_id 投递，不在这里再次推理。
+
+            conversation_key: 这条人和员工会话的键。
+            message: 要送给人类的原文。
+            """
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.post(
+                    f"{nexus_api}/api/v1/im/contacts",
+                    json={
+                        "agent_id": agent_id,
+                        "conversation_key": conversation_key,
+                        "session_id": session_id,
+                        "body": message,
+                    },
+                )
+            if response.status_code >= 400:
+                return response.text
+            return str(response.json().get("delivery_id") or "")
+
         return [
             FunctionTool(
                 contact_employee,
@@ -423,7 +503,15 @@ def main() -> None:
                     behavior=PermissionBehavior.ALLOW,
                     message="允许数字员工联系同事",
                 ),
-            )
+            ),
+            FunctionTool(
+                contact_human,
+                name="contact_human",
+                permission=PermissionDecision(
+                    behavior=PermissionBehavior.ALLOW,
+                    message="允许数字员工联系人类",
+                ),
+            ),
         ]
 
     app = create_app(
@@ -453,8 +541,8 @@ def main() -> None:
     register_record_message(app, storage, message_bus, MessageBusKeys, Msg)
 
     @app.get("/nexus/memory-status")
-    async def nexus_memory_status() -> dict[str, str | bool]:
-        return memory_status()
+    async def nexus_memory_status(key: str = "") -> dict[str, str | bool | dict]:
+        return memory_status(key or None)
     uvicorn.run(app, host=listen_host, port=listen_port)
 
 

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS messages (
     text TEXT NOT NULL,
     attachments_json TEXT NOT NULL,
     accepted INTEGER NOT NULL DEFAULT 0,
+    speaker_uid TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS channels (
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS im_events (
     employee_id TEXT NOT NULL,
     session_id TEXT NOT NULL DEFAULT '',
     accepted INTEGER NOT NULL DEFAULT 0,
+    claim_token TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (provider, event_id)
 );
 CREATE TABLE IF NOT EXISTS im_bindings (
@@ -117,6 +119,7 @@ CREATE TABLE IF NOT EXISTS im_outbox (
     session_id TEXT NOT NULL,
     body TEXT NOT NULL,
     state TEXT NOT NULL,
+    lease_until TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS peer_deliveries (
@@ -147,6 +150,8 @@ def init_db(path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
         if "accepted" not in columns:
             connection.execute("ALTER TABLE messages ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0")
+        if "speaker_uid" not in columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN speaker_uid TEXT NOT NULL DEFAULT ''")
         conversation_columns = {row[1] for row in connection.execute("PRAGMA table_info(conversations)")}
         if "kind" not in conversation_columns:
             connection.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'private'")
@@ -175,6 +180,12 @@ def init_db(path: Path) -> None:
             connection.execute(
                 "ALTER TABLE channel_members ADD COLUMN last_delivered_message_id TEXT NOT NULL DEFAULT ''"
             )
+        event_columns = {row[1] for row in connection.execute("PRAGMA table_info(im_events)")}
+        if "claim_token" not in event_columns:
+            connection.execute("ALTER TABLE im_events ADD COLUMN claim_token TEXT NOT NULL DEFAULT ''")
+        outbox_columns = {row[1] for row in connection.execute("PRAGMA table_info(im_outbox)")}
+        if "lease_until" not in outbox_columns:
+            connection.execute("ALTER TABLE im_outbox ADD COLUMN lease_until TEXT NOT NULL DEFAULT ''")
 
 
 def new_id(prefix: str) -> str:
@@ -218,6 +229,7 @@ def message_from_row(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "sender": row["sender"],
+        "speaker": row["speaker_uid"] if "speaker_uid" in row.keys() else "",
         "text": row["text"],
         "attachments": _loads(row["attachments_json"]),
         "accepted": bool(row["accepted"]),

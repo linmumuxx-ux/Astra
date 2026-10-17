@@ -36,7 +36,18 @@ def employee_body(**overrides):
 
 
 def test_backlog_keeps_original_ids_until_the_cursor_moves():
-    history = [{"id": "m1", "text": "先说一件事"}, {"id": "m2", "text": "@星河 接着看"}]
+    history = [
+        {
+            "id": "m1",
+            "text": "先说一件事",
+            "speaker_uid": "u-old",
+            "content": [
+                {"type": "text", "text": "先说一件事"},
+                {"type": "data", "name": "a.png"},
+            ],
+        },
+        {"id": "m2", "text": "@星河 接着看"},
+    ]
     assert [item["id"] for item in messages_since(history, "")] == ["m1", "m2"]
     payload = chat_inputs(
         history,
@@ -45,12 +56,15 @@ def test_backlog_keeps_original_ids_until_the_cursor_moves():
         current_content=[{"type": "text", "text": "@星河 接着看\n\n文件正文"}],
     )
     assert [item["id"] for item in payload] == ["m1", "m2"]
-    assert payload[0]["content"] == [{"type": "text", "text": "先说一件事"}]
+    assert payload[0]["name"] == "u-old"
+    assert payload[0]["metadata"]["verified_uid"] == "u-old"
+    assert payload[0]["content"][1]["name"] == "a.png"
     assert payload[0]["metadata"]["display_text"] == "先说一件事"
     assert payload[1]["metadata"]["verified_uid"] == "u1"
     assert payload[1]["metadata"]["display_text"] == "@星河 接着看"
     assert payload[1]["content"][0]["text"].endswith("文件正文")
     assert [item["id"] for item in messages_since(history, "m2")] == []
+    assert messages_since(history, "missing") == []
 
 
 def test_timeline_dedupes_humans_and_team_hints_and_pages():
@@ -140,6 +154,36 @@ def test_timeline_dedupes_humans_and_team_hints_and_pages():
     assert mailbox["session_id"] not in {item["session_id"] for item in team_only["items"]}
 
 
+def test_timeline_includes_the_employees_own_reply():
+    streams = [
+        {
+            "session_id": "ses-a",
+            "label": "星河",
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "name": "u-old",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "metadata": {"display_text": "问一句"},
+                    "content": [{"type": "text", "text": "问一句"}],
+                },
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "created_at": "2026-01-01T00:00:01+00:00",
+                    "content": [{"type": "text", "text": "答完了"}],
+                },
+            ],
+        }
+    ]
+    page = merge_timeline(streams)
+    assert [(item["kind"], item["speaker"], item["text"]) for item in page["items"]] == [
+        ("human", "u-old", "问一句"),
+        ("reply", "星河", "答完了"),
+    ]
+
+
 def test_human_event_skips_the_sender():
     events = HumanEvents()
     sender = events.subscribe("ch", "u1")
@@ -211,6 +255,277 @@ def test_channel_mention_replays_the_unmentioned_line_with_its_id(tmp_path, monk
         assert [item["id"] for item in calls[1]["input"]] == [again.json()["message"]["id"]]
         listed = test_client.get(f"/api/v1/channels/{channel['id']}/messages").json()["messages"]
         assert [item["text"] for item in listed] == ["先说一件事", "@星河 那件事怎么样", "@星河 再追问"]
+
+
+def test_channel_edit_keeps_the_cursor_speakers_and_attachments(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['agent_id']}-{body['name']}"})
+        if request.url.path == "/nexus/record-message":
+            return httpx.Response(200, json={"ok": True})
+        if request.url.path == "/chat/":
+            calls.append(json.loads(request.content.decode()))
+            return httpx.Response(200, json={"status": "started", "session_id": "ignored"})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    with TestClient(create_app()) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        star = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        zhi = test_client.post(
+            "/api/v1/employees",
+            json=employee_body(name="知微", domain="防线运营人员"),
+        ).json()["employee"]
+        channel = test_client.post(
+            "/api/v1/channels",
+            json={"name": "版本交付", "description": "群", "member_ids": [star["id"]]},
+        ).json()
+        uploaded = test_client.post(
+            "/api/v1/attachments",
+            headers={"X-Verified-UID": "u-old"},
+            files={"file": ("note.txt", b"OLD-NOTE", "text/plain")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        quiet = test_client.post(
+            f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Verified-UID": "u-old"},
+            json={"text": "先说一件事", "attachment_ids": [uploaded.json()["id"]]},
+        )
+        assert quiet.status_code == 200, quiet.text
+        asked = test_client.post(
+            f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Verified-UID": "u1"},
+            json={"text": "@星河 那件事怎么样"},
+        )
+        assert asked.status_code == 200, asked.text
+        first = calls[0]["input"]
+        assert first[0]["name"] == "u-old"
+        assert first[0]["metadata"]["verified_uid"] == "u-old"
+        assert any("OLD-NOTE" in block.get("text", "") for block in first[0]["content"])
+        assert first[1]["name"] == "u1"
+        assert not any("OLD-NOTE" in block.get("text", "") for block in first[1]["content"])
+        edited = test_client.patch(
+            f"/api/v1/channels/{channel['id']}",
+            json={
+                "name": "版本交付",
+                "description": "改过的目标",
+                "member_ids": [star["id"], zhi["id"]],
+            },
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["created_at"] == channel["created_at"]
+        from nexus_api.db import connect
+
+        connection = connect(tmp_path / "nexus.sqlite3")
+        cursors = {
+            row["employee_id"]: row["last_delivered_message_id"]
+            for row in connection.execute(
+                "SELECT employee_id, last_delivered_message_id FROM channel_members WHERE channel_id = ?",
+                (channel["id"],),
+            )
+        }
+        connection.close()
+        assert cursors[star["id"]] == asked.json()["message"]["id"]
+        assert cursors[zhi["id"]] == ""
+        again = test_client.post(
+            f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Verified-UID": "u2"},
+            json={"text": "@星河 再追问"},
+        )
+        assert [item["id"] for item in calls[1]["input"]] == [again.json()["message"]["id"]]
+        assert calls[1]["input"][0]["name"] == "u2"
+        wider = test_client.post(
+            f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Verified-UID": "u1"},
+            json={"text": "@知微 你也看"},
+        )
+        backlog = calls[2]["input"]
+        assert wider.status_code == 200, wider.text
+        assert [item["name"] for item in backlog] == ["u-old", "u1", "u2", "u1"]
+        assert any("OLD-NOTE" in block.get("text", "") for block in backlog[0]["content"])
+        assert not any("OLD-NOTE" in block.get("text", "") for block in backlog[-1]["content"])
+
+
+def test_timeline_merges_replies_and_invited_member_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"session_id": f"session-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "sessions": [
+                        {
+                            "session": {"id": "session-时间线"},
+                            "team": {
+                                "team": {"session_id": "session-时间线"},
+                                "members": [
+                                    {
+                                        "session_id": "session-时间线",
+                                        "agent": {"id": "agent-星河", "name": "星河"},
+                                    },
+                                    {
+                                        "session_id": "team-peer",
+                                        "agent": {"id": "agent-知微", "name": "知微"},
+                                    },
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+        if request.method == "GET" and request.url.path.endswith("/messages"):
+            if request.url.path == "/sessions/team-peer/messages":
+                return httpx.Response(
+                    200,
+                    json={
+                        "messages": [
+                            {
+                                "id": "peer-1",
+                                "role": "assistant",
+                                "created_at": "2099-01-01T00:00:02+00:00",
+                                "content": [{"type": "text", "text": "同事补充"}],
+                            }
+                        ],
+                        "has_more": False,
+                    },
+                )
+            if "时间线" in request.url.path and "记录" not in request.url.path:
+                return httpx.Response(
+                    200,
+                    json={
+                        "messages": [
+                            {
+                                "id": "reply-1",
+                                "role": "assistant",
+                                "created_at": "2099-01-01T00:00:01+00:00",
+                                "content": [{"type": "text", "text": "我看过了"}],
+                            }
+                        ],
+                        "has_more": False,
+                    },
+                )
+            return httpx.Response(200, json={"messages": [], "has_more": False})
+        if request.url.path == "/nexus/record-message":
+            return httpx.Response(200, json={"ok": True})
+        if request.url.path == "/chat/":
+            return httpx.Response(200, json={"status": "started", "session_id": "ignored"})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    with TestClient(create_app()) as test_client:
+        test_client.app.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        star = test_client.post("/api/v1/employees", json=employee_body()).json()["employee"]
+        channel = test_client.post(
+            "/api/v1/channels",
+            json={"name": "时间线", "description": "群", "member_ids": [star["id"]]},
+        ).json()
+        asked = test_client.post(
+            f"/api/v1/channels/{channel['id']}/messages",
+            headers={"X-Verified-UID": "u-old"},
+            json={"text": "@星河 先问一下"},
+        )
+        assert asked.status_code == 200, asked.text
+        page = test_client.get(f"/api/v1/channels/{channel['id']}/timeline")
+        assert page.status_code == 200, page.text
+        rows = [(item["kind"], item["speaker"], item["text"]) for item in page.json()["items"]]
+        assert ("human", "u-old", "@星河 先问一下") in rows
+        assert ("reply", "星河", "我看过了") in rows
+        assert ("reply", "知微", "同事补充") in rows
+
+
+def test_member_session_is_created_once_under_the_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    member_creates: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            return httpx.Response(201, json={"agent_id": f"agent-{body['name']}"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            body = json.loads(request.content.decode())
+            if body.get("name") == "并发群":
+                member_creates.append(body["name"])
+                entered.set()
+                await release.wait()
+            return httpx.Response(201, json={"session_id": f"session-{body['name']}"})
+        if request.url.path == "/nexus/record-message":
+            return httpx.Response(200, json={"ok": True})
+        if request.url.path == "/chat/":
+            return httpx.Response(200, json={"status": "started", "session_id": "ignored"})
+        if request.method == "PATCH":
+            return httpx.Response(200, json={})
+        if request.url.path == "/skill":
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json={})
+
+    async def scenario():
+        application = create_app()
+        async with application.router.lifespan_context(application):
+            application.state.agentscope = AgentScopeClient(
+                "http://agentscope.test",
+                "nexus",
+                httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+            )
+            transport = httpx.ASGITransport(app=application)
+            async with httpx.AsyncClient(transport=transport, base_url="http://nexus.test") as client:
+                employee = (await client.post("/api/v1/employees", json=employee_body())).json()["employee"]
+                channel = (
+                    await client.post(
+                        "/api/v1/channels",
+                        json={"name": "并发群", "description": "群", "member_ids": [employee["id"]]},
+                    )
+                ).json()
+
+                async def mention():
+                    return await client.post(
+                        f"/api/v1/channels/{channel['id']}/messages",
+                        headers={"X-Verified-UID": "u1"},
+                        json={"text": "@星河 一起看"},
+                    )
+
+                first = asyncio.create_task(mention())
+                second = None
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=3)
+                    second = asyncio.create_task(mention())
+                    await asyncio.sleep(0.05)
+                    assert member_creates == ["并发群"]
+                finally:
+                    release.set()
+                assert second is not None
+                followed = await asyncio.wait_for(second, timeout=3)
+                led = await asyncio.wait_for(first, timeout=3)
+                assert led.status_code == 200, led.text
+                assert followed.status_code == 200, followed.text
+                assert member_creates == ["并发群"]
+
+    asyncio.run(scenario())
 
 
 def test_running_record_session_rejects_without_a_chat(tmp_path, monkeypatch):

@@ -58,29 +58,55 @@ def test_memory_uses_the_workspace_and_a_failure_stays_out_of_the_chat():
         def get_backend(self):
             return f"backend:{self.workdir}"
 
-    missing = asyncio.run(module.memory_middlewares("nexus", "a", "s1", Workspace("/ws/u1")))
+    missing = asyncio.run(module.memory_middlewares("nexus", "agent-a", "s1", Workspace("/ws/u1")))
     assert missing == []
-    assert module.memory_status()["ok"] is False
+    assert module.memory_status("agent-a")["status"] == "degraded"
+    assert module.memory_status("agent-b")["ok"] is True
 
     def capture(*, workdir, backend):
         return Middleware(workdir=workdir, backend=backend)
 
-    one = module.attach_memory(Workspace("/ws/u1"), capture)
-    other = module.attach_memory(Workspace("/ws/u2"), capture)
+    one = module.attach_memory(Workspace("/ws/u1"), capture, key="agent-a")
+    other = module.attach_memory(Workspace("/ws/u2"), capture, key="agent-b")
     assert one[0].workdir == "/ws/u1"
     assert other[0].workdir == "/ws/u2"
     assert one[0].backend == "backend:/ws/u1"
     assert other[0].backend == "backend:/ws/u2"
     assert one[0].workdir != other[0].workdir
-    assert module.memory_status()["ok"] is True
+    assert module.memory_status("agent-a")["ok"] is True
 
     def broken(*, workdir, backend):
         raise RuntimeError("记忆组件不可用")
 
-    assert module.attach_memory(Workspace("/ws/u1"), broken) == []
-    status = module.memory_status()
-    assert status["ok"] is False
+    assert module.attach_memory(Workspace("/ws/u1"), broken, key="agent-a") == []
+    status = module.memory_status("agent-a")
+    assert status["status"] == "degraded"
     assert "记忆组件不可用" in status["error"]
+    assert module.memory_status("agent-b")["ok"] is True
+
+    class Hook:
+        def __init__(self, *, workdir, backend) -> None:
+            self.workdir = workdir
+
+        async def on_system_prompt(self, agent, current_prompt: str) -> str:
+            raise RuntimeError("hook failed")
+
+        async def on_reply(self, agent, input_kwargs, next_handler):
+            raise RuntimeError("hook failed")
+            yield None
+
+    guarded = module.attach_memory(Workspace("/ws/hook"), lambda **kwargs: Hook(**kwargs), key="agent-hook")
+    assert asyncio.run(guarded[0].on_system_prompt(None, "原来的提示")) == "原来的提示"
+
+    async def next_handler(**_kwargs):
+        yield "继续"
+
+    async def collect():
+        return [item async for item in guarded[0].on_reply(None, {}, next_handler)]
+
+    assert asyncio.run(collect()) == ["继续"]
+    assert module.memory_status("agent-hook")["status"] == "degraded"
+    assert module.memory_status("agent-b")["status"] == "ok"
 
 
 def test_private_workspaces_stay_apart_and_rebind_keeps_the_workspace(tmp_path, monkeypatch):

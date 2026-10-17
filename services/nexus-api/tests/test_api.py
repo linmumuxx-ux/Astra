@@ -498,7 +498,7 @@ def test_connected_catalog_accepts_only_returned_resources(tmp_path, monkeypatch
         tools = test_client.get("/api/v1/tools").json()
         assert tools["available"] is True
         tool_ids = {item["id"] for item in tools["items"]}
-        assert {"Bash", "contact_employee"} <= tool_ids
+        assert {"Bash", "contact_employee", "contact_human"} <= tool_ids
         assert "query_task" not in tool_ids
         assert "TeamSay" not in tool_ids
         knowledge = test_client.get("/api/v1/knowledge").json()
@@ -1197,6 +1197,7 @@ def test_peer_toolkit_drops_team_and_task_tools_but_keeps_contact():
     assert "ToolStop" in toolkit.removed
     assert "ScheduleCreate" in toolkit.removed
     assert "contact_employee" not in toolkit.removed
+    assert "contact_human" not in toolkit.removed
 
 
 def test_launcher_parses_and_does_not_import_agentscope():
@@ -1204,6 +1205,7 @@ def test_launcher_parses_and_does_not_import_agentscope():
     ast.parse(source)
     assert "import agentscope" not in source.split("def main")[0]
     assert "deliver_to_inbox" in source
+    assert "async def contact_human" in source
     assert "IsolationPolicy.PER_SESSION" in source
     assert "without_team_and_task_tools" in source
     assert "TeamCreate(" not in source

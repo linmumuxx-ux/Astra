@@ -11,7 +11,7 @@ import httpx
 PINNED_VERSION = "2.0.10"
 # Linux 上 LocalWorkspace.list_tools 的名称，加上本仓库启动脚本注册的 contact_employee。
 # AgentScope 的 get_toolkit 还会自行挂上任务和团队工具，那些不在这份可选目录里。
-LAUNCHER_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee")
+LAUNCHER_TOOLS = ("Bash", "Edit", "Glob", "Grep", "Read", "Write", "contact_employee", "contact_human")
 
 
 class AgentScopeError(Exception):
@@ -368,6 +368,17 @@ class AgentScopeClient:
                 break
             before = older
         return collected, event_cursor
+
+    async def list_agent_sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        response = await self.request("GET", "/sessions/", params={"agent_id": agent_id})
+        payload = response.json()
+        if isinstance(payload, dict):
+            items = payload.get("sessions") or []
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+        return [item for item in items if isinstance(item, dict)]
 
     async def list_session_messages(self, agent_id: str, session_id: str) -> list[dict[str, Any]]:
         messages, _cursor = await self.read_session(agent_id, session_id)

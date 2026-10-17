@@ -37,6 +37,7 @@ from .im import (
     accept_inbound,
     acknowledge,
     bind_bot,
+    claim_outbox,
     contact_human,
     open_external,
     redeliver,
@@ -115,7 +116,8 @@ class ImGroupBody(BaseModel):
 
 
 class ImContactBody(BaseModel):
-    employee_id: str
+    employee_id: str = ""
+    agent_id: str = ""
     conversation_key: str
     session_id: str
     body: str
@@ -1057,7 +1059,23 @@ def create_app() -> FastAPI:
             )
         return found
 
-    def store_user_message(connection, text: str, attachments: list[dict[str, Any]], **scope: str | None):
+    def attachment_bytes(connection, message: dict[str, Any]) -> list[tuple[str, str, bytes]]:
+        files: list[tuple[str, str, bytes]] = []
+        for item in message.get("attachments") or []:
+            row = connection.execute("SELECT * FROM attachments WHERE id = ?", (item["id"],)).fetchone()
+            if row is None:
+                continue
+            files.append((row["name"], row["media_type"], Path(row["path"]).read_bytes()))
+        return files
+
+    def store_user_message(
+        connection,
+        text: str,
+        attachments: list[dict[str, Any]],
+        *,
+        speaker_uid: str = "",
+        **scope: str | None,
+    ):
         if not text.strip() and not attachments:
             raise HTTPException(status_code=400, detail="请输入消息或添加附件")
         message_id = new_id("msg")
@@ -1069,8 +1087,9 @@ def create_app() -> FastAPI:
         connection.execute(
             """
             INSERT INTO messages (
-                id, conversation_id, channel_id, sender, text, attachments_json, accepted, created_at
-            ) VALUES (?, ?, ?, 'user', ?, ?, 0, ?)
+                id, conversation_id, channel_id, sender, text, attachments_json, accepted,
+                speaker_uid, created_at
+            ) VALUES (?, ?, ?, 'user', ?, ?, 0, ?, ?)
             """,
             (
                 message_id,
@@ -1078,6 +1097,7 @@ def create_app() -> FastAPI:
                 scope.get("channel_id"),
                 text.strip(),
                 json.dumps(visible, ensure_ascii=False),
+                speaker_uid,
                 created_at,
             ),
         )
@@ -1104,6 +1124,54 @@ def create_app() -> FastAPI:
         if permission_mode:
             await client.set_permission_mode(agent_id, session_id, permission_mode)
         return session_id
+
+    async def claim_member_session(connection, client, employee, channel_id: str, name: str) -> str:
+        """群成员会话只绑定还是空的那一行。并发时使用先写入的那一个。"""
+
+        lock_id = f"member:{channel_id}:{employee['id']}"
+        async with await conversation_lock(lock_id):
+            row = connection.execute(
+                """
+                SELECT agentscope_session_id FROM channel_members
+                WHERE channel_id = ? AND employee_id = ?
+                """,
+                (channel_id, employee["id"]),
+            ).fetchone()
+            current = row["agentscope_session_id"] if row is not None else None
+            if current:
+                await client.set_permission_mode(
+                    employee["agentscope_agent_id"],
+                    current,
+                    UNATTENDED_PERMISSION,
+                )
+                return current
+            session_id = await client.create_session(
+                employee["agentscope_agent_id"],
+                name,
+                chat_model_config=await model_for(client, employee),
+                knowledge_base_ids=bound_knowledge(employee),
+            )
+            await client.set_permission_mode(
+                employee["agentscope_agent_id"],
+                session_id,
+                UNATTENDED_PERMISSION,
+            )
+            connection.execute(
+                """
+                UPDATE channel_members SET agentscope_session_id = ?
+                WHERE channel_id = ? AND employee_id = ? AND agentscope_session_id IS NULL
+                """,
+                (session_id, channel_id, employee["id"]),
+            )
+            connection.commit()
+            stored = connection.execute(
+                """
+                SELECT agentscope_session_id FROM channel_members
+                WHERE channel_id = ? AND employee_id = ?
+                """,
+                (channel_id, employee["id"]),
+            ).fetchone()
+            return str(stored["agentscope_session_id"] or session_id) if stored is not None else session_id
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -1691,27 +1759,37 @@ def create_app() -> FastAPI:
     @app.patch("/api/v1/channels/{channel_id}")
     def update_channel(channel_id: str, body: ChannelBody, connection=Depends(database)) -> dict[str, Any]:
         channel_payload(connection, channel_id)
+        before = connection.execute("SELECT created_at FROM channels WHERE id = ?", (channel_id,)).fetchone()
         member_ids = ensure_members_exist(connection, body.member_ids)
         connection.execute(
             "UPDATE channels SET name = ?, description = ?, updated_at = ? WHERE id = ?",
             (body.name.strip(), body.description.strip(), utcnow(), channel_id),
         )
         existing = {
-            row["employee_id"]: row["agentscope_session_id"]
+            row["employee_id"]: (row["agentscope_session_id"], row["last_delivered_message_id"])
             for row in connection.execute(
-                "SELECT employee_id, agentscope_session_id FROM channel_members WHERE channel_id = ?",
+                """
+                SELECT employee_id, agentscope_session_id, last_delivered_message_id
+                FROM channel_members WHERE channel_id = ?
+                """,
                 (channel_id,),
             ).fetchall()
         }
         connection.execute("DELETE FROM channel_members WHERE channel_id = ?", (channel_id,))
         for member_id in member_ids:
+            session_id, cursor = existing.get(member_id, (None, ""))
             connection.execute(
                 """
-                INSERT INTO channel_members (channel_id, employee_id, agentscope_session_id)
-                VALUES (?, ?, ?)
+                INSERT INTO channel_members (
+                    channel_id, employee_id, agentscope_session_id, last_delivered_message_id
+                ) VALUES (?, ?, ?, ?)
                 """,
-                (channel_id, member_id, existing.get(member_id)),
+                (channel_id, member_id, session_id, cursor or ""),
             )
+        connection.execute(
+            "UPDATE channels SET created_at = ? WHERE id = ?",
+            (before["created_at"], channel_id),
+        )
         connection.commit()
         return channel_payload(connection, channel_id)
 
@@ -1839,6 +1917,7 @@ def create_app() -> FastAPI:
             connection,
             body.text,
             attachments,
+            speaker_uid=speaker if speaker != "user" else "",
             conversation_id=None,
             channel_id=channel_id,
         )
@@ -1889,6 +1968,12 @@ def create_app() -> FastAPI:
                 (channel_id,),
             ).fetchall()
         ]
+        for item in history:
+            item["speaker_uid"] = item.get("speaker") or ""
+            item["content"] = model_input_blocks(
+                str(item.get("text") or ""),
+                attachment_bytes(connection, item),
+            )
         triggered: list[dict[str, Any]] = []
         for employee in named:
             result = {
@@ -1914,24 +1999,13 @@ def create_app() -> FastAPI:
                 (channel_id, employee["id"]),
             ).fetchone()
             try:
-                session_id = await ensure_session(
+                session_id = await claim_member_session(
                     connection,
                     client,
-                    employee["agentscope_agent_id"],
-                    binding["agentscope_session_id"],
+                    employee,
+                    channel_id,
                     channel["name"],
-                    UNATTENDED_PERMISSION,
-                    await model_for(client, employee),
-                    bound_knowledge(employee),
                 )
-                connection.execute(
-                    """
-                    UPDATE channel_members SET agentscope_session_id = ?
-                    WHERE channel_id = ? AND employee_id = ?
-                    """,
-                    (session_id, channel_id, employee["id"]),
-                )
-                connection.commit()
                 await attach_task_capability(client, employee, session_id, channel_id=channel_id)
                 pending = messages_since(history, binding["last_delivered_message_id"] or "")
                 await client.trigger_inputs(
@@ -2009,30 +2083,51 @@ def create_app() -> FastAPI:
                     {
                         "id": item["id"],
                         "role": "user",
-                        "name": "user",
+                        "name": item.get("speaker") or "user",
                         "created_at": item["created_at"],
                         "content": [{"type": "text", "text": item["text"]}],
+                        "metadata": {
+                            "display_text": item["text"],
+                            "attachments": item.get("attachments") or [],
+                        },
                     }
                     for item in local
                 ],
             }
         ]
+        seen_sessions = {channel_id}
         client = client_of(request)
         if client.configured:
             for member in channel["members"]:
                 session_id = member["agentscope_session_id"]
-                if not session_id:
+                if not session_id or session_id in seen_sessions:
                     continue
                 employee = load_employee(connection, member["employee_id"])
                 if not employee["agentscope_agent_id"]:
                     continue
+                seen_sessions.add(session_id)
                 try:
                     remote = await client.list_session_messages(employee["agentscope_agent_id"], session_id)
                 except AgentScopeError:
-                    continue
+                    remote = []
                 streams.append(
                     {"session_id": session_id, "label": employee["name"], "messages": remote}
                 )
+                try:
+                    views = await client.list_agent_sessions(employee["agentscope_agent_id"])
+                except AgentScopeError:
+                    views = []
+                for peer_session, peer_label, peer_agent in team_peers(views, session_id):
+                    if peer_session in seen_sessions or not peer_agent:
+                        continue
+                    seen_sessions.add(peer_session)
+                    try:
+                        peer_messages = await client.list_session_messages(peer_agent, peer_session)
+                    except AgentScopeError:
+                        continue
+                    streams.append(
+                        {"session_id": peer_session, "label": peer_label, "messages": peer_messages}
+                    )
         bounded = limit if 1 <= limit <= 200 else 50
         return merge_timeline(streams, cursor=cursor, limit=bounded)
 
@@ -2151,30 +2246,15 @@ def create_app() -> FastAPI:
                 if not client.configured:
                     raise HTTPException(status_code=503, detail="AgentScope 未连接，没有生成回复")
                 try:
-                    peer_session = await client.create_session(
-                        employee["agentscope_agent_id"],
+                    peer_session = await claim_member_session(
+                        connection,
+                        client,
+                        employee,
+                        member["channel_id"],
                         channel["name"] if channel is not None else employee["name"],
-                        chat_model_config=await model_for(client, employee),
-                        knowledge_base_ids=bound_knowledge(employee),
                     )
                 except AgentScopeError as exc:
                     raise HTTPException(status_code=503, detail=exc.detail) from exc
-                connection.execute(
-                    """
-                    UPDATE channel_members SET agentscope_session_id = ?
-                    WHERE channel_id = ? AND employee_id = ? AND agentscope_session_id IS NULL
-                    """,
-                    (peer_session, member["channel_id"], employee["id"]),
-                )
-                connection.commit()
-                stored = connection.execute(
-                    """
-                    SELECT agentscope_session_id FROM channel_members
-                    WHERE channel_id = ? AND employee_id = ?
-                    """,
-                    (member["channel_id"], employee["id"]),
-                ).fetchone()
-                peer_session = stored["agentscope_session_id"] or peer_session
             await attach_task_capability(
                 client,
                 employee,
@@ -2261,6 +2341,63 @@ def create_app() -> FastAPI:
     async def im_event(body: ImEventBody, request: Request, connection=Depends(database)) -> dict[str, Any]:
         client = client_of(request)
 
+        async def ensure_private_chat(employee_id: str, owner_id: str) -> str:
+            employee = load_employee(connection, employee_id)
+            existing = connection.execute(
+                """
+                SELECT * FROM conversations
+                WHERE employee_id = ? AND owner_id = ? AND kind = 'private'
+                """,
+                (employee_id, owner_id),
+            ).fetchone()
+            if existing is None:
+                conversation_id = new_id("conv")
+                now = utcnow()
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO conversations (
+                        id, employee_id, owner_id, kind, name, agentscope_session_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'private', '私聊', NULL, ?, ?)
+                    """,
+                    (conversation_id, employee_id, owner_id, now, now),
+                )
+                connection.commit()
+                existing = connection.execute(
+                    """
+                    SELECT * FROM conversations
+                    WHERE employee_id = ? AND owner_id = ? AND kind = 'private'
+                    """,
+                    (employee_id, owner_id),
+                ).fetchone()
+            if existing is None:
+                return ""
+            if existing["agentscope_session_id"]:
+                return existing["agentscope_session_id"]
+            if not client.configured or not employee["agentscope_agent_id"]:
+                return ""
+            conversation_id = existing["id"]
+            async with await conversation_lock(conversation_id):
+                current = connection.execute(
+                    "SELECT * FROM conversations WHERE id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if current["agentscope_session_id"]:
+                    return current["agentscope_session_id"]
+                workspace_id = current["workspace_id"] or f"ws-{conversation_id}"
+                session_id = await client.create_session(
+                    employee["agentscope_agent_id"],
+                    current["name"] or "私聊",
+                    workspace_id,
+                    chat_model_config=await model_for(client, employee),
+                    knowledge_base_ids=bound_knowledge(employee),
+                )
+                await client.set_permission_mode(
+                    employee["agentscope_agent_id"],
+                    session_id,
+                    UNATTENDED_PERMISSION,
+                )
+                return claim_private_session(connection, conversation_id, session_id, workspace_id)
+
         async def accept(employee_id: str, session_id: str, text: str) -> None:
             employee = load_employee(connection, employee_id)
             if not client.configured or not employee["agentscope_agent_id"]:
@@ -2274,7 +2411,7 @@ def create_app() -> FastAPI:
             )
 
         try:
-            return await accept_inbound(
+            result = await accept_inbound(
                 connection,
                 provider=body.provider,
                 event_id=body.event_id,
@@ -2284,19 +2421,41 @@ def create_app() -> FastAPI:
                 accept=accept,
                 external_key=body.external_key,
                 conversation_key=body.conversation_key,
+                ensure_private=ensure_private_chat,
             )
         except ImError as exc:
             raise_im(exc)
         except AgentScopeError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if not result.get("duplicate"):
+            key = body.conversation_key.strip() or body.external_key.strip() or body.sender_uid.strip()
+            employee = load_employee(connection, result["employee_id"])
+            await capture_im_reply(connection, client, employee, result["session_id"], key)
+        return result
+
+    @app.get("/api/v1/im/outbox")
+    def im_outbox(connection=Depends(database)) -> dict[str, str]:
+        item = claim_outbox(connection)
+        if item is None:
+            raise HTTPException(status_code=404, detail="没有待投递的消息")
+        return item
 
     @app.post("/api/v1/im/contacts")
     def im_contact(body: ImContactBody, connection=Depends(database)) -> dict[str, str]:
-        load_employee(connection, body.employee_id)
+        employee_id = body.employee_id.strip()
+        if not employee_id and body.agent_id.strip():
+            row = connection.execute(
+                "SELECT id FROM employees WHERE agentscope_agent_id = ?",
+                (body.agent_id.strip(),),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="没有找到可联系的员工")
+            employee_id = row["id"]
+        load_employee(connection, employee_id)
         try:
             return contact_human(
                 connection,
-                employee_id=body.employee_id,
+                employee_id=employee_id,
                 conversation_key=body.conversation_key,
                 session_id=body.session_id,
                 body=body.body,
@@ -2366,6 +2525,81 @@ def observe_stream_event(
         }
         return started, terminal, started == 0
     return started, None, False
+
+
+def team_peers(views: list[dict[str, Any]], leader_session_id: str) -> list[tuple[str, str, str]]:
+    """AgentInvite 写进 team 的成员会话。leader 自己的会话不重复返回。"""
+
+    found: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for view in views:
+        team = view.get("team") if isinstance(view.get("team"), dict) else {}
+        record = team.get("team") if isinstance(team.get("team"), dict) else {}
+        members = team.get("members") if isinstance(team.get("members"), list) else []
+        session = view.get("session") if isinstance(view.get("session"), dict) else {}
+        related = record.get("session_id") == leader_session_id or session.get("id") == leader_session_id
+        if not related:
+            related = any(
+                isinstance(member, dict) and member.get("session_id") == leader_session_id
+                for member in members
+            )
+        if not related:
+            continue
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            session_id = str(member.get("session_id") or "")
+            if not session_id or session_id == leader_session_id or session_id in seen:
+                continue
+            agent = member.get("agent") if isinstance(member.get("agent"), dict) else {}
+            seen.add(session_id)
+            found.append((session_id, str(agent.get("name") or session_id), str(agent.get("id") or "")))
+    return found
+
+
+async def capture_im_reply(
+    connection,
+    client,
+    employee: dict[str, Any],
+    session_id: str,
+    conversation_key: str,
+) -> None:
+    """IM 触发的这一轮在 REPLY_END 时把助手回复写入 outbox。"""
+
+    agent_id = employee.get("agentscope_agent_id")
+    if not client.configured or not agent_id or not conversation_key or not session_id:
+        return
+    started = 0
+    pending = b""
+    try:
+        async with client.stream_session(agent_id, session_id) as response:
+            if response.status_code >= 400:
+                return
+            async for chunk in response.aiter_bytes():
+                pending += chunk
+                frames, pending = split_sse(pending)
+                for frame in frames:
+                    started, _terminal, close = observe_stream_event(started, sse_payload(frame))
+                    if not close:
+                        continue
+                    messages = await client.list_session_messages(agent_id, session_id)
+                    body = ""
+                    for message in reversed(messages):
+                        if isinstance(message, dict) and message.get("role") == "assistant":
+                            body = block_text(message.get("content"))
+                            if body:
+                                break
+                    if body:
+                        contact_human(
+                            connection,
+                            employee_id=employee["id"],
+                            conversation_key=conversation_key,
+                            session_id=session_id,
+                            body=body,
+                        )
+                    return
+    except AgentScopeError:
+        return
 
 
 def stream_cursor(after: str | None) -> str | None:

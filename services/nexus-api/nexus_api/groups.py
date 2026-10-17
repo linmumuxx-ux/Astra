@@ -18,7 +18,7 @@ def messages_since(messages: list[dict[str, Any]], cursor_id: str) -> list[dict[
     for index, message in enumerate(messages):
         if message.get("id") == cursor_id:
             return messages[index + 1 :]
-    return list(messages)
+    return []
 
 
 def chat_inputs(
@@ -33,13 +33,24 @@ def chat_inputs(
     payload: list[dict[str, Any]] = []
     last = len(messages) - 1
     for index, message in enumerate(messages):
-        content = current_content if index == last else [{"type": "text", "text": message.get("text") or ""}]
+        own = str(message.get("speaker_uid") or message.get("speaker") or "")
+        name = own or speaker or "user"
+        uid = own or verified_uid
+        content = message.get("content")
+        if not content:
+            if index == last:
+                content = current_content
+            else:
+                content = [{"type": "text", "text": message.get("text") or ""}]
         metadata: dict[str, Any] = {"display_text": str(message.get("text") or "")}
-        if verified_uid:
-            metadata["verified_uid"] = verified_uid
+        if uid:
+            metadata["verified_uid"] = uid
+        attachments = message.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            metadata["attachments"] = attachments
         item: dict[str, Any] = {
             "id": message["id"],
-            "name": speaker or "user",
+            "name": name,
             "role": "user",
             "content": content,
             "metadata": metadata,
@@ -125,6 +136,8 @@ def merge_timeline(
                 metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
                 display = metadata.get("display_text")
                 text = display if isinstance(display, str) else _plain_text(message.get("content"))
+                raw_attachments = metadata.get("attachments")
+                attachments = raw_attachments if isinstance(raw_attachments, list) else []
                 rows.append(
                     {
                         "id": message_id,
@@ -133,16 +146,26 @@ def merge_timeline(
                         "kind": "human",
                         "speaker": str(message.get("name") or "user"),
                         "text": text,
+                        "attachments": attachments,
                     }
                 )
                 continue
+            plain: list[str] = []
+            message_id = str(message.get("id") or "")
             for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "hint":
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text = str(block.get("text") or "")
+                    if text:
+                        plain.append(text)
+                    continue
+                if block.get("type") != "hint":
                     continue
                 text = str(block.get("text") or block.get("hint") or "")
                 if "<team-message" not in text:
                     continue
-                hint_id = str(block.get("id") or message.get("id") or "")
+                hint_id = str(block.get("id") or message_id)
                 if not hint_id:
                     continue
                 slot = hints.setdefault(
@@ -160,6 +183,18 @@ def merge_timeline(
                 if (created_at, session_id, hint_id) < (slot["created_at"], slot["session_id"], slot["id"]):
                     slot["created_at"] = created_at
                     slot["session_id"] = session_id
+            if plain and message_id:
+                rows.append(
+                    {
+                        "id": message_id,
+                        "session_id": session_id,
+                        "created_at": created_at,
+                        "kind": "reply",
+                        "speaker": label,
+                        "text": "\n".join(plain),
+                        "attachments": [],
+                    }
+                )
     for hint in hints.values():
         rows.append(
             {

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import new_id, utcnow
+
+LEASE_SECONDS = 30
 
 
 class ImError(Exception):
@@ -70,8 +73,9 @@ async def accept_inbound(
     accept: Callable[..., Any],
     external_key: str = "",
     conversation_key: str = "",
+    ensure_private: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """AgentScope 接受输入之后才把这次入站标成成功。"""
+    """先原子认领事件行。只有认领成功的那一份才调用 accept。"""
 
     provider = provider.strip()
     event_id = event_id.strip()
@@ -84,39 +88,63 @@ async def accept_inbound(
     if bot is None:
         raise ImError("这个员工没有绑定机器人，IM 不可用", 409)
     employee_id = bot["employee_id"]
-    existing = connection.execute(
-        "SELECT * FROM im_events WHERE provider = ? AND event_id = ?",
-        (provider, event_id),
-    ).fetchone()
-    if existing is not None and existing["accepted"]:
-        return {
-            "accepted": True,
-            "duplicate": True,
-            "session_id": existing["session_id"],
-            "employee_id": employee_id,
-        }
-    session_id = _session_for(
-        connection,
-        employee_id,
-        sender_uid.strip(),
-        external_key.strip(),
-        conversation_key.strip(),
-    )
+    sender = sender_uid.strip()
+    external = external_key.strip()
+    thread = conversation_key.strip()
+    session_id = _session_for(connection, employee_id, sender, external, thread)
+    if not session_id and ensure_private is not None and sender and not external and not thread:
+        session_id = await ensure_private(employee_id, sender)
     if not session_id:
         raise ImError("还没有可复用的会话", 409)
+    token = new_id("clm")
     connection.execute(
         """
-        INSERT INTO im_events (provider, event_id, employee_id, session_id, accepted)
-        VALUES (?, ?, ?, ?, 0)
-        ON CONFLICT(provider, event_id) DO UPDATE SET session_id = excluded.session_id
+        INSERT INTO im_events (provider, event_id, employee_id, session_id, accepted, claim_token)
+        VALUES (?, ?, ?, ?, 0, '')
+        ON CONFLICT(provider, event_id) DO NOTHING
         """,
         (provider, event_id, employee_id, session_id),
     )
+    claimed = connection.execute(
+        """
+        UPDATE im_events
+        SET claim_token = ?, session_id = ?, employee_id = ?
+        WHERE provider = ? AND event_id = ? AND accepted = 0 AND claim_token = ''
+        """,
+        (token, session_id, employee_id, provider, event_id),
+    )
     connection.commit()
-    await accept(employee_id, session_id, text)
+    if claimed.rowcount != 1:
+        existing = connection.execute(
+            "SELECT * FROM im_events WHERE provider = ? AND event_id = ?",
+            (provider, event_id),
+        ).fetchone()
+        if existing is not None and existing["accepted"]:
+            return {
+                "accepted": True,
+                "duplicate": True,
+                "session_id": existing["session_id"],
+                "employee_id": employee_id,
+            }
+        raise ImError("这个事件正在处理", 409)
+    try:
+        await accept(employee_id, session_id, text)
+    except Exception:
+        connection.execute(
+            """
+            UPDATE im_events SET claim_token = ''
+            WHERE provider = ? AND event_id = ? AND claim_token = ?
+            """,
+            (provider, event_id, token),
+        )
+        connection.commit()
+        raise
     connection.execute(
-        "UPDATE im_events SET accepted = 1, session_id = ? WHERE provider = ? AND event_id = ?",
-        (session_id, provider, event_id),
+        """
+        UPDATE im_events SET accepted = 1, claim_token = ''
+        WHERE provider = ? AND event_id = ? AND claim_token = ?
+        """,
+        (provider, event_id, token),
     )
     connection.commit()
     return {"accepted": True, "duplicate": False, "session_id": session_id, "employee_id": employee_id}
@@ -142,25 +170,75 @@ def contact_human(
         """,
         (employee_id, conversation_key, session_id),
     )
-    inflight = connection.execute(
-        """
-        SELECT delivery_id FROM im_outbox
-        WHERE conversation_key = ? AND state = 'inflight'
-        """,
-        (conversation_key,),
-    ).fetchone()
     delivery_id = new_id("dlv")
-    state = "queued" if inflight is not None else "inflight"
     connection.execute(
         """
         INSERT INTO im_outbox (
-            delivery_id, employee_id, conversation_key, session_id, body, state, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            delivery_id, employee_id, conversation_key, session_id, body, state, lease_until, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'queued', '', ?)
         """,
-        (delivery_id, employee_id, conversation_key, session_id, body.strip(), state, utcnow()),
+        (delivery_id, employee_id, conversation_key, session_id, body.strip(), utcnow()),
     )
     connection.commit()
-    return {"delivery_id": delivery_id, "state": state, "session_id": session_id}
+    return {"delivery_id": delivery_id, "state": "queued", "session_id": session_id}
+
+
+def claim_outbox(connection, *, lease_seconds: int = LEASE_SECONDS) -> dict[str, str] | None:
+    """认领一条出站。同一条在租约内重试时仍是原来的 delivery_id。"""
+
+    expiry = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
+    current = connection.execute(
+        """
+        SELECT delivery_id FROM im_outbox
+        WHERE state = 'inflight'
+        ORDER BY created_at, delivery_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if current is not None:
+        connection.execute(
+            "UPDATE im_outbox SET lease_until = ? WHERE delivery_id = ? AND state = 'inflight'",
+            (expiry, current["delivery_id"]),
+        )
+        connection.commit()
+        return _outbox_row(connection, current["delivery_id"])
+    candidate = connection.execute(
+        """
+        SELECT delivery_id FROM im_outbox
+        WHERE state = 'queued'
+          AND conversation_key NOT IN (
+            SELECT conversation_key FROM im_outbox WHERE state = 'inflight'
+          )
+        ORDER BY created_at, delivery_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if candidate is None:
+        return None
+    claimed = connection.execute(
+        """
+        UPDATE im_outbox SET state = 'inflight', lease_until = ?
+        WHERE delivery_id = ? AND state = 'queued'
+        """,
+        (expiry, candidate["delivery_id"]),
+    )
+    connection.commit()
+    if claimed.rowcount != 1:
+        return claim_outbox(connection, lease_seconds=lease_seconds)
+    return _outbox_row(connection, candidate["delivery_id"])
+
+
+def _outbox_row(connection, delivery_id: str) -> dict[str, str]:
+    row = connection.execute("SELECT * FROM im_outbox WHERE delivery_id = ?", (delivery_id,)).fetchone()
+    return {
+        "delivery_id": row["delivery_id"],
+        "employee_id": row["employee_id"],
+        "conversation_key": row["conversation_key"],
+        "session_id": row["session_id"],
+        "body": row["body"],
+        "state": row["state"],
+        "lease_until": row["lease_until"],
+    }
 
 
 def acknowledge(connection, delivery_id: str) -> dict[str, str]:
