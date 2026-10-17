@@ -25,7 +25,7 @@ from app.runtime.lifecycle import RuntimeService, RuntimeStateError
 from app.runtime.session_connection import connect, resolve_environment, session_tree
 from app.runtime.workspace_changes import collect_workspace_changes, workspace_diff
 from app.runtime.workspace_files import MAX_UPLOAD, same_workspace_path, upload, validate_path
-from app.schemas import ExecutionStopConfirm, TaskRead
+from app.schemas import ExecutionStopConfirm, RetrySubmission, TaskRead
 
 router = APIRouter(prefix="/api/tasks/{task_id}")
 # Task Workspace capability model: a task-bound, read-only window onto the
@@ -528,10 +528,16 @@ async def native_proxy(
 
 
 @router.post("/retry-submission", response_model=TaskRead)
-async def retry_submission(task_id: str, session=Depends(get_session)):
+async def retry_submission(
+    task_id: str,
+    body: RetrySubmission | None = None,
+    session=Depends(get_session),
+):
     await require_task(task_id, session)
     try:
-        return await RuntimeService(session).retry_submission(task_id)
+        return await RuntimeService(session).retry_submission(
+            task_id, confirm_unknown=bool(body and body.confirm_unknown)
+        )
     except Exception as exc:
         raise error_response(exc) from exc
 

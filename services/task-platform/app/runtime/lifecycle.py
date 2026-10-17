@@ -57,6 +57,7 @@ from app.runtime.session_connection import (
     session_tree,
 )
 from app.runtime.session_state import SessionState, derive_session_state
+from app.runtime.submission import body_fetched_at, get_attempt, mark_body_fetched, put_attempt
 from app.runtime.wake_outbox import record_wake
 from app.runtime.workspace_changes import workspace_head_commit
 from app.runtime.workspace_files import materialize_task_attachments
@@ -490,7 +491,7 @@ class RuntimeService:
             raise RuntimeStateError(str(exc.detail)) from exc
         new_snapshot = environment_snapshot(environment)
         initial_id = message_id()
-        reservation = {"pending_message_id": initial_id}
+        reservation = {"pending_message_id": initial_id, "pending_attempt": 0}
         if restart:
             clear_execution_stop(task)
             reservation.update(
@@ -694,7 +695,7 @@ class RuntimeService:
                     task.submitted_at = None
                     await TaskService(self.session).transition(task, TaskStatus.RUNNING, commit=False)
                 await self.session.commit()
-            return await self.retry_submission(task.id)
+            return await self.deliver_first_submission(task.id)
         except Exception as exc:
             await self.session.rollback()
             definitive_failure = (
@@ -821,15 +822,25 @@ class RuntimeService:
         task.last_message_id = outbound_id
         started = datetime.now(UTC)
         prompt = _arm_in_flight({"action": native_action, "body": body})
+        expected_attempt = task.pending_attempt or 0
+        new_attempt = expected_attempt + 1
+        request_id = f"req_{token_hex(8)}"
+        put_attempt(task, outbound_id, new_attempt, request_id)
         task.pending_prompt = prompt
         task.turn_started_at = started
         reserved = await self.session.execute(
             update(Task)
-            .where(Task.id == task.id, Task.pending_message_id.is_(None))
+            .where(
+                Task.id == task.id,
+                Task.pending_message_id.is_(None),
+                Task.pending_attempt == expected_attempt,
+            )
             .values(
                 pending_message_id=outbound_id,
+                pending_attempt=new_attempt,
                 turn_started_at=started,
                 pending_prompt=prompt,
+                submission_attempts=task.submission_attempts,
                 execution_stop_confirmed_at=None,
                 execution_stop_session_id=None,
                 execution_stop_attempt=None,
@@ -847,6 +858,7 @@ class RuntimeService:
         # A previous abort/timeout must not invalidate its eventual ACK.
         await self._sync_session_state(task, SessionState(status=RuntimeSessionStatus.RUNNING.value))
         await self.session.commit()
+        await self._note_body_fetched(task_id, outbound_id, new_attempt)
 
         try:
             async with connect(environment, start=True) as client:
@@ -926,7 +938,36 @@ class RuntimeService:
             task, SessionState(status=RuntimeSessionStatus.RUNNING.value)
         )
 
-    async def retry_submission(self, task_id):
+    async def _note_body_fetched(self, task_id: str, message_id: str, attempt: int) -> bool:
+        task = await self.lock_task(task_id)
+        if task.pending_message_id != message_id or task.pending_attempt != attempt:
+            await self.session.rollback()
+            return False
+        try:
+            mark_body_fetched(task, message_id, attempt, datetime.now(UTC))
+        except KeyError:
+            await self.session.rollback()
+            raise RuntimeStateError("没有这次提交的请求记录，不能发送") from None
+        await self.session.commit()
+        return True
+
+    async def _all_messages(self, client, directory: Path, session_id: str) -> list[dict]:
+        collected: list[dict] = []
+        before = None
+        seen: set[str] = set()
+        while True:
+            page = await client.messages_page(directory, session_id, limit=100, before=before)
+            batch = list(page.get("messages") or [])
+            collected.extend(batch)
+            cursor = page.get("next_before")
+            if not cursor or cursor in seen or not batch:
+                return collected
+            seen.add(str(cursor))
+            before = cursor
+
+    async def deliver_first_submission(self, task_id: str):
+        """Post the prompt reserved by start(). This is not a human retry."""
+
         task = await self.lock_task(task_id)
         if _task_result_concluded(task):
             await self.session.rollback()
@@ -937,9 +978,100 @@ class RuntimeService:
         if not task.pending_message_id or not task.pending_prompt:
             await self.session.rollback()
             raise RuntimeStateError("没有待确认输入")
+        if task.pending_attempt:
+            await self.session.rollback()
+            raise RuntimeStateError("这次输入已经提交，请人工重试")
         pending_id = task.pending_message_id
-        pending_prompt = _arm_in_flight(_prompt_data(task))
-        task.pending_prompt = pending_prompt
+        expected = task.pending_attempt or 0
+        attempt = expected + 1
+        prompt = _arm_in_flight(_prompt_data(task))
+        clear_execution_stop(task)
+        put_attempt(task, pending_id, attempt, f"req_{token_hex(8)}")
+        claimed = await self.session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.pending_message_id == pending_id,
+                Task.pending_attempt == expected,
+            )
+            .values(
+                pending_attempt=attempt,
+                pending_prompt=prompt,
+                submission_attempts=task.submission_attempts,
+                execution_stop_confirmed_at=None,
+                execution_stop_session_id=None,
+                execution_stop_attempt=None,
+                execution_stop_operator=None,
+                execution_stop_reason=None,
+            )
+        )
+        if claimed.rowcount != 1:
+            await self.session.rollback()
+            raise RuntimeStateError("已有提交正在进行")
+        return await self._transmit_attempt(task, prompt, attempt)
+
+    async def retry_submission(self, task_id: str, *, confirm_unknown: bool = False):
+        """Human retry. Recovery, reconnect, dispatch, heartbeat, and timeout never call this."""
+
+        task = await self.lock_task(task_id)
+        if _task_result_concluded(task):
+            await self.session.rollback()
+            raise RuntimeStateError("任务已结束，不能重试输入")
+        if _cancel_active(task):
+            await self.session.rollback()
+            raise RuntimeStateError("任务正在取消，不能提交新输入")
+        if not task.pending_message_id or not task.pending_prompt or not task.current_session_id:
+            await self.session.rollback()
+            raise RuntimeStateError("没有待确认输入")
+        if _pending_in_flight(task) and not _in_flight_expired(task):
+            await self.session.rollback()
+            raise RuntimeStateError("上次提交仍在途，未到超时，不能重试")
+        pending_id = task.pending_message_id
+        expected = task.pending_attempt or 0
+        record = get_attempt(task, pending_id, expected)
+        if record is None or not record.get("request_id"):
+            await self.session.rollback()
+            raise RuntimeStateError("没有这次提交的请求记录，不能判断是否已发送")
+        fetched = body_fetched_at(task, pending_id, expected)
+        if fetched is not None:
+            limit = get_settings().opencode_control_timeout_seconds
+            ready_at = fetched + timedelta(seconds=limit * 2)
+            if datetime.now(UTC) < ready_at:
+                await self.session.rollback()
+                raise RuntimeStateError("请求体已拉取，结果未知，请等到本地上限和落库余量之后再确认")
+            if not confirm_unknown:
+                await self.session.rollback()
+                raise RuntimeStateError("结果未知，需要再次确认后才能重发")
+        prompt = _arm_in_flight(_prompt_data(task))
+        attempt = expected + 1
+        clear_execution_stop(task)
+        put_attempt(task, pending_id, attempt, f"req_{token_hex(8)}")
+        claimed = await self.session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.pending_message_id == pending_id,
+                Task.pending_attempt == expected,
+            )
+            .values(
+                pending_attempt=attempt,
+                pending_prompt=prompt,
+                submission_attempts=task.submission_attempts,
+                execution_stop_confirmed_at=None,
+                execution_stop_session_id=None,
+                execution_stop_attempt=None,
+                execution_stop_operator=None,
+                execution_stop_reason=None,
+            )
+        )
+        if claimed.rowcount != 1:
+            await self.session.rollback()
+            raise RuntimeStateError("已有提交正在进行")
+        return await self._transmit_attempt(task, prompt, attempt)
+
+    async def _transmit_attempt(self, task: Task, pending_prompt: dict, attempt: int):
+        task_id = task.id
+        pending_id = task.pending_message_id
         session_id = task.current_session_id
         workspace = task.workspace
         environment = await resolve_environment(self.session, task)
@@ -947,27 +1079,40 @@ class RuntimeService:
 
         async with connect(environment, start=True) as client:
             try:
-                messages = await client.messages(Path(workspace), session_id)
-                acknowledged = any(item["info"]["id"] == pending_id for item in messages)
-                sent_now = False
-                if not acknowledged:
-                    await client.request(
-                        "POST",
-                        f"/session/{session_id}/{pending_prompt['action']}",
-                        directory=Path(workspace),
-                        body=pending_prompt["body"],
-                    )
-                    sent_now = True
+                messages = await self._all_messages(client, Path(workspace), session_id)
             except Exception as exc:
-                # start() owns definitive restart failures and still needs the
-                # reservation. Only a cancel in progress settles the attempt here.
+                await self.disconnected(task_id, exc)
+                raise
+            if _message_visible(messages, pending_id):
+                task = await self.lock_task(task_id)
+                if task.pending_message_id == pending_id:
+                    _without_in_flight(task)
+                    await self.session.commit()
+                else:
+                    await self.session.rollback()
+                return await self.refresh(task_id, client=client)
+            sent_now = False
+            try:
+                noted = await self._note_body_fetched(task_id, pending_id, attempt)
+                if not noted:
+                    raise RuntimeStateError("提交已经变化，未重发")
+                await client.request(
+                    "POST",
+                    f"/session/{session_id}/{pending_prompt['action']}",
+                    directory=Path(workspace),
+                    body=pending_prompt["body"],
+                )
+                sent_now = True
+            except Exception as exc:
+                # A failed prompt call can still be settled for cancel. A failed
+                # message read never reaches here and keeps in_flight.
                 current = await self.session.get(Task, task_id)
                 canceling = bool(
                     current and (_cancel_active(current) or current.status == TaskStatus.CANCELED)
                 )
                 if canceling:
                     await self._settle_failed_submission(task_id, pending_id, exc)
-                else:
+                elif not isinstance(exc, RuntimeStateError):
                     task = await self.lock_task(task_id)
                     if task.pending_message_id == pending_id:
                         _without_in_flight(task)
@@ -994,7 +1139,7 @@ class RuntimeService:
             if stale:
                 newer_turn = task.current_session_id == session_id and task.last_message_id != pending_id
                 await self.session.rollback()
-                if not newer_turn and (sent_now or acknowledged):
+                if not newer_turn and sent_now:
                     try:
                         await client.abort(Path(workspace), session_id)
                     except Exception:

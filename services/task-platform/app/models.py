@@ -145,6 +145,7 @@ class Task(RuntimeProjection, Base):
     pending_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     pending_attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     pending_prompt: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    submission_attempts: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     execution_stop_confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     execution_stop_session_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     execution_stop_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)

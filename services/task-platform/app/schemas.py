@@ -231,6 +231,10 @@ class ExecutionStopConfirm(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class RetrySubmission(BaseModel):
+    confirm_unknown: bool = False
+
+
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=240)
     description: str | None = Field(default=None, min_length=1)

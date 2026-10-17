@@ -77,6 +77,10 @@ class NativeServer:
         await self.session(directory, sid)
         return self.sessions[sid]
 
+    async def messages_page(self, directory, sid, *, limit, before=None):
+        messages = await self.messages(directory, sid)
+        return {"messages": messages, "next_before": None}
+
     async def request(self, method, path, *, directory=None, body=None):
         if method == "POST" and path.endswith("/prompt_async"):
             sid = path.split("/")[2]
@@ -273,7 +277,16 @@ async def test_lost_ack_is_reconciled_without_duplicate_prompt(runtime):
     assert r.task.status == "FAILED"  # Transport loss does not assert an execution outcome.
     assert r.task.pending_message_id
     r.native.fail_after_accept = False
-    await r.service.retry_submission("T1")
+    with pytest.raises(RuntimeStateError, match="结果未知"):
+        await r.service.retry_submission("T1")
+    await r.session.refresh(r.task)
+    stamped = {
+        key: {**value, "body_fetched_at": (datetime.now(UTC) - timedelta(seconds=180)).isoformat()}
+        for key, value in r.task.submission_attempts.items()
+    }
+    r.task.submission_attempts = stamped
+    await r.session.commit()
+    await r.service.retry_submission("T1", confirm_unknown=True)
     assert len(r.native.sent) == 1
     assert r.task.pending_prompt is None
     assert r.task.status == "RUNNING"
@@ -383,6 +396,10 @@ async def test_retry_submission_aborts_if_stop_invalidates_inflight_send(runtime
     r.task.pending_prompt = {
         "action": "prompt_async",
         "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    r.task.pending_attempt = 1
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {"request_id": "req_seed_abort", "body_fetched_at": None},
     }
     r.task.status = "FAILED"
     await r.session.commit()
@@ -559,6 +576,10 @@ async def test_retry_submission_converges_when_background_refresh_acks_first(run
     r.task.pending_prompt = {
         "action": "prompt_async",
         "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    r.task.pending_attempt = 1
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {"request_id": "req_seed_ack", "body_fetched_at": None},
     }
     r.task.status = "FAILED"
     await r.session.commit()
@@ -2173,6 +2194,62 @@ async def test_cancel_keeps_worker_until_execution_stops(runtime, monkeypatch):
         await r.service.stop("T1")
     assert r.task.status == "RUNNING"
     assert employee.current_task_count == 1
+
+
+async def test_human_retry_keeps_inflight_when_message_read_fails(runtime):
+    r = runtime
+    pending_id = "msg_readfail0001"
+    since = (datetime.now(UTC) - timedelta(seconds=180)).isoformat()
+    r.task.pending_message_id = pending_id
+    r.task.pending_attempt = 1
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+        "in_flight": True,
+        "in_flight_since": since,
+    }
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {"request_id": "req_read", "body_fetched_at": None},
+    }
+    await r.session.commit()
+
+    async def broken_page(*_args, **_kwargs):
+        raise ConnectionError("page failed")
+
+    r.native.messages_page = broken_page
+    with pytest.raises(ConnectionError, match="page failed"):
+        await r.service.retry_submission("T1")
+    await r.session.refresh(r.task)
+    assert r.task.pending_prompt["in_flight"] is True
+    assert r.task.pending_prompt["in_flight_since"] != since
+    assert r.task.runtime_connection == "UNAVAILABLE"
+    assert not r.native.sent
+
+
+async def test_human_retry_refuses_without_fetch_evidence(runtime):
+    r = runtime
+    pending_id = "msg_noevidence01"
+    r.task.pending_message_id = pending_id
+    r.task.pending_prompt = {
+        "action": "prompt_async",
+        "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
+    }
+    await r.session.commit()
+    with pytest.raises(RuntimeStateError, match="请求记录"):
+        await r.service.retry_submission("T1")
+    assert not r.native.sent
+
+    r.task.pending_attempt = 1
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {
+            "request_id": "req_fetched",
+            "body_fetched_at": datetime.now(UTC).isoformat(),
+        },
+    }
+    await r.session.commit()
+    with pytest.raises(RuntimeStateError, match="结果未知"):
+        await r.service.retry_submission("T1", confirm_unknown=True)
+    assert not r.native.sent
 
 
 async def test_cancel_does_not_release_worker_until_human_confirms(runtime):

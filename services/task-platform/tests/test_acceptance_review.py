@@ -287,6 +287,10 @@ async def test_delayed_retry_after_cancel_does_not_leave_native_busy(runtime):
         "action": "prompt_async",
         "body": {"messageID": pending_id, "parts": [{"type": "text", "text": "retry"}]},
     }
+    r.task.pending_attempt = 1
+    r.task.submission_attempts = {
+        f"{pending_id}:1": {"request_id": "req_seed_cancel", "body_fetched_at": None},
+    }
     employee = await r.session.get(DigitalEmployee, "E1")
     employee.current_task_count = 1
     employee.status = "WORKING"
