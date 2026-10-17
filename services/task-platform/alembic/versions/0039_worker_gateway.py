@@ -1,7 +1,8 @@
 """Worker 实例、连接纪元和已持久化的控制指令。
 
 Worker 身份独立于数字员工。token 只存摘要。epoch 单调递增，旧连接行改为 superseded。
-指令在投递前写入 worker_commands。downgrade 删除这三张表。
+指令在投递前写入 worker_commands，并带上投递次数、发布状态和最近投递时间。
+downgrade 删除这三张表。
 """
 
 import sqlalchemy as sa
@@ -68,6 +69,15 @@ def upgrade():
         sa.Column("result", sa.JSON(), nullable=True),
         sa.Column("error_code", sa.String(length=64), nullable=True),
         sa.Column("deadline_at", sa.DateTime(), nullable=True),
+        sa.Column("delivery_attempts", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "delivery_state",
+            sa.String(length=16),
+            nullable=False,
+            server_default="unpublished",
+        ),
+        sa.Column("last_dispatched_at", sa.DateTime(), nullable=True),
+        sa.Column("dispatched_epoch", sa.Integer(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("finished_at", sa.DateTime(), nullable=True),

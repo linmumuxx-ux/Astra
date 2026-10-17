@@ -66,9 +66,7 @@ API 和 Celery 是两个进程，反向隧道字典不能跨进程共享。执�
 
 ## Migration Plan
 
-- 迁移 `0039_worker_gateway` 新增三张表，`down_revision` 为 `0038_gateway_request_lifecycle`。downgrade 删除这三张表。
-- 迁移 `0040_worker_command_delivery` 为已有指令补上投递次数字段，默认 0。downgrade 删除这三列。
-- 迁移 `0041_worker_command_delivery_state` 增加 `delivery_state`，默认 `unpublished`。`delivery_attempts > 0` 的已有行回填为 `published`。downgrade 删除这一列。
+- 迁移 `0039_worker_gateway` 创建三张表，`down_revision` 为 `0038_gateway_request_lifecycle`。`worker_commands` 直接包含 `delivery_attempts`（默认 0）、`delivery_state`（默认 `unpublished`）、`last_dispatched_at` 和 `dispatched_epoch`。downgrade 删除这三张表。
 - 不回填历史执行环境。没有登记的环境继续走 SSH。
 - 不修改 `fix-session-task-state` 的数据或语义。
 
