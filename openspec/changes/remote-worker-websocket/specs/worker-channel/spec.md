@@ -61,3 +61,53 @@ The Worker Agent MUST reconnect with backoff after a socket failure and MUST NOT
 #### Scenario: Reconnect keeps the restart count
 - **WHEN** the socket closes and the agent connects again
 - **THEN** the new session receives a new epoch and the process restart count stays unchanged
+
+### Requirement: OpenCode HTTP uses a worker-initiated data channel
+For an environment that already has a Worker instance, Nexus MUST send OpenCode calls as `http` commands and MUST receive response bodies on `PUT /api/worker-gateway/data/{request_id}`. The Worker MUST open that HTTP call. Nexus MUST NOT dial the Worker, and the response body MUST NOT be placed in a WebSocket frame. The PUT MUST authenticate with the enrollment token and the command epoch. An older epoch MUST be rejected without storing the body. A request body larger than 32 KiB MUST be rejected before publish. A non-stream response larger than 8 MiB MUST fail as `response_too_large`.
+
+#### Scenario: Large response stays off the socket
+- **WHEN** a migrated Worker completes an OpenCode HTTP call
+- **THEN** the WebSocket completion frame contains only the request id, HTTP status, and size, and the body is stored under the data-channel result key
+
+#### Scenario: Stale data upload is rejected
+- **WHEN** a data upload carries an epoch older than the Worker instance
+- **THEN** the upload is rejected and no response body is stored
+
+### Requirement: OpenCode events are sequenced and reconciled
+The Agent MUST assign a per-epoch, per-subscription sequence to each OpenCode SSE event and upload it on the data channel. Consumers MUST read the shared event log, not the in-process socket buffer. A gap or an event dropped for size MUST surface as `astra.event_gap` and MUST be repaired by rereading the native Session, messages, questions, and permissions. An event from an older epoch MUST NOT advance the cursor. Reconnect MUST NOT create a Session to fill a gap.
+
+#### Scenario: Gap triggers reconcile
+- **WHEN** the next event sequence skips one or more numbers
+- **THEN** the browser stream receives `astra.event_gap` and recovery rereads the native Session without creating a new one
+
+### Requirement: Reconnect does not resend the last prompt
+`pending_message_id` and `pending_prompt.in_flight` MUST be committed before the OpenCode POST leaves Nexus. After reconnect, Nexus MUST compare that id with the native message list. A visible message MUST clear `in_flight` and MUST NOT be sent again. A failed or timed-out read MUST NOT be treated as proof that OpenCode rejected the prompt. Reconnect MUST NOT create a Session and MUST NOT send the last prompt. An explicit retry MAY resend the same message id only after a successful read shows it is absent and `in_flight` has expired. The Agent MUST NOT persist a side-effect deduplication ledger; its in-memory `request_id` record only collapses duplicate frames inside one process.
+
+#### Scenario: Accepted prompt survives an agent exit
+- **WHEN** OpenCode has stored the pending message id and the Agent exits before uploading the result
+- **THEN** reconnect observes that message, does not send the prompt again, and does not create a Session
+
+### Requirement: Transport faults stay out of task status
+A communication failure MUST set `runtime_connection` to `UNAVAILABLE` and MUST leave `Task.status` unchanged. An execution timeout and an OpenCode session error MUST be projected only through `RuntimeService.apply_session_state()`. Worker Gateway code MUST NOT assign `Task.status`. A migrated environment that loses its socket MUST NOT open an SSH tunnel and MUST NOT run the start script that kills an existing OpenCode process. A WebSocket disconnect MUST NOT restart a healthy OpenCode.
+
+#### Scenario: Disconnect keeps the business status
+- **WHEN** the Worker socket closes during a running task
+- **THEN** the task business status is unchanged, the runtime connection is `UNAVAILABLE`, and no SSH tunnel is opened
+
+### Requirement: Worker occupancy has one predicate
+Start, send, and environment maintenance MUST use one occupancy predicate. An employee is occupied while a task is `RUNNING` or `WAITING`, has `pending_message_id`, is claimed `PENDING`, or is `CANCELED` before execution stop is confirmed. Occupancy MUST end only when the task is `SUCCEEDED`, or when the task is `CANCELED` and both pending fields are clear and the bound session is not `RUNNING`, `WAITING`, or `UNKNOWN`. Socket presence, session idle, and command completion MUST NOT release occupancy. `current_task_count` MUST be written from this predicate and MUST NOT be read as an input to it.
+
+#### Scenario: Session success does not free the worker
+- **WHEN** the native Session has succeeded and the task is still `WAITING` for human confirmation
+- **THEN** the employee remains occupied
+
+#### Scenario: Confirmed cancel releases the worker
+- **WHEN** a canceled task has no pending message or prompt and its session is no longer running, waiting, or unknown
+- **THEN** the employee is not occupied
+
+### Requirement: Command identity includes the session
+The same `request_id` MUST return the stored command only when the Worker, command name, payload, and `session_id` all match. A different `session_id`, including null versus non-null, MUST be rejected with a conflict.
+
+#### Scenario: Same request id on another session conflicts
+- **WHEN** a stored request id is submitted again with a different session id
+- **THEN** the command is rejected and the original row is not returned as a replay

@@ -16,6 +16,8 @@
 
 ## 2. OpenCode API、SSE 与 Session 恢复
 
+实现以 design.md「阶段 2 契约」为准。本轮只锁定契约，下列项仍未实现。
+
 - [ ] 2.1 抽出远程 OpenCode 传输，在线 Worker 走 Gateway 指令，而不是每调用一次 SSH
 - [ ] 2.2 SSE 事件经 Worker 上报后，由 Nexus 转成现有浏览器事件流
 - [ ] 2.3 断线重连后核对原生 Session、消息、问题和权限；不新建 Session，不重发最后一条 Prompt
@@ -26,8 +28,9 @@
 - [ ] 2.8 已迁移环境断线进入通信恢复，不回退 SSH，不运行会杀旧进程的启动脚本
 - [ ] 2.9 ACK 丢失时用持久化的原生消息 ID 决定能否重发
 - [ ] 2.10 把 lifecycle 与 remote_provisioning 的占用判断收成一个入口，沿用 dfc5eab
-- [ ] 2.11 决定幂等身份是否包含 session_id。当前比较不含 session_id
-- [ ] 2.12 有副作用的指令在执行前持久化 Agent 去重，或改为原生消息核对。阶段 1 的去重只在内存
+- [ ] 2.11 幂等身份包含 session_id。相同 request_id 在 Worker、指令名、payload、session_id 不一致时返回 409
+- [ ] 2.12 有副作用的指令用原生消息核对决定能否重发，不新增 Agent 落盘去重账本。内存去重只挡同一进程的重复帧
+- [ ] 2.13 按 design.md「阶段 2 故障测试」覆盖 epoch 乱序、双 owner、发布后崩溃、消费者崩溃、ACK 丢失和事件丢失对账
 
 ## 3. Workspace、文件与 Git
 
