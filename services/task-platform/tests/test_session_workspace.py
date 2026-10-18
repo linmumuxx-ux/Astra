@@ -1356,7 +1356,13 @@ async def test_provider_model_and_config_responses_redact_gateway_keys(runtime, 
                             "key": secret,
                             "options": {"apiKey": secret},
                             "headers": {"authorization": secret},
-                            "models": {"m": {"id": "m", "options": {"apiKey": secret}, "headers": {"secret": secret}}},
+                            "models": {
+                                "m": {
+                                    "id": "m",
+                                    "options": {"apiKey": secret},
+                                    "headers": {"secret": secret},
+                                }
+                            },
                         }
                     ]
                 },

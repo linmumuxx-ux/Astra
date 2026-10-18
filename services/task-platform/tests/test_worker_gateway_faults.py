@@ -262,13 +262,11 @@ async def test_long_directory_subscription_stays_online(environment_id: int):
                 if not line or line in {b"\r\n", b"\n"}:
                     break
             writer.write(
-                (
-                    "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/event-stream\r\n"
-                    "Cache-Control: no-cache\r\n"
-                    "\r\n"
-                    'data: {"type":"server.connected"}\n\n'
-                ).encode()
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"\r\n"
+                b'data: {"type":"server.connected"}\n\n'
             )
             await writer.drain()
             await asyncio.sleep(30)
