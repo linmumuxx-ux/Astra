@@ -1993,6 +1993,74 @@ async def test_diff_stays_redacted_when_remote_connect_fails(runtime, monkeypatc
     assert raw.text == "+echo [redacted]\n"
 
 
+async def test_cold_remote_diff_fails_closed_without_leaking(runtime, monkeypatch):
+    secret = "cold-diff-unredacted-canary"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+    await runtime.session.refresh(runtime.task)
+    status_before = runtime.task.status
+    (runtime.workspace / "notes.txt").write_text(secret + "\n")
+
+    class Hanging:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            await asyncio.sleep(30)
+            return 200, b"{}", {}
+
+    class Stopped:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            raise ConnectionError("opencode stopped")
+
+    clients = {"client": Hanging()}
+
+    @asynccontextmanager
+    async def open_client(*_args, **_kwargs):
+        yield clients["client"]
+
+    calls = {"diff": 0}
+
+    async def fake_diff(*_args, **_kwargs):
+        calls["diff"] += 1
+        return [
+            {
+                "file": "notes.txt",
+                "patch": f"+{secret}\n",
+                "before": "",
+                "after": secret,
+                "additions": 1,
+                "deletions": 0,
+                "status": "added",
+            }
+        ]
+
+    monkeypatch.setattr("app.api.workspace_routes.connect", open_client)
+    monkeypatch.setattr("app.api.workspace_routes.workspace_diff", fake_diff)
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    started = time.perf_counter()
+    hung = await runtime.api.get(base, params={"mode": "git"})
+    assert time.perf_counter() - started < 8
+    assert hung.status_code == 503, hung.text
+    assert secret not in hung.text
+    assert hung.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+
+    clients["client"] = Stopped()
+    for mode in ("git", "task"):
+        for path in (base, base + "/raw"):
+            response = await runtime.api.get(path, params={"mode": mode})
+            assert response.status_code == 503, response.text
+            assert secret not in response.text
+            assert response.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+    assert calls["diff"] == 0
+    file_body = await runtime.api.get(
+        "/api/tasks/T1/opencode/ses_current/file/content",
+        params={"path": "notes.txt"},
+    )
+    assert file_body.status_code == 503, file_body.text
+    assert secret not in file_body.text
+    await runtime.session.refresh(runtime.task)
+    assert runtime.task.status == status_before
+
+
 async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):
     r = runtime
     _init_repo(r.workspace)
@@ -2930,7 +2998,7 @@ async def test_upstream_error_bodies_are_redacted_before_return(runtime, monkeyp
     assert "err-field-token-canary" not in failed.text
     assert secret not in failed.text
     assert failed.json() == {
-        "error": {"nested": [{"message": "kept"}, "[redacted]"], "detail": "failed"}
+        "error": {"nested": [{"message": "kept"}], "detail": "failed"}
     }
     text = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
     assert text.status_code == 502, text.text

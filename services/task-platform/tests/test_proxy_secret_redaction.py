@@ -210,7 +210,7 @@ async def test_sse_redacts_tool_part_canaries_on_both_event_modes(monkeypatch, g
     assert state_input["request"]["headers"] == {"accept": "application/json"}
     assert state_input["request"]["body"] == {"options": {}, "model": "keep-model"}
     assert state_input["nested"] == {"one": {"two": {"name": "kept"}}}
-    assert state_input["args"] == ["keep-arg", "[redacted]", ["inner", "[redacted]"]]
+    assert state_input["args"] == ["keep-arg", ["inner"]]
     assert state_input["copied"] == "[redacted]"
     assert state_input["tokens"] == {
         "input": 12,
@@ -251,9 +251,8 @@ def test_secret_text_inside_strings_and_lists_is_replaced():
     redact_secret_fields(payload, {secret, "public"})
     assert payload["items"] == [
         "keep",
-        "[redacted]",
         "curl -H 'Authorization: Bearer [redacted]'",
-        ["nested-keep", "[redacted]", {}],
+        ["nested-keep", {}],
     ]
     assert payload["note"] == "echo [redacted]"
     assert payload["plain"] == "public"
@@ -316,6 +315,69 @@ def test_new_secret_field_names_redact_without_dropping_token_counts():
     assert payload["title"] == "kept"
 
 
+def _spellings(snake: str, camel: str, concat: str) -> list[str]:
+    pascal = camel[:1].upper() + camel[1:]
+    return [
+        snake,
+        snake.replace("_", "-"),
+        camel,
+        pascal,
+        snake.upper(),
+        concat,
+        concat.upper(),
+    ]
+
+
+def test_concatenated_secret_names_redact_and_usage_fields_stay():
+    names = {
+        "client_secret": ("clientSecret", "clientsecret"),
+        "access_token": ("accessToken", "accesstoken"),
+        "refresh_token": ("refreshToken", "refreshtoken"),
+        "private_key": ("privateKey", "privatekey"),
+        "access_key": ("accessKey", "accesskey"),
+        "x_auth_token": ("xAuthToken", "xauthtoken"),
+        "x_goog_api_key": ("xGoogApiKey", "xgoogapikey"),
+    }
+    payload: dict[str, object] = {}
+    canaries: list[str] = []
+    for snake, (camel, concat) in names.items():
+        for spelling in _spellings(snake, camel, concat):
+            canary = f"canary-{len(canaries):02d}-secret-value"
+            payload[spelling] = canary
+            canaries.append(canary)
+    assert len(canaries) == 49
+    payload.update(
+        {
+            "tokens": {"input": 4, "output": 5},
+            "input_tokens": 4,
+            "inputTokens": 9,
+            "inputtokens": 11,
+            "maxTokens": 100,
+            "output_tokens": 5,
+            "setCacheKey": False,
+            "cache_key": "keep-cache-key",
+            "publicKey": "keep-public-key",
+            "authorizationUrl": "https://example.test/oauth",
+            "title": "kept",
+        }
+    )
+    redact_secret_fields(payload)
+    rendered = json.dumps(payload)
+    for canary in canaries:
+        assert canary not in rendered
+    assert payload["tokens"] == {"input": 4, "output": 5}
+    assert payload["input_tokens"] == 4
+    assert payload["inputTokens"] == 9
+    assert payload["inputtokens"] == 11
+    assert payload["maxTokens"] == 100
+    assert payload["output_tokens"] == 5
+    assert payload["setCacheKey"] is False
+    assert payload["cache_key"] == "keep-cache-key"
+    assert payload["publicKey"] == "keep-public-key"
+    assert payload["authorizationUrl"] == "https://example.test/oauth"
+    assert payload["title"] == "kept"
+
+
 def test_error_json_and_text_bodies_drop_secret_fields_and_values():
     secret = "configured-error-canary-value"
     body = {
@@ -332,7 +394,7 @@ def test_error_json_and_text_bodies_drop_secret_fields_and_values():
     parsed = json.loads(rendered)
     assert parsed == {
         "error": {
-            "nested": [{"message": "kept"}, "[redacted]"],
+            "nested": [{"message": "kept"}],
             "detail": "failed",
         }
     }
@@ -366,7 +428,7 @@ async def test_remote_workspace_loads_secret_values_through_the_connected_client
     assert payload == {
         "copied": "[redacted]",
         "baseURL": "http://127.0.0.1",
-        "items": ["[redacted]", "keep"],
+        "items": ["keep"],
     }
 
 
