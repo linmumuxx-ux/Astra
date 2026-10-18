@@ -21,6 +21,30 @@ os.environ["ASTRA_WORKSPACE_ROOT"] = str(TEST_WORKSPACES)
 
 
 @pytest.fixture(autouse=True)
+def isolate_proxy_secret_cache():
+    from app.api.workspace_routes import clear_proxy_secret_cache
+
+    clear_proxy_secret_cache()
+    yield
+    clear_proxy_secret_cache()
+
+
+@pytest.fixture(autouse=True)
+async def prepare_process_schema():
+    """The process database URL is a fresh file. Create its schema before any lookup.
+
+    Standalone modules such as ``test_waiting_reason`` use their own engine, but
+    ``environment_uses_worker`` still reads ``worker_channel`` through SessionLocal.
+    """
+
+    import app.assistant.models  # noqa: F401 - register assistant tables
+    import app.gateway.models  # noqa: F401 - register gateway tables
+    from app.database import init_database
+
+    await init_database()
+
+
+@pytest.fixture(autouse=True)
 def keep_redis_url_stable():
     """全量跑时，前面的用例清掉缓存或改掉环境变量后，把 Redis URL 还回来。"""
 

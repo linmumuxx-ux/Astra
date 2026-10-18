@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.workspace_routes import redact_secret_fields
+from app.api.workspace_routes import load_proxy_secrets, redact_secret_fields
 from app.database import get_session
 from app.executors.errors import OpenCodeSessionNotFound
 from app.main import app
@@ -1457,7 +1457,10 @@ async def test_v2_model_redacts_options_api_key_copied_into_request_body(runtime
     assert "public" not in models.text
     body = models.json()["data"]
     assert body[0]["request"]["headers"] == {"accept": "application/json"}
-    assert body[0]["request"]["body"] == {"model": "deepseek-v4.1-flash-free"}
+    assert body[0]["request"]["body"] == {
+        "model": "deepseek-v4.1-flash-free",
+        "copied": "[redacted]",
+    }
     assert body[1]["request"]["body"] == {"model": "free-model"}
 
 
@@ -1910,6 +1913,84 @@ async def test_native_vcs_diff_uses_bound_git_without_upstream(runtime):
     assert "-before\n+after" in raw.text
     outside = await runtime.api.get(base, params={"directory": str(repo.parent)})
     assert outside.status_code == 403
+
+
+@pytest.mark.parametrize("mode", ["git", "task"])
+async def test_vcs_diff_redacts_configured_secrets_in_file_text(runtime, mode):
+    secret = "diff-workspace-file-canary"
+    repo = runtime.workspace
+    _init_repo(repo)
+    (repo / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": secret}}}}),
+        encoding="utf-8",
+    )
+    (repo / "notes.txt").write_text(f"echo {secret}\ncurl -H 'Authorization: Bearer {secret}'\n")
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    response = await runtime.api.get(base, params={"mode": mode})
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    notes = next(item for item in response.json() if item["file"] == "notes.txt")
+    assert notes["after"] == "echo [redacted]\ncurl -H 'Authorization: Bearer [redacted]'\n"
+    assert "[redacted]" in notes["patch"]
+    assert secret not in notes["patch"]
+    raw = await runtime.api.get(base + "/raw", params={"mode": mode})
+    assert raw.status_code == 200, raw.text
+    assert raw.headers["content-type"].startswith("text/x-diff")
+    assert secret not in raw.text
+    assert "echo [redacted]" in raw.text
+    assert "Authorization: Bearer [redacted]" in raw.text
+
+
+async def test_diff_stays_redacted_when_remote_connect_fails(runtime, monkeypatch):
+    secret = "diff-cached-remote-canary"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+
+    class Client:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            if path == "/config":
+                payload = {"provider": {"astra-gateway": {"options": {"apiKey": secret}}}}
+                return 200, json.dumps(payload).encode(), {}
+            return 200, b"{}", {}
+
+    seeded = await load_proxy_secrets(
+        binding.workspace,
+        SimpleNamespace(mode="LINUX_REMOTE", id=runtime.environment.id, worker_epoch=0),
+        Client(),
+    )
+    assert secret in seeded
+
+    @asynccontextmanager
+    async def fail_connect(*_args, **_kwargs):
+        raise ConnectionError("opencode health failed")
+        yield
+
+    async def fake_diff(*_args, **_kwargs):
+        return [
+            {
+                "file": "notes.txt",
+                "patch": f"+echo {secret}\n",
+                "before": "",
+                "after": f"curl -H 'Authorization: Bearer {secret}'\n",
+                "additions": 1,
+                "deletions": 0,
+                "status": "added",
+            }
+        ]
+
+    monkeypatch.setattr("app.api.workspace_routes.connect", fail_connect)
+    monkeypatch.setattr("app.api.workspace_routes.workspace_diff", fake_diff)
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    response = await runtime.api.get(base, params={"mode": "git"})
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert response.json()[0]["after"] == "curl -H 'Authorization: Bearer [redacted]'\n"
+    assert response.json()[0]["patch"] == "+echo [redacted]\n"
+    raw = await runtime.api.get(base + "/raw", params={"mode": "git"})
+    assert raw.status_code == 200, raw.text
+    assert secret not in raw.text
+    assert raw.text == "+echo [redacted]\n"
 
 
 async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):
@@ -2758,3 +2839,211 @@ async def test_restart_clears_execution_stop_confirmation(runtime):
     assert r.task.execution_stop_confirmed_at is None
     assert r.task.current_session_id != "ses_current"
     assert employee.current_task_count == 1
+
+
+async def test_remote_worker_redacts_configured_secret_values(runtime, monkeypatch):
+    """The workspace lives on the Worker. Value redaction still uses OpenCode config."""
+
+    canary = "remote-worker-api-key-canary"
+    runtime.environment.worker_channel = "worker"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.workspace = "/srv/worker/task"
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    runtime.task.workspace = "/srv/worker/task"
+    await runtime.session.commit()
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"provider": {"astra-gateway": {"options": {"apiKey": canary, "baseURL": "http://gw"}}}},
+            )
+        if request.url.path == "/global/config":
+            return httpx.Response(200, json={})
+        if request.url.path == "/api/model":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "opencode/keep",
+                            "request": {"body": {"copied": canary, "model": "keep-model"}},
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
+    assert models.status_code == 200, models.text
+    assert canary not in models.text
+    assert models.json()["data"][0]["request"]["body"] == {
+        "copied": "[redacted]",
+        "model": "keep-model",
+    }
+    assert models.json()["data"][0]["id"] == "opencode/keep"
+
+
+async def test_upstream_error_bodies_are_redacted_before_return(runtime, monkeypatch):
+    secret = "upstream-error-body-canary"
+    (runtime.workspace / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": secret}}}}),
+        encoding="utf-8",
+    )
+    original = httpx.AsyncClient
+    calls = {"n": 0}
+
+    def upstream(_request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "apiKey": "err-field-api-key-canary",
+                        "nested": [
+                            {"token": "err-field-token-canary", "message": "kept"},
+                            secret,
+                        ],
+                        "detail": "failed",
+                    }
+                },
+            )
+        return httpx.Response(
+            502,
+            text=f"gateway rejected {secret}",
+            headers={"content-type": "text/plain"},
+        )
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    failed = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert failed.status_code == 400, failed.text
+    assert "err-field-api-key-canary" not in failed.text
+    assert "err-field-token-canary" not in failed.text
+    assert secret not in failed.text
+    assert failed.json() == {
+        "error": {"nested": [{"message": "kept"}, "[redacted]"], "detail": "failed"}
+    }
+    text = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert text.status_code == 502, text.text
+    assert secret not in text.text
+    assert text.text == "gateway rejected [redacted]"
+
+
+async def test_message_history_redacts_secret_names_and_embedded_values(runtime, monkeypatch):
+    """Successful session history is redacted even though it is not a config path."""
+
+    configured = "history-config-api-key-canary"
+    field = "history-field-api-key-canary"
+    (runtime.workspace / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": configured}}}}),
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        seen.append(request.url.path)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "info": {
+                        "id": "msg_user",
+                        "role": "user",
+                        "tokens": {
+                            "input": 8,
+                            "output": 1,
+                            "reasoning": 0,
+                            "cache": {"read": 0, "write": 0},
+                        },
+                        "input_tokens": 8,
+                        "output_tokens": 1,
+                    },
+                    "parts": [{"type": "text", "text": f"user prompt {configured} please"}],
+                },
+                {
+                    "info": {"id": "msg_asst", "role": "assistant", "apiKey": field},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "state": {
+                                "input": {"command": f"curl -H 'Authorization: Bearer {configured}'"},
+                                "output": f"echo {configured}",
+                            },
+                        }
+                    ],
+                },
+            ],
+        )
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    history = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert history.status_code == 200, history.text
+    assert configured not in history.text
+    assert field not in history.text
+    assert "/config" not in seen
+    body = history.json()
+    assert body[0]["parts"][0]["text"] == "user prompt [redacted] please"
+    assert body[0]["info"]["tokens"]["input"] == 8
+    assert body[0]["info"]["input_tokens"] == 8
+    assert body[0]["info"]["output_tokens"] == 1
+    assert "apiKey" not in body[1]["info"]
+    state = body[1]["parts"][0]["state"]
+    assert state["input"]["command"] == "curl -H 'Authorization: Bearer [redacted]'"
+    assert state["output"] == "echo [redacted]"
+
+
+async def test_remote_config_secrets_are_read_once_inside_the_cache_window(runtime, monkeypatch):
+    canary = "cached-remote-config-canary"
+    runtime.environment.worker_channel = "worker"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.workspace = "/srv/worker/task"
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    runtime.task.workspace = "/srv/worker/task"
+    await runtime.session.commit()
+    seen: list[str] = []
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"provider": {"astra-gateway": {"options": {"apiKey": canary}}}},
+            )
+        if request.url.path == "/global/config":
+            return httpx.Response(200, json={})
+        if request.url.path == "/session/ses_current/message":
+            return httpx.Response(
+                200,
+                json=[{"parts": [{"type": "text", "text": f"echo {canary}"}]}],
+            )
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    first = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    second = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert canary not in first.text
+    assert canary not in second.text
+    assert first.json()[0]["parts"][0]["text"] == "echo [redacted]"
+    assert second.json()[0]["parts"][0]["text"] == "echo [redacted]"
+    assert seen.count("/config") == 1
+    assert seen.count("/global/config") == 1
+    assert seen.count("/session/ses_current/message") == 2
