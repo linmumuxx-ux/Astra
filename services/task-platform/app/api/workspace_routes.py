@@ -939,9 +939,8 @@ async def native_proxy(
         try:
             # `git` is the native uncommitted view; the explicit task view also
             # includes commits since this workspace's first Session baseline.
-            # /file, /find and /session/.../diff go through connect() below, so a
-            # stopped OpenCode never returns their bodies. This path reads Git
-            # itself and must withhold the diff when remote secrets are unknown.
+            # This path reads Git itself and must withhold the diff when remote
+            # secrets are unknown. Other file-body routes use the same gate below.
             mode = request.query_params.get("mode", "task")
             if mode not in {"git", "task"}:
                 raise ValueError("不支持的 Diff 模式")
@@ -980,6 +979,13 @@ async def native_proxy(
     api_read = method == "GET" and API_READ.fullmatch(native_path) is not None
     if not match and not pending and not (method == "GET" and native_path in READ_PATHS) and not api_read:
         raise HTTPException(403, "此接口不属于 Task Workspace 的权限范围")
+    gated: tuple[set[str], bool] | None = None
+    if _workspace_file_body(native_path) and _needs_remote_secrets(environment, workspace):
+        # Decide before health/connect/session_tree: a stopped OpenCode would
+        # otherwise hold the request for the full Worker exchange timeout.
+        gated = await _diff_proxy_secrets(environment, workspace)
+        if not gated[1]:
+            raise HTTPException(503, _DIFF_UNAVAILABLE)
     try:
         await check_request_path(
             environment, workspace, request.query_params.get("path", "."), native_path=native_path
@@ -1057,7 +1063,8 @@ async def native_proxy(
                     task_id=task.id,
                 )
             upstream = _Upstream(status, content, headers)
-            secrets, known = await _load_proxy_secrets(workspace, environment, client)
+            # Reuse the gate's read so one request never pays the config timeout twice.
+            secrets, known = gated or await _load_proxy_secrets(workspace, environment, client)
             if (
                 not known
                 and _needs_remote_secrets(environment, workspace)
