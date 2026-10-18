@@ -1172,6 +1172,38 @@ async def test_native_config_uses_bound_employee_model_and_status_is_filtered(ru
     assert status.json() == {"ses_current": {"type": "busy"}}
 
 
+async def test_v2_absolute_api_paths_are_proxied(runtime, monkeypatch):
+    original = httpx.AsyncClient
+    seen: list[str] = []
+
+    def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path == "/api/provider":
+            return httpx.Response(404, json={"error": "missing"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "opencode", "models": {}}]})
+        if request.url.path == "/api/session/active":
+            return httpx.Response(200, json={"ses_current": {"type": "idle"}})
+        if request.url.path == "/api/model":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    provider = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/provider")
+    assert provider.status_code == 200, provider.text
+    assert seen[:2] == ["/api/provider", "/provider"]
+    active = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/active")
+    assert active.status_code == 200, active.text
+    assert active.json() == {"ses_current": {"type": "idle"}}
+    models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
+    assert models.status_code == 200
+    foreign = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/ses_other/message")
+    assert foreign.status_code == 403
+
+
 async def test_native_abort_accepts_empty_body(runtime):
     await runtime.service.project(runtime.task, "RUNNING")
     response = await runtime.api.post("/api/tasks/T1/opencode/ses_current/session/ses_current/abort")

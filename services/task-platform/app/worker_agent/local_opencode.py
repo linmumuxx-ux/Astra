@@ -115,14 +115,22 @@ def _auth(token: str, epoch: int) -> dict[str, str]:
 
 
 def _chunks(text: str) -> list[str]:
+    """按 UTF-8 字节宽度切分。一次编码，线性扫描，不拆开多字节字符。"""
+
+    if not text:
+        return []
+    data = text.encode("utf-8")
     pieces: list[str] = []
-    current = ""
-    for char in text:
-        if len((current + char).encode("utf-8")) > MAX_CHUNK_BYTES:
-            pieces.append(current)
-            current = char
-        else:
-            current += char
-    if current:
-        pieces.append(current)
+    start = 0
+    size = len(data)
+    limit = MAX_CHUNK_BYTES
+    while start < size:
+        end = min(start + limit, size)
+        if end < size:
+            while end > start and data[end] & 0xC0 == 0x80:
+                end -= 1
+            if end == start:
+                end = min(start + limit, size)
+        pieces.append(data[start:end].decode("utf-8"))
+        start = end
     return pieces

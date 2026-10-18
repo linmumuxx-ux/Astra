@@ -175,9 +175,12 @@ class AgentScopeClient:
         body: dict[str, Any] = {"agent_id": agent_id, "name": name}
         if workspace_id:
             body["workspace_id"] = workspace_id
-        config = self.chat_model_config if chat_model_config is None else chat_model_config
-        if config:
-            body["chat_model_config"] = config
+        # 部署配置可能指向厂商。空路由不能拿它补上，也不能因此去创建 Session。
+        if chat_model_config is None:
+            if self.chat_model_config is not None:
+                raise AgentScopeError("没有选择模型路由，不能直连厂商", 422)
+        else:
+            body["chat_model_config"] = chat_model_config
         ids = [item for item in knowledge_base_ids or [] if item]
         if ids:
             body["knowledge_config"] = {"knowledge_base_ids": ids}

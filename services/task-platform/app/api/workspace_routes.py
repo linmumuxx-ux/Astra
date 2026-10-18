@@ -93,6 +93,13 @@ READ_PATHS = {
     "/pty",
 }
 SESSION_READ = re.compile(r"^/session/([^/]+)(/(children|todo|diff|message)(/[^/]+)?)?$")
+# OpenCode 1.18 的 v2 客户端用绝对路径 /api/...。只放行观察类 GET。
+API_READ = re.compile(
+    r"^/api/(?:health|provider|model|config|project|path|agent|command|skill|mcp|location|"
+    r"global|file|find|vcs|lsp|formatter|experimental|permission|question|pty|session)(?:/.*)?$"
+)
+API_SESSION = re.compile(r"^/api/session/([^/]+)(/.*)?$")
+API_SESSION_COLLECTIONS = {"active", "status"}
 SESSION_WRITE = re.compile(
     r"^/session/([^/]+)/(prompt_async|message|abort|revert|unrevert|summarize|command)$"
 )
@@ -136,6 +143,25 @@ def workspace_ui_for(snapshot: dict | None) -> tuple[str, str | None, str | None
     if not bundle_installed(version):
         return version, None, f"{RETIRED_WORKSPACE_UI}（{version}）"
     return version, f"/opencode-workspace/{version}/index.html", None
+
+
+async def runtime_worker_online(session, snapshot: dict | None) -> bool | None:
+    """Worker 通道上的在线事实。非 Worker 通道不在这里判断。"""
+
+    if not isinstance(snapshot, dict):
+        return None
+    environment_id = snapshot.get("environment_id")
+    if environment_id is None:
+        return None
+    from app.models import OpenCodeExecutionEnvironment, WorkerInstance
+
+    stored = await session.get(OpenCodeExecutionEnvironment, environment_id)
+    if stored is None or stored.worker_channel != "worker":
+        return None
+    instance = await session.scalar(
+        select(WorkerInstance).where(WorkerInstance.environment_id == stored.id)
+    )
+    return bool(instance is not None and instance.status == "online")
 
 
 def error_response(exc):
@@ -252,6 +278,7 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
 
     selected_snapshot = selected.environment if selected else task.execution_environment_snapshot
     selected_version, selected_ui, selected_ui_error = workspace_ui_for(selected_snapshot)
+    worker_online = await runtime_worker_online(session, selected_snapshot)
 
     def session_item(item: RuntimeSession):
         version, workspace_ui, workspace_ui_error = workspace_ui_for(item.environment)
@@ -280,6 +307,7 @@ async def task_workspace(task_id: str, session_id: str | None = None, session=De
             "opencode_version": selected_version,
             "workspace_ui": selected_ui,
             "workspace_ui_error": selected_ui_error,
+            "worker_online": worker_online,
         },
         "sessions": [session_item(item) for item in bindings],
     }
@@ -454,14 +482,15 @@ async def native_proxy(
         raise HTTPException(409, "任务已结束；请显式重新开始")
     if method != "GET" and session_id != task.current_session_id:
         raise HTTPException(403, "历史 Session 只读")
-    if method == "GET" and native_path in {"/global/event", "/event"}:
+    if method == "GET" and native_path in {"/global/event", "/event", "/api/event"}:
         await session.commit()
         return StreamingResponse(
             native_events(environment, workspace, session_id, native_path == "/global/event"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    if not match and not pending and not (method == "GET" and native_path in READ_PATHS):
+    api_read = method == "GET" and API_READ.fullmatch(native_path) is not None
+    if not match and not pending and not (method == "GET" and native_path in READ_PATHS) and not api_read:
         raise HTTPException(403, "此接口不属于 Task Workspace 的权限范围")
     try:
         await check_request_path(
@@ -472,6 +501,13 @@ async def native_proxy(
             # Global reads such as /session/status are not per-session resources;
             # their payloads are filtered to `allowed` below instead of rejected here.
             if match and native_path not in READ_PATHS and match[1] not in allowed:
+                raise PermissionError("Session 不属于此任务")
+            api_session = API_SESSION.fullmatch(native_path)
+            if (
+                api_session
+                and api_session[1] not in API_SESSION_COLLECTIONS
+                and api_session[1] not in allowed
+            ):
                 raise PermissionError("Session 不属于此任务")
             if method != "GET" and match and match[1] != session_id:
                 raise PermissionError("子 Session 只读")
@@ -518,6 +554,17 @@ async def native_proxy(
                 session_id=session_id,
                 task_id=task.id,
             )
+            if status == 404 and forward_path.startswith("/api/"):
+                # v2 客户端的 /api 前缀在只提供 v1 路由的 OpenCode 上落到原路径。
+                alternate = forward_path.removeprefix("/api") or "/"
+                status, content, headers = await client.exchange(
+                    method,
+                    alternate,
+                    params=params,
+                    body=body,
+                    session_id=session_id,
+                    task_id=task.id,
+                )
             upstream = _Upstream(status, content, headers)
             if upstream.is_error:
                 return Response(
@@ -528,17 +575,18 @@ async def native_proxy(
             if native_path == "/vcs/diff/raw":
                 return Response(content=upstream.content, media_type="text/x-diff")
             data = upstream.json() if upstream.content else None
-            if native_path == "/session":
+            shape = native_path.removeprefix("/api") if native_path.startswith("/api/") else native_path
+            if shape == "/session":
                 data = [item for item in data if item["id"] in allowed]
-            elif native_path == "/session/status":
+            elif shape == "/session/status":
                 data = {key: value for key, value in data.items() if key in allowed}
-            elif native_path in {"/question", "/permission"}:
+            elif shape in {"/question", "/permission"}:
                 data = [item for item in data if item.get("sessionID") in allowed]
-            elif native_path in {"/project", "/project/current"}:
+            elif shape in {"/project", "/project/current"}:
                 data = {**data, "worktree": workspace, "sandboxes": []}
-                if native_path == "/project":
+                if shape == "/project":
                     data = [data]
-            elif native_path == "/path":
+            elif shape == "/path":
                 data = {
                     **data,
                     "directory": workspace,
@@ -547,7 +595,7 @@ async def native_proxy(
                     "config": workspace,
                     "state": workspace,
                 }
-            elif native_path in {"/global/config", "/config"}:
+            elif shape in {"/global/config", "/config"}:
                 data = {
                     key: value
                     for key, value in data.items()
@@ -564,14 +612,14 @@ async def native_proxy(
                 }
                 if environment.model_name:
                     data["model"] = environment.model_name
-            elif native_path in {"/provider", "/config/providers"}:
+            elif shape in {"/provider", "/config/providers"}:
                 for provider in data.get("all", data.get("providers", [])):
                     for key in ("key", "options", "headers"):
                         provider.pop(key, None)
                     for model in provider.get("models", {}).values():
                         model["options"] = {}
                         model["headers"] = {}
-            elif native_path == "/experimental/worktree":
+            elif shape == "/experimental/worktree":
                 data = []
             if reply or method != "GET":
                 await RuntimeService(session).refresh(task.id, client=client)

@@ -3,7 +3,7 @@
     <header class="top">
       <div class="brand">
         <div class="mark">✦</div>
-        <div class="brandname">NEXUS <span class="version">v1.0.1</span></div>
+        <div class="brandname">NEXUS <span class="version">v1.4.0</span></div>
       </div>
       <span class="env-banner">
         <i class="dot" :class="{ off: !runtime?.reachable }"></i>

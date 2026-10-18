@@ -151,6 +151,45 @@ async def test_projection_writes_waiting_reason_without_closing_or_retrying(sess
     assert task.waiting_reason is None
 
 
+class _Idle:
+    async def status(self, *_args):
+        return "idle"
+
+    async def children(self, *_args):
+        return []
+
+    async def questions(self, *_args):
+        return []
+
+    async def permissions(self, *_args):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_recovered_transport_recomputes_waiting_reason(session):
+    task = await _ready(session)
+    task.status = TaskStatus.WAITING
+    task.waiting_reason = "TRANSPORT_RECOVERY"
+    task.human_required_reason = "执行结束，待确认"
+    task.current_progress = "执行结束，待确认"
+    binding = await session.get(RuntimeSession, "ses")
+    binding.status = "SUCCEEDED"
+    binding.terminal_reason = "completed"
+    await session.commit()
+
+    refreshed = await RuntimeService(session).refresh(task.id, client=_Idle())
+    assert refreshed.status == TaskStatus.WAITING
+    assert refreshed.waiting_reason == "EXECUTION_RESULT_REVIEW"
+
+    refreshed.waiting_reason = "TRANSPORT_RECOVERY"
+    binding.status = "FAILED"
+    binding.terminal_reason = "assistant_error"
+    await session.commit()
+    refreshed = await RuntimeService(session).refresh(task.id, client=_Idle())
+    assert refreshed.status == TaskStatus.WAITING
+    assert refreshed.waiting_reason == "RETRY_EXHAUSTED"
+
+
 @pytest.mark.asyncio
 async def test_missing_transport_and_completed_set_waiting_reason(session):
     task = await _ready(session)

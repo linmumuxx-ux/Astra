@@ -198,6 +198,20 @@ async def test_online_restart_does_not_open_ssh(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_online_restart_does_not_require_ssh_password(monkeypatch):
+    _direct(monkeypatch)
+    gateway = gateway_for()
+    monkeypatch.setattr("app.worker_gateway.service.get_gateway", lambda: gateway)
+    monkeypatch.setattr("app.runtime.worker_client.get_gateway", lambda: gateway)
+    employee_id, environment_id = await _employee(ssh_password=None)
+    await authenticate_existing(gateway, environment_id)
+    async with SessionLocal() as db:
+        environment, operation = await reserve_operation(employee_id, "restart", db)
+    assert operation["action"] == "restart"
+    assert environment.ssh_password is None
+
+
+@pytest.mark.asyncio
 async def test_install_marks_inside_the_operation_and_serves_files(tmp_path, monkeypatch):
     _direct(monkeypatch)
     gateway = gateway_for()

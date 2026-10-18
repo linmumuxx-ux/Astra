@@ -1664,22 +1664,21 @@ class RuntimeService:
             # Once Task is already waiting for acceptance, skip another history read.
             task_snapshot.runtime_connection = "CONNECTED"
             task_snapshot.runtime_error = None
+            recovered = SessionState(
+                status=RuntimeSessionStatus.SUCCEEDED.value,
+                terminal_reason=binding.terminal_reason or SessionTerminalReason.COMPLETED.value,
+                finish_reason=binding.finish_reason,
+            )
             projected = (
                 task_snapshot.status == TaskStatus.WAITING
                 and task_snapshot.human_required_reason == _ACCEPTANCE_REASON
                 and task_snapshot.current_progress == _ACCEPTANCE_REASON
             )
+            # 传输恢复后仍走同一投影，清掉过期的 TRANSPORT_RECOVERY。
             if projected:
-                await self.session.commit()
+                await self.apply_session_state(task_snapshot, recovered)
             else:
-                await self._project_session_state(
-                    task_snapshot,
-                    SessionState(
-                        status=RuntimeSessionStatus.SUCCEEDED.value,
-                        terminal_reason=binding.terminal_reason or SessionTerminalReason.COMPLETED.value,
-                        finish_reason=binding.finish_reason,
-                    ),
-                )
+                await self._project_session_state(task_snapshot, recovered)
             return task_snapshot
         confirmed_terminal = (
             binding and binding.terminal_reason != SessionTerminalReason.UNCONFIRMED.value
@@ -1689,10 +1688,19 @@ class RuntimeService:
         )
         if not canceling and settled and confirmed_terminal and waiting_for_terminal:
             # unconfirmed is not a settled fact: a later transcript can still
-            # show that this same round actually finished.
+            # show that this same round actually finished. A confirmed terminal
+            # result replaces a stale transport-recovery reason through the
+            # same projection.
             task_snapshot.runtime_connection = "CONNECTED"
             task_snapshot.runtime_error = None
-            await self.session.commit()
+            await self.apply_session_state(
+                task_snapshot,
+                SessionState(
+                    status=binding.status,
+                    terminal_reason=binding.terminal_reason,
+                    finish_reason=binding.finish_reason,
+                ),
+            )
             return task_snapshot
         turn_started = task_snapshot.turn_started_at
         task_status = task_snapshot.status
