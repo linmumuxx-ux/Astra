@@ -1993,6 +1993,152 @@ async def test_diff_stays_redacted_when_remote_connect_fails(runtime, monkeypatc
     assert raw.text == "+echo [redacted]\n"
 
 
+async def test_cold_remote_diff_fails_closed_without_leaking(runtime, monkeypatch):
+    secret = "cold-diff-unredacted-canary"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+    await runtime.session.refresh(runtime.task)
+    status_before = runtime.task.status
+    (runtime.workspace / "notes.txt").write_text(secret + "\n")
+
+    class Hanging:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            await asyncio.sleep(30)
+            return 200, b"{}", {}
+
+    class Stopped:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            raise ConnectionError("opencode stopped")
+
+    clients = {"client": Hanging()}
+
+    @asynccontextmanager
+    async def open_client(*_args, **_kwargs):
+        yield clients["client"]
+
+    calls = {"diff": 0}
+
+    async def fake_diff(*_args, **_kwargs):
+        calls["diff"] += 1
+        return [
+            {
+                "file": "notes.txt",
+                "patch": f"+{secret}\n",
+                "before": "",
+                "after": secret,
+                "additions": 1,
+                "deletions": 0,
+                "status": "added",
+            }
+        ]
+
+    monkeypatch.setattr("app.api.workspace_routes.connect", open_client)
+    monkeypatch.setattr("app.api.workspace_routes.workspace_diff", fake_diff)
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    started = time.perf_counter()
+    hung = await runtime.api.get(base, params={"mode": "git"})
+    assert time.perf_counter() - started < 8
+    assert hung.status_code == 503, hung.text
+    assert secret not in hung.text
+    assert hung.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+
+    clients["client"] = Stopped()
+    for mode in ("git", "task"):
+        for path in (base, base + "/raw"):
+            response = await runtime.api.get(path, params={"mode": mode})
+            assert response.status_code == 503, response.text
+            assert secret not in response.text
+            assert response.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+    assert calls["diff"] == 0
+    file_body = await runtime.api.get(
+        "/api/tasks/T1/opencode/ses_current/file/content",
+        params={"path": "notes.txt"},
+    )
+    assert file_body.status_code == 503, file_body.text
+    assert secret not in file_body.text
+    await runtime.session.refresh(runtime.task)
+    assert runtime.task.status == status_before
+
+
+async def test_global_config_alone_does_not_make_a_cold_diff_known(runtime, monkeypatch):
+    secret = "global-only-config-canary-value"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+
+    class Client:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            if path == "/config":
+                await asyncio.sleep(30)
+                payload = {"provider": {"astra-gateway": {"options": {"apiKey": secret}}}}
+                return 200, json.dumps(payload).encode(), {}
+            if path == "/global/config":
+                return 200, b"{}", {}
+            raise AssertionError(path)
+
+    @asynccontextmanager
+    async def open_client(*_args, **_kwargs):
+        yield Client()
+
+    calls = {"diff": 0}
+
+    async def fake_diff(*_args, **_kwargs):
+        calls["diff"] += 1
+        return [
+            {
+                "file": "notes.txt",
+                "patch": secret,
+                "before": "",
+                "after": secret,
+                "additions": 1,
+                "deletions": 0,
+                "status": "added",
+            }
+        ]
+
+    monkeypatch.setattr("app.api.workspace_routes.connect", open_client)
+    monkeypatch.setattr("app.api.workspace_routes.workspace_diff", fake_diff)
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    for path in (base, base + "/raw"):
+        response = await runtime.api.get(path, params={"mode": "git"})
+        assert response.status_code == 503, response.text
+        assert secret not in response.text
+        assert response.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+    assert calls["diff"] == 0
+
+
+async def test_session_diff_fails_closed_when_remote_config_is_unknown(runtime, monkeypatch):
+    secret = "session-diff-gateway-canary"
+    runtime.environment.worker_channel = "worker"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+    await runtime.session.refresh(runtime.task)
+    status_before = runtime.task.status
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        if request.url.path == "/config":
+            return httpx.Response(500, text="config down")
+        if request.url.path == "/global/config":
+            return httpx.Response(200, json={})
+        if request.url.path == "/session/ses_current/diff":
+            return httpx.Response(200, json=[{"file": "notes.txt", "patch": f"+{secret}\n", "after": secret}])
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/diff")
+    assert response.status_code == 503, response.text
+    assert secret not in response.text
+    assert response.json()["detail"] == "OpenCode 不可用，暂时无法安全显示 Diff"
+    await runtime.session.refresh(runtime.task)
+    assert runtime.task.status == status_before
+
+
 async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):
     r = runtime
     _init_repo(r.workspace)
@@ -2930,7 +3076,7 @@ async def test_upstream_error_bodies_are_redacted_before_return(runtime, monkeyp
     assert "err-field-token-canary" not in failed.text
     assert secret not in failed.text
     assert failed.json() == {
-        "error": {"nested": [{"message": "kept"}, "[redacted]"], "detail": "failed"}
+        "error": {"nested": [{"message": "kept"}], "detail": "failed"}
     }
     text = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
     assert text.status_code == 502, text.text
