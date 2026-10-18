@@ -43,53 +43,32 @@
         <template #default="{ row }">
           <div class="key-cell">
             <strong>{{ row.name }}</strong>
-            <span class="key-cell__id" :title="row.id">{{ row.id }}</span>
+            <span class="key-cell__id">{{ row.key_prefix }}… · {{ row.allowed_models.length ? row.allowed_models.join('、') : '全部模型' }}</span>
           </div>
         </template>
       </ElTableColumn>
-      <ElTableColumn label="前缀" width="128">
-        <template #default="{ row }"><span class="key-mono">{{ row.key_prefix }}…</span></template>
+      <ElTableColumn label="归属" min-width="120">
+        <template #default="{ row }">{{ row.owner_id || '未指定' }}</template>
       </ElTableColumn>
-      <ElTableColumn label="归属" width="132" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.owner_id || '—' }}</template>
-      </ElTableColumn>
-      <ElTableColumn label="允许模型" min-width="160" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.allowed_models.length">{{ row.allowed_models.join('、') }}</span>
-          <span v-else class="key-muted">全部</span>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="并发" width="76">
-        <template #default="{ row }">{{ row.max_concurrency || '不限' }}</template>
-      </ElTableColumn>
-      <ElTableColumn label="额度（时 / 日）" width="124">
-        <template #default="{ row }">{{ tokenLimitText(row.hourly_token_limit) }} / {{ tokenLimitText(row.daily_token_limit) }}</template>
-      </ElTableColumn>
-      <ElTableColumn label="有效期" width="130">
-        <template #default="{ row }">{{ row.expires_at ? formatDateTime(row.expires_at) : '长期' }}</template>
-      </ElTableColumn>
-      <ElTableColumn label="状态" width="88">
+      <ElTableColumn label="状态" width="96">
         <template #default="{ row }">
           <ElTag v-if="row.revoked_at" type="danger">已吊销</ElTag>
           <ElTag v-else :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</ElTag>
         </template>
       </ElTableColumn>
-      <ElTableColumn label="最近使用" width="104">
-        <template #default="{ row }">{{ formatRelativeTime(row.last_used_at) }}</template>
+      <ElTableColumn label="额度与并发" min-width="180">
+        <template #default="{ row }">并发 {{ row.max_concurrency || '不限' }} · 时/日 {{ tokenLimitText(row.hourly_token_limit) }}/{{ tokenLimitText(row.daily_token_limit) }}</template>
       </ElTableColumn>
-      <ElTableColumn label="操作" width="124" fixed="right">
+      <ElTableColumn label="操作" width="120">
         <template #default="{ row }">
-          <ElSpace :size="4">
-            <ElTooltip content="编辑 Key" placement="top">
-              <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openEdit(row as GatewayKey)" />
-            </ElTooltip>
-            <ElTooltip content="吊销 Key（立即失效，不可恢复）" placement="top">
-              <ElButton circle type="danger" :icon="Ban" :aria-label="`吊销 ${row.name}`" :disabled="busy || Boolean(row.revoked_at)" @click="revoke(row as GatewayKey)" />
-            </ElTooltip>
-            <ElTooltip content="删除 Key" placement="top">
-              <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" :loading="deletingId === row.id" @click="removeKey(row as GatewayKey)" />
-            </ElTooltip>
-          </ElSpace>
+          <RowMenu
+            primary="编辑"
+            :aria-label="(row as GatewayKey).name"
+            :disabled="busy"
+            :items="[{ command: 'revoke', label: '吊销', disabled: Boolean(row.revoked_at) }, { command: 'delete', label: '删除' }]"
+            @primary="openEdit(row as GatewayKey)"
+            @command="(command) => onKeyCommand(row as GatewayKey, command)"
+          />
         </template>
       </ElTableColumn>
       <template #empty>
@@ -197,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { Ban, Copy, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Copy, Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
@@ -218,7 +197,6 @@ import {
   ElTableColumn,
   ElTag,
   ElText,
-  ElTooltip,
   vLoading,
 } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
@@ -228,13 +206,12 @@ import {
   type GatewayKeyCreated,
 } from '@/api/gateway'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import RowMenu from '@/components/astra/RowMenu.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import {
   errorMessage,
-  formatDateTime,
-  formatRelativeTime,
   parseNumberList,
   tokenLimitText,
 } from '@/utils/gateway'
@@ -340,6 +317,11 @@ function openCreate() {
   formError.value = ''
   initialSnapshot.value = formSnapshot()
   drawerOpen.value = true
+}
+
+function onKeyCommand(key: GatewayKey, command: string) {
+  if (command === 'revoke') void revoke(key)
+  if (command === 'delete') void removeKey(key)
 }
 
 function openEdit(key: GatewayKey) {

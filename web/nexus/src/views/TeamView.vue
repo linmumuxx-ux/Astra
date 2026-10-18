@@ -83,7 +83,7 @@
           <button class="chip" :class="{ sel: sideTab === 'tasks' }" type="button" @click="sideTab = 'tasks'">任务</button>
         </div>
         <div v-if="sideTab === 'tasks'" style="padding: 16px">
-          <TaskTable :tasks="tasks" />
+          <TaskRail :tasks="tasks" :names="nameById" />
         </div>
         <div v-else style="padding: 0 16px 16px">
         <div style="display: flex; justify-content: space-between; align-items: center">
@@ -95,7 +95,7 @@
           <span class="avatar" :class="{ off: !employee.enabled }">{{ employee.avatar }}</span>
           <div><b>{{ employee.name }}</b><small class="muted">{{ employee.domain }} · {{ employee.enabled ? "启用" : "禁用" }}</small></div>
         </div>
-        <p class="muted">员工之间的后续联系由 contact_employee 投递。Nexus 不代写同事回复。</p>
+        <p class="muted">同事之间如果还要继续联系，会交给对应的数字员工自己处理。这里不会代写同事的回复。</p>
         </div>
       </aside>
     </div>
@@ -135,8 +135,8 @@ import {
   uploadAttachment,
 } from "../api";
 import type { TimelineItem } from "../api";
-import TaskTable from "../components/TaskTable.vue";
-import { listTasks, type PlatformTask } from "../platform";
+import TaskRail from "../components/TaskRail.vue";
+import { listTasks, listWorkers, type PlatformTask, type PlatformWorker } from "../platform";
 import type { Attachment, Channel, ChatMessage, Employee } from "../types";
 
 const employees = ref<Employee[]>([]);
@@ -155,8 +155,15 @@ const editingId = ref<string | null>(null);
 const mentionOpen = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const form = reactive({ name: "", description: "", memberIds: [] as string[] });
-const sideTab = ref<"members" | "tasks">("members");
+const sideTab = ref<"members" | "tasks">("tasks");
 const tasks = ref<PlatformTask[]>([]);
+const workers = ref<PlatformWorker[]>([]);
+const nameById = computed(() => {
+  const names: Record<string, string> = {};
+  for (const employee of employees.value) names[employee.id] = employee.name;
+  for (const worker of workers.value) names[worker.id] = worker.name;
+  return names;
+});
 let streamAbort: AbortController | null = null;
 let channelAbort: AbortController | null = null;
 
@@ -503,6 +510,7 @@ watch([messages, liveLines], async () => {
 let taskTimer = 0;
 onMounted(() => {
   void reload();
+  void listWorkers().then((items) => { workers.value = items; }).catch(() => { workers.value = []; });
   taskTimer = window.setInterval(() => void refreshTasks(), 8000);
 });
 onBeforeUnmount(() => {

@@ -1,8 +1,11 @@
 <template>
   <section>
     <div class="title-row">
-      <h1 class="h-title">员工管理</h1>
-      <el-button type="primary" @click="openCreate">＋ 创建数字员工</el-button>
+      <div>
+        <h1 class="h-title">数字员工</h1>
+        <p class="muted" style="margin: 4px 0 0">这里是你对话的人。执行任务的 Worker 在导航里单独进入，两者不是同一个对象。</p>
+      </div>
+      <el-button type="primary" @click="openCreate">创建数字员工</el-button>
     </div>
     <div class="management-grid">
       <div class="panel management-main">
@@ -25,12 +28,11 @@
               <td>
                 <div class="person-cell">
                   <span class="avatar" :class="{ off: !employee.enabled }">{{ employee.avatar }}</span>
-                  <span><b>{{ employee.name }}</b><small class="mono">{{ employee.id }}</small></span>
+                  <span class="person-name"><b>{{ employee.name }}</b><small class="person-id">{{ employee.id }}</small></span>
                 </div>
               </td>
               <td>
                 <b>{{ employee.domain }}</b>
-                <div class="role-desc">{{ employee.description }}</div>
               </td>
               <td>
                 <div class="chips">
@@ -39,12 +41,19 @@
                 </div>
               </td>
               <td>
-                <el-switch :model-value="employee.enabled" @change="toggle(employee, Boolean($event))" @click.stop />
+                <el-switch :model-value="employee.enabled" :aria-label="`${employee.name} 启用`" @change="toggle(employee, Boolean($event))" @click.stop />
               </td>
               <td>
                 <el-button link type="primary" @click.stop="goChat(employee.id)">对话</el-button>
-                <el-button link type="primary" @click.stop="openEdit(employee)">编辑</el-button>
-                <el-button link type="danger" @click.stop="askDelete(employee)">删除</el-button>
+                <el-dropdown trigger="click" @command="(command: string) => onEmployeeCommand(employee, command)">
+                  <el-button link type="primary" @click.stop>更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                      <el-dropdown-item command="delete">删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </td>
             </tr>
           </tbody>
@@ -52,35 +61,35 @@
       </div>
       <aside class="panel management-side">
         <template v-if="selected">
-          <div style="display: flex; justify-content: space-between"><b>员工档案</b><el-button size="small" @click.stop="openEdit(selected)">编辑</el-button></div>
           <div class="profile-hero">
             <span class="avatar" :class="{ off: !selected.enabled }">{{ selected.avatar }}</span>
             <h3>{{ selected.name }}</h3>
             <p class="muted">{{ selected.domain }}</p>
             <span class="tag" :class="{ ash: !selected.enabled }">{{ selected.enabled ? "已启用" : "已禁用" }}</span>
           </div>
-          <div class="section-label">职责范围</div>
-          <div class="detail-excerpt">{{ selected.description }}</div>
-          <div class="section-label">知识资源</div>
-          <div class="resource-list">
-            <span v-for="item in selected.knowledge" :key="item" class="mini-chip">{{ resourceLabel(catalogs.knowledge, item) }}</span>
-            <span v-if="!selected.knowledge.length" class="muted">暂无配置</span>
-          </div>
-          <div class="section-label">技能与工具</div>
-          <div class="resource-list">
-            <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
-            <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ resourceLabel(catalogs.tools, item) }}</span>
-          </div>
-          <div class="section-label">员工 ID</div>
-          <div class="mono">{{ selected.id }}</div>
-          <div class="section-label">AgentScope Agent</div>
-          <div class="mono">{{ selected.agentscope_agent_id || "尚未创建" }}</div>
-          <el-button type="primary" style="width: 100%; margin-top: 18px" @click="goChat(selected.id)">与 {{ selected.name }} 交流</el-button>
+          <el-button style="margin-top: 12px" @click="profileOpen = !profileOpen">{{ profileOpen ? "收起档案" : "展开档案" }}</el-button>
+          <template v-if="profileOpen">
+            <div class="section-label">职责范围</div>
+            <div class="detail-excerpt">{{ selected.description }}</div>
+            <div class="section-label">知识资源</div>
+            <div class="resource-list">
+              <span v-for="item in selected.knowledge" :key="item" class="mini-chip">{{ resourceLabel(catalogs.knowledge, item) }}</span>
+              <span v-if="!selected.knowledge.length" class="muted">暂无配置</span>
+            </div>
+            <div class="section-label">技能与工具</div>
+            <div class="resource-list">
+              <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
+              <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ toolLabel(item) }}</span>
+            </div>
+            <div class="section-label">Agent 标识</div>
+            <div class="mono">{{ selected.agentscope_agent_id || "尚未创建" }}</div>
+            <el-button style="margin-top: 14px" @click="openEdit(selected)">编辑</el-button>
+          </template>
         </template>
         <div v-else class="empty">创建第一个数字员工，直接定义他的职责与能力</div>
       </aside>
     </div>
-    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalogs="catalogs" :routes="routes" :route-error="routeError" @close="drawerOpen = false" @save="save" />
+    <EmployeeDrawer :open="drawerOpen" :employee="editing" :catalogs="catalogs" :routes="routes" :route-error="routeError" @close="drawerOpen = false" @save="save" @reload-catalogs="reloadCatalogs" />
     <el-dialog v-model="deleteOpen" title="删除数字员工" width="460px">
       <p>确定删除 <b>{{ deleting?.name }}</b> 吗？删除后将不再显示该员工。</p>
       <template #footer>
@@ -108,6 +117,7 @@ const drawerOpen = ref(false);
 const editing = ref<Employee | null>(null);
 const deleteOpen = ref(false);
 const deleting = ref<Employee | null>(null);
+const profileOpen = ref(false);
 const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
 const catalogs = ref({ skills: emptyCatalog(), knowledge: emptyCatalog(), tools: emptyCatalog() });
 const routes = ref<GatewayRoute[]>([]);
@@ -122,6 +132,15 @@ const selected = computed(() => employees.value.find((item) => item.id === selec
 
 function resourceLabel(catalog: ResourceCatalog, id: string) {
   return catalog.items.find((item) => item.id === id)?.name ?? id;
+}
+function toolLabel(id: string) {
+  if (id === "contact_employee") return "联系其他数字员工";
+  const name = resourceLabel(catalogs.value.tools, id);
+  return name === id ? "工作区工具" : name;
+}
+function onEmployeeCommand(employee: Employee, command: string) {
+  if (command === "edit") openEdit(employee);
+  if (command === "delete") askDelete(employee);
 }
 
 async function reload() {
@@ -184,9 +203,13 @@ async function confirmDelete() {
   }
 }
 
-onMounted(async () => {
+async function reloadCatalogs() {
   const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
   catalogs.value = { skills, knowledge, tools };
+}
+
+onMounted(async () => {
+  await reloadCatalogs();
   try {
     routes.value = (await gatewayApi.routes()).filter((item) => item.enabled);
   } catch (error) {

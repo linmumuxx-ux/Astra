@@ -15,12 +15,6 @@
       <ElSelect v-model="filters.node_id" class="astra-filter__select" data-testid="log-filter-node" aria-label="节点筛选" placeholder="节点：全部" clearable>
         <ElOption v-for="node in nodes" :key="node.id" :value="node.id" :label="node.name" />
       </ElSelect>
-      <ElSelect v-model="filters.key_id" class="astra-filter__select" data-testid="log-filter-key" aria-label="Key 筛选" placeholder="Key：全部" clearable>
-        <ElOption v-for="key in keys" :key="key.id" :value="key.id" :label="key.name" />
-      </ElSelect>
-      <ElSelect v-model="filters.pool_id" class="astra-filter__select" data-testid="log-filter-pool" aria-label="资源池筛选" placeholder="资源池：全部" clearable>
-        <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
-      </ElSelect>
       <ElDatePicker
         v-model="timeRange"
         class="log-filter__range"
@@ -30,27 +24,36 @@
         start-placeholder="开始时间"
         end-placeholder="结束时间"
       />
-      <ElInput v-model="filters.status_code" class="log-filter__status" data-testid="log-filter-status-code" aria-label="状态码筛选" placeholder="状态码" type="number" />
-      <ElInput
-        v-model="filters.error_code"
-        class="log-filter__error"
-        data-testid="log-filter-error-code"
-        aria-label="错误码筛选"
-        placeholder="错误码，如 UPSTREAM_CONNECT_TIMEOUT"
-        clearable
-      />
-      <ElSelect v-model="pageSize" class="log-filter__size" data-testid="log-filter-size" aria-label="每页条数">
-        <ElOption v-for="size in pageSizeOptions" :key="size" :value="size" :label="`每页 ${size}`" />
-      </ElSelect>
-      <template #search>
+      <ElButton text type="primary" @click="advancedFilters = !advancedFilters">{{ advancedFilters ? '收起筛选' : '更多筛选' }}</ElButton>
+      <template v-if="advancedFilters">
+        <ElSelect v-model="filters.key_id" class="astra-filter__select" data-testid="log-filter-key" aria-label="Key 筛选" placeholder="Key：全部" clearable>
+          <ElOption v-for="key in keys" :key="key.id" :value="key.id" :label="key.name" />
+        </ElSelect>
+        <ElSelect v-model="filters.pool_id" class="astra-filter__select" data-testid="log-filter-pool" aria-label="资源池筛选" placeholder="资源池：全部" clearable>
+          <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
+        </ElSelect>
+        <ElInput v-model="filters.status_code" class="log-filter__status" data-testid="log-filter-status-code" aria-label="状态码筛选" placeholder="状态码" type="number" />
+        <ElInput
+          v-model="filters.error_code"
+          class="log-filter__error"
+          data-testid="log-filter-error-code"
+          aria-label="错误码筛选"
+          placeholder="错误码"
+          clearable
+        />
+        <ElSelect v-model="pageSize" class="log-filter__size" data-testid="log-filter-size" aria-label="每页条数">
+          <ElOption v-for="size in pageSizeOptions" :key="size" :value="size" :label="`每页 ${size}`" />
+        </ElSelect>
         <ElInput
           v-model="filters.request_id"
           class="astra-filter__keyword"
           data-testid="log-filter-request"
           aria-label="Request ID 筛选"
-          placeholder="Request ID 精确匹配"
+          placeholder="请求编号精确匹配"
           clearable
         />
+      </template>
+      <template #search>
         <ElButton type="primary" :icon="Filter" :disabled="loading" data-testid="gateway-requests-apply" @click="apply">筛选</ElButton>
         <ElButton :disabled="loading" data-testid="gateway-requests-reset" @click="reset">重置</ElButton>
       </template>
@@ -65,52 +68,38 @@
       element-loading-text="正在加载调用日志"
       data-testid="gateway-requests-table"
     >
-      <ElTableColumn label="时间" width="116">
-        <template #default="{ row }"><span class="log-num">{{ formatDateTime(row.started_at) }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="Request ID" width="160">
-        <template #default="{ row }"><span class="log-mono" :title="row.id">{{ shortId(row.id) }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="Key / 模型" min-width="170">
+      <ElTableColumn type="expand" width="42">
         <template #default="{ row }">
-          <div class="log-cell">
-            <strong>{{ keyName(row.key_id) }}</strong>
-            <span class="log-cell__sub">{{ row.model ?? '—' }}</span>
+          <div class="log-detail">
+            <p>请求编号 {{ row.id }}</p>
+            <p v-if="row.error_code">原始错误码 {{ row.error_code }}</p>
+            <p>Token {{ tokenText(row as GatewayRequestLog) }} · 首字节 {{ latencyText(row.ttfb_ms) }} · 首 Token {{ latencyText(row.ttft_ms) }} · 输出速率 {{ row.output_tps !== null ? row.output_tps.toFixed(1) : '—' }}</p>
+            <p>{{ row.streaming ? '流式' : '普通' }}{{ row.stream_interrupted ? '，中途断开' : '' }} · 重试 {{ row.retry_count }} 次 · Key {{ keyName(row.key_id) }}</p>
           </div>
         </template>
       </ElTableColumn>
-      <ElTableColumn label="节点" width="130" show-overflow-tooltip>
+      <ElTableColumn label="时间" width="148">
+        <template #default="{ row }"><span class="log-num">{{ formatDateTime(row.started_at) }}</span></template>
+      </ElTableColumn>
+      <ElTableColumn label="模型" min-width="140">
+        <template #default="{ row }">{{ row.model ?? '—' }}</template>
+      </ElTableColumn>
+      <ElTableColumn label="节点" min-width="120">
         <template #default="{ row }">{{ nodeName(row.node_id) }}</template>
       </ElTableColumn>
-      <ElTableColumn label="状态" min-width="170">
+      <ElTableColumn label="结果" min-width="160">
         <template #default="{ row }">
           <ElTag v-if="row.outcome === 'lost'" type="warning" data-testid="gateway-log-lost">结果未知</ElTag>
           <ElTag v-else-if="!row.finished_at && row.gateway_instance_id" type="info" data-testid="gateway-log-inflight">进行中</ElTag>
           <ElTag v-else-if="!row.finished_at" type="info" data-testid="gateway-log-legacy">历史未完成</ElTag>
-          <ElTag v-else-if="row.error_code" type="danger" :title="row.error_code">{{ row.error_code }}</ElTag>
-          <ElTag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">{{ row.status_code ?? '—' }}</ElTag>
+          <template v-else-if="row.error_code">
+            <ElTag type="danger">{{ errorCause(row.error_code) }}</ElTag>
+          </template>
+          <ElTag v-else :type="row.status_code && row.status_code < 400 ? 'success' : 'warning'">成功 {{ row.status_code ?? '' }}</ElTag>
         </template>
       </ElTableColumn>
-      <ElTableColumn label="流式" width="110">
-        <template #default="{ row }">
-          <span>{{ row.streaming ? 'SSE' : '普通' }}</span>
-          <ElTag v-if="row.stream_interrupted" class="log-interrupted" type="danger" effect="plain">中断</ElTag>
-        </template>
-      </ElTableColumn>
-      <ElTableColumn label="重试" width="68">
-        <template #default="{ row }"><span class="log-num">{{ row.retry_count }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="Token（入 / 出 / 总）" width="132">
-        <template #default="{ row }"><span class="log-num">{{ tokenText(row as GatewayRequestLog) }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="TTFB / TTFT" width="128">
-        <template #default="{ row }"><span class="log-num">{{ latencyText(row.ttfb_ms) }} / {{ latencyText(row.ttft_ms) }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="总时长" width="96">
+      <ElTableColumn label="时长" width="96">
         <template #default="{ row }"><span class="log-num">{{ latencyText(row.duration_ms) }}</span></template>
-      </ElTableColumn>
-      <ElTableColumn label="TPS" width="84">
-        <template #default="{ row }"><span class="log-num">{{ row.output_tps !== null ? row.output_tps.toFixed(1) : '—' }}</span></template>
       </ElTableColumn>
       <template #empty>
         <ElEmpty v-if="!loading" :image-size="64" :description="emptyText" />
@@ -147,7 +136,6 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
-  ElSpace,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -165,7 +153,7 @@ import {
 } from '@/api/gateway'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
-import { errorMessage, formatDateTime } from '@/utils/gateway'
+import { errorCause, errorMessage, formatDateTime } from '@/utils/gateway'
 
 const route = useRoute()
 const page = ref<GatewayRequestPage>({ items: [], total: 0, page: 1, page_size: 50 })
@@ -178,6 +166,7 @@ const error = ref('')
 const pageSizeOptions = [50, 100, 200]
 const pageSize = ref(50)
 const filters = reactive({ request_id: '', model: '', node_id: '', key_id: '', pool_id: '', status_code: '', error_code: '' })
+const advancedFilters = ref(false)
 const timeRange = ref<[Date, Date] | null>(null)
 
 const hasFilters = computed(() =>
@@ -196,9 +185,6 @@ const emptyText = computed(() => (hasFilters.value
   ? '没有匹配的调用记录，调整筛选条件后重试。'
   : '暂无调用记录。'))
 
-function shortId(value: string): string {
-  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value
-}
 function keyName(id: string | null): string {
   if (!id) return '—'
   return keys.value.find((key) => key.id === id)?.name ?? id.slice(0, 12)
@@ -263,6 +249,7 @@ function readQuery() {
   const start = from ? new Date(from) : null
   const end = to ? new Date(to) : null
   timeRange.value = start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) ? [start, end] : null
+  advancedFilters.value = Boolean(filters.key_id || filters.pool_id || filters.status_code || filters.error_code || filters.request_id)
 }
 
 async function loadFilterOptions() {
@@ -301,5 +288,7 @@ onMounted(() => {
 .log-cell__sub { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
 .log-mono { overflow: hidden; font-family: var(--astra-font-family); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
 .log-num { white-space: nowrap; font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
+.log-detail { display: grid; gap: 4px; padding: 4px 8px 8px; color: var(--astra-text-secondary); }
+.log-detail p { margin: 0; }
 .log-interrupted { margin-left: 6px; }
 </style>

@@ -54,39 +54,22 @@
             <ElTag :type="row.enabled ? 'success' : 'info'" :effect="row.enabled ? 'light' : 'plain'">{{ row.enabled ? '已启用' : '已停用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="任务 / 问题 Prompt" min-width="230">
-          <template #default="{ row }">
-            <ElSpace :size="6">
-              <ElTag effect="plain" :type="row.task_prompt?.trim() ? 'success' : 'info'">任务 {{ row.task_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
-              <ElTag effect="plain" :type="row.question_prompt?.trim() ? 'success' : 'info'">问题 {{ row.question_prompt?.trim() ? '已配置' : '未配置' }}</ElTag>
-            </ElSpace>
+        <ElTableColumn label="提示词" min-width="220">
+          <template #header>
+            <span>提示词 <ElTooltip content="任务提示词用于需求，问题提示词用于问题。没配的时候 Worker 只知道分类名称，不知道该怎么做。"><button type="button" class="category-help">说明</button></ElTooltip></span>
           </template>
+          <template #default="{ row }">{{ promptSummary(row as TaskCategory) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <ElSpace class="astra-row-actions" :size="4">
-              <ElTooltip content="编辑分类与提示词" placement="top">
-                <ElButton
-                  circle
-                  type="primary"
-                  :icon="Pencil"
-                  :aria-label="`编辑分类 ${row.name}`"
-                  data-testid="category-edit"
-                  @click="beginEdit(row as TaskCategory)"
-                />
-              </ElTooltip>
-              <ElTooltip :content="row.enabled ? '停用该分类' : '启用该分类'" placement="top">
-                <ElButton
-                  circle
-                  type="primary"
-                  :icon="row.enabled ? Pause : Play"
-                  :aria-label="`${row.enabled ? '停用' : '启用'}分类 ${row.name}`"
-                  :disabled="busyId === row.id"
-                  data-testid="category-toggle"
-                  @click="toggleEnabled(row as TaskCategory)"
-                />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu
+              primary="编辑"
+              :aria-label="(row as TaskCategory).name"
+              :disabled="busyId === row.id"
+              :items="[{ command: 'toggle', label: row.enabled ? '停用' : '启用' }]"
+              @primary="beginEdit(row as TaskCategory)"
+              @command="toggleEnabled(row as TaskCategory)"
+            />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -126,7 +109,7 @@
 </template>
 
 <script setup lang="ts">
-import { Pause, Pencil, Play, Plus, RefreshCw, Search } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import {
@@ -137,7 +120,6 @@ import {
   ElOption,
   ElPagination,
   ElSelect,
-  ElSpace,
   ElTable,
   ElTableColumn,
   ElTag,
@@ -149,6 +131,7 @@ import { api } from '@/api/client'
 import type { TaskCategory, TaskCategoryWrite } from '@/api/types'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
+import RowMenu from '@/components/astra/RowMenu.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import CategoryEditorDrawer from '@/views/settings/CategoryEditorDrawer.vue'
@@ -203,6 +186,15 @@ function beginCreate() {
   editing.value = null
   saveError.value = ''
   drawerOpen.value = true
+}
+
+function promptSummary(row: TaskCategory) {
+  const task = Boolean(row.task_prompt?.trim())
+  const question = Boolean(row.question_prompt?.trim())
+  if (task && question) return '任务和问题提示词都已配置'
+  if (task) return '已有任务提示词，还缺问题提示词'
+  if (question) return '已有问题提示词，还缺任务提示词'
+  return '提示词还没配置'
 }
 
 function beginEdit(row: TaskCategory) {
@@ -284,4 +276,5 @@ onMounted(load)
 /* 页面骨架、标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css，
    这里只保留表格单元格内部的排版。 */
 .category-num { font-size: var(--astra-font-helper); font-variant-numeric: tabular-nums; }
+.category-help { padding: 0; border: 0; background: transparent; color: var(--astra-primary); cursor: pointer; }
 </style>

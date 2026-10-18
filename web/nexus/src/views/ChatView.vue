@@ -1,7 +1,12 @@
 <template>
   <section>
-    <div class="title-row"><h1 class="h-title">数字员工</h1></div>
-    <div class="workspace">
+    <div class="title-row">
+      <div>
+        <h1 class="h-title">私聊</h1>
+        <p class="muted" style="margin: 4px 0 0">直接问这位数字员工。资料和任务在右侧，需要时再打开。</p>
+      </div>
+    </div>
+    <div class="workspace" :class="{ 'workspace--focus': !materialsOpen }">
       <aside class="panel left-rail">
         <div style="display: flex; justify-content: space-between; margin-bottom: 12px">
           <b>我的数字员工</b><span class="tag">{{ employees.length }} 位</span>
@@ -23,9 +28,9 @@
         <div class="chat-head" v-if="current">
           <div>
             <h2 style="margin: 0 0 4px">{{ current.name }} · {{ current.domain }}</h2>
-            <p class="muted" style="margin: 0">{{ current.description }}</p>
+            <p class="muted" style="margin: 0">同一人与该员工只有一条私聊</p>
           </div>
-          <span class="muted">同一人与该员工只有一条私聊</span>
+          <el-button @click="materialsOpen = !materialsOpen">{{ materialsOpen ? "收起资料" : "查看资料" }}</el-button>
         </div>
         <div v-else class="chat-head"><h2>尚未创建员工</h2></div>
         <div class="chat-messages" ref="messageBox">
@@ -63,8 +68,9 @@
         </div>
         <div class="chat-compose">
           <div class="chips" style="margin-bottom: 8px">
-            <button class="chip" type="button" :disabled="!canSend" @click="draft = '你负责哪些工作？'">你的职责</button>
-            <button class="chip" type="button" :disabled="!canSend" @click="draft = '你能访问哪些知识和工具？'">你的能力</button>
+            <span class="muted">问员工</span>
+            <button class="chip" type="button" :disabled="!canSend" @click="draft = '你负责哪些工作？'">问职责</button>
+            <button class="chip" type="button" :disabled="!canSend" @click="draft = '你能访问哪些知识和工具？'">问能力</button>
           </div>
           <div v-if="draftFiles.length" class="draft-attachments">
             <div v-for="file in draftFiles" :key="file.id" class="draft-file">
@@ -87,44 +93,41 @@
           </div>
         </div>
       </article>
-      <aside class="panel aside" v-if="current">
+      <aside class="panel aside" v-if="current && materialsOpen">
         <div class="right-tabs">
-          <button class="chip" :class="{ sel: tab === 'responsibility' }" type="button" @click="tab = 'responsibility'">职责</button>
-          <button class="chip" :class="{ sel: tab === 'capability' }" type="button" @click="tab = 'capability'">能力</button>
-          <button class="chip" :class="{ sel: tab === 'memory' }" type="button" @click="tab = 'memory'">记忆</button>
           <button class="chip" :class="{ sel: tab === 'tasks' }" type="button" @click="tab = 'tasks'">任务</button>
+          <button class="chip" :class="{ sel: tab === 'materials' }" type="button" @click="tab = 'materials'">资料</button>
+          <button class="chip" :class="{ sel: tab === 'memory' }" type="button" @click="tab = 'memory'">记忆</button>
         </div>
-        <div v-if="tab === 'responsibility'" style="padding: 16px">
+        <div v-if="tab === 'tasks'" style="padding: 16px">
+          <TaskRail :tasks="tasks" :names="nameById" hide-responsible />
+        </div>
+        <div v-else-if="tab === 'materials'" style="padding: 16px">
           <div class="section-label">职责范围</div>
           <div class="detail-excerpt">{{ current.description }}</div>
           <div class="section-label">工作指令</div>
           <div class="detail-excerpt">{{ current.instructions }}</div>
-        </div>
-        <div v-else-if="tab === 'capability'" style="padding: 16px">
           <div class="section-label">知识</div>
           <div class="resource-list">
             <span v-for="item in current.knowledge" :key="item" class="mini-chip">{{ resourceLabel(catalogs.knowledge, item) }}</span>
             <span v-if="!current.knowledge.length" class="muted">暂无</span>
           </div>
-          <div class="section-label">Skill</div>
+          <div class="section-label">技能</div>
           <div class="resource-list">
             <span v-for="item in current.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
             <span v-if="!current.skills.length" class="muted">暂无</span>
           </div>
-          <div class="section-label">Tools</div>
+          <div class="section-label">工具</div>
           <div class="resource-list">
-            <span v-for="item in current.tools" :key="item" class="mini-chip">{{ resourceLabel(catalogs.tools, item) }}</span>
+            <span v-for="item in current.tools" :key="item" class="mini-chip">{{ toolLabel(item) }}</span>
             <span v-if="!current.tools.length" class="muted">暂无</span>
           </div>
         </div>
-        <div v-else-if="tab === 'memory'" style="padding: 16px">
-          <div class="detail-excerpt">记忆保存在这条 AgentScope Session 里，这里只读，不能修改员工。</div>
-          <div class="section-label">Session</div>
+        <div v-else style="padding: 16px">
+          <div class="detail-excerpt">记忆保存在这条会话里，这里只读，不能修改员工。</div>
+          <div class="section-label">会话</div>
           <div class="mono">{{ activeConversation?.agentscope_session_id || "发送后才会创建" }}</div>
           <div v-if="latestReply" class="detail-excerpt" style="margin-top: 12px">{{ latestReply }}</div>
-        </div>
-        <div v-else style="padding: 16px">
-          <TaskTable :tasks="tasks" />
         </div>
       </aside>
     </div>
@@ -147,8 +150,8 @@ import {
   sendConversation,
   uploadAttachment,
 } from "../api";
-import TaskTable from "../components/TaskTable.vue";
-import { listTasks, type PlatformTask } from "../platform";
+import TaskRail from "../components/TaskRail.vue";
+import { listTasks, listWorkers, type PlatformTask, type PlatformWorker } from "../platform";
 import type { Attachment, ChatMessage, Conversation, Employee, ResourceCatalog } from "../types";
 
 const route = useRoute();
@@ -165,8 +168,16 @@ const liveTools = ref<{ id: string; name: string; input: string; output: string 
 const dropping = ref(false);
 const seenEventIds = new Map<string, Set<string>>();
 let followToken = 0;
-const tab = ref<"responsibility" | "capability" | "memory" | "tasks">("responsibility");
+const materialsOpen = ref(true);
+const tab = ref<"materials" | "memory" | "tasks">("tasks");
 const tasks = ref<PlatformTask[]>([]);
+const workers = ref<PlatformWorker[]>([]);
+const nameById = computed(() => {
+  const names: Record<string, string> = {};
+  for (const employee of employees.value) names[employee.id] = employee.name;
+  for (const worker of workers.value) names[worker.id] = worker.name;
+  return names;
+});
 const fileInput = ref<HTMLInputElement | null>(null);
 const messageBox = ref<HTMLElement | null>(null);
 const emptyCatalog = (): ResourceCatalog => ({ available: false, items: [] });
@@ -206,6 +217,11 @@ function isImage(type: string) {
 }
 function resourceLabel(catalog: ResourceCatalog, id: string) {
   return catalog.items.find((item) => item.id === id)?.name ?? id;
+}
+function toolLabel(id: string) {
+  if (id === "contact_employee") return "联系其他数字员工";
+  const name = resourceLabel(catalogs.value.tools, id);
+  return name === id ? "工作区工具" : name;
 }
 function takeLiveReply() {
   const text = liveText.value.trim();
@@ -430,6 +446,7 @@ let taskTimer = 0;
 onMounted(async () => {
   const [skills, knowledge, tools] = await Promise.all([getSkills(), getKnowledge(), getTools()]);
   catalogs.value = { skills, knowledge, tools };
+  workers.value = await listWorkers().catch(() => []);
   await loadEmployees();
   if (currentId.value) await selectEmployee(currentId.value);
   taskTimer = window.setInterval(() => void refreshTasks(), 8000);

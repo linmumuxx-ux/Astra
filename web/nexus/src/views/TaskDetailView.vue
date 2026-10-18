@@ -3,26 +3,36 @@
     <ElHeader v-if="task" class="task-header">
       <ElButton :tag="RouterLink" to="/tasks" :icon="ArrowLeft">返回任务列表</ElButton>
       <div class="task-title">
-        <h1>{{ task.title }}</h1>
-        <ElText type="info">{{ employeeName }} · {{ task.id }}</ElText>
+        <p class="task-kicker">任务目标</p>
+        <h1>{{ task.description || task.title }}</h1>
+        <div class="task-title__row">
+          <RuntimeStatusBadge :projection="task" :show-detail="false" />
+          <ElText type="info">{{ task.title }} · {{ task.id }}</ElText>
+        </div>
+        <p class="task-next">下一步：{{ nextStep }}</p>
+        <ElText v-if="sessionFact" type="warning">{{ sessionFact }}</ElText>
       </div>
-      <RuntimeStatusBadge :projection="task" :show-detail="false" />
-      <ElText v-if="sessionFact" type="warning">{{ sessionFact }}</ElText>
       <ElTag v-if="repo" class="repo" type="info" effect="plain" :title="repo.commit">{{ repoSummary }}</ElTag>
-      <ElSelect v-if="binding?.sessions.length" v-model="selectedSession" class="task-header__session" data-testid="session-select" :data-session-id="selectedSession" aria-label="选择 Session">
-        <ElOption v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id" :label="`Session #${binding.sessions.length - index} · ${item.current ? '当前' : '历史只读'}`" />
+      <ElSelect v-if="binding?.sessions.length" v-model="selectedSession" class="task-header__session" data-testid="session-select" :data-session-id="selectedSession" aria-label="选择会话">
+        <ElOption v-for="(item, index) in binding.sessions" :key="item.id" :value="item.id" :label="`会话 #${binding.sessions.length - index} · ${item.current ? '当前' : '历史只读'}`" />
       </ElSelect>
       <div class="task-header__actions">
-        <ElButton :icon="RefreshCw" :loading="loading" :disabled="busy || loading" data-testid="task-detail-refresh" @click="load">刷新</ElButton>
-        <ElButton v-if="!task.current_session_id && !task.pending_message_id" type="primary" :disabled="busy || loading" @click="action('start')">启动任务</ElButton>
-        <ElButton v-if="canFinish" type="primary" :disabled="busy || loading" @click="action('confirm')">确认完成</ElButton>
-        <ElButton v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" type="danger" :disabled="busy || loading" @click="action('stop')">终止任务</ElButton>
-        <ElButton v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" :disabled="busy || loading" @click="action('restart')">重新开始（新 Session）</ElButton>
-        <ElButton v-if="task.workspace" @click="openChanges">代码变更</ElButton>
-        <ElButton v-if="task.current_session_id" data-testid="task-review-open" @click="showReview = true">总结与经验</ElButton>
-        <ElButton :icon="Info" @click="showInfo = true">任务信息</ElButton>
-        <ElButton data-testid="task-events-open" @click="openEvents">实时事件</ElButton>
-        <ElButton data-testid="task-usage-open" @click="openUsage">用量</ElButton>
+        <ElButton v-if="primaryDetail" type="primary" :disabled="busy || loading" :loading="loading && primaryDetail.key === 'refresh'" @click="primaryDetail.run()">{{ primaryDetail.label }}</ElButton>
+        <ElDropdown trigger="click" @command="onDetailCommand">
+          <ElButton :disabled="busy">更多</ElButton>
+          <template #dropdown>
+            <ElDropdownMenu>
+              <ElDropdownItem command="refresh" data-testid="task-detail-refresh">刷新</ElDropdownItem>
+              <ElDropdownItem v-if="task.status === 'RUNNING' || task.status === 'WAITING' || task.pending_message_id" command="stop">终止任务</ElDropdownItem>
+              <ElDropdownItem v-if="task.current_session_id && task.status !== 'RUNNING' && !task.pending_message_id" command="restart">重新开始</ElDropdownItem>
+              <ElDropdownItem v-if="task.workspace" command="changes">代码变更</ElDropdownItem>
+              <ElDropdownItem v-if="task.current_session_id" command="review" data-testid="task-review-open">总结与经验</ElDropdownItem>
+              <ElDropdownItem command="info">任务信息</ElDropdownItem>
+              <ElDropdownItem command="events" data-testid="task-events-open">实时事件</ElDropdownItem>
+              <ElDropdownItem command="usage" data-testid="task-usage-open">用量</ElDropdownItem>
+            </ElDropdownMenu>
+          </template>
+        </ElDropdown>
       </div>
     </ElHeader>
 
@@ -88,29 +98,35 @@
       </template>
     </ElDrawer>
     <ElDrawer v-if="task" v-model="showInfo" class="task-info" title="任务信息" size="min(480px, 100%)">
-      <ElDescriptions :column="1" border size="small">
-        <ElDescriptionsItem label="任务编号">{{ task.id }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="任务类型">{{ taskTypeLabel(task.task_type) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="任务分类">{{ categoryName }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="优先级">{{ priorityLabel(task.priority) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="Worker">{{ employeeName }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="责任员工">{{ responsibleName }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="来源会话">{{ task.source_session_id || '无' }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="来源对话">{{ task.source_conversation_id || '无' }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="当前状态">{{ task.runtime_status_label }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="Session 结果">{{ sessionFact || '尚未开始' }}</ElDescriptionsItem>
-        <ElDescriptionsItem v-if="task.human_required_reason" label="等待原因">{{ task.human_required_reason }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="创建时间">{{ formatTime(task.created_at) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="开始时间">{{ formatTime(task.started_at) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="运行时长">{{ duration }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="任务描述"><p class="task-info__paragraph">{{ task.description }}</p></ElDescriptionsItem>
-        <ElDescriptionsItem label="验收标准">
-          <ol v-if="task.acceptance_criteria.length" class="task-info__criteria"><li v-for="criterion in task.acceptance_criteria" :key="criterion.id">{{ criterion.content }}</li></ol>
-          <span v-else>未设置验收标准</span>
-        </ElDescriptionsItem>
-        <ElDescriptionsItem label="工作目录"><code class="task-info__path">{{ binding?.runtime.workspace || '尚未准备' }}</code></ElDescriptionsItem>
-        <ElDescriptionsItem label="执行会话">{{ selectedSession || '尚未创建' }}</ElDescriptionsItem>
-      </ElDescriptions>
+      <dl class="task-facts">
+        <div><dt>任务目标</dt><dd>{{ task.description || '未写目标' }}</dd></div>
+        <div><dt>当前状态</dt><dd>{{ task.runtime_status_label }}</dd></div>
+        <div><dt>下一步</dt><dd>{{ nextStep }}</dd></div>
+        <div><dt>问谁</dt><dd>{{ responsibleName }}</dd></div>
+        <div><dt>谁执行</dt><dd>{{ employeeName }}</dd></div>
+        <div>
+          <dt>验收标准</dt>
+          <dd>
+            <ol v-if="task.acceptance_criteria.length" class="task-info__criteria"><li v-for="criterion in task.acceptance_criteria" :key="criterion.id">{{ criterion.content }}</li></ol>
+            <span v-else>未设置验收标准</span>
+          </dd>
+        </div>
+      </dl>
+      <ElCollapse>
+        <ElCollapseItem title="技术信息" name="tech">
+          <dl class="task-facts">
+            <div><dt>任务编号</dt><dd>{{ task.id }}</dd></div>
+            <div><dt>类型 / 分类</dt><dd>{{ taskTypeLabel(task.task_type) }} · {{ categoryName }}</dd></div>
+            <div><dt>优先级</dt><dd>{{ priorityLabel(task.priority) }}</dd></div>
+            <div><dt>会话结果</dt><dd>{{ sessionFact || '尚未开始' }}</dd></div>
+            <div v-if="task.human_required_reason"><dt>等待原因</dt><dd>{{ task.human_required_reason }}</dd></div>
+            <div><dt>时间</dt><dd>创建 {{ formatTime(task.created_at) }} · 开始 {{ formatTime(task.started_at) }} · {{ duration }}</dd></div>
+            <div><dt>来源</dt><dd>{{ task.source_session_id || '无会话' }} · {{ task.source_conversation_id || '无对话' }}</dd></div>
+            <div><dt>工作目录</dt><dd><code class="task-info__path">{{ binding?.runtime.workspace || '尚未准备' }}</code></dd></div>
+            <div><dt>执行会话</dt><dd>{{ selectedSession || '尚未创建' }}</dd></div>
+          </dl>
+        </ElCollapseItem>
+      </ElCollapse>
     </ElDrawer>
     <ElDrawer v-model="showEvents" title="实时事件" size="min(640px, 100%)" data-testid="task-events-drawer">
       <ElEmpty v-if="!events.length" description="还没有任务事件" />
@@ -144,12 +160,12 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowLeft, Info, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft } from 'lucide-vue-next'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElContainer, ElDescriptions, ElDescriptionsItem, ElDrawer, ElEmpty, ElHeader, ElMain, ElOption, ElSelect, ElTable, ElTableColumn, ElTabPane, ElTabs, ElTag, ElText, ElTimeline, ElTimelineItem } from 'element-plus'
+import { ElAlert, ElButton, ElCollapse, ElCollapseItem, ElContainer, ElDrawer, ElDropdown, ElDropdownItem, ElDropdownMenu, ElEmpty, ElHeader, ElMain, ElOption, ElSelect, ElTable, ElTableColumn, ElTabPane, ElTabs, ElTag, ElText, ElTimeline, ElTimelineItem } from 'element-plus'
 import { api } from '@/api/client'
 import type { AstraEvent, Task, TaskReview, TaskUsage, TaskWorkspaceBinding } from '@/api/types'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
@@ -255,6 +271,39 @@ const sessionFact = computed(() => {
 const canFinish = computed(() => task.value?.status === 'WAITING'
   && currentSession.value?.status === 'SUCCEEDED'
   && !task.value.pending_message_id)
+const nextStep = computed(() => {
+  const current = task.value
+  if (!current) return ''
+  if (current.pending_message_id) return '有一条输入还没确认，先核对并重试'
+  if (current.human_required_reason) return current.human_required_reason
+  if (!current.current_session_id) return '启动任务，让 Worker 开始执行'
+  if (canFinish.value) return '本轮已结束，请确认是否完成'
+  if (current.status === 'RUNNING') return 'Worker 正在执行，直接看下面的工作区'
+  if (current.status === 'WAITING') return sessionFact.value || '等待处理后再继续'
+  if (current.status === 'SUCCEEDED') return '任务已完成，可以查看总结'
+  if (current.status === 'FAILED') return '执行失败，可以重新开始'
+  if (current.status === 'CANCELED') return '任务已取消'
+  return sessionFact.value || '查看当前状态'
+})
+const primaryDetail = computed(() => {
+  const current = task.value
+  if (!current) return null
+  if (!current.current_session_id && !current.pending_message_id) return { key: 'start', label: '启动任务', run: () => action('start') }
+  if (canFinish.value) return { key: 'confirm', label: '确认完成', run: () => action('confirm') }
+  if (current.pending_message_id) return { key: 'retry', label: '核对并重试', run: () => action('retry-submission') }
+  return { key: 'refresh', label: '刷新状态', run: () => load() }
+})
+function onDetailCommand(command: string | number) {
+  const name = String(command)
+  if (name === 'refresh') void load()
+  else if (name === 'stop') void action('stop')
+  else if (name === 'restart') void action('restart')
+  else if (name === 'changes') openChanges()
+  else if (name === 'review') showReview.value = true
+  else if (name === 'info') showInfo.value = true
+  else if (name === 'events') void openEvents()
+  else if (name === 'usage') void openUsage()
+}
 const showChanges = ref(false)
 const changesLoading = ref(false)
 const changesError = ref('')
@@ -357,10 +406,17 @@ onBeforeUnmount(() => { clearInterval(timer); diffRequest?.abort(); closeEvents(
 </script>
 
 <style scoped>
-.task-detail{--el-border-color-lighter:var(--astra-border);height:calc(100vh - 260px);min-height:480px;overflow:hidden}
-.task-header{--el-header-height:auto;display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
-.task-title{flex:1;min-width:200px;display:grid;gap:3px}
-.task-title h1{margin:0;font-size:var(--astra-font-section);line-height:normal}
+.task-detail{--el-border-color-lighter:var(--astra-border);height:calc(100vh - 176px);min-height:480px;overflow:hidden}
+.task-header{--el-header-height:auto;display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;padding:12px 20px;border-bottom:1px solid var(--astra-border);background:var(--astra-bg-panel)}
+.task-title{flex:1;min-width:240px;display:grid;gap:4px}
+.task-kicker{margin:0;color:var(--astra-text-muted)}
+.task-title h1{display:-webkit-box;overflow:hidden;margin:0;font-size:var(--astra-font-section);line-height:1.4;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.task-title__row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.task-next{margin:0;line-height:1.5}
+.task-facts{display:grid;gap:12px;margin:0 0 16px}
+.task-facts div{display:grid;gap:2px}
+.task-facts dt{color:var(--astra-text-muted)}
+.task-facts dd{margin:0;line-height:1.55}
 .task-header__session{width:220px;flex:none}
 .task-header__actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-left:auto}
 .repo{max-width:400px}

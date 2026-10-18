@@ -31,7 +31,7 @@
         </ElRadioGroup>
       </ElFormItem>
       <ElFormItem label="任务分类" prop="category_id">
-        <ElSelect v-model="form.category_id" placeholder="请选择">
+        <ElSelect v-model="form.category_id" placeholder="请选择分类">
           <ElOption v-for="item in store.categories" :key="item.id" :value="item.id" :label="item.name" />
         </ElSelect>
       </ElFormItem>
@@ -76,7 +76,8 @@
         <ElButton :icon="Plus" plain @click="addCriterion">添加验收标准</ElButton>
       </ElFormItem>
 
-      <ElDivider content-position="left">Worker</ElDivider>
+      <ElDivider content-position="left">谁来执行，问谁</ElDivider>
+      <ElText type="info">Worker 是实际执行任务的运行实例。责任员工是你要询问进度的数字员工。先选分类，再选能做这类任务的 Worker。</ElText>
 
       <ElFormItem prop="employee_id">
         <template #label>分配方式 <FieldHelp label="分配方式" help="自动分配会综合 Worker 启用状态、空闲状态、任务类型和任务分类。" /></template>
@@ -147,7 +148,7 @@ function criteriaFrom(task?: Task | null) {
 const form = reactive({
   title: props.task?.title ?? '',
   task_type: (props.task?.task_type ?? 'ISSUE') as TaskType,
-  category_id: props.task?.category_id ?? store.categories[0]?.id ?? '',
+  category_id: props.task?.category_id ?? '',
   priority: (props.task?.priority ?? 'MEDIUM') as TaskPriority,
   description: props.task?.description ?? '',
   criteria: criteriaFrom(props.task),
@@ -186,7 +187,7 @@ const formRules: FormRules = {
   description: [{ required: true, message: '请输入任务描述', trigger: 'blur' }],
 }
 
-// 分类默认选中第一项沿用旧表单逻辑；列表数据晚于抽屉打开时补齐，并同步基线。
+// 不预选第一项分类。列表晚到时只确立基线，不替用户选分类。
 watch(() => store.categories.map((item) => item.id).join('\0'), () => syncBaseline())
 onMounted(async () => {
   await nextTick()

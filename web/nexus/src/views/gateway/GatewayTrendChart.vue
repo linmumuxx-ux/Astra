@@ -28,9 +28,9 @@ let chart: echarts.ECharts | null = null
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 const ariaLabel = computed(() => {
-  if (props.mode === 'tokens') return 'API 中转 Token 使用趋势图'
-  if (props.mode === 'value') return `API 中转 ${props.valueName} 趋势图`
-  return 'API 中转请求量趋势图'
+  if (props.mode === 'tokens') return 'API 网关 Token 使用趋势图'
+  if (props.mode === 'value') return `API 网关 ${props.valueName} 趋势图`
+  return 'API 网关请求量趋势图'
 })
 
 function parseTime(value: string) {

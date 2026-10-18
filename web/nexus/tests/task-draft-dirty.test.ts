@@ -17,12 +17,13 @@ function blank(): TaskDraftSnapshot {
   }
 }
 
-test('opening the create drawer is clean after categories arrive', () => {
+test('opening the create drawer stays uncategorized and clean', () => {
   const opened = applyDefaultCategory(blank(), [], '')
+  assert.equal(opened.draft.category_id, '')
   assert.equal(taskDraftSnapshot(opened.draft), opened.baseline)
 
   const settled = applyDefaultCategory(opened.draft, ['testing-platform'], opened.baseline)
-  assert.equal(settled.draft.category_id, 'testing-platform')
+  assert.equal(settled.draft.category_id, '')
   assert.equal(taskDraftSnapshot(settled.draft), settled.baseline)
 })
 

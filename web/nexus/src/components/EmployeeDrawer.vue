@@ -16,10 +16,12 @@
         </el-select>
       </el-form-item>
       <el-form-item label="职责说明" required>
-        <el-input v-model="form.description" type="textarea" :rows="3" />
+        <el-input v-model="form.description" type="textarea" :rows="3" placeholder="例如：负责测试平台的问题定位和需求澄清，不直接改生产配置。" />
+        <div class="muted" style="margin-top: 6px">职责是这个人负责什么。同事和任务会按这段话找到他。</div>
       </el-form-item>
       <el-form-item label="工作指令" required>
-        <el-input v-model="form.instructions" type="textarea" :rows="5" />
+        <el-input v-model="form.instructions" type="textarea" :rows="5" placeholder="例如：先确认现象和影响范围，信息不足时追问，需要同事时再联系对方。" />
+        <div class="muted" style="margin-top: 6px">工作指令是他收到消息后怎么做。职责说范围，指令说步骤。</div>
       </el-form-item>
       <el-form-item label="模型路由">
         <el-select v-model="form.model_route_id" clearable filterable placeholder="选择已启用的路由" style="width: 100%">
@@ -39,9 +41,10 @@
           style="width: 100%"
           :disabled="!catalogs.knowledge.available"
         >
-          <el-option v-for="item in knowledgeOptions" :key="item.id" :label="`${item.name} · ${item.id}`" :value="item.id" />
+          <el-option v-for="item in knowledgeOptions" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>
-        <div class="muted" style="margin-top: 6px">知识库来自 AgentScope。读不到目录时不能新增。</div>
+        <div class="muted" style="margin-top: 6px">知识库当前读不到时不能新选。已保存的选择会保留，恢复目录后再改。</div>
+        <el-button v-if="!catalogs.knowledge.available" style="margin-top: 8px" @click="emit('reload-catalogs')">重新读取知识库</el-button>
       </el-form-item>
       <el-form-item label="技能">
         <el-select
@@ -52,7 +55,7 @@
           style="width: 100%"
           :disabled="!skillOptions.length"
         >
-          <el-option v-for="item in skillOptions" :key="item.id" :label="`${item.name} · ${item.id}`" :value="item.id" />
+          <el-option v-for="item in skillOptions" :key="item.id" :label="item.name" :value="item.id" />
         </el-select>
         <div class="muted" style="margin-top: 6px">任务管理是内置技能。其余技能仍来自 AgentScope，这里不能编写技能正文。</div>
       </el-form-item>
@@ -65,10 +68,10 @@
           style="width: 100%"
           :disabled="!catalogs.tools.available"
         >
-          <el-option v-for="item in toolOptions" :key="item.id" :label="item.name" :value="item.id" />
+          <el-option v-for="item in toolOptions" :key="item.id" :label="toolLabel(item)" :value="item.id" />
         </el-select>
         <div class="muted" style="margin-top: 6px">
-          可选范围是工作区自带工具和 contact_employee。不能填写目录外的名称。
+          只能选择工作区里已经提供的工具，包括联系其他数字员工。不能手填目录外的名称。
         </div>
       </el-form-item>
     </el-form>
@@ -103,6 +106,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   save: [body: Omit<Employee, "id" | "agentscope_agent_id" | "mailbox_session_id">];
+  "reload-catalogs": [];
 }>();
 
 const avatars = ["👩🏻‍💻", "🧑🏻‍🔬", "👩🏽‍🚀", "🤖", "🧑🏽‍💻"];
@@ -174,6 +178,12 @@ function optionsFor(catalog: ResourceCatalog, selected: string[]) {
     if (!options.has(id)) options.set(id, { id, name: id });
   }
   return [...options.values()];
+}
+
+function toolLabel(item: { id: string; name: string }) {
+  if (item.id === "contact_employee") return "联系其他数字员工";
+  if (item.name && item.name !== item.id) return item.name;
+  return "工作区工具";
 }
 
 function defaultTools(): string[] {

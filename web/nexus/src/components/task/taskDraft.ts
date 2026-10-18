@@ -25,19 +25,14 @@ export function taskDraftSnapshot(draft: TaskDraftSnapshot): string {
 }
 
 /**
- * 分类列表可能晚于抽屉打开。默认分类补上之前不能把空分类写进基线，
- * 否则未编辑也会被当成脏数据。用户已经改过表单时，只补分类、不刷新基线。
+ * 创建任务不预选分类。分类列表晚于抽屉打开时也不要改用户还没选的值，
+ * 否则空表单会被当成已修改。编辑已有任务时分类本来就有值。
  */
 export function applyDefaultCategory(
   draft: TaskDraftSnapshot,
   categoryIds: string[],
   baseline: string,
 ): { draft: TaskDraftSnapshot; baseline: string } {
-  if (draft.category_id || categoryIds.length === 0) {
-    return { draft, baseline: baseline || taskDraftSnapshot(draft) }
-  }
-  const before = taskDraftSnapshot(draft)
-  const next = { ...draft, category_id: categoryIds[0] }
-  const untouched = !baseline || before === baseline
-  return { draft: next, baseline: untouched ? taskDraftSnapshot(next) : baseline }
+  void categoryIds
+  return { draft, baseline: baseline || taskDraftSnapshot(draft) }
 }
