@@ -46,7 +46,7 @@
 
         <section v-if="detail.status === 'candidate'" class="detail-section" aria-label="候选经验来源与证据">
           <h3>来源证据</h3>
-          <ElText type="info">用于判断这条候选经验是否可信；仅展示实际存在的执行信息。</ElText>
+          
           <ElAlert v-if="detail.review_note" class="candidate-review-note" type="warning" show-icon :closable="false">
             <template #title>审核意见</template>
             <p class="candidate-review-note__body">{{ detail.review_note }}</p>

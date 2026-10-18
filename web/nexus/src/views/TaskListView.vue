@@ -1,6 +1,6 @@
 <template>
   <div class="astra-page" data-testid="task-list-page">
-    <AstraPageHeader title="任务管理" description="现在有哪些任务，哪些正在正常运行，哪些需要人工处理。" testid="task-header">
+    <AstraPageHeader title="任务大厅" testid="task-header">
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="task-refresh" @click="store.refresh()">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" data-testid="task-create" @click="createOpen = true">创建任务</ElButton>
@@ -70,7 +70,7 @@
             <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.tasks.length ? '暂无符合条件的任务' : '暂无任务'">
-            <ElText type="info">{{ store.tasks.length ? '当前筛选条件下没有找到任务。' : '创建第一个任务后即可开始管理。' }}</ElText>
+            <ElText type="info">{{ store.tasks.length ? '没有匹配的任务' : '暂无任务' }}</ElText>
             <ElButton v-if="store.tasks.length" @click="resetFilters">清除筛选</ElButton>
             <ElButton v-else type="primary" :icon="Plus" @click="createOpen = true">创建任务</ElButton>
           </ElEmpty>

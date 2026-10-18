@@ -109,7 +109,7 @@
         </ElTableColumn>
         <template #empty>
           <ElEmpty v-if="!loading" :image-size="72" :description="hasFilters ? '没有匹配的知识' : '这里还没有知识'">
-            <ElText type="info">{{ hasFilters ? '调整搜索或筛选条件后重试。' : `当前位置：${spacePath}。你可以新建知识，或将已有知识移动到这里。` }}</ElText>
+            <ElText type="info">{{ hasFilters ? '没有匹配的知识' : '暂无知识' }}</ElText>
             <div class="empty-actions">
               <ElButton v-if="!hasFilters && canManage" type="primary" :icon="Plus" @click="emit('create')">新建知识</ElButton>
               <ElButton v-else-if="hasFilters" @click="emit('clear-filter')">清除筛选</ElButton>

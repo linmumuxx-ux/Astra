@@ -30,7 +30,7 @@
       <ElCard shadow="never">
         <template #header>
           <div class="employee-detail__card-header">
-            <div class="employee-detail__card-title"><h3>当前工作</h3><ElText size="small" type="info">任务状态、实时进展和运行时长</ElText></div>
+            <div class="employee-detail__card-title"><h3>当前工作</h3></div>
             <RouterLink v-if="currentTask" class="employee-detail__link" :to="`/tasks/${currentTask.id}`">查看任务 <ArrowUpRight :size="13" /></RouterLink>
           </div>
         </template>
@@ -74,7 +74,7 @@
 
       <ElCard shadow="never" class="employee-detail__panel--wide">
         <template #header>
-          <div class="employee-detail__card-title"><h3>历史任务</h3><ElText size="small" type="info">已完成、未完成和已取消任务的消耗均会保留</ElText></div>
+          <div class="employee-detail__card-title"><h3>历史任务</h3></div>
         </template>
         <ElTable :data="historicalTasks" size="small" @row-click="openTask">
           <ElTableColumn label="任务" min-width="240">
@@ -170,7 +170,7 @@
           <ElTableColumn label="成功" prop="success_count" width="90" align="right" />
           <ElTableColumn label="失败" prop="failure_count" width="90" align="right" />
           <ElTableColumn label="调用次数" prop="call_count" width="100" align="right" />
-          <template #empty><ElEmpty :image-size="56" description="暂无工具数据，Agent 返回工具事件后会在此汇总。" /></template>
+          <template #empty><ElEmpty :image-size="56" description="暂无工具数据" /></template>
         </ElTable>
       </ElCard>
     </section>

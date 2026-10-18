@@ -80,7 +80,7 @@
             <ElButton :icon="RefreshCw" @click="store.refresh()">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!store.loading" :image-size="72" :description="store.employees.length ? '没有匹配 Worker' : '暂无 Worker'">
-            <ElText type="info">{{ store.employees.length ? '调整搜索或筛选条件后重试。' : '创建第一位 Worker 后即可开始管理。' }}</ElText>
+            <ElText type="info">{{ store.employees.length ? '没有匹配的 Worker' : '暂无 Worker' }}</ElText>
             <ElButton v-if="!store.employees.length" type="primary" :icon="Plus" @click="beginCreate">新建 Worker</ElButton>
           </ElEmpty>
         </template>

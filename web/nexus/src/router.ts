@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory, type LocationQueryRaw, type RouteLocationGeneric } from "vue-router";
 import EmployeesView from "./views/EmployeesView.vue";
-import ChatView from "./views/ChatView.vue";
-import TaskListView from "./views/TaskListView.vue";
+import DigitalEmployeeChatView from "./views/DigitalEmployeeChatView.vue";
+import TaskHallView from "./views/TaskHallView.vue";
 import TaskDetailView from "./views/TaskDetailView.vue";
 import EmployeeListView from "./views/EmployeeListView.vue";
 import EmployeeDetailView from "./views/EmployeeDetailView.vue";
@@ -50,8 +50,8 @@ export const router = createRouter({
       path: "/",
       redirect: (to: RouteLocationGeneric) => ({ path: "/chat", query: to.query }),
     },
-    { path: "/chat", name: "chat", component: ChatView },
-    { path: "/tasks", name: "tasks", component: TaskListView },
+    { path: "/chat", name: "chat", component: DigitalEmployeeChatView },
+    { path: "/tasks", name: "tasks", component: TaskHallView },
     { path: "/tasks/:id", name: "task-detail", component: TaskDetailView },
     { path: "/library", name: "library", component: DigitalLibraryView },
     {

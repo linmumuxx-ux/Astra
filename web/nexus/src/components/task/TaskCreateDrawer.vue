@@ -77,7 +77,7 @@
       </ElFormItem>
 
       <ElDivider content-position="left">谁来执行，问谁</ElDivider>
-      <ElText type="info">Worker 是实际执行任务的运行实例。责任员工是你要询问进度的数字员工。先选分类，再选能做这类任务的 Worker。</ElText>
+      
 
       <ElFormItem prop="employee_id">
         <template #label>分配方式 <FieldHelp label="分配方式" help="自动分配会综合 Worker 启用状态、空闲状态、任务类型和任务分类。" /></template>

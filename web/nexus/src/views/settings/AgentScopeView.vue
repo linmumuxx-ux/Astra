@@ -23,6 +23,14 @@
           title="功能提示"
           description="当前部署未提供可嵌入的 AgentScope 管理界面。Skill / MCP 管理暂不可用。"
         />
+        <section v-for="block in catalogBlocks" :key="block.key" class="agentscope-catalog" :data-testid="`agentscope-${block.key}`">
+          <h3>{{ block.label }}（只读）</h3>
+          <ElText v-if="!block.catalog.available" type="warning">AgentScope 不可达，无法读取</ElText>
+          <ElText v-else-if="!block.catalog.items.length" type="info">暂无</ElText>
+          <div v-else class="agentscope-chips">
+            <ElTag v-for="item in block.catalog.items" :key="item.id" effect="plain">{{ item.name }}</ElTag>
+          </div>
+        </section>
       </div>
     </ElCard>
   </div>
@@ -31,11 +39,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElAlert, ElCard, ElTag, ElText } from 'element-plus'
-import { getRuntime } from '@/api'
-import type { RuntimeStatus } from '@/types'
+import { getRuntime, getSkills, getTools } from '@/api'
+import type { ResourceCatalog, RuntimeStatus } from '@/types'
 
 const runtime = ref<RuntimeStatus | null>(null)
 const loading = ref(true)
+const skills = ref<ResourceCatalog>({ available: false, items: [] })
+const tools = ref<ResourceCatalog>({ available: false, items: [] })
+const catalogBlocks = computed(() => [
+  { key: 'skills', label: '已注册 Skill', catalog: skills.value },
+  { key: 'tools', label: '已注册工具', catalog: tools.value },
+])
 
 const statusText = computed(() => {
   if (!runtime.value) return loading.value ? '检查中' : '未连接'
@@ -59,6 +73,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  ;[skills.value, tools.value] = await Promise.all([
+    getSkills().catch(() => ({ available: false, items: [] })),
+    getTools().catch(() => ({ available: false, items: [] })),
+  ])
 })
 </script>
 
@@ -87,6 +105,8 @@ onMounted(async () => {
   font-size: 16px;
   font-weight: 700;
 }
+.agentscope-catalog h3 { margin: 0 0 8px; font-size: 14px; }
+.agentscope-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .agentscope-body {
   display: flex;
   flex-direction: column;
