@@ -38,7 +38,7 @@
           class="log-filter__error"
           data-testid="log-filter-error-code"
           aria-label="错误码筛选"
-          placeholder="错误原因或错误码"
+          placeholder="错误码"
           clearable
         />
         <ElSelect v-model="pageSize" class="log-filter__size" data-testid="log-filter-size" aria-label="每页条数">

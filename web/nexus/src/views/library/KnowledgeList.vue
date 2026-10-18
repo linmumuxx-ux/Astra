@@ -104,7 +104,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <RowMenu primary="查看" :items="rowMenu(row)" @primary="openRow(row)" @command="(command) => onRowCommand(row, command)" />
+            <RowMenu primary="查看" :aria-label="row.title" :items="rowMenu(row)" @primary="openRow(row)" @command="(command) => onRowCommand(row, command)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -243,7 +243,7 @@ const statusTag = (value: KnowledgeStatus) => (statusMeta[value] ?? statusMeta.d
 const statusLabel = (value: KnowledgeStatus) => (statusMeta[value] ?? { label: value, tag: 'info' as const }).label
 const verificationTag = (value: VerificationStatus) => (verificationMeta[value] ?? verificationMeta.unverified).tag
 const verificationLabel = (value: VerificationStatus) => (verificationMeta[value] ?? { label: value, tag: 'info' as const }).label
-const metaText = (row: Row) => [typeLabel(row.type), row.space_name ?? '未归类', formatDate(row.updated_at)].join(' · ')
+const metaText = (row: Row) => [row.id, typeLabel(row.type), row.space_name ?? '未归类', formatDate(row.updated_at)].filter(Boolean).join(' · ')
 const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
 </script>
 

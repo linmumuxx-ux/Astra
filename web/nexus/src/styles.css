@@ -123,6 +123,6 @@ button, input, textarea { font: inherit; }
 .skill-tag { font-size: 11px; color: #286a4b; background: #edf8f2; border: 1px solid #d5eade; padding: 4px 9px; border-radius: 7px; }
 .form-cap { font-size: 10px; letter-spacing: 1.4px; font-weight: 750; color: #319875; margin: 8px 0 12px; }
 @media (max-width: 1000px) {
-  .management-grid, .workspace { grid-template-columns: 1fr; }
+  .management-grid, .workspace, .workspace.workspace--focus { grid-template-columns: 1fr; }
   .workspace { height: auto; }
 }

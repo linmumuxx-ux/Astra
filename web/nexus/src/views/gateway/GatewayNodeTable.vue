@@ -31,6 +31,7 @@
       <template #default="{ row }">
         <RowMenu
           primary="详情"
+          :aria-label="(row as GatewayNode).name"
           :disabled="busyId === row.id"
           :items="nodeMenu(row as GatewayNode)"
           @primary="$emit('detail', row as GatewayNode)"

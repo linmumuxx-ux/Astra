@@ -63,6 +63,7 @@
         <template #default="{ row }">
           <RowMenu
             primary="编辑"
+            :aria-label="(row as GatewayKey).name"
             :disabled="busy"
             :items="[{ command: 'revoke', label: '吊销', disabled: Boolean(row.revoked_at) }, { command: 'delete', label: '删除' }]"
             @primary="openEdit(row as GatewayKey)"

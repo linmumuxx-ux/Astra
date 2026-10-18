@@ -52,10 +52,17 @@
       >
         <ElTableColumn label="名称" min-width="220">
           <template #default="{ row }">
-            <div class="pool-cell">
+            <button
+              type="button"
+              class="pool-pick"
+              tabindex="0"
+              :aria-selected="row.id === routeFilters.pool"
+              :aria-label="`选择 ${row.name} 的路由`"
+              @click.stop="selectPool(row as GatewayPool)"
+            >
               <strong>{{ row.name }}</strong>
               <span class="pool-cell__desc" :title="row.description">{{ row.description || '—' }}</span>
-            </div>
+            </button>
           </template>
         </ElTableColumn>
         <ElTableColumn label="权重" prop="weight" width="90" />
@@ -67,7 +74,7 @@
         <ElTableColumn label="排序" prop="sort_order" width="80" />
         <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <RowMenu primary="编辑" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openPoolEdit(row as GatewayPool)" @command="removePool(row as GatewayPool)" />
+            <RowMenu primary="编辑" :aria-label="(row as GatewayPool).name" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openPoolEdit(row as GatewayPool)" @command="removePool(row as GatewayPool)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -148,7 +155,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <RowMenu primary="编辑" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openRouteEdit(row as GatewayRoute)" @command="removeRoute(row as GatewayRoute)" />
+            <RowMenu primary="编辑" :aria-label="(row as GatewayRoute).model" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openRouteEdit(row as GatewayRoute)" @command="removeRoute(row as GatewayRoute)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -643,6 +650,8 @@ onMounted(load)
 .gateway-pools-routes__card-title { display: grid; gap: 2px; margin-right: auto; }
 .gateway-pools-routes__card-title h4 { margin: 0; color: var(--astra-text-primary); }
 .gateway-pools-routes__footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 10px; }
+.pool-pick { display: grid; gap: 2px; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.pool-pick:focus-visible { outline: 2px solid var(--astra-primary); outline-offset: 2px; }
 .pool-cell { display: grid; gap: 2px; min-width: 0; }
 .pool-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
 .pool-cell__desc { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }

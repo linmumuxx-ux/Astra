@@ -64,6 +64,7 @@
           <template #default="{ row }">
             <RowMenu
               primary="编辑"
+              :aria-label="(row as TaskCategory).name"
               :disabled="busyId === row.id"
               :items="[{ command: 'toggle', label: row.enabled ? '停用' : '启用' }]"
               @primary="beginEdit(row as TaskCategory)"

@@ -66,6 +66,7 @@
           <template #default="{ row }">
             <RowMenu
               primary="查看"
+              :aria-label="(row as EmployeeViewModel).name"
               :disabled="busyId === row.id"
               :items="workerMenu(row as EmployeeViewModel)"
               @primary="openDetail(row.id)"

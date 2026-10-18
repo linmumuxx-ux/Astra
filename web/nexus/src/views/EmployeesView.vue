@@ -81,7 +81,7 @@
               <span v-for="item in selected.skills" :key="item" class="mini-chip">{{ resourceLabel(catalogs.skills, item) }}</span>
               <span v-for="item in selected.tools" :key="item" class="mini-chip">{{ toolLabel(item) }}</span>
             </div>
-            <div class="section-label">会话标识</div>
+            <div class="section-label">Agent 标识</div>
             <div class="mono">{{ selected.agentscope_agent_id || "尚未创建" }}</div>
             <el-button style="margin-top: 14px" @click="openEdit(selected)">编辑</el-button>
           </template>

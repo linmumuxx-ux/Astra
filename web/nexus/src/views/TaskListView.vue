@@ -61,7 +61,7 @@
         </ElTableColumn>
         <ElTableColumn label="操作" width="132">
           <template #default="{ row }">
-            <RowMenu :primary="primaryFor(row as Task).label" :items="moreFor(row as Task)" @primary="runPrimary(row as Task)" @command="(command) => runCommand(row as Task, command)" />
+            <RowMenu :aria-label="(row as Task).title" :primary="primaryFor(row as Task).label" :items="moreFor(row as Task)" @primary="runPrimary(row as Task)" @command="(command) => runCommand(row as Task, command)" />
           </template>
         </ElTableColumn>
         <template #empty>
