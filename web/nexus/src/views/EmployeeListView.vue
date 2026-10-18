@@ -1,6 +1,6 @@
 <template>
   <div class="astra-page" data-testid="employee-list-page">
-    <AstraPageHeader title="Agent Worker" description="集中管理 Worker 职责、运行状态与执行配置" testid="employee-header">
+    <AstraPageHeader title="Worker" description="Worker 负责执行任务。数字员工负责沟通，不在这个列表里。" testid="employee-header">
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="employee-refresh" @click="store.refresh()">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" data-testid="employee-create" @click="beginCreate">新建 Worker</ElButton>
@@ -29,20 +29,19 @@
       </template>
     </AstraFilterPanel>
 
-    <section class="astra-table-panel astra-table-panel--clickable" aria-label="Agent Worker 列表">
+    <section class="astra-table-panel astra-table-panel--clickable" aria-label="Worker 列表">
       <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="onRowClick">
-        <ElTableColumn label="Worker" width="230">
+        <ElTableColumn label="Worker" min-width="220">
           <template #default="{ row }">
             <div class="employee-cell">
               <EmployeeAvatar :employee="row.employee" size="small" />
               <span class="employee-cell__meta">
                 <strong>{{ row.name }}</strong>
-                <ElText type="info" truncated :title="row.employee.description">{{ row.employee.description || '暂无职责说明' }}</ElText>
+                <ElText type="info" class="employee-cell__id">{{ row.id }}</ElText>
               </span>
             </div>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="编号" prop="id" width="130" />
         <ElTableColumn label="职责" prop="role" min-width="140" show-overflow-tooltip />
         <ElTableColumn label="运行状态" width="120">
           <template #default="{ row }">
@@ -52,44 +51,27 @@
         <ElTableColumn label="当前任务" min-width="210">
           <template #default="{ row }">
             <RouterLink v-if="row.currentTask" class="task-link" :to="`/tasks/${row.currentTask.id}`" :title="row.currentTaskName" @click.stop>
-              <strong>{{ row.currentTask.id }} · {{ row.currentTask.runtime_status_label }}</strong>
-              <ElText type="info" truncated>{{ row.currentTaskName }}</ElText>
+              <strong>{{ row.currentTaskName }}</strong>
+              <ElText type="info" truncated>{{ row.currentTask.runtime_status_label }}</ElText>
             </RouterLink>
             <ElText v-else type="info">—</ElText>
           </template>
-        </ElTableColumn>
-        <ElTableColumn label="执行器 / 模型" min-width="170">
-          <template #default="{ row }">
-            <div class="environment-cell">
-              <strong>{{ environmentLabel(row.employee.execution_environment) }}</strong>
-              <ElText type="info" truncated :title="row.employee.execution_environment?.model_name ?? ''">{{ row.employee.execution_environment?.model_name || '默认模型' }}</ElText>
-            </div>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="最近活动" width="130">
-          <template #default="{ row }">{{ formatTime(row.lastActiveAt) }}</template>
         </ElTableColumn>
         <ElTableColumn label="启用" width="100">
           <template #default="{ row }">
             <ElTag :type="row.employee.enabled ? 'success' : 'info'" :effect="row.employee.enabled ? 'light' : 'plain'">{{ row.employee.enabled ? '已启用' : '已停用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="160" fixed="right">
+        <ElTableColumn label="操作" width="132">
           <template #default="{ row }">
-            <ElSpace class="astra-row-actions" :size="4" @click.stop>
-              <ElTooltip content="查看" placement="top">
-                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.name}`" @click="openDetail(row.id)" />
-              </ElTooltip>
-              <ElTooltip content="编辑" placement="top">
-                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" @click="beginEdit(row.employee)" />
-              </ElTooltip>
-              <ElTooltip :content="row.employee.enabled ? '停用' : '启用'" placement="top">
-                <ElButton circle type="primary" :icon="row.employee.enabled ? Pause : Play" :aria-label="`${row.employee.enabled ? '停用' : '启用'} ${row.name}`" :disabled="busyId === row.id" @click="toggleEnabled(row.employee)" />
-              </ElTooltip>
-              <ElTooltip content="删除" placement="top">
-                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busyId === row.id" @click="removeEmployee(row.employee)" />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu
+              primary="查看"
+              :aria-label="(row as EmployeeViewModel).name"
+              :disabled="busyId === row.id"
+              :items="workerMenu(row as EmployeeViewModel)"
+              @primary="openDetail(row.id)"
+              @command="(command) => onWorkerCommand(row as EmployeeViewModel, command)"
+            />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -119,14 +101,15 @@
 </template>
 
 <script setup lang="ts">
-import { Eye, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
+import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElText, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Employee } from '@/api/types'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
+import RowMenu, { type RowMenuItem } from '@/components/astra/RowMenu.vue'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import EmployeeConfigModal from '@/components/employee/EmployeeConfigModal.vue'
 import EmployeeDetailDrawer from '@/components/employee/EmployeeDetailDrawer.vue'
@@ -134,7 +117,7 @@ import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
 import { employeeMatches, toEmployeeViewModel, workspaceAreas, type EmployeeViewModel } from '@/features/employees/presentation'
 import { useAstraStore } from '@/stores/astra'
-import { environmentLabel, formatTime, statusTone } from '@/utils/format'
+import { statusTone } from '@/utils/format'
 
 const store = useAstraStore()
 const route = useRoute()
@@ -173,6 +156,18 @@ const statusOptions = [
 const TAG_TYPES = { info: 'primary', success: 'success', warning: 'warning', danger: 'danger', neutral: 'info' } as const
 const statusTagType = (value: string) => TAG_TYPES[statusTone(value)]
 function openDetail(id: string) { detailId.value = id }
+function workerMenu(row: EmployeeViewModel): RowMenuItem[] {
+  return [
+    { command: 'edit', label: '编辑' },
+    { command: 'toggle', label: row.employee.enabled ? '停用' : '启用' },
+    { command: 'delete', label: '删除' },
+  ]
+}
+function onWorkerCommand(row: EmployeeViewModel, command: string) {
+  if (command === 'edit') beginEdit(row.employee)
+  else if (command === 'toggle') void toggleEnabled(row.employee)
+  else if (command === 'delete') void removeEmployee(row.employee)
+}
 function onRowClick(row: EmployeeViewModel) { openDetail(row.id) }
 function applySearch() {
   page.value = 1
@@ -224,7 +219,8 @@ onMounted(async () => {
    这里只保留表格单元格内部的排版。 */
 .employee-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .employee-cell__meta, .task-link, .environment-cell { display: grid; min-width: 0; }
-.employee-cell__meta strong, .task-link strong, .environment-cell strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
+.employee-cell__meta strong, .task-link strong { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); text-overflow: ellipsis; white-space: nowrap; }
+.employee-cell__id { font-size: var(--astra-font-helper); }
 .task-link, .task-link:hover { color: inherit; text-decoration: none; }
 .task-link:hover strong { color: var(--astra-primary); }
 </style>

@@ -34,13 +34,15 @@
       </ElCard>
     </section>
 
-    <section class="gateway-overview__metrics gateway-overview__metrics--secondary" aria-label="辅助指标">
-      <ElCard v-for="metric in secondaryCards" :key="metric.id" shadow="never" :data-testid="`gateway-metric-${metric.id}`">
-        <p class="gateway-overview__metric-label">{{ metric.label }}</p>
-        <p class="gateway-overview__metric-value gateway-overview__metric-value--secondary">{{ metric.value }}</p>
-        <p class="gateway-overview__metric-hint">{{ metric.hint }}</p>
-      </ElCard>
-    </section>
+    <ul class="gateway-overview__inline" aria-label="辅助指标">
+      <li v-for="metric in secondaryCards" :key="metric.id" :data-testid="`gateway-metric-${metric.id}`">
+        <span>{{ metric.label }}</span>
+        <strong>{{ metric.value }}</strong>
+        <ElTooltip :content="metric.hint">
+          <button type="button" class="gateway-overview__hint" :aria-label="`${metric.label}说明`">说明</button>
+        </ElTooltip>
+      </li>
+    </ul>
 
     <div class="gateway-overview__main">
       <ElCard shadow="never" data-testid="gateway-overview-nodes">
@@ -48,7 +50,7 @@
           <div class="gateway-overview__card-header">
             <div>
               <h4>节点与资源池</h4>
-              <ElText>异常在前。健康节点默认收起。指标与上方卡片同一窗口。</ElText>
+              <ElText>健康和调度是两件独立的事。异常在前，健康节点默认收起。</ElText>
             </div>
             <ElCheckbox v-model="abnormalOnly" data-testid="gateway-abnormal-only">只看异常</ElCheckbox>
           </div>
@@ -60,23 +62,14 @@
               <span class="gateway-overview__sub">{{ row.pool_name ?? '未分配' }}</span>
             </template>
           </ElTableColumn>
+          <ElTableColumn label="结论" min-width="140">
+            <template #default="{ row }">{{ row.abnormal ? '需要处理' : '可以服务' }}</template>
+          </ElTableColumn>
           <ElTableColumn label="健康" width="88">
             <template #default="{ row }"><ElTag :type="healthTag(row.health)">{{ row.health_label }}</ElTag></template>
           </ElTableColumn>
           <ElTableColumn label="调度" width="100">
             <template #default="{ row }"><ElTag :type="schedulingTag(row.scheduling)">{{ row.scheduling_label }}</ElTag></template>
-          </ElTableColumn>
-          <ElTableColumn label="负载" min-width="130">
-            <template #default="{ row }">{{ loadText(row as GatewayNodeMetric) }}</template>
-          </ElTableColumn>
-          <ElTableColumn label="QPS" width="88">
-            <template #default="{ row }">{{ numberText(row.qps, 2) }}</template>
-          </ElTableColumn>
-          <ElTableColumn label="错误率" width="96">
-            <template #default="{ row }">{{ percentText(row.error_rate) }}</template>
-          </ElTableColumn>
-          <ElTableColumn label="TTFT P95" width="110">
-            <template #default="{ row }">{{ row.ttft_p95_ms === null ? '暂无数据' : `${Math.round(row.ttft_p95_ms)} ms` }}</template>
           </ElTableColumn>
           <ElTableColumn label="日志" width="72">
             <template #default="{ row }">
@@ -163,6 +156,7 @@ import {
   ElTableColumn,
   ElTag,
   ElText,
+  ElTooltip,
 } from 'element-plus'
 import {
   gatewayApi,
@@ -226,7 +220,6 @@ const headlineTps = computed(() => (trend.value?.output_tps_p95 == null ? '暂�
 const primaryCards = computed(() => {
   const current = metrics.value
   return [
-    { id: 'qps', label: '当前 QPS', value: numberText(current?.qps ?? null, 2), hint: '滚动 1 分钟开始的请求 / 60 秒' },
     {
       id: 'error-rate',
       label: '错误率',
@@ -235,18 +228,20 @@ const primaryCards = computed(() => {
         ? `近 5 分钟最终失败 / 已完成 · 样本 ${current.error_samples}`
         : `近 5 分钟样本 ${current?.error_samples ?? 0}，未达到健康判断样本`,
     },
+    { id: 'abnormal', label: '异常节点', value: String(abnormalRows.value.length), hint: '健康或调度异常的节点数' },
     {
       id: 'ttft',
       label: 'TTFT P95',
       value: current?.ttft_p95_ms == null ? '暂无数据' : `${Math.round(current.ttft_p95_ms)} ms`,
       hint: current?.output_tps_p95 == null ? '输出 TPS P95 暂无数据' : `输出 TPS P95 ${current.output_tps_p95.toFixed(1)}`,
     },
-    { id: 'capacity', label: '容量占用', value: capacityText(current), hint: capacityHint(current) },
   ]
 })
 const secondaryCards = computed(() => {
   const current = metrics.value
   return [
+    { id: 'qps', label: '当前 QPS', value: numberText(current?.qps ?? null, 2), hint: '滚动 1 分钟开始的请求 / 60 秒' },
+    { id: 'capacity', label: '容量占用', value: capacityText(current), hint: capacityHint(current) },
     { id: 'tokens', label: 'Token 吞吐', value: current?.token_throughput == null ? '暂无数据' : `${current.token_throughput.toFixed(2)} /s`, hint: '近 5 分钟已知 total token / 300 秒' },
     { id: 'retry', label: '重试率', value: percentText(current?.retry_rate ?? null), hint: '额外上游尝试次数 / 已完成请求' },
     { id: '429', label: '上游 429', value: percentText(current?.upstream_429_rate ?? null), hint: '上游返回 429 的占比，不含网关本地拒绝' },
@@ -459,8 +454,11 @@ onBeforeUnmount(() => {
 .gateway-overview__verdict h3 { margin: 2px 0; color: var(--astra-text-primary); font-size: 22px; }
 .gateway-overview__impact, .gateway-overview__reasons { margin: 0; color: var(--astra-text-secondary); }
 .gateway-overview__reasons { margin-top: 4px; }
-.gateway-overview__metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.gateway-overview__metrics--secondary { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.gateway-overview__metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.gateway-overview__inline { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 0; list-style: none; }
+.gateway-overview__inline li { display: inline-flex; align-items: baseline; gap: 6px; }
+.gateway-overview__inline span { color: var(--astra-text-secondary); }
+.gateway-overview__hint { padding: 0; border: 0; background: transparent; color: var(--astra-primary); cursor: pointer; }
 .gateway-overview__metric-label { margin: 0; color: var(--astra-text-secondary); font-size: var(--astra-font-control); }
 .gateway-overview__metric-value { margin: 6px 0 0; color: var(--astra-text-primary); font-size: var(--astra-font-subtitle); font-weight: var(--astra-weight-bold); font-variant-numeric: tabular-nums; }
 .gateway-overview__metric-value--secondary { font-size: var(--astra-font-control); }
@@ -482,12 +480,12 @@ onBeforeUnmount(() => {
 .gateway-overview__trend-tools { display: flex; gap: 8px; }
 .gateway-overview__group { width: 120px; }
 .gateway-overview__trend-headline { margin: 0 0 8px; color: var(--astra-text-secondary); }
-@media (max-width: 1280px) {
-  .gateway-overview__metrics, .gateway-overview__metrics--secondary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1100px) {
+  .gateway-overview__metrics { grid-template-columns: 1fr; }
   .gateway-overview__main { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
-  .gateway-overview__verdict, .gateway-overview__metrics, .gateway-overview__metrics--secondary { grid-template-columns: 1fr; }
+  .gateway-overview__verdict, .gateway-overview__metrics { grid-template-columns: 1fr; }
   .gateway-overview__verdict { align-items: flex-start; flex-direction: column; }
 }
 </style>
