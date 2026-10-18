@@ -821,6 +821,31 @@ async def test_sweep_closes_socket_and_heartbeat_does_not_revive(environment_id:
     await asyncio.wait_for(task, 2)
 
 
+async def test_old_epoch_disconnect_leaves_a_reconnected_worker_online(environment_id: int):
+    gateway = gateway_for(MemoryRouteBus())
+    enrolled = await enroll(gateway, environment_id)
+    socket = FakeWebSocket()
+    task = asyncio.create_task(gateway.serve_socket(socket))
+    await socket.incoming.put(dump_message(auth_message(
+        enrolled.worker_instance_id, environment_id, enrolled.token
+    )))
+    await wait_until(lambda: socket.sent)
+    old_epoch = json.loads(socket.sent[0])["payload"]["epoch"]
+    async with SessionLocal() as session:
+        await session.execute(
+            update(WorkerInstance)
+            .where(WorkerInstance.id == enrolled.worker_instance_id)
+            .values(epoch=old_epoch + 1, status="online", last_heartbeat_at=utcnow())
+        )
+        await session.commit()
+        await gateway.disconnect(session, enrolled.worker_instance_id, old_epoch)
+    stored = await load_instance(enrolled.worker_instance_id)
+    assert stored.epoch == old_epoch + 1
+    assert stored.status == "online"
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_auth_failure_closes_transport_and_ack_failure_skips_ledger():
     manager = WorkerConnectionManager(_agent_config(), sleep=lambda _seconds: asyncio.sleep(0))
     failed = ScriptedTransport([])

@@ -109,6 +109,15 @@ async def guard_environment_write(session, environment):
         raise HTTPException(409, "环境状态已变化，请刷新后重试")
 
 
+async def _worker_online(session, environment_id: int) -> bool:
+    from app.models import WorkerInstance
+
+    instance = await session.scalar(
+        select(WorkerInstance).where(WorkerInstance.environment_id == environment_id)
+    )
+    return instance is not None and instance.status == "online"
+
+
 async def reserve_operation(employee_id: str, action: str, session):
     settings = get_settings()
     employee = await session.scalar(
@@ -124,7 +133,10 @@ async def reserve_operation(employee_id: str, action: str, session):
     if not environment or environment.mode != ExecutionMode.LINUX_REMOTE:
         raise HTTPException(409, "仅 Linux 远程员工支持部署和重启")
     require_no_operation(environment)
-    if not environment.host or not environment.username or not environment.ssh_password:
+    online_restart = action == "restart" and await _worker_online(session, environment.id)
+    if not online_restart and (
+        not environment.host or not environment.username or not environment.ssh_password
+    ):
         raise HTTPException(409, "请先保存远程 IP、用户名和 SSH 密码")
     if not environment.workspace_root.startswith("/"):
         raise HTTPException(409, "工程目录必须是 Linux 绝对路径")

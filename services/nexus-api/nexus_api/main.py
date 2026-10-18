@@ -789,7 +789,11 @@ def create_app() -> FastAPI:
 
     async def model_for(client: AgentScopeClient, employee: dict[str, Any]) -> dict[str, Any] | None:
         route_id = str(employee.get("model_route_id") or "").strip()
-        if not route_id or not client.configured:
+        if not route_id:
+            if client.chat_model_config is not None:
+                raise AgentScopeError("没有选择模型路由，不能直连厂商", 422)
+            return None
+        if not client.configured:
             return None
         try:
             return await chat_config_for_route(client, route_id)

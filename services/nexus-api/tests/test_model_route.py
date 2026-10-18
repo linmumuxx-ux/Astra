@@ -8,7 +8,6 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.main import create_app
 from nexus_api.model_route import gateway_base_url
@@ -144,6 +143,49 @@ def test_route_is_injected_and_a_change_keeps_the_private_session(tmp_path, monk
         assert patched["chat_model_config"]["model"] == "gpt-4.1"
         listed = client.get(f"/api/v1/employees/{employee_id}/conversations", headers=headers).json()
         assert listed["items"][0]["agentscope_session_id"] == private_id
+
+
+def test_empty_route_refuses_a_vendor_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("NEXUS_AGENTSCOPE_BASE_URL", "http://agentscope.test")
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/agent/" and request.method == "POST":
+            return httpx.Response(201, json={"agent_id": "agent-1"})
+        return httpx.Response(200, json={})
+
+    vendor = {
+        "type": "openai_credential",
+        "credential_id": "cred-vendor",
+        "model": "deepseek-chat",
+        "parameters": {},
+    }
+    application = create_app()
+    with TestClient(application) as client:
+        application.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+            chat_model_config=vendor,
+        )
+        created = client.post(
+            "/api/v1/employees",
+            json={
+                "name": "星河",
+                "domain": "测试自动化",
+                "description": "负责自动化脚本",
+                "instructions": "直接回答。",
+            },
+        )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["agentscope"]["ok"] is False
+        assert "不能直连厂商" in body["agentscope"]["detail"]
+        assert body["employee"]["mailbox_session_id"] in {None, ""}
+        assert not any(item.method == "POST" and item.url.path == "/sessions/" for item in seen)
+        assert "api.deepseek.com" not in created.text
 
 
 def test_gateway_credential_updates_when_the_key_changes():

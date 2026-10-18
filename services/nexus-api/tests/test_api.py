@@ -10,8 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
-from nexus_api.agentscope import AgentScopeClient
+from nexus_api.agentscope import AgentScopeClient, AgentScopeError
 from nexus_api.main import (
     assistant_messages,
     assistant_replies_after,
@@ -1026,7 +1025,7 @@ def test_stream_cursor_is_the_redis_checkpoint_not_an_event_id():
     assert stream_cursor(None) is None
 
 
-def test_chat_model_config_is_forwarded_only_when_deploy_sets_it(monkeypatch):
+def test_empty_route_does_not_attach_the_deploy_vendor_config(monkeypatch):
     monkeypatch.delenv("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", raising=False)
     assert load_chat_model_config() is None
     monkeypatch.setenv("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", "{")
@@ -1039,10 +1038,16 @@ def test_chat_model_config_is_forwarded_only_when_deploy_sets_it(monkeypatch):
         seen.append(request)
         return httpx.Response(201, json={"session_id": "session-model"})
 
-    config = {
-        "type": "ollama_credential",
-        "credential_id": "cred-1",
-        "model": "qwen2.5:3b",
+    vendor = {
+        "type": "openai_credential",
+        "credential_id": "cred-vendor",
+        "model": "deepseek-chat",
+        "parameters": {},
+    }
+    gateway = {
+        "type": "openai_credential",
+        "credential_id": "cred-gw",
+        "model": "opencode/deepseek-v4.1-flash-free",
         "parameters": {},
     }
     import asyncio
@@ -1051,12 +1056,18 @@ def test_chat_model_config_is_forwarded_only_when_deploy_sets_it(monkeypatch):
         "http://agentscope.test",
         "nexus",
         httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
-        chat_model_config=config,
+        chat_model_config=vendor,
     )
-    assert asyncio.run(client.create_session("agent-1", "邮箱")) == "session-model"
+    with pytest.raises(AgentScopeError) as raised:
+        asyncio.run(client.create_session("agent-1", "邮箱"))
+    assert raised.value.status_code == 422
+    assert "不能直连厂商" in raised.value.detail
+    assert seen == []
+
+    assert asyncio.run(client.create_session("agent-1", "邮箱", chat_model_config=gateway)) == "session-model"
     body = json.loads(seen[0].content.decode())
-    assert body["chat_model_config"] == config
-    assert "model" not in body
+    assert body["chat_model_config"] == gateway
+    assert "deepseek-chat" not in seen[0].content.decode()
 
 
 def test_private_attachments_are_forwarded_and_session_replies_restore(tmp_path, monkeypatch):

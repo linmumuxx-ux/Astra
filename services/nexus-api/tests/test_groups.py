@@ -11,7 +11,6 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.groups import HumanEvents, chat_inputs, merge_timeline, messages_since
 from nexus_api.main import create_app

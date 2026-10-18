@@ -16,7 +16,7 @@ from secrets import token_hex, token_urlsafe
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
@@ -660,9 +660,23 @@ class WorkerGateway:
             stale_rows = (
                 await session.execute(select(WorkerInstance.id, WorkerInstance.epoch).where(*stale_filter))
             ).all()
-            offline = await session.execute(
-                update(WorkerInstance).where(*stale_filter).values(status="offline", updated_at=current)
-            )
+            # 只下线这次读到的 epoch。重连若已切到新 epoch，不能被这次清扫改成离线。
+            if stale_rows:
+                pinned = or_(
+                    *[
+                        and_(
+                            WorkerInstance.id == worker_id,
+                            WorkerInstance.epoch == epoch,
+                            *stale_filter,
+                        )
+                        for worker_id, epoch in stale_rows
+                    ]
+                )
+                offline = await session.execute(
+                    update(WorkerInstance).where(pinned).values(status="offline", updated_at=current)
+                )
+            else:
+                offline = None
             expired_values = {
                 "status": "expired",
                 "error_code": "timeout",
@@ -711,7 +725,8 @@ class WorkerGateway:
         for worker_id, epoch in offlined:
             self._close_local_socket(worker_id, epoch)
             await self.bus.clear_owner(worker_id, epoch, None)
-        return int(offline.rowcount or 0) + len(released_slots) + int(expired.rowcount or 0)
+        offline_count = 0 if offline is None else int(offline.rowcount or 0)
+        return offline_count + len(released_slots) + int(expired.rowcount or 0)
 
     async def serve_socket(self, websocket: Any) -> None:
         await websocket.accept()

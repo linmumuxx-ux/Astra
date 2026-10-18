@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-
 from nexus_api.agentscope import AgentScopeClient
 from nexus_api.db import connect, init_db
 from nexus_api.im import ImError, accept_inbound, bind_bot, claim_outbox, contact_human

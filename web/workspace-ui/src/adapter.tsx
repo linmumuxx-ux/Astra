@@ -17,12 +17,72 @@ declare const __OPENCODE_WORKSPACE_VERSION__: string
 const taskID = new URLSearchParams(location.search).get('task')
 const selected = new URLSearchParams(location.search).get('session')
 const root = document.getElementById('root')!
+const nativeFetch = window.fetch.bind(window)
+
+const OPENCODE_ROOTS = [
+  '/event',
+  '/session',
+  '/provider',
+  '/project',
+  '/config',
+  '/path',
+  '/file',
+  '/vcs',
+  '/find',
+  '/lsp',
+  '/agent',
+  '/command',
+  '/skill',
+  '/mcp',
+  '/permission',
+  '/question',
+  '/pty',
+  '/tui',
+  '/log',
+  '/auth',
+  '/experimental',
+  '/formatter',
+]
+
+function opencodePath(pathname: string) {
+  if (pathname.startsWith('/api/') || pathname.startsWith('/global/')) return true
+  return OPENCODE_ROOTS.some((item) => pathname === item || pathname.startsWith(`${item}/`))
+}
+
+// @opencode-ai/client builds `new URL("/api/...", baseUrl)`. An absolute path drops the
+// task prefix, so the iframe would call the Nexus origin instead of the Worker proxy.
+function rewriteOpenCodeUrl(input: RequestInfo | URL, endpoint: string) {
+  const raw = input instanceof Request ? input.url : String(input)
+  let url: URL
+  try {
+    url = new URL(raw, location.origin)
+  } catch {
+    return null
+  }
+  if (url.origin !== location.origin) return null
+  const path = url.pathname
+  if (path.startsWith('/opencode-workspace/') || path.startsWith('/api/tasks/')) return null
+  if (!opencodePath(path)) return null
+  return endpoint + path + url.search
+}
+
+function installFetchRewrite(endpoint: string) {
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const next = rewriteOpenCodeUrl(input, endpoint)
+    if (!next) return nativeFetch(input, init)
+    if (input instanceof Request) return nativeFetch(new Request(next, input), init)
+    return nativeFetch(next, init)
+  }
+}
 
 async function boot() {
   if (!taskID) throw new Error('缺少 Task ID')
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
+  const response = await nativeFetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
   const binding = await response.json()
   if (!response.ok) throw new Error(binding.detail)
+  if (binding.runtime.worker_online === false) {
+    throw new Error('Worker 不在线。恢复连接后再打开这个 Session。')
+  }
   if (binding.runtime.opencode_version !== __OPENCODE_WORKSPACE_VERSION__) {
     throw new Error(`Workspace UI ${__OPENCODE_WORKSPACE_VERSION__} 与 OpenCode ${binding.runtime.opencode_version} 不匹配`)
   }
@@ -30,18 +90,12 @@ async function boot() {
   if (!sessionID) throw new Error('任务尚未绑定 OpenCode Session')
   if (!binding.sessions.some((session: { id: string }) => session.id === sessionID)) throw new Error('Session 不属于此任务')
   const endpoint = `${location.origin}${binding.runtime.server}/${encodeURIComponent(sessionID)}`
+  installFetchRewrite(endpoint)
   const server: ServerConnection.Http = { type: 'http', http: { url: endpoint } }
   location.hash = `/${base64Encode(binding.runtime.workspace)}/session/${sessionID}`
   const platform: Platform = {
     platform: 'web', version: __OPENCODE_WORKSPACE_VERSION__,
-    fetch: (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : String(input), location.origin)
-      // Upstream probes absolute health URLs; keep them within the task-bound transport.
-      if (url.origin === location.origin && ['/global/health', '/api/health'].includes(url.pathname)) {
-        return fetch(endpoint + '/global/health', init)
-      }
-      return fetch(input, init)
-    },
+    fetch: (input, init) => window.fetch(input, init),
     openExternal: url => { window.open(url, '_blank', 'noopener,noreferrer') },
     restart: async () => location.reload(),
     notify: async () => {},
