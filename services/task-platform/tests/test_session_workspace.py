@@ -3193,3 +3193,116 @@ async def test_remote_config_secrets_are_read_once_inside_the_cache_window(runti
     assert seen.count("/config") == 1
     assert seen.count("/global/config") == 1
     assert seen.count("/session/ses_current/message") == 2
+
+
+FAST_503_ROUTES = (
+    "session/ses_current/diff",
+    "file/content?path=notes.txt",
+    "find?pattern=canary",
+)
+
+
+async def _remote_binding(runtime):
+    runtime.environment.worker_channel = "worker"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+    await runtime.session.refresh(runtime.task)
+
+
+@pytest.mark.parametrize("route", FAST_503_ROUTES)
+async def test_file_body_routes_fail_fast_when_opencode_is_down_and_cache_is_cold(
+    runtime, monkeypatch, route
+):
+    from app.api import workspace_routes
+
+    await _remote_binding(runtime)
+    status_before = runtime.task.status
+    monkeypatch.setattr(workspace_routes, "_SECRET_FETCH_TIMEOUT_SECONDS", 0.5)
+    seen: list[bool] = []
+
+    class Hanging:
+        async def exchange(self, *_args, **_kwargs):
+            await asyncio.sleep(60)
+
+    @asynccontextmanager
+    async def stopped_opencode(*_args, start=True, **_kwargs):
+        seen.append(start)
+        if start:
+            await asyncio.sleep(60)  # health check against a stopped OpenCode
+        yield Hanging()
+
+    monkeypatch.setattr(workspace_routes, "connect", stopped_opencode)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    response = await asyncio.wait_for(
+        runtime.api.get(f"/api/tasks/T1/opencode/ses_current/{route}"), timeout=10
+    )
+    assert loop.time() - started < 6
+    assert response.status_code == 503, response.text
+    assert response.json() == {"detail": "OpenCode 不可用，暂时无法安全显示 Diff"}
+    assert True not in seen  # never reached health / session_tree
+    await runtime.session.refresh(runtime.task)
+    assert runtime.task.status == status_before
+
+
+@pytest.mark.parametrize("route", FAST_503_ROUTES)
+async def test_file_body_routes_redact_with_a_warm_cache(runtime, monkeypatch, route):
+    from app.api import workspace_routes
+
+    secret = "warm-cache-file-body-canary"
+    # Treat the local fixture as remote for the secret gate only.
+    monkeypatch.setattr(workspace_routes, "_needs_remote_secrets", lambda *_args: True)
+    key = await workspace_routes._remote_secret_cache_key(runtime.environment, str(runtime.workspace))
+    workspace_routes._REMOTE_SECRET_CACHE[key] = (
+        asyncio.get_running_loop().time() + 1e9, frozenset({secret})
+    )
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        if request.url.path in {"/config", "/global/config"}:
+            return httpx.Response(500, text="down")
+        if request.url.path == "/session/ses_current/diff":
+            return httpx.Response(200, json=[{"file": "notes.txt", "patch": f"+{secret}\n"}])
+        if request.url.path == "/file/content":
+            return httpx.Response(200, json={"type": "text", "content": f"KEY={secret}"})
+        if request.url.path == "/find":
+            return httpx.Response(200, json=[{"path": "notes.txt", "lines": {"text": secret}}])
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = await runtime.api.get(f"/api/tasks/T1/opencode/ses_current/{route}")
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert "[redacted]" in response.text
+
+
+async def test_file_body_route_reads_config_once_with_a_stale_cache(runtime, monkeypatch):
+    from app.api import workspace_routes
+
+    secret = "stale-cache-file-body-canary"
+    monkeypatch.setattr(workspace_routes, "_needs_remote_secrets", lambda *_args: True)
+    key = await workspace_routes._remote_secret_cache_key(runtime.environment, str(runtime.workspace))
+    workspace_routes._REMOTE_SECRET_CACHE[key] = (0.0, frozenset({secret}))  # expired
+    original = httpx.AsyncClient
+    config_reads: list[str] = []
+
+    def upstream(request):
+        if request.url.path in {"/config", "/global/config"}:
+            config_reads.append(request.url.path)
+            return httpx.Response(500, text="down")
+        if request.url.path == "/file/content":
+            return httpx.Response(200, json={"type": "text", "content": f"KEY={secret}"})
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    response = await runtime.api.get("/api/tasks/T1/opencode/ses_current/file/content?path=notes.txt")
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert sorted(config_reads) == ["/config", "/global/config"]
