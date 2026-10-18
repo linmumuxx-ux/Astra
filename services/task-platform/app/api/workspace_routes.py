@@ -6,7 +6,7 @@ import base64
 import json
 import re
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 from uuid import uuid4
@@ -108,6 +108,41 @@ REPLY = re.compile(r"^/(question|permission)/([^/]+)/(reply|reject)$")
 PERMISSION_REPLY = re.compile(r"^/session/([^/]+)/permissions/([^/]+)$")
 OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 RETIRED_WORKSPACE_UI = "版本未知/界面已退役"
+_SECRET_SEGMENTS = frozenset({"provider", "model", "config"})
+_SECRET_CONTAINERS = frozenset({"settings", "options", "headers"})
+_SECRET_FIELDS = frozenset(
+    {"apikey", "api_key", "api-key", "x-api-key", "key", "token", "authorization", "password", "secret"}
+)
+
+
+def normalize_proxy_path(path: str) -> str:
+    """Collapse duplicate and trailing slashes before allowlist and filter checks."""
+
+    return "/" + "/".join(part for part in path.split("/") if part)
+
+
+def carries_provider_secrets(path: str) -> bool:
+    return bool(_SECRET_SEGMENTS.intersection(normalize_proxy_path(path).split("/")))
+
+
+def redact_secret_fields(value: Any) -> Any:
+    """Drop secret fields nested under settings, options, and headers."""
+
+    if isinstance(value, list):
+        for item in value:
+            redact_secret_fields(item)
+        return value
+    if not isinstance(value, dict):
+        return value
+    for key, item in list(value.items()):
+        if key.lower() in _SECRET_CONTAINERS:
+            if isinstance(item, dict):
+                for secret in [name for name in item if name.lower() in _SECRET_FIELDS]:
+                    item.pop(secret, None)
+            redact_secret_fields(item)
+            continue
+        redact_secret_fields(item)
+    return value
 
 
 def _api_route_missing(status: int, headers: dict[str, str]) -> bool:
@@ -473,7 +508,7 @@ async def native_proxy(
             raise HTTPException(403, "不允许覆盖任务绑定")
     requested = request.query_params.get("directory") or request.headers.get("x-opencode-directory")
     requested_path = unquote(requested) if requested else None
-    native_path = "/" + path
+    native_path = normalize_proxy_path(path)
     directory = workspace
     if requested_path and not same_workspace_path(environment, workspace, requested_path):
         if request.method != "GET" or native_path not in {"/vcs/diff", "/vcs/diff/raw"}:
@@ -608,6 +643,8 @@ async def native_proxy(
             if native_path == "/vcs/diff/raw":
                 return Response(content=upstream.content, media_type="text/x-diff")
             data = upstream.json() if upstream.content else None
+            if carries_provider_secrets(native_path):
+                redact_secret_fields(data)
             shape = native_path.removeprefix("/api") if native_path.startswith("/api/") else native_path
             if shape == "/session":
                 data = _scope_session_list(data, allowed)
@@ -647,7 +684,7 @@ async def native_proxy(
                 }
                 if environment.model_name:
                     data["model"] = environment.model_name
-            elif shape in {"/provider", "/config/providers"}:
+            elif shape in {"/provider", "/config/providers"} and isinstance(data, dict):
                 for provider in data.get("all", data.get("providers", [])):
                     for key in ("key", "options", "headers"):
                         provider.pop(key, None)

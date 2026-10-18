@@ -1,6 +1,7 @@
 import asyncio
 import json
 import subprocess
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.api.workspace_routes import redact_secret_fields
 from app.database import get_session
 from app.executors.errors import OpenCodeSessionNotFound
 from app.main import app
@@ -1283,6 +1285,147 @@ async def test_v2_session_lists_stay_inside_one_task(runtime, monkeypatch):
     assert own_active.json() == {"data": {"ses_current": {"type": "busy"}}}
     other_active = await runtime.api.get("/api/tasks/T2/opencode/ses_other/api/session/active")
     assert other_active.json()["data"] == {"ses_other": {"type": "busy"}}
+    slashed = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/")
+    assert slashed.status_code == 200, slashed.text
+    assert slashed.json()["data"] == [{"id": "ses_current", "title": "one"}]
+    doubled = await runtime.api.get("/api/tasks/T2/opencode/ses_other/api//session//")
+    assert doubled.status_code == 200, doubled.text
+    assert doubled.json()["data"] == [{"id": "ses_other", "title": "two"}]
+    slashed_active = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/active/")
+    assert slashed_active.status_code == 200, slashed_active.text
+    assert slashed_active.json() == {"data": {"ses_current": {"type": "busy"}}}
+    doubled_active = await runtime.api.get("/api/tasks/T2/opencode/ses_other/api/session//active//")
+    assert doubled_active.json()["data"] == {"ses_other": {"type": "busy"}}
+
+
+async def test_provider_model_and_config_responses_redact_gateway_keys(runtime, monkeypatch):
+    secret = "gw-test-secret-value"
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        path = request.url.path
+        if path == "/api/provider":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "opencode",
+                            "api": {
+                                "settings": {"apiKey": secret, "baseURL": "http://127.0.0.1:18110/v1"},
+                                "options": {"token": secret},
+                                "headers": {"Authorization": f"Bearer {secret}"},
+                            },
+                            "models": [
+                                {
+                                    "id": "m",
+                                    "api": {"settings": {"api_key": secret, "temperature": 0}},
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        if path == "/api/provider/opencode":
+            return httpx.Response(
+                200,
+                json={"data": {"id": "opencode", "api": {"settings": {"apiKey": secret, "baseURL": "http://gw"}}}},
+            )
+        if path == "/api/model":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "opencode/deepseek-v4.1-flash-free",
+                            "api": {
+                                "settings": {"apiKey": secret},
+                                "headers": {"authorization": secret, "password": secret},
+                            },
+                        }
+                    ]
+                },
+            )
+        if path == "/provider":
+            return httpx.Response(
+                200,
+                json={
+                    "all": [
+                        {
+                            "id": "opencode",
+                            "key": secret,
+                            "options": {"apiKey": secret},
+                            "headers": {"authorization": secret},
+                            "models": {"m": {"id": "m", "options": {"apiKey": secret}, "headers": {"secret": secret}}},
+                        }
+                    ]
+                },
+            )
+        if path == "/config":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "other/image-model",
+                    "provider": {"secret": secret, "options": {"apiKey": secret}},
+                },
+            )
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    provider = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/provider")
+    assert provider.status_code == 200, provider.text
+    assert secret not in provider.text
+    body = provider.json()
+    assert body["data"][0]["api"]["settings"]["baseURL"] == "http://127.0.0.1:18110/v1"
+    assert body["data"][0]["models"][0]["api"]["settings"]["temperature"] == 0
+    one = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/provider/opencode")
+    assert one.status_code == 200, one.text
+    assert secret not in one.text
+    assert one.json()["data"]["api"]["settings"]["baseURL"] == "http://gw"
+    models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
+    assert models.status_code == 200, models.text
+    assert secret not in models.text
+    assert models.json()["data"][0]["id"] == "opencode/deepseek-v4.1-flash-free"
+    legacy = await runtime.api.get("/api/tasks/T1/opencode/ses_current/provider")
+    assert legacy.status_code == 200, legacy.text
+    assert secret not in legacy.text
+    assert legacy.json()["all"][0]["models"]["m"]["options"] == {}
+    config = await runtime.api.get("/api/tasks/T1/opencode/ses_current/config")
+    assert config.status_code == 200, config.text
+    assert secret not in config.text
+    assert config.json() == {"model": "other/image-model"}
+    v1_config = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/config")
+    assert v1_config.status_code == 200, v1_config.text
+    assert secret not in v1_config.text
+
+
+def test_redact_large_provider_catalog_stays_fast():
+    secret = "gw-test-secret-value"
+    catalog = {
+        "data": [
+            {
+                "id": f"p{index}",
+                "api": {
+                    "settings": {"apiKey": secret, "baseURL": "http://gw"},
+                    "headers": {"authorization": secret},
+                },
+                "models": [
+                    {"id": f"m{item}", "api": {"settings": {"key": secret, "name": "keep"}}}
+                    for item in range(20)
+                ],
+            }
+            for index in range(200)
+        ]
+    }
+    started = time.perf_counter()
+    redact_secret_fields(catalog)
+    assert time.perf_counter() - started < 1
+    assert secret not in json.dumps(catalog)
+    assert catalog["data"][0]["api"]["settings"]["baseURL"] == "http://gw"
+    assert catalog["data"][0]["models"][0]["api"]["settings"]["name"] == "keep"
 
 
 async def test_native_abort_accepts_empty_body(runtime):

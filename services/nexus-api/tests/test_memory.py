@@ -26,6 +26,7 @@ def employee_body(**overrides):
         "knowledge": [],
         "skills": [],
         "tools": [],
+        "model_route_id": "route-test",
     }
     payload.update(overrides)
     return payload

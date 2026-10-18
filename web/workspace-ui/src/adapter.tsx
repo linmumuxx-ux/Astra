@@ -66,18 +66,94 @@ function rewriteOpenCodeUrl(input: RequestInfo | URL, endpoint: string) {
   return endpoint + path + url.search
 }
 
+const OFFLINE_NOTICE = 'Worker 不在线。正在自动重试…'
+const SOLID_CRASH = ['加载应用程序时发生错误', 'An error occurred while loading the application']
+const RECOVER_KEY = 'astra-workspace-recover'
+
+function workspaceURL() {
+  const query = selected ? `?session_id=${encodeURIComponent(selected)}` : ''
+  return `/api/tasks/${encodeURIComponent(taskID || '')}/workspace${query}`
+}
+
+let disposeApp: (() => void) | undefined
+let offline = false
+
+function showOfflineNotice() {
+  if (offline) return
+  offline = true
+  disposeApp?.()
+  disposeApp = undefined
+  root.replaceChildren()
+  const notice = document.createElement('p')
+  notice.dataset.astraNotice = 'offline'
+  notice.textContent = OFFLINE_NOTICE
+  root.append(notice)
+}
+
+function pageCrashed() {
+  const text = root.textContent || ''
+  return SOLID_CRASH.some(item => text.includes(item))
+}
+
+function watchWorker(endpoint: string) {
+  const observer = new MutationObserver(() => {
+    if (pageCrashed()) showOfflineNotice()
+  })
+  observer.observe(root, { subtree: true, childList: true, characterData: true })
+  window.setInterval(async () => {
+    if (offline || pageCrashed()) {
+      if (pageCrashed()) showOfflineNotice()
+      return
+    }
+    try {
+      const response = await nativeFetch(workspaceURL())
+      if (!response.ok) return
+      const binding = await response.json()
+      if (binding?.runtime?.worker_online === false) showOfflineNotice()
+    } catch {
+      // The platform itself blipped. Leave the open workspace in place.
+    }
+  }, 1000)
+  const recover = async () => {
+    if (!offline) return
+    try {
+      const response = await nativeFetch(workspaceURL())
+      if (!response.ok) return
+      const binding = await response.json()
+      if (binding?.runtime?.worker_online === false) return
+      if (endpoint) {
+        const health = await nativeFetch(`${endpoint}/global/health`)
+        if (!health.ok) return
+      }
+      const last = Number(sessionStorage.getItem(RECOVER_KEY) || 0)
+      if (Date.now() - last < 8000) return
+      sessionStorage.setItem(RECOVER_KEY, String(Date.now()))
+      location.reload()
+    } catch {
+      // Still unreachable. The next tick retries.
+    }
+  }
+  window.setInterval(() => { void recover() }, 1000)
+}
+
 function installFetchRewrite(endpoint: string) {
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const next = rewriteOpenCodeUrl(input, endpoint)
-    if (!next) return nativeFetch(input, init)
-    if (input instanceof Request) return nativeFetch(new Request(next, input), init)
-    return nativeFetch(next, init)
+    const response = next
+      ? await nativeFetch(input instanceof Request ? new Request(next, input) : next, init)
+      : await nativeFetch(input, init)
+    if (next && response.status === 503) {
+      void response.clone().text().then(text => {
+        if (text.includes('不在线') || text.includes('不可连接')) showOfflineNotice()
+      }).catch(() => {})
+    }
+    return response
   }
 }
 
 async function boot() {
   if (!taskID) throw new Error('缺少 Task ID')
-  const response = await nativeFetch(`/api/tasks/${encodeURIComponent(taskID)}/workspace${selected ? `?session_id=${encodeURIComponent(selected)}` : ""}`)
+  const response = await nativeFetch(workspaceURL())
   const binding = await response.json()
   if (!response.ok) throw new Error(binding.detail)
   if (binding.runtime.worker_online === false) {
@@ -108,8 +184,14 @@ async function boot() {
   }
   // Astra owns session creation and lifecycle: the embedded workspace only shows the bound session.
   configureWorkspaceCapabilities({ sessionManagementEnabled: false })
-  render(() => <PlatformProvider value={platform}><AppBaseProviders><AppInterface
+  disposeApp = render(() => <PlatformProvider value={platform}><AppBaseProviders><AppInterface
     defaultServer={ServerConnection.Key.make(endpoint)} servers={[server]} router={HashRouter}
   ></AppInterface></AppBaseProviders></PlatformProvider>, root)
+  sessionStorage.removeItem(RECOVER_KEY)
+  watchWorker(endpoint)
 }
-boot().catch(error => { root.textContent = String(error.message || error) })
+boot().catch(error => {
+  const message = String(error.message || error)
+  root.textContent = message
+  if (message.includes('不在线')) watchWorker('')
+})
