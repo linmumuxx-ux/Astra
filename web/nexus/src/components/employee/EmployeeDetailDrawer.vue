@@ -66,7 +66,7 @@
         <template #header>
           <div class="employee-detail-drawer__card-header">
             <h3>最近任务</h3>
-            <RouterLink class="employee-detail-drawer__link" :to="`/workers/${model.employee.id}#tasks`">查看全部任务 <ArrowUpRight :size="14" /></RouterLink>
+            <RouterLink class="employee-detail-drawer__link" :to="`/settings/workers/${model.employee.id}#tasks`">查看全部任务 <ArrowUpRight :size="14" /></RouterLink>
           </div>
         </template>
         <ElTable v-if="recentTasks.length" :data="recentTasks" size="small">

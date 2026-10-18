@@ -1,7 +1,7 @@
 <template>
   <div v-if="employee" class="employee-detail" data-testid="employee-detail-page">
     <ElBreadcrumb separator="/" class="employee-detail__nav">
-      <ElBreadcrumbItem><RouterLink to="/workers">Worker</RouterLink></ElBreadcrumbItem>
+      <ElBreadcrumbItem><RouterLink to="/settings/workers">Worker</RouterLink></ElBreadcrumbItem>
       <ElBreadcrumbItem>{{ employeeDisplayName(employee.name) }}</ElBreadcrumbItem>
     </ElBreadcrumb>
 
@@ -228,7 +228,7 @@
   </div>
   <div v-else-if="!store.loading" class="employee-detail">
     <ElEmpty :image-size="80" description="未找到该 Worker，可能已被删除。">
-      <ElButton @click="router.push('/workers')">返回 Worker 列表</ElButton>
+      <ElButton @click="router.push('/settings/workers')">返回 Worker 列表</ElButton>
     </ElEmpty>
   </div>
 </template>

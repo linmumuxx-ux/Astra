@@ -358,3 +358,18 @@ def test_remote_ssh_password_is_never_returned_and_blank_update_keeps_value():
                 return row.ssh_password
 
         assert asyncio.run(load_password()) == "database-only-secret"
+
+
+def test_task_list_filters_by_source_session_and_channel():
+    with TestClient(app) as client:
+        mine = client.post(
+            "/api/tasks", json=task_payload(title="会话任务", source_session_id="as-session-mine")
+        ).json()
+        client.post("/api/tasks", json=task_payload(title="别的会话", source_session_id="as-session-other"))
+        group = client.post(
+            "/api/tasks", json=task_payload(title="群组任务", source_channel_id="ch-filter-1")
+        ).json()
+        by_session = client.get("/api/tasks", params={"source_session_id": "as-session-mine"}).json()
+        assert [item["id"] for item in by_session] == [mine["id"]]
+        by_channel = client.get("/api/tasks", params={"source_channel_id": "ch-filter-1"}).json()
+        assert [item["id"] for item in by_channel] == [group["id"]]

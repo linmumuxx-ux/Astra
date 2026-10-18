@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from fastapi import HTTPException, Request
@@ -592,7 +593,10 @@ async def deliver_peer_hint(
             params={"session_id": session_id, "name": employee_name, "message": message},
         )
     if response.status_code >= 400:
-        return peer_error_text(response, employee_name)
+        return json.dumps(
+            {"status": "failed", "employee": employee_name, "reason": peer_error_text(response, employee_name)},
+            ensure_ascii=False,
+        )
     peer = response.json()
     hint = hint_block(hint=message, source=peer.get("sender_name") or agent_id)
     await deliver_to_inbox(
@@ -602,7 +606,11 @@ async def deliver_peer_hint(
         agent_id=peer["agent_id"],
         payload=hint.model_dump(mode="json"),
     )
-    return "已把消息交给对方。对方将自行推理，这里没有代替对方写出答复。"
+    # The reply arrives later from the colleague's own session; this result only
+    # tells the calling Agent that delivery happened.
+    return json.dumps(
+        {"status": "delivered", "employee": employee_name}, ensure_ascii=False
+    )
 
 
 async def deliver_task_hint(
