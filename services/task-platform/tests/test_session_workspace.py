@@ -2758,3 +2758,97 @@ async def test_restart_clears_execution_stop_confirmation(runtime):
     assert r.task.execution_stop_confirmed_at is None
     assert r.task.current_session_id != "ses_current"
     assert employee.current_task_count == 1
+
+
+async def test_remote_worker_redacts_configured_secret_values(runtime, monkeypatch):
+    """The workspace lives on the Worker. Value redaction still uses OpenCode config."""
+
+    canary = "remote-worker-api-key-canary"
+    runtime.environment.worker_channel = "worker"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.workspace = "/srv/worker/task"
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    runtime.task.workspace = "/srv/worker/task"
+    await runtime.session.commit()
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        if request.url.path == "/config":
+            return httpx.Response(
+                200,
+                json={"provider": {"astra-gateway": {"options": {"apiKey": canary, "baseURL": "http://gw"}}}},
+            )
+        if request.url.path == "/global/config":
+            return httpx.Response(200, json={})
+        if request.url.path == "/api/model":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "opencode/keep",
+                            "request": {"body": {"copied": canary, "model": "keep-model"}},
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
+    assert models.status_code == 200, models.text
+    assert canary not in models.text
+    assert models.json()["data"][0]["request"]["body"] == {"model": "keep-model"}
+    assert models.json()["data"][0]["id"] == "opencode/keep"
+
+
+async def test_upstream_error_bodies_are_redacted_before_return(runtime, monkeypatch):
+    secret = "upstream-error-body-canary"
+    (runtime.workspace / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": secret}}}}),
+        encoding="utf-8",
+    )
+    original = httpx.AsyncClient
+    calls = {"n": 0}
+
+    def upstream(_request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "apiKey": "err-field-api-key-canary",
+                        "nested": [
+                            {"token": "err-field-token-canary", "message": "kept"},
+                            secret,
+                        ],
+                        "detail": "failed",
+                    }
+                },
+            )
+        return httpx.Response(
+            502,
+            text=f"gateway rejected {secret}",
+            headers={"content-type": "text/plain"},
+        )
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    failed = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert failed.status_code == 400, failed.text
+    assert "err-field-api-key-canary" not in failed.text
+    assert "err-field-token-canary" not in failed.text
+    assert secret not in failed.text
+    assert failed.json() == {
+        "error": {"nested": [{"message": "kept"}], "detail": "failed"}
+    }
+    text = await runtime.api.get("/api/tasks/T1/opencode/ses_current/session/ses_current/message")
+    assert text.status_code == 502, text.text
+    assert secret not in text.text
+    assert text.text == "gateway rejected [redacted]"
