@@ -191,6 +191,36 @@ async def test_recovered_transport_recomputes_waiting_reason(session):
 
 
 @pytest.mark.asyncio
+async def test_recovered_refresh_keeps_finished_at(session):
+    completed = datetime(2026, 10, 18, 1, 0, tzinfo=UTC)
+    task = await _ready(session)
+    task.status = TaskStatus.WAITING
+    task.waiting_reason = "TRANSPORT_RECOVERY"
+    task.human_required_reason = "执行结束，待确认"
+    task.current_progress = "执行结束，待确认"
+    binding = await session.get(RuntimeSession, "ses")
+    binding.status = "SUCCEEDED"
+    binding.terminal_reason = "completed"
+    binding.finished_at = completed
+    await session.commit()
+
+    service = RuntimeService(session)
+    await service.refresh(task.id, client=_Idle())
+    await service.refresh(task.id, client=_Idle())
+    stored = await session.get(RuntimeSession, "ses")
+    assert stored.finished_at == completed
+
+    stored.status = "FAILED"
+    stored.terminal_reason = "assistant_error"
+    stored.finished_at = completed
+    task.waiting_reason = "TRANSPORT_RECOVERY"
+    await session.commit()
+    await service.refresh(task.id, client=_Idle())
+    await service.refresh(task.id, client=_Idle())
+    assert stored.finished_at == completed
+
+
+@pytest.mark.asyncio
 async def test_missing_transport_and_completed_set_waiting_reason(session):
     task = await _ready(session)
     service = RuntimeService(session)

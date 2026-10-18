@@ -1668,6 +1668,7 @@ class RuntimeService:
                 status=RuntimeSessionStatus.SUCCEEDED.value,
                 terminal_reason=binding.terminal_reason or SessionTerminalReason.COMPLETED.value,
                 finish_reason=binding.finish_reason,
+                finished_at=binding.finished_at,
             )
             projected = (
                 task_snapshot.status == TaskStatus.WAITING
@@ -1699,6 +1700,7 @@ class RuntimeService:
                     status=binding.status,
                     terminal_reason=binding.terminal_reason,
                     finish_reason=binding.finish_reason,
+                    finished_at=binding.finished_at,
                 ),
             )
             return task_snapshot

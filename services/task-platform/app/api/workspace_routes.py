@@ -110,6 +110,36 @@ OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 RETIRED_WORKSPACE_UI = "版本未知/界面已退役"
 
 
+def _api_route_missing(status: int, headers: dict[str, str]) -> bool:
+    """v1 OpenCode serves its SPA document for an unknown /api path."""
+
+    if status == 404:
+        return True
+    media = str(headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    return status == 200 and media == "text/html"
+
+
+def _scope_session_list(data, allowed: set[str]):
+    """v1 is an array. v2 is {data, cursor}; keep the envelope and filter data."""
+
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict) and item.get("id") in allowed]
+    if isinstance(data, dict) and isinstance(data.get("data"), list):
+        visible = [item for item in data["data"] if isinstance(item, dict) and item.get("id") in allowed]
+        return {**data, "data": visible}
+    return data
+
+
+def _scope_session_active(data, allowed: set[str]):
+    """v2 wraps the status map in data. A bare map is filtered the same way."""
+
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get("data"), dict):
+        return {**data, "data": {key: value for key, value in data["data"].items() if key in allowed}}
+    return {key: value for key, value in data.items() if key in allowed}
+
+
 def workspace_ui_bundle(version: str) -> Path:
     return REPO_ROOT / "web" / "nexus" / "public" / "opencode-workspace" / version / "index.html"
 
@@ -482,7 +512,7 @@ async def native_proxy(
         raise HTTPException(409, "任务已结束；请显式重新开始")
     if method != "GET" and session_id != task.current_session_id:
         raise HTTPException(403, "历史 Session 只读")
-    if method == "GET" and native_path in {"/global/event", "/event", "/api/event"}:
+    if method == "GET" and native_path in {"/global/event", "/event"}:
         await session.commit()
         return StreamingResponse(
             native_events(environment, workspace, session_id, native_path == "/global/event"),
@@ -540,7 +570,9 @@ async def native_proxy(
                 return []  # Arbitrary terminals are outside the task-scoped API boundary.
             params = dict(request.query_params)
             params["directory"] = directory
-            if "location[directory]" in params:
+            # v2 resolves /api/model and friends from location[directory]. Always pin it
+            # to this task; a missing value follows OpenCode's last directory.
+            if native_path.startswith("/api/") or "location[directory]" in params:
                 params["location[directory]"] = workspace
             for key in ("sessionID", "sessionId", "session_id"):
                 if key in params and params[key] not in allowed:
@@ -554,8 +586,9 @@ async def native_proxy(
                 session_id=session_id,
                 task_id=task.id,
             )
-            if status == 404 and forward_path.startswith("/api/"):
-                # v2 客户端的 /api 前缀在只提供 v1 路由的 OpenCode 上落到原路径。
+            if forward_path.startswith("/api/") and _api_route_missing(status, headers):
+                # v1 OpenCode answers an unknown /api path with the SPA document (200
+                # text/html) or 404. Retry the unprefixed route once.
                 alternate = forward_path.removeprefix("/api") or "/"
                 status, content, headers = await client.exchange(
                     method,
@@ -577,7 +610,9 @@ async def native_proxy(
             data = upstream.json() if upstream.content else None
             shape = native_path.removeprefix("/api") if native_path.startswith("/api/") else native_path
             if shape == "/session":
-                data = [item for item in data if item["id"] in allowed]
+                data = _scope_session_list(data, allowed)
+            elif shape == "/session/active":
+                data = _scope_session_active(data, allowed)
             elif shape == "/session/status":
                 data = {key: value for key, value in data.items() if key in allowed}
             elif shape in {"/question", "/permission"}:

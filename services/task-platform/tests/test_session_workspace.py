@@ -1178,6 +1178,7 @@ async def test_v2_absolute_api_paths_are_proxied(runtime, monkeypatch):
 
     def upstream(request):
         seen.append(request.url.path)
+        assert request.url.params["location[directory]"] == str(runtime.workspace)
         if request.url.path == "/api/provider":
             return httpx.Response(404, json={"error": "missing"})
         if request.url.path == "/provider":
@@ -1186,6 +1187,14 @@ async def test_v2_absolute_api_paths_are_proxied(runtime, monkeypatch):
             return httpx.Response(200, json={"ses_current": {"type": "idle"}})
         if request.url.path == "/api/model":
             return httpx.Response(200, json=[])
+        if request.url.path == "/api/config":
+            return httpx.Response(
+                200,
+                text="<!doctype html><html></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+        if request.url.path == "/config":
+            return httpx.Response(200, json={"model": "other/image-model", "provider": {"secret": "private"}})
         return httpx.Response(404, json={"error": "missing"})
 
     monkeypatch.setattr(
@@ -1200,8 +1209,80 @@ async def test_v2_absolute_api_paths_are_proxied(runtime, monkeypatch):
     assert active.json() == {"ses_current": {"type": "idle"}}
     models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
     assert models.status_code == 200
+    config = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/config")
+    assert config.status_code == 200, config.text
+    assert config.json() == {"model": "other/image-model"}
+    assert seen[-2:] == ["/api/config", "/config"]
     foreign = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/ses_other/message")
     assert foreign.status_code == 403
+
+
+async def test_v2_session_lists_stay_inside_one_task(runtime, monkeypatch):
+    """Two tasks share one Worker environment. Each proxy only sees its own sessions."""
+
+    workspace = str(runtime.workspace)
+    snapshot = environment_snapshot(runtime.environment)
+    runtime.environment.worker_channel = "worker"
+    runtime.session.add(
+        Task(
+            id="T2",
+            title="Other",
+            task_type="ISSUE",
+            status="RUNNING",
+            employee_id="E1",
+            current_session_id="ses_other",
+            workspace=workspace,
+            execution_environment_snapshot=snapshot,
+        )
+    )
+    runtime.session.add(
+        RuntimeSession(
+            id="ses_other",
+            task_id="T2",
+            employee_id="E1",
+            workspace=workspace,
+            environment=snapshot,
+        )
+    )
+    await runtime.session.commit()
+    original = httpx.AsyncClient
+    sessions = {
+        "data": [{"id": "ses_current", "title": "one"}, {"id": "ses_other", "title": "two"}],
+        "cursor": {"next": None},
+    }
+    active = {
+        "data": {
+            "ses_current": {"type": "busy"},
+            "ses_other": {"type": "busy"},
+        }
+    }
+
+    def upstream(request):
+        assert request.url.params["location[directory]"] == workspace
+        if request.url.path == "/api/session":
+            return httpx.Response(200, json=sessions)
+        if request.url.path == "/api/session/active":
+            return httpx.Response(200, json=active)
+        return httpx.Response(404, json={"error": "missing"})
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    own = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session")
+    assert own.status_code == 200, own.text
+    assert own.json() == {
+        "data": [{"id": "ses_current", "title": "one"}],
+        "cursor": {"next": None},
+    }
+    other = await runtime.api.get("/api/tasks/T2/opencode/ses_other/api/session")
+    assert other.status_code == 200, other.text
+    assert other.json()["data"] == [{"id": "ses_other", "title": "two"}]
+    own_active = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/session/active")
+    assert own_active.status_code == 200, own_active.text
+    assert own_active.json() == {"data": {"ses_current": {"type": "busy"}}}
+    other_active = await runtime.api.get("/api/tasks/T2/opencode/ses_other/api/session/active")
+    assert other_active.json()["data"] == {"ses_other": {"type": "busy"}}
 
 
 async def test_native_abort_accepts_empty_body(runtime):

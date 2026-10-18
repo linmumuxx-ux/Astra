@@ -16,7 +16,11 @@ function missingWorkspaceBundle(): Plugin {
       res.end("OpenCode Workspace UI bundle is not installed");
       return;
     }
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    // index.html points at the hashed bundle. Keep it revalidatable; cache the assets.
+    res.setHeader(
+      "Cache-Control",
+      url.endsWith("/index.html") ? "no-cache" : "public, max-age=31536000, immutable",
+    );
     next();
   };
   return {
