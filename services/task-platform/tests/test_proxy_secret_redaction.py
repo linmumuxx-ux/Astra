@@ -407,3 +407,77 @@ async def test_failed_remote_config_keeps_cached_secrets(monkeypatch):
     cold = SimpleNamespace(mode="LINUX_REMOTE", id=12, worker_epoch=4)
     empty = await load_proxy_secrets("/srv/missing", cold, client)
     assert secret not in empty
+
+
+@pytest.mark.asyncio
+async def test_remote_secret_cache_is_per_workspace(monkeypatch):
+    secret = "workspace-cache-canary-value"
+    other = "other-workspace-canary-value"
+    environment = SimpleNamespace(mode="LINUX_REMOTE", id=21, worker_epoch=2)
+    calls: list[tuple[str, str]] = []
+
+    class Client:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            directory = params["directory"]
+            calls.append((path, directory))
+            if path != "/config":
+                return 200, b"{}", {}
+            value = secret if directory.rstrip("/") == "/srv/worker/task" else other
+            payload = {"provider": {"astra-gateway": {"options": {"apiKey": value}}}}
+            return 200, json.dumps(payload).encode(), {}
+
+    client = Client()
+    first = await load_proxy_secrets("/srv/worker/task", environment, client)
+    second = await load_proxy_secrets("/srv/worker/task/", environment, client)
+    assert secret in first
+    assert secret in second
+    assert other not in second
+    assert len([item for item in calls if item[0] == "/config"]) == 1
+
+    separate = await load_proxy_secrets("/srv/worker/other", environment, client)
+    assert other in separate
+    assert secret not in separate
+    assert len([item for item in calls if item[0] == "/config"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_partial_config_read_keeps_cached_secret_values(monkeypatch):
+    secret = "partial-config-canary-value"
+    environment = SimpleNamespace(mode="LINUX_REMOTE", id=22, worker_epoch=1)
+    clock = {"now": 5_000.0}
+    monkeypatch.setattr("app.api.workspace_routes.time.monotonic", lambda: clock["now"])
+    state = {"config": "ok"}
+
+    class Client:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            if path == "/config":
+                if state["config"] == "down":
+                    raise ConnectionError("config down")
+                if state["config"] == "bad-json":
+                    return 200, b"not-json", {}
+                payload = {"provider": {"astra-gateway": {"options": {"apiKey": secret}}}}
+                return 200, json.dumps(payload).encode(), {}
+            if path == "/global/config":
+                return 200, b"{}", {}
+            return 404, b"", {}
+
+    client = Client()
+    found = await load_proxy_secrets("/srv/worker/task", environment, client)
+    assert secret in found
+
+    clock["now"] += 31
+    state["config"] = "down"
+    kept = await load_proxy_secrets("/srv/worker/task", environment, client)
+    assert secret in kept
+
+    clock["now"] += 31
+    state["config"] = "bad-json"
+    still = await load_proxy_secrets("/srv/worker/task", environment, client)
+    assert secret in still
+
+    cold = SimpleNamespace(mode="LINUX_REMOTE", id=23, worker_epoch=1)
+    missing = await load_proxy_secrets("/srv/cold", cold, client)
+    assert secret not in missing
+    state["config"] = "ok"
+    recovered = await load_proxy_secrets("/srv/cold", cold, client)
+    assert secret in recovered

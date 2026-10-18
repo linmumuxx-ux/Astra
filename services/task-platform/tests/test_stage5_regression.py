@@ -138,7 +138,7 @@ async def _seed(factory, workspace: str):
 
 
 async def test_network_timeout_and_process_restart_keep_the_same_session(monkeypatch, tmp_path):
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'stage5.db'}")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)

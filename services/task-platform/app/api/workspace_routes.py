@@ -149,8 +149,8 @@ _TOKEN_USAGE_PARTS = frozenset(
 )
 _REDACTED = "[redacted]"
 _REMOTE_SECRET_TTL_SECONDS = 30.0
-# (environment id, worker epoch) -> (monotonic time, secret values). Not logged.
-_REMOTE_SECRET_CACHE: dict[tuple[int, int], tuple[float, frozenset[str]]] = {}
+# (environment id, worker epoch, workspace) -> (monotonic time, secret values). Not logged.
+_REMOTE_SECRET_CACHE: dict[tuple[int, int, str], tuple[float, frozenset[str]]] = {}
 _CONFIG_FILES = (
     Path("opencode.json"),
     Path("opencode.jsonc"),
@@ -265,19 +265,26 @@ def _platform_written_secrets() -> set[str]:
     return found
 
 
-async def _secrets_from_opencode(client, workspace: str) -> set[str] | None:
+def _secret_cache_workspace(workspace: str) -> str:
+    """Lexical path identity. A trailing slash shares the directory's cache entry."""
+
+    return str(PurePosixPath(str(workspace).replace("\\", "/")))
+
+
+async def _secrets_from_opencode(client, workspace: str) -> tuple[set[str], bool] | None:
     """Read merged OpenCode config through the client already talking to the Worker.
 
-    ``None`` means every read failed. An empty set means the config loaded and
-    held no secret-length values. Values are not logged or returned to clients.
+    ``None`` means no read parsed. The bool is true only when every read parsed.
+    A client with no exchange is a complete empty read. Values are not logged.
     """
 
     exchange = getattr(client, "exchange", None)
     if exchange is None:
-        return set()
+        return set(), True
     found: set[str] = set()
-    succeeded = False
-    for path in ("/config", "/global/config"):
+    paths = ("/config", "/global/config")
+    parsed = 0
+    for path in paths:
         try:
             status, content, _headers = await exchange("GET", path, params={"directory": workspace})
         except Exception:
@@ -286,17 +293,15 @@ async def _secrets_from_opencode(client, workspace: str) -> set[str] | None:
             content = content.encode()
         if not isinstance(content, (bytes, bytearray)) or status >= 400 or len(content) > 1_000_000:
             continue
-        succeeded = True
-        if not content:
-            continue
         try:
             data = json.loads(content)
         except (UnicodeError, ValueError):
             continue
+        parsed += 1
         _collect_configured_secrets(data, found)
-    if not succeeded:
+    if parsed == 0:
         return None
-    return found
+    return found, parsed == len(paths)
 
 
 async def _worker_epoch(environment) -> int:
@@ -328,15 +333,19 @@ def clear_proxy_secret_cache() -> None:
 
 
 async def _remote_configured_secrets(environment, client, workspace: str) -> set[str]:
-    """Worker config values, reused per environment and epoch for 30 seconds.
+    """Worker config values, reused per environment, epoch, and workspace for 30 seconds.
 
-    A failed read keeps the previous values. With no previous values, callers
-    still apply field-name redaction.
+    A failed or partial read keeps the previous values for this workspace. With
+    no previous values, callers still apply field-name redaction.
     """
 
     epoch = await _worker_epoch(environment)
     environment_id = getattr(environment, "id", None)
-    key = (int(environment_id), epoch) if isinstance(environment_id, int) else None
+    key = (
+        (int(environment_id), epoch, _secret_cache_workspace(workspace))
+        if isinstance(environment_id, int)
+        else None
+    )
     now = time.monotonic()
     cached = _REMOTE_SECRET_CACHE.get(key) if key is not None else None
     if cached is not None and now - cached[0] < _REMOTE_SECRET_TTL_SECONDS:
@@ -349,9 +358,14 @@ async def _remote_configured_secrets(environment, client, workspace: str) -> set
         if cached is not None:
             return set(cached[1])
         return set()
+    values, complete = fetched
+    if not complete:
+        if cached is not None:
+            return set(cached[1]) | values
+        return set(values)
     if key is not None:
-        _REMOTE_SECRET_CACHE[key] = (now, frozenset(fetched))
-    return set(fetched)
+        _REMOTE_SECRET_CACHE[key] = (now, frozenset(values))
+    return set(values)
 
 
 async def load_proxy_secrets(workspace: str, environment=None, client=None) -> set[str]:
@@ -364,6 +378,18 @@ async def load_proxy_secrets(workspace: str, environment=None, client=None) -> s
         found |= _platform_written_secrets()
         found |= await _remote_configured_secrets(environment, client, workspace)
         return found
+    except Exception:
+        return configured_secret_values(workspace)
+
+
+async def _diff_proxy_secrets(environment, workspace: str) -> set[str]:
+    """Secrets for a platform-built diff. A failed remote read still returns the diff."""
+
+    try:
+        if _needs_remote_secrets(environment, workspace):
+            async with connect(environment, start=True) as client:
+                return await load_proxy_secrets(workspace, environment, client)
+        return await load_proxy_secrets(workspace, environment)
     except Exception:
         return configured_secret_values(workspace)
 
@@ -827,9 +853,11 @@ async def native_proxy(
                 session, task, cumulative=mode == "task", directory=directory,
                 environment=environment, workspace=workspace,
             )
+            secrets = await _diff_proxy_secrets(environment, workspace)
             if native_path.endswith("/raw"):
-                return Response("".join(item["patch"] for item in diffs), media_type="text/x-diff")
-            return diffs
+                raw = redact_configured_text("".join(item["patch"] for item in diffs), secrets)
+                return Response(raw, media_type="text/x-diff")
+            return redact_secret_fields(diffs, secrets)
         except Exception as exc:
             raise error_response(exc) from exc
     match = SESSION_READ.fullmatch(native_path) if method == "GET" else SESSION_WRITE.fullmatch(native_path)
@@ -931,8 +959,6 @@ async def native_proxy(
                     task_id=task.id,
                 )
             upstream = _Upstream(status, content, headers)
-            if native_path == "/vcs/diff/raw" and not upstream.is_error:
-                return Response(content=upstream.content, media_type="text/x-diff")
             secrets = await load_proxy_secrets(workspace, environment, client)
             if upstream.is_error:
                 return Response(

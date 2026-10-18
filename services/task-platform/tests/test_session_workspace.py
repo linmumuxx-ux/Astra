@@ -1915,6 +1915,32 @@ async def test_native_vcs_diff_uses_bound_git_without_upstream(runtime):
     assert outside.status_code == 403
 
 
+@pytest.mark.parametrize("mode", ["git", "task"])
+async def test_vcs_diff_redacts_configured_secrets_in_file_text(runtime, mode):
+    secret = "diff-workspace-file-canary"
+    repo = runtime.workspace
+    _init_repo(repo)
+    (repo / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": secret}}}}),
+        encoding="utf-8",
+    )
+    (repo / "notes.txt").write_text(f"echo {secret}\ncurl -H 'Authorization: Bearer {secret}'\n")
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    response = await runtime.api.get(base, params={"mode": mode})
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    notes = next(item for item in response.json() if item["file"] == "notes.txt")
+    assert notes["after"] == "echo [redacted]\ncurl -H 'Authorization: Bearer [redacted]'\n"
+    assert "[redacted]" in notes["patch"]
+    assert secret not in notes["patch"]
+    raw = await runtime.api.get(base + "/raw", params={"mode": mode})
+    assert raw.status_code == 200, raw.text
+    assert raw.headers["content-type"].startswith("text/x-diff")
+    assert secret not in raw.text
+    assert "echo [redacted]" in raw.text
+    assert "Authorization: Bearer [redacted]" in raw.text
+
+
 async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):
     r = runtime
     _init_repo(r.workspace)
