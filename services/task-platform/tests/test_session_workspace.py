@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.workspace_routes import redact_secret_fields
+from app.api.workspace_routes import load_proxy_secrets, redact_secret_fields
 from app.database import get_session
 from app.executors.errors import OpenCodeSessionNotFound
 from app.main import app
@@ -1939,6 +1939,58 @@ async def test_vcs_diff_redacts_configured_secrets_in_file_text(runtime, mode):
     assert secret not in raw.text
     assert "echo [redacted]" in raw.text
     assert "Authorization: Bearer [redacted]" in raw.text
+
+
+async def test_diff_stays_redacted_when_remote_connect_fails(runtime, monkeypatch):
+    secret = "diff-cached-remote-canary"
+    binding = await runtime.session.get(RuntimeSession, "ses_current")
+    binding.environment = {**binding.environment, "mode": "LINUX_REMOTE"}
+    await runtime.session.commit()
+
+    class Client:
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            if path == "/config":
+                payload = {"provider": {"astra-gateway": {"options": {"apiKey": secret}}}}
+                return 200, json.dumps(payload).encode(), {}
+            return 200, b"{}", {}
+
+    seeded = await load_proxy_secrets(
+        binding.workspace,
+        SimpleNamespace(mode="LINUX_REMOTE", id=runtime.environment.id, worker_epoch=0),
+        Client(),
+    )
+    assert secret in seeded
+
+    @asynccontextmanager
+    async def fail_connect(*_args, **_kwargs):
+        raise ConnectionError("opencode health failed")
+        yield
+
+    async def fake_diff(*_args, **_kwargs):
+        return [
+            {
+                "file": "notes.txt",
+                "patch": f"+echo {secret}\n",
+                "before": "",
+                "after": f"curl -H 'Authorization: Bearer {secret}'\n",
+                "additions": 1,
+                "deletions": 0,
+                "status": "added",
+            }
+        ]
+
+    monkeypatch.setattr("app.api.workspace_routes.connect", fail_connect)
+    monkeypatch.setattr("app.api.workspace_routes.workspace_diff", fake_diff)
+    base = "/api/tasks/T1/opencode/ses_current/vcs/diff"
+    response = await runtime.api.get(base, params={"mode": "git"})
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    assert response.json()[0]["after"] == "curl -H 'Authorization: Bearer [redacted]'\n"
+    assert response.json()[0]["patch"] == "+echo [redacted]\n"
+    raw = await runtime.api.get(base + "/raw", params={"mode": "git"})
+    assert raw.status_code == 200, raw.text
+    assert secret not in raw.text
+    assert raw.text == "+echo [redacted]\n"
 
 
 async def test_historical_diff_reads_its_bound_workspace_after_relocation(runtime, tmp_path):

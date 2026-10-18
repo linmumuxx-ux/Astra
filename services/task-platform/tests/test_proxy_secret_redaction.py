@@ -449,7 +449,11 @@ async def test_partial_config_read_keeps_cached_secret_values(monkeypatch):
     state = {"config": "ok"}
 
     class Client:
+        def __init__(self):
+            self.reads = 0
+
         async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            self.reads += 1
             if path == "/config":
                 if state["config"] == "down":
                     raise ConnectionError("config down")
@@ -464,20 +468,30 @@ async def test_partial_config_read_keeps_cached_secret_values(monkeypatch):
     client = Client()
     found = await load_proxy_secrets("/srv/worker/task", environment, client)
     assert secret in found
+    assert client.reads == 2
 
     clock["now"] += 31
     state["config"] = "down"
     kept = await load_proxy_secrets("/srv/worker/task", environment, client)
     assert secret in kept
+    assert client.reads == 4
+    cached = await load_proxy_secrets("/srv/worker/task", environment, client)
+    assert secret in cached
+    assert client.reads == 4
 
     clock["now"] += 31
     state["config"] = "bad-json"
     still = await load_proxy_secrets("/srv/worker/task", environment, client)
     assert secret in still
+    assert client.reads == 6
 
     cold = SimpleNamespace(mode="LINUX_REMOTE", id=23, worker_epoch=1)
     missing = await load_proxy_secrets("/srv/cold", cold, client)
     assert secret not in missing
+    quiet = client.reads
+    assert await load_proxy_secrets("/srv/cold", cold, client) == missing
+    assert client.reads == quiet
+    clock["now"] += 31
     state["config"] = "ok"
     recovered = await load_proxy_secrets("/srv/cold", cold, client)
     assert secret in recovered

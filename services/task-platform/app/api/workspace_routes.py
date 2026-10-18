@@ -332,20 +332,32 @@ def clear_proxy_secret_cache() -> None:
     _REMOTE_SECRET_CACHE.clear()
 
 
+async def _remote_secret_cache_key(environment, workspace: str) -> tuple[int, int, str] | None:
+    environment_id = getattr(environment, "id", None)
+    if not isinstance(environment_id, int):
+        return None
+    epoch = await _worker_epoch(environment)
+    return int(environment_id), epoch, _secret_cache_workspace(workspace)
+
+
+def _cached_remote_secrets(key: tuple[int, int, str] | None) -> set[str]:
+    if key is None:
+        return set()
+    cached = _REMOTE_SECRET_CACHE.get(key)
+    if cached is None:
+        return set()
+    return set(cached[1])
+
+
 async def _remote_configured_secrets(environment, client, workspace: str) -> set[str]:
     """Worker config values, reused per environment, epoch, and workspace for 30 seconds.
 
-    A failed or partial read keeps the previous values for this workspace. With
-    no previous values, callers still apply field-name redaction.
+    A failed read keeps the previous values. A partial read stores the merged
+    values with a fresh timestamp. With no previous values, callers still apply
+    field-name redaction.
     """
 
-    epoch = await _worker_epoch(environment)
-    environment_id = getattr(environment, "id", None)
-    key = (
-        (int(environment_id), epoch, _secret_cache_workspace(workspace))
-        if isinstance(environment_id, int)
-        else None
-    )
+    key = await _remote_secret_cache_key(environment, workspace)
     now = time.monotonic()
     cached = _REMOTE_SECRET_CACHE.get(key) if key is not None else None
     if cached is not None and now - cached[0] < _REMOTE_SECRET_TTL_SECONDS:
@@ -359,10 +371,8 @@ async def _remote_configured_secrets(environment, client, workspace: str) -> set
             return set(cached[1])
         return set()
     values, complete = fetched
-    if not complete:
-        if cached is not None:
-            return set(cached[1]) | values
-        return set(values)
+    if not complete and cached is not None:
+        values = set(cached[1]) | values
     if key is not None:
         _REMOTE_SECRET_CACHE[key] = (now, frozenset(values))
     return set(values)
@@ -383,15 +393,23 @@ async def load_proxy_secrets(workspace: str, environment=None, client=None) -> s
 
 
 async def _diff_proxy_secrets(environment, workspace: str) -> set[str]:
-    """Secrets for a platform-built diff. A failed remote read still returns the diff."""
+    """Secrets for a platform-built diff. A failed remote read still returns the diff.
+
+    ``start=False`` skips OpenCode health so a dead server still reaches the
+    cache. If connecting itself fails, cached Worker values are kept.
+    """
 
     try:
         if _needs_remote_secrets(environment, workspace):
-            async with connect(environment, start=True) as client:
+            async with connect(environment, start=False) as client:
                 return await load_proxy_secrets(workspace, environment, client)
         return await load_proxy_secrets(workspace, environment)
     except Exception:
-        return configured_secret_values(workspace)
+        found = configured_secret_values(workspace)
+        if _needs_remote_secrets(environment, workspace):
+            key = await _remote_secret_cache_key(environment, workspace)
+            found |= _cached_remote_secrets(key)
+        return found
 
 
 def redact_configured_text(text: str, configured: set[str] | None = None) -> str:
