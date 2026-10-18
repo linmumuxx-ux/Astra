@@ -21,6 +21,15 @@ os.environ["ASTRA_WORKSPACE_ROOT"] = str(TEST_WORKSPACES)
 
 
 @pytest.fixture(autouse=True)
+def isolate_proxy_secret_cache():
+    from app.api.workspace_routes import clear_proxy_secret_cache
+
+    clear_proxy_secret_cache()
+    yield
+    clear_proxy_secret_cache()
+
+
+@pytest.fixture(autouse=True)
 async def prepare_process_schema():
     """The process database URL is a fresh file. Create its schema before any lookup.
 

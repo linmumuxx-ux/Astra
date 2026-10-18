@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any
 from urllib.parse import unquote, urlparse
@@ -111,9 +112,23 @@ RETIRED_WORKSPACE_UI = "版本未知/界面已退役"
 _SECRET_SEGMENTS = frozenset({"provider", "model", "config"})
 # Exact names after '-' / '_' normalization. `key` stays exact so fields such as
 # setCacheKey are left for the Workspace UI.
-_EXACT_SECRET_FIELDS = frozenset({"key"})
+_EXACT_SECRET_FIELDS = frozenset({"key", "credentials", "bearer"})
+# Whole-name matches after normalization. `setCacheKey` stays a normal option.
+_COMPOUND_SECRET_FIELDS = frozenset({"private_key", "access_key"})
 # Segment match (case-insensitive). `tokens` / `*_tokens` are usage counters.
-_SECRET_WORDS = frozenset({"token", "secret", "password", "passwd", "cookie", "cookies", "apikey"})
+_SECRET_WORDS = frozenset(
+    {
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "cookie",
+        "cookies",
+        "apikey",
+        "credentials",
+        "bearer",
+    }
+)
 _TOKEN_USAGE_PARTS = frozenset(
     {
         "count",
@@ -133,6 +148,9 @@ _TOKEN_USAGE_PARTS = frozenset(
     }
 )
 _REDACTED = "[redacted]"
+_REMOTE_SECRET_TTL_SECONDS = 30.0
+# (environment id, worker epoch) -> (monotonic time, secret values). Not logged.
+_REMOTE_SECRET_CACHE: dict[tuple[int, int], tuple[float, frozenset[str]]] = {}
 _CONFIG_FILES = (
     Path("opencode.json"),
     Path("opencode.jsonc"),
@@ -174,7 +192,7 @@ def _is_secret_field(name: str) -> bool:
     parts = [part for part in normalized.split("_") if part]
     if "token" in parts and parts != ["token"] and _TOKEN_USAGE_PARTS.intersection(parts):
         return False
-    if normalized in _EXACT_SECRET_FIELDS:
+    if normalized in _EXACT_SECRET_FIELDS or normalized in _COMPOUND_SECRET_FIELDS:
         return True
     if "api" in parts:
         for index, part in enumerate(parts[:-1]):
@@ -247,16 +265,18 @@ def _platform_written_secrets() -> set[str]:
     return found
 
 
-async def _secrets_from_opencode(client, workspace: str) -> set[str]:
+async def _secrets_from_opencode(client, workspace: str) -> set[str] | None:
     """Read merged OpenCode config through the client already talking to the Worker.
 
-    Values stay in this set for redaction. They are not logged or returned.
+    ``None`` means every read failed. An empty set means the config loaded and
+    held no secret-length values. Values are not logged or returned to clients.
     """
 
     exchange = getattr(client, "exchange", None)
     if exchange is None:
         return set()
     found: set[str] = set()
+    succeeded = False
     for path in ("/config", "/global/config"):
         try:
             status, content, _headers = await exchange("GET", path, params={"directory": workspace})
@@ -266,26 +286,86 @@ async def _secrets_from_opencode(client, workspace: str) -> set[str]:
             content = content.encode()
         if not isinstance(content, (bytes, bytearray)) or status >= 400 or len(content) > 1_000_000:
             continue
+        succeeded = True
+        if not content:
+            continue
         try:
             data = json.loads(content)
         except (UnicodeError, ValueError):
             continue
         _collect_configured_secrets(data, found)
+    if not succeeded:
+        return None
     return found
+
+
+async def _worker_epoch(environment) -> int:
+    """Current Worker epoch for this environment. Missing rows stay at 0."""
+
+    explicit = getattr(environment, "worker_epoch", None)
+    if isinstance(explicit, int):
+        return explicit
+    environment_id = getattr(environment, "id", None)
+    if not isinstance(environment_id, int):
+        return 0
+    try:
+        from sqlalchemy import select
+
+        from app.database import SessionLocal
+        from app.models import WorkerInstance
+
+        async with SessionLocal() as session:
+            epoch = await session.scalar(
+                select(WorkerInstance.epoch).where(WorkerInstance.environment_id == environment_id)
+            )
+    except Exception:
+        return 0
+    return int(epoch or 0)
+
+
+def clear_proxy_secret_cache() -> None:
+    _REMOTE_SECRET_CACHE.clear()
+
+
+async def _remote_configured_secrets(environment, client, workspace: str) -> set[str]:
+    """Worker config values, reused per environment and epoch for 30 seconds.
+
+    A failed read keeps the previous values. With no previous values, callers
+    still apply field-name redaction.
+    """
+
+    epoch = await _worker_epoch(environment)
+    environment_id = getattr(environment, "id", None)
+    key = (int(environment_id), epoch) if isinstance(environment_id, int) else None
+    now = time.monotonic()
+    cached = _REMOTE_SECRET_CACHE.get(key) if key is not None else None
+    if cached is not None and now - cached[0] < _REMOTE_SECRET_TTL_SECONDS:
+        return set(cached[1])
+    try:
+        fetched = await _secrets_from_opencode(client, workspace)
+    except Exception:
+        fetched = None
+    if fetched is None:
+        if cached is not None:
+            return set(cached[1])
+        return set()
+    if key is not None:
+        _REMOTE_SECRET_CACHE[key] = (now, frozenset(fetched))
+    return set(fetched)
 
 
 async def load_proxy_secrets(workspace: str, environment=None, client=None) -> set[str]:
     """Local config files, plus remote Worker config when this host does not have them."""
 
-    found = configured_secret_values(workspace)
-    if not _needs_remote_secrets(environment, workspace):
-        return found
     try:
+        found = configured_secret_values(workspace)
+        if not _needs_remote_secrets(environment, workspace):
+            return found
         found |= _platform_written_secrets()
-        found |= await _secrets_from_opencode(client, workspace)
-    except Exception:
+        found |= await _remote_configured_secrets(environment, client, workspace)
         return found
-    return found
+    except Exception:
+        return configured_secret_values(workspace)
 
 
 def redact_configured_text(text: str, configured: set[str] | None = None) -> str:
@@ -297,21 +377,19 @@ def redact_configured_text(text: str, configured: set[str] | None = None) -> str
 
 
 def redact_secret_fields(value: Any, configured: set[str] | None = None) -> Any:
-    """Drop secret-named fields at any depth, and any string equal to a configured key."""
+    """Drop secret-named fields, and replace configured secret text inside every string."""
 
     secrets = configured or set()
+    if isinstance(value, str):
+        return redact_configured_text(value, secrets)
 
     def walk(node: Any) -> None:
         if isinstance(node, list):
-            kept: list[Any] = []
-            for item in node:
+            for index, item in enumerate(node):
                 if isinstance(item, str):
-                    if item not in secrets:
-                        kept.append(item)
-                    continue
-                walk(item)
-                kept.append(item)
-            node[:] = kept
+                    node[index] = redact_configured_text(item, secrets)
+                else:
+                    walk(item)
             return
         if not isinstance(node, dict):
             return
@@ -319,8 +397,7 @@ def redact_secret_fields(value: Any, configured: set[str] | None = None) -> Any:
             node.pop(key, None)
         for key, item in list(node.items()):
             if isinstance(item, str):
-                if item in secrets:
-                    node.pop(key, None)
+                node[key] = redact_configured_text(item, secrets)
                 continue
             walk(item)
 
@@ -623,8 +700,8 @@ def event_session(event):
 
 
 def _sse_data(value, secrets: set[str]) -> str:
-    redact_secret_fields(value, secrets)
-    return f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
+    redacted = redact_secret_fields(value, secrets)
+    return f"data: {json.dumps(redacted, ensure_ascii=False)}\n\n"
 
 
 async def native_events(environment, workspace, root, global_stream):
@@ -854,22 +931,17 @@ async def native_proxy(
                     task_id=task.id,
                 )
             upstream = _Upstream(status, content, headers)
-            secrets = (
-                await load_proxy_secrets(workspace, environment, client)
-                if upstream.is_error or carries_provider_secrets(native_path)
-                else set()
-            )
+            if native_path == "/vcs/diff/raw" and not upstream.is_error:
+                return Response(content=upstream.content, media_type="text/x-diff")
+            secrets = await load_proxy_secrets(workspace, environment, client)
             if upstream.is_error:
                 return Response(
                     content=redact_upstream_body(upstream.content, secrets),
                     status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"),
                 )
-            if native_path == "/vcs/diff/raw":
-                return Response(content=upstream.content, media_type="text/x-diff")
             data = upstream.json() if upstream.content else None
-            if carries_provider_secrets(native_path):
-                redact_secret_fields(data, secrets)
+            data = redact_secret_fields(data, secrets)
             shape = native_path.removeprefix("/api") if native_path.startswith("/api/") else native_path
             if shape == "/session":
                 data = _scope_session_list(data, allowed)

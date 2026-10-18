@@ -45,7 +45,7 @@ def _tool_event() -> dict:
                 "state": {
                     "status": "completed",
                     "input": {
-                        "command": "pwd",
+                        "command": f"curl -H 'Authorization: Bearer {VALUE}'",
                         "request": {
                             "headers": {
                                 "authorization": AUTH,
@@ -78,7 +78,7 @@ def _tool_event() -> dict:
                         "setCacheKey": True,
                         "authorizationUrl": "https://example.test/oauth",
                     },
-                    "output": "ok",
+                    "output": f"echo {VALUE}",
                     "title": "Run pwd",
                     "metadata": {},
                     "time": {"start": 1, "end": 2},
@@ -86,6 +86,33 @@ def _tool_event() -> dict:
             },
             "time": 3,
         },
+    }
+
+
+def _prompt_event() -> dict:
+    return {
+        "id": "evt_prompt",
+        "type": "message.part.updated",
+        "properties": {
+            "sessionID": "ses",
+            "part": {
+                "id": "prt_text",
+                "sessionID": "ses",
+                "messageID": "msg_user",
+                "type": "text",
+                "text": f"user prompt {VALUE} please",
+            },
+            "time": 4,
+        },
+    }
+
+
+def _gap_event() -> dict:
+    return {
+        "type": "astra.event_gap",
+        "directory": "/srv/worker/task",
+        "reason": "worker_reconnected",
+        "detail": f"lost {VALUE}",
     }
 
 
@@ -144,7 +171,7 @@ def _unwrap(chunk: str, global_stream: bool) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("global_stream", [False, True])
 async def test_sse_redacts_tool_part_canaries_on_both_event_modes(monkeypatch, global_stream):
-    client = _RemoteClient([_tool_event(), _usage_event()])
+    client = _RemoteClient([_tool_event(), _prompt_event(), _usage_event(), _gap_event()])
     environment = SimpleNamespace(mode="LINUX_REMOTE", id=7, worker_channel="worker")
 
     @asynccontextmanager
@@ -160,15 +187,31 @@ async def test_sse_redacts_tool_part_canaries_on_both_event_modes(monkeypatch, g
     raw = "".join(chunks)
     for canary in (*FIELD_CANARIES, VALUE):
         assert canary not in raw
-    tool = _unwrap(chunks[0], global_stream)
-    usage = _unwrap(chunks[1], global_stream)
+    events = [_unwrap(chunk, global_stream) for chunk in chunks]
+    tool = next(
+        item
+        for item in events
+        if item.get("type") == "message.part.updated" and item["properties"]["part"]["type"] == "tool"
+    )
+    prompt = next(
+        item
+        for item in events
+        if item.get("type") == "message.part.updated" and item["properties"]["part"]["type"] == "text"
+    )
+    usage = next(item for item in events if item.get("type") == "message.updated")
+    gap = next(item for item in events if item.get("type") == "astra.event_gap")
     assert tool["type"] == "message.part.updated"
-    state_input = tool["properties"]["part"]["state"]["input"]
-    assert state_input["command"] == "pwd"
+    state = tool["properties"]["part"]["state"]
+    state_input = state["input"]
+    assert state_input["command"] == "curl -H 'Authorization: Bearer [redacted]'"
+    assert state["output"] == "echo [redacted]"
+    assert prompt["properties"]["part"]["text"] == "user prompt [redacted] please"
+    assert gap["detail"] == "lost [redacted]"
     assert state_input["request"]["headers"] == {"accept": "application/json"}
     assert state_input["request"]["body"] == {"options": {}, "model": "keep-model"}
     assert state_input["nested"] == {"one": {"two": {"name": "kept"}}}
-    assert state_input["args"] == ["keep-arg", ["inner"]]
+    assert state_input["args"] == ["keep-arg", "[redacted]", ["inner", "[redacted]"]]
+    assert state_input["copied"] == "[redacted]"
     assert state_input["tokens"] == {
         "input": 12,
         "output": 3,
@@ -182,7 +225,6 @@ async def test_sse_redacts_tool_part_canaries_on_both_event_modes(monkeypatch, g
     assert state_input["cache_read_tokens"] == 2
     assert state_input["setCacheKey"] is True
     assert state_input["authorizationUrl"] == "https://example.test/oauth"
-    assert "copied" not in state_input
     info = usage["properties"]["info"]
     assert info["tokens"]["input"] == 12
     assert info["tokens"]["output"] == 3
@@ -194,15 +236,27 @@ async def test_sse_redacts_tool_part_canaries_on_both_event_modes(monkeypatch, g
         assert wrapped["directory"] == "/srv/worker/task"
 
 
-def test_list_elements_equal_to_a_configured_secret_are_removed():
+def test_secret_text_inside_strings_and_lists_is_replaced():
     secret = "configured-list-canary-value"
     payload = {
-        "items": ["keep", secret, ["nested-keep", secret, {"token": "field-token-canary-value"}]],
-        "note": "plain",
+        "items": [
+            "keep",
+            secret,
+            f"curl -H 'Authorization: Bearer {secret}'",
+            ["nested-keep", secret, {"token": "field-token-canary-value"}],
+        ],
+        "note": f"echo {secret}",
+        "plain": "public",
     }
-    redact_secret_fields(payload, {secret})
-    assert payload["items"] == ["keep", ["nested-keep", {}]]
-    assert payload["note"] == "plain"
+    redact_secret_fields(payload, {secret, "public"})
+    assert payload["items"] == [
+        "keep",
+        "[redacted]",
+        "curl -H 'Authorization: Bearer [redacted]'",
+        ["nested-keep", "[redacted]", {}],
+    ]
+    assert payload["note"] == "echo [redacted]"
+    assert payload["plain"] == "public"
     assert secret not in json.dumps(payload)
 
 
@@ -217,6 +271,11 @@ def test_new_secret_field_names_redact_without_dropping_token_counts():
         "dbPassword": PASSWORD,
         "authorization": AUTH,
         "apiKey": APIKEY,
+        "privateKey": "canary-private-key-value",
+        "private_key": "canary-private-key-value-2",
+        "access_key": "canary-access-key-value",
+        "credentials": "canary-credentials-value",
+        "bearer": "canary-bearer-value",
         "tokens": {"input": 4, "output": 5, "reasoning": 0, "cache": {"read": 1, "write": 1}},
         "input_tokens": 4,
         "output_tokens": 5,
@@ -229,7 +288,22 @@ def test_new_secret_field_names_redact_without_dropping_token_counts():
     }
     redact_secret_fields(payload)
     rendered = json.dumps(payload)
-    for canary in (XAUTH, XGOOG, ACCESS, REFRESH, CLIENT, COOKIE, PASSWORD, AUTH, APIKEY):
+    for canary in (
+        XAUTH,
+        XGOOG,
+        ACCESS,
+        REFRESH,
+        CLIENT,
+        COOKIE,
+        PASSWORD,
+        AUTH,
+        APIKEY,
+        "canary-private-key-value",
+        "canary-private-key-value-2",
+        "canary-access-key-value",
+        "canary-credentials-value",
+        "canary-bearer-value",
+    ):
         assert canary not in rendered
     assert payload["tokens"]["input"] == 4
     assert payload["input_tokens"] == 4
@@ -258,7 +332,7 @@ def test_error_json_and_text_bodies_drop_secret_fields_and_values():
     parsed = json.loads(rendered)
     assert parsed == {
         "error": {
-            "nested": [{"message": "kept"}],
+            "nested": [{"message": "kept"}, "[redacted]"],
             "detail": "failed",
         }
     }
@@ -289,4 +363,47 @@ async def test_remote_workspace_loads_secret_values_through_the_connected_client
     payload = {"copied": secret, "baseURL": "http://127.0.0.1", "items": [secret, "keep"]}
     redact_secret_fields(payload, found)
     assert secret not in json.dumps(payload)
-    assert payload == {"baseURL": "http://127.0.0.1", "items": ["keep"]}
+    assert payload == {
+        "copied": "[redacted]",
+        "baseURL": "http://127.0.0.1",
+        "items": ["[redacted]", "keep"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_remote_config_keeps_cached_secrets(monkeypatch):
+    secret = "stale-cache-canary-value"
+    environment = SimpleNamespace(mode="LINUX_REMOTE", id=11, worker_epoch=4)
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr("app.api.workspace_routes.time.monotonic", lambda: clock["now"])
+    state = {"fail": False}
+
+    class Client:
+        def __init__(self):
+            self.reads = 0
+
+        async def exchange(self, method, path, *, params=None, body=None, session_id=None, task_id=None):
+            self.reads += 1
+            if state["fail"]:
+                raise ConnectionError("worker down")
+            if path == "/config":
+                payload = {"provider": {"astra-gateway": {"options": {"apiKey": secret}}}}
+                return 200, json.dumps(payload).encode(), {}
+            return 200, b"{}", {}
+
+    client = Client()
+    first = await load_proxy_secrets("/srv/missing", environment, client)
+    second = await load_proxy_secrets("/srv/missing", environment, client)
+    assert secret in first
+    assert secret in second
+    assert client.reads == 2
+
+    clock["now"] += 31
+    state["fail"] = True
+    stale = await load_proxy_secrets("/srv/missing", environment, client)
+    assert secret in stale
+    assert client.reads == 4
+
+    cold = SimpleNamespace(mode="LINUX_REMOTE", id=12, worker_epoch=4)
+    empty = await load_proxy_secrets("/srv/missing", cold, client)
+    assert secret not in empty
