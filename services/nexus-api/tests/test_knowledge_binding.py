@@ -18,6 +18,7 @@ def employee_body(name: str, domain: str, knowledge: list[str]) -> dict:
         "knowledge": knowledge,
         "skills": [],
         "tools": [],
+        "model_route_id": "route-test",
     }
 
 

@@ -182,7 +182,7 @@ def test_empty_route_refuses_a_vendor_session(tmp_path, monkeypatch):
         assert created.status_code == 201, created.text
         body = created.json()
         assert body["agentscope"]["ok"] is False
-        assert "不能直连厂商" in body["agentscope"]["detail"]
+        assert "请先选择模型路由" in body["agentscope"]["detail"]
         assert body["employee"]["mailbox_session_id"] in {None, ""}
         assert not any(item.method == "POST" and item.url.path == "/sessions/" for item in seen)
         assert "api.deepseek.com" not in created.text
@@ -228,3 +228,81 @@ def test_gateway_credential_updates_when_the_key_changes():
     body = json.loads(seen[1].content.decode())
     assert body["data"]["api_key"] == "new-key"
     assert body["data"]["base_url"] == "http://127.0.0.1:18110/v1"
+
+
+def test_empty_route_without_bootstrap_does_not_create_a_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("NEXUS_AGENTSCOPE_CHAT_MODEL_CONFIG", raising=False)
+    monkeypatch.setenv("NEXUS_GATEWAY_API_KEY", "gw-test-key")
+    monkeypatch.setenv("NEXUS_GATEWAY_OPENAI_BASE", "http://127.0.0.1:18110/v1")
+
+    async def loader(_url):
+        return [{"id": "route-1", "model": "opencode/deepseek-v4.1-flash-free", "enabled": True}]
+
+    monkeypatch.setattr("nexus_api.model_route.fetch_routes", loader)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/agent/" and request.method == "POST":
+            return httpx.Response(201, json={"agent_id": "agent-1"})
+        if request.url.path == "/agent/agent-1" and request.method == "PATCH":
+            return httpx.Response(200, json={})
+        if request.url.path == "/credential/" and request.method == "GET":
+            return httpx.Response(200, json={"credentials": []})
+        if request.url.path == "/credential/" and request.method == "POST":
+            return httpx.Response(201, json={"credential_id": "cred-gw"})
+        if request.url.path == "/sessions/" and request.method == "POST":
+            return httpx.Response(201, json={"session_id": "ses-later"})
+        if request.method == "PATCH" and request.url.path.startswith("/sessions/"):
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={})
+
+    employee = {
+        "name": "星河",
+        "domain": "测试自动化",
+        "description": "负责自动化脚本",
+        "instructions": "直接回答。",
+    }
+    application = create_app()
+    with TestClient(application) as client:
+        application.state.agentscope = AgentScopeClient(
+            "http://agentscope.test",
+            "nexus",
+            httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://agentscope.test"),
+        )
+        created = client.post("/api/v1/employees", json=employee)
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["agentscope"]["ok"] is False
+        assert "请先选择模型路由" in body["agentscope"]["detail"]
+        assert body["employee"]["mailbox_session_id"] in {None, ""}
+        assert not any(item.method == "POST" and item.url.path == "/sessions/" for item in seen)
+
+        headers = {"X-Owner-Id": "alice"}
+        conversation = client.post(
+            f"/api/v1/employees/{body['employee']['id']}/conversations",
+            headers=headers,
+            json={"name": "私聊"},
+        ).json()
+        sent = client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            headers=headers,
+            json={"text": "你好"},
+        )
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["agentscope"]["accepted"] is False
+        assert "请先选择模型路由" in sent.json()["agentscope"]["detail"]
+        assert not any(item.method == "POST" and item.url.path == "/sessions/" for item in seen)
+
+        updated = client.patch(
+            f"/api/v1/employees/{body['employee']['id']}",
+            json={**employee, "model_route_id": "route-1"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["employee"]["mailbox_session_id"] == "ses-later"
+        mailbox = next(item for item in seen if item.method == "POST" and item.url.path == "/sessions/")
+        posted = json.loads(mailbox.content.decode())
+        assert posted["chat_model_config"]["model"] == "opencode/deepseek-v4.1-flash-free"
+        assert "gw-test-key" not in updated.text
+        assert "gw-test-key" not in mailbox.content.decode()

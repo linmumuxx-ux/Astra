@@ -20,7 +20,7 @@ from app.models import (
     WorkerInstance,
     utcnow,
 )
-from app.worker_agent.connection import AgentConfig, WorkerConnectionManager
+from app.worker_agent.connection import AgentConfig, WorkerConnectionManager, event_request_id
 from app.worker_agent.supervisor import RuntimeSupervisor
 from app.worker_agent.transport import (
     WebSocketTransport,
@@ -209,21 +209,166 @@ async def test_protocol_violation_closes_real_socket(environment_id: int):
             )))
             ack = json.loads(await asyncio.wait_for(socket.recv(), 2))
             assert ack["payload"]["ok"] is True, ack
+            epoch = ack["payload"]["epoch"]
             await socket.send(json.dumps({**oversized, "request_id": "too-big-2"}))
-            code = await _close_code(socket)
-        assert code == 1009
-
-        async with websockets.connect(url, ping_interval=None, max_size=2**20) as socket:
-            await socket.send(json.dumps(auth_frame(
-                enrolled.worker_instance_id, environment_id, enrolled.token, "auth-bad-frame"
-            )))
-            await asyncio.wait_for(socket.recv(), 2)
             await socket.send("not-json")
-            code = await _close_code(socket)
-        assert code == 1008
+            await socket.send(json.dumps({
+                "request_id": "evt-" + ("目录" * 40),
+                "worker_instance_id": enrolled.worker_instance_id,
+                "environment_id": environment_id,
+                "session_id": None,
+                "type": "event",
+                "payload": {"seq": 1, "directory": "/work", "event": {"type": "server.connected"}},
+                "epoch": epoch,
+            }))
+            ping = envelope(
+                request_id="hb-stay",
+                worker_instance_id=enrolled.worker_instance_id,
+                environment_id=environment_id,
+                session_id=None,
+                message_type="heartbeat",
+                payload={"kind": "ping"},
+            )
+            ping.epoch = epoch
+            ping.expires_at = int(time.time()) + 60
+            await socket.send(dump_message(ping))
+            saw_pong = False
+            deadline = asyncio.get_running_loop().time() + 2
+            while asyncio.get_running_loop().time() < deadline:
+                raw = await asyncio.wait_for(socket.recv(), 2)
+                frame = json.loads(raw)
+                if frame.get("type") == "heartbeat" and frame.get("payload", {}).get("kind") == "pong":
+                    saw_pong = True
+                    break
+            assert saw_pong
+        assert (await load_instance(enrolled.worker_instance_id)).status == "online"
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_long_directory_subscription_stays_online(environment_id: int):
+    directory = "/srv/tasks/" + ("工作区" * 40)
+    assert len(directory) > 100
+    assert len(event_request_id(directory, 1)) <= 80
+    assert event_request_id(directory, 1) == event_request_id(directory, 1)
+    assert event_request_id(directory, 1) != event_request_id(directory, 2)
+    assert "工作区" not in event_request_id(directory, 1)
+
+    async def serve_sse(reader, writer):
+        try:
+            while True:
+                line = await reader.readline()
+                if not line or line in {b"\r\n", b"\n"}:
+                    break
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"\r\n"
+                b'data: {"type":"server.connected"}\n\n'
+            )
+            await writer.drain()
+            await asyncio.sleep(30)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    sse = await asyncio.start_server(serve_sse, "127.0.0.1", 0)
+    sse_port = sse.sockets[0].getsockname()[1]
+    gateway = gateway_for(
+        MemoryRouteBus(),
+        worker_gateway_ping_seconds=60,
+        worker_gateway_ping_timeout_seconds=30,
+        worker_gateway_dispatch_lease_seconds=60,
+    )
+    enrolled = await enroll(gateway, environment_id)
+    seen: list = []
+    record = gateway.record_worker_event
+
+    async def spy(auth, message):
+        seen.append(message)
+        return await record(auth, message)
+
+    gateway.record_worker_event = spy
+
+    async def handler(socket):
+        await gateway.serve_socket(Adapter(socket))
+
+    server = await websockets.serve(handler, "127.0.0.1", 0, ping_interval=None, max_size=2**20)
+    port = server.sockets[0].getsockname()[1]
+
+    async def connect():
+        socket = await websockets.connect(
+            f"ws://127.0.0.1:{port}", ping_interval=None, max_size=2**20
+        )
+        return WebSocketTransport(socket)
+
+    manager = WorkerConnectionManager(
+        AgentConfig(
+            gateway_url=f"ws://127.0.0.1:{port}",
+            worker_instance_id=enrolled.worker_instance_id,
+            environment_id=environment_id,
+            token=enrolled.token,
+            ping_seconds=60,
+            opencode_url=f"http://127.0.0.1:{sse_port}",
+        ),
+        supervisor=RuntimeSupervisor(),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+    stop = asyncio.Event()
+    agent = asyncio.create_task(manager.run(connect, stop))
+    try:
+        await wait_until(lambda: manager.epoch is not None, timeout=10)
+        assert (await load_instance(enrolled.worker_instance_id)).status == "online"
+        subscribed = await dispatch(
+            gateway,
+            enrolled.worker_instance_id,
+            "req-sub-long",
+            "subscribe_events",
+            {"directory": directory},
+        )
+        assert subscribed.delivered is True
+
+        def connected() -> bool:
+            return any(
+                isinstance(item.payload, dict)
+                and isinstance(item.payload.get("event"), dict)
+                and item.payload["event"].get("type") == "server.connected"
+                for item in seen
+            )
+
+        await wait_until(connected, timeout=10)
+        event = next(
+            item
+            for item in seen
+            if isinstance(item.payload.get("event"), dict)
+            and item.payload["event"].get("type") == "server.connected"
+        )
+        assert event.payload["directory"] == directory
+        assert event.payload["seq"] == 1
+        assert len(event.request_id) <= 80
+        assert directory not in event.request_id
+        assert "工作区" not in event.request_id
+        assert event.request_id == event_request_id(directory, 1)
+        assert (await load_instance(enrolled.worker_instance_id)).status == "online"
+        ping = await dispatch(gateway, enrolled.worker_instance_id, "req-still-up", "ping")
+        assert ping.delivered is True
+        deadline = asyncio.get_running_loop().time() + 10
+        command = await load_command("req-still-up")
+        while command.status != "succeeded" and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.02)
+            command = await load_command("req-still-up")
+        assert command.status == "succeeded"
+        assert (await load_instance(enrolled.worker_instance_id)).status == "online"
+    finally:
+        stop.set()
+        agent.cancel()
+        await asyncio.gather(agent, return_exceptions=True)
+        server.close()
+        await server.wait_closed()
+        sse.close()
+        await sse.wait_closed()
 
 
 async def _close_code(socket) -> int | None:

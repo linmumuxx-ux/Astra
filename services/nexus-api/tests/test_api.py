@@ -49,6 +49,7 @@ def employee_body(**overrides):
         "knowledge": [],
         "skills": [],
         "tools": [],
+        "model_route_id": "route-test",
     }
     payload.update(overrides)
     return payload
@@ -1061,7 +1062,7 @@ def test_empty_route_does_not_attach_the_deploy_vendor_config(monkeypatch):
     with pytest.raises(AgentScopeError) as raised:
         asyncio.run(client.create_session("agent-1", "邮箱"))
     assert raised.value.status_code == 422
-    assert "不能直连厂商" in raised.value.detail
+    assert "请先选择模型路由" in raised.value.detail
     assert seen == []
 
     assert asyncio.run(client.create_session("agent-1", "邮箱", chat_model_config=gateway)) == "session-model"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import random
 import threading
@@ -731,6 +732,13 @@ def load_agent_config(environ: dict[str, str]) -> AgentConfig:
     )
 
 
+def event_request_id(directory: str, seq: int) -> str:
+    """Stable short id. The directory stays in the payload, never in the id."""
+
+    digest = hashlib.sha256(f"{directory}\0{seq}".encode()).hexdigest()[:32]
+    return f"evt-{digest}"
+
+
 def _bounded_event_frame(
     incoming: WorkerMessage,
     config: AgentConfig,
@@ -767,7 +775,7 @@ def _event_envelope(
     expires_at: int,
 ) -> dict[str, Any]:
     message = envelope(
-        request_id=f"evt-{directory}-{seq}",
+        request_id=event_request_id(directory, seq),
         worker_instance_id=config.worker_instance_id,
         environment_id=config.environment_id,
         session_id=incoming.session_id,

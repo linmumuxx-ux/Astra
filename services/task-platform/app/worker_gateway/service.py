@@ -829,7 +829,12 @@ class WorkerGateway:
     ) -> None:
         while not stop.is_set():
             raw = await websocket.receive_text()
-            message = parse_message(raw, max_bytes=self.settings.worker_gateway_max_frame_bytes)
+            try:
+                message = parse_message(raw, max_bytes=self.settings.worker_gateway_max_frame_bytes)
+            except WorkerGatewayError as exc:
+                # One bad frame must not drop the Worker. The body can carry secrets.
+                logger.warning("worker frame rejected code=%s", exc.code)
+                continue
             if message.worker_instance_id != auth.worker_instance_id:
                 raise WorkerGatewayError("invalid_message", "worker_instance_id 与连接不一致")
             if message.type == "heartbeat":
