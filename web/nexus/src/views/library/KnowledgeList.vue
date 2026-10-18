@@ -74,6 +74,7 @@
       </ElSpace>
     </div>
 
+    <p class="knowledge-list__facts">审核表示能不能对外使用，验证表示内容有没有被确认。两者独立：待人工审核的条目也可以是已验证或未验证。</p>
     <div class="knowledge-table-wrap">
       <ElTable
         ref="tableRef"
@@ -91,48 +92,19 @@
           <template #default="{ row }">
             <div class="knowledge-cell">
               <strong :title="row.title">{{ row.title }}</strong>
-              <ElText type="info" truncated>{{ metaText(row) }}</ElText>
-              <ElText v-if="tagText(row)" type="info" truncated>{{ tagText(row) }}</ElText>
+              <ElText type="info">{{ metaText(row) }}</ElText>
             </div>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="类型" width="80">
-          <template #default="{ row }">{{ typeLabel(row.type) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="所属目录" width="150" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.space_name ?? '未归类' }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="审核状态" width="112">
+        <ElTableColumn label="审核" width="120">
           <template #default="{ row }"><ElTag :type="statusTag(row.status)">{{ statusLabel(row.status) }}</ElTag></template>
         </ElTableColumn>
-        <ElTableColumn label="验证状态" width="104">
+        <ElTableColumn label="验证" width="110">
           <template #default="{ row }"><ElTag :type="verificationTag(row.verification_status)" effect="plain">{{ verificationLabel(row.verification_status) }}</ElTag></template>
         </ElTableColumn>
-        <ElTableColumn label="更新时间" width="132">
-          <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="232" fixed="right">
+        <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <ElSpace class="astra-row-actions" :size="4" @click.stop>
-              <ElTooltip content="查看" placement="top">
-                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.title}`" @click="openRow(row)" />
-              </ElTooltip>
-              <ElTooltip v-if="canManage" content="编辑" placement="top">
-                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.title}`" @click="editRow(row)" />
-              </ElTooltip>
-              <ElTooltip v-if="canManage" content="移动到其他目录" placement="top">
-                <ElButton circle type="primary" :icon="FolderInput" :aria-label="`移动 ${row.title}`" @click="moveRow(row)" />
-              </ElTooltip>
-              <ElTooltip v-if="canReview && (row.status === 'candidate' || row.status === 'draft')" content="在详情中审核发布" placement="top">
-                <ElButton circle type="warning" :icon="Stamp" :aria-label="`审核发布 ${row.title}`" @click="publishRow(row)" />
-              </ElTooltip>
-              <ElTooltip v-if="canManage && row.status !== 'archived'" content="归档" placement="top">
-                <ElButton circle type="primary" :icon="Archive" :aria-label="`归档 ${row.title}`" @click="archiveRow(row)" />
-              </ElTooltip>
-              <ElTooltip v-if="canManage" content="删除" placement="top">
-                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.title}`" @click="deleteRow(row)" />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu primary="查看" :items="rowMenu(row)" @primary="openRow(row)" @command="(command) => onRowCommand(row, command)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -166,12 +138,13 @@
 </template>
 
 <script setup lang="ts">
-import { Archive, Eye, FolderInput, Pencil, Plus, Search, Stamp, Trash2 } from 'lucide-vue-next'
+import { Plus, Search } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
-import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
+import { ElButton, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, vLoading } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import type { KnowledgeListItem, KnowledgePage, KnowledgeStatus, VerificationStatus } from '@/api/types'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import RowMenu, { type RowMenuItem } from '@/components/astra/RowMenu.vue'
 
 // 只保留最常用的查询条件：类型、状态、排序与关键词。
 // 来源与标签筛选随「更多筛选」一并取消，filters 里也不再保留这两个维度。
@@ -247,6 +220,21 @@ function emitBatch(action: 'move' | 'archive' | 'publish' | 'delete') { const id
 function openRow(row: Row) { emit('open', row.id) }
 function editRow(row: Row) { emit('edit', row as KnowledgeListItem) }
 function moveRow(row: Row) { emit('move', row as KnowledgeListItem) }
+function rowMenu(row: Row): RowMenuItem[] {
+  const items: RowMenuItem[] = []
+  if (props.canManage) items.push({ command: 'edit', label: '编辑' }, { command: 'move', label: '移动' })
+  if (props.canReview && (row.status === 'candidate' || row.status === 'draft')) items.push({ command: 'publish', label: '审核发布' })
+  if (props.canManage && row.status !== 'archived') items.push({ command: 'archive', label: '归档' })
+  if (props.canManage) items.push({ command: 'delete', label: '删除' })
+  return items
+}
+function onRowCommand(row: Row, command: string) {
+  if (command === 'edit') editRow(row)
+  else if (command === 'move') moveRow(row)
+  else if (command === 'publish') publishRow(row)
+  else if (command === 'archive') archiveRow(row)
+  else if (command === 'delete') deleteRow(row)
+}
 function publishRow(row: Row) { emit('publish', row as KnowledgeListItem) }
 function archiveRow(row: Row) { emit('archive', row as KnowledgeListItem) }
 function deleteRow(row: Row) { emit('delete', row as KnowledgeListItem) }
@@ -255,8 +243,7 @@ const statusTag = (value: KnowledgeStatus) => (statusMeta[value] ?? statusMeta.d
 const statusLabel = (value: KnowledgeStatus) => (statusMeta[value] ?? { label: value, tag: 'info' as const }).label
 const verificationTag = (value: VerificationStatus) => (verificationMeta[value] ?? verificationMeta.unverified).tag
 const verificationLabel = (value: VerificationStatus) => (verificationMeta[value] ?? { label: value, tag: 'info' as const }).label
-const metaText = (row: Row) => row.summary || (row.tags as string[]).map((tag) => `#${tag}`).join(' ') || row.id
-const tagText = (row: Row) => (row.summary && (row.tags as string[]).length ? (row.tags as string[]).slice(0, 3).map((tag) => `#${tag}`).join(' ') : '')
+const metaText = (row: Row) => [typeLabel(row.type), row.space_name ?? '未归类', formatDate(row.updated_at)].join(' · ')
 const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
 </script>
 
@@ -274,7 +261,8 @@ const formatDate = (value: string) => new Intl.DateTimeFormat('zh-CN', { month: 
 .knowledge-table{--el-table-border-color:var(--astra-border)}
 .knowledge-table .el-table__row{cursor:pointer}
 .knowledge-cell{display:grid;min-width:0;gap:2px}
-.knowledge-cell strong{overflow:hidden;color:var(--astra-text-primary);font-size:var(--astra-font-label);text-overflow:ellipsis;white-space:nowrap}
+.knowledge-list__facts{margin:0;color:var(--astra-text-muted);line-height:1.5}
+.knowledge-cell strong{display:-webkit-box;overflow:hidden;color:var(--astra-text-primary);font-size:var(--astra-font-label);line-height:1.45;white-space:normal;-webkit-box-orient:vertical;-webkit-line-clamp:2}
 .empty-actions{display:flex;justify-content:center;gap:8px}
 .knowledge-list__footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:2px}
 </style>

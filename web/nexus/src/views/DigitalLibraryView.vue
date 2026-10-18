@@ -1,33 +1,6 @@
 <template>
   <ElContainer direction="vertical" class="digital-library-page" data-testid="digital-library-page">
     <AstraPageHeader title="数字图书馆" description="管理团队知识、经验与项目资料。" testid="library-header">
-      <!-- 知识服务状态并入标题信息区：与标题合成一个整体，不再单独占一整行。 -->
-      <span class="astra-service-dot" :data-state="serviceState" aria-hidden="true" />
-      <strong :data-state="serviceState" data-testid="library-service-state">知识服务：{{ serviceStateText }}</strong>
-      <span data-testid="library-service-synced">最近同步：{{ lastSyncedText }}</span>
-      <span v-if="pendingCount > 0 || failedCount > 0" data-testid="library-service-queue">
-        待同步 <em>{{ pendingCount }}</em> · 同步失败 <em>{{ failedCount }}</em>
-      </span>
-      <ElButton
-        v-if="canManage && canResync"
-        text
-        type="primary"
-        :loading="resyncing"
-        :disabled="!serviceStatus?.enabled"
-        data-testid="library-service-resync"
-        @click="resyncKnowledge"
-      >重新同步</ElButton>
-      <span v-if="serviceReason" class="library-service-reason" role="status">{{ serviceReason }}</span>
-      <button
-        v-if="permissions?.can_review"
-        type="button"
-        class="astra-mark"
-        :aria-pressed="statsActive === 'candidate'"
-        data-testid="library-review-queue"
-        @click="applyStat('candidate')"
-      >
-        待审核经验 <em>{{ stats?.candidate_experiences ?? 0 }}</em><ChevronRight :size="14" />
-      </button>
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="refreshing" data-testid="library-refresh" @click="refreshAll">刷新</ElButton>
         <template v-if="permissions?.can_manage">
@@ -36,6 +9,19 @@
         </template>
       </template>
     </AstraPageHeader>
+    <ElAlert v-if="libraryNotice" class="library-notice" :type="libraryNotice.level" show-icon :closable="false" :title="libraryNotice.title" data-testid="library-service-state">
+      <p>{{ libraryNotice.next }}</p>
+      <ElButton
+        v-if="canManage && libraryNotice.resync"
+        text
+        type="primary"
+        :loading="resyncing"
+        :disabled="!serviceStatus?.enabled"
+        data-testid="library-service-resync"
+        @click="resyncKnowledge"
+      >重新同步</ElButton>
+      <ElButton v-if="libraryNotice.review" text type="primary" data-testid="library-review-queue" @click="applyStat('candidate')">去审核</ElButton>
+    </ElAlert>
     <input ref="importInput" class="hidden-input" data-testid="library-import-input" type="file" accept=".md,text/markdown,text/plain" @change="importMarkdown" />
 
     <ElMain class="library-body">
@@ -145,7 +131,7 @@
 </template>
 
 <script setup lang="ts">
-import { ChevronRight, Plus, RefreshCw, Upload } from 'lucide-vue-next'
+import { Plus, RefreshCw, Upload } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElAlert, ElAside, ElButton, ElContainer, ElMain } from 'element-plus'
@@ -232,14 +218,38 @@ let searchTimer = 0
 
 const selectedSpace = computed(() => spaces.value.find((space) => space.id === filters.spaceId) ?? findNode(spaces.value, filters.spaceId) ?? null)
 const canManage = computed(() => Boolean(permissions.value?.can_manage))
-const serviceState = computed<'ok' | 'error'>(() => (serviceError.value || serviceStatus.value?.healthy === false ? 'error' : 'ok'))
-const serviceStateText = computed(() => (serviceError.value ? '异常' : serviceStatus.value ? (serviceStatus.value.healthy ? '正常' : '异常') : '检查中'))
-const lastSyncedText = computed(() => (serviceStatus.value?.last_synced_at ? new Date(serviceStatus.value.last_synced_at).toLocaleString() : '暂无'))
 const pendingCount = computed(() => serviceStatus.value?.pending_count ?? 0)
 const failedCount = computed(() => serviceStatus.value?.failed_count ?? 0)
-// 状态接口请求失败、或服务自报不健康、或有同步失败，都需要给出重新同步入口。
-const canResync = computed(() => Boolean(serviceError.value || serviceStatus.value?.healthy === false || failedCount.value > 0))
-const serviceReason = computed(() => (serviceError.value || serviceStatus.value?.healthy === false ? serviceError.value || serviceStatus.value?.message || '' : ''))
+const libraryNotice = computed(() => {
+  const parts: string[] = []
+  const steps: string[] = []
+  let level: 'error' | 'warning' = 'warning'
+  if (serviceError.value || serviceStatus.value?.healthy === false) {
+    level = 'error'
+    parts.push(serviceError.value || serviceStatus.value?.message || '知识服务异常，暂时不能确认内容是否最新')
+    steps.push('重新同步')
+  }
+  if (failedCount.value > 0) {
+    parts.push(`${failedCount.value} 条同步失败，新内容可能还没进图书馆`)
+    steps.push('重新同步')
+  } else if (pendingCount.value > 0) {
+    parts.push(`${pendingCount.value} 条还在同步，刷新前先别当成已经入库`)
+    steps.push('稍后刷新')
+  }
+  const candidates = stats.value?.candidate_experiences ?? 0
+  if (permissions.value?.can_review && candidates > 0) {
+    parts.push(`${candidates} 条经验待人工审核，审核和验证是两件独立的事`)
+    steps.push('打开待审核列表')
+  }
+  if (!parts.length) return null
+  return {
+    level,
+    title: parts.join('。'),
+    next: `下一步：${[...new Set(steps)].join('，')}。`,
+    resync: steps.includes('重新同步'),
+    review: steps.includes('打开待审核列表'),
+  }
+})
 const selectedPath = computed(() => {
   if (!filters.spaceId) return '全部知识'
   return findPath(spaces.value, filters.spaceId)?.join(' / ') ?? selectedSpace.value?.name ?? '全部知识'

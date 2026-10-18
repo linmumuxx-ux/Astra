@@ -125,3 +125,43 @@ export function parseNumberList(value: string): string[] {
 export function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
+
+const ERROR_CAUSE: Record<string, string> = {
+  UNAUTHORIZED: '密钥无效',
+  KEY_DISABLED: '密钥已停用',
+  KEY_EXPIRED: '密钥已过期',
+  KEY_FORBIDDEN: '密钥无权访问该模型',
+  KEY_CONCURRENCY_EXCEEDED: '密钥并发已满',
+  INVALID_REQUEST: '请求不合法',
+  PAYLOAD_TOO_LARGE: '请求体过大',
+  MODEL_NOT_FOUND: '没有这个模型',
+  NO_ELIGIBLE_NODE: '没有可接请求的节点',
+  POOL_SATURATED: '资源池已满',
+  QUOTA_EXCEEDED: '额度已用尽',
+  RUNTIME_UNAVAILABLE: '网关暂不可用',
+  NODE_CREDENTIAL_ERROR: '节点凭据不可用',
+  UPSTREAM_CONNECT_TIMEOUT: '连接节点超时',
+  UPSTREAM_CONNECT_ERROR: '连不上节点',
+  UPSTREAM_TIMEOUT: '节点响应超时',
+  UPSTREAM_PROTOCOL_ERROR: '节点协议异常',
+  UPSTREAM_ERROR: '节点返回错误',
+  CLIENT_DISCONNECTED: '调用方断开',
+  STREAM_INTERRUPTED: '流式输出中断',
+}
+
+export function errorCause(code: string | null | undefined): string {
+  if (!code) return ''
+  if (ERROR_CAUSE[code]) return ERROR_CAUSE[code]
+  if (code.startsWith('UPSTREAM_')) return `节点返回 ${code.slice('UPSTREAM_'.length)}`
+  return '调用失败'
+}
+
+export function serveSentence(node: { health_state: string; scheduling_state: string; config_state: string }): string {
+  if (node.config_state !== 'ENABLED') return '不能接请求：配置已禁用'
+  if (node.scheduling_state === 'DRAINING') return '正在下线，不再接新请求'
+  if (node.scheduling_state === 'BLOCKED') return '不能接请求：调度已阻止'
+  if (node.health_state === 'UNHEALTHY' || node.health_state === 'DEGRADED') return `不能稳定接请求：${healthStateLabel(node.health_state)}`
+  if (node.health_state === 'UNKNOWN' || node.health_state === 'CHECKING') return '还不能确认：探测未完成'
+  if (node.scheduling_state !== 'ACTIVE') return '不能接请求：当前不在调度'
+  return '可以接请求'
+}

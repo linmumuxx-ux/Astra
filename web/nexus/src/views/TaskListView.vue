@@ -36,58 +36,32 @@
 
     <section class="astra-table-panel astra-table-panel--clickable" aria-label="任务列表">
       <ElTable v-loading="store.loading" :data="paged" height="100%" row-key="id" @row-click="(row: Task) => openTask(row.id)">
-        <ElTableColumn label="任务标题" min-width="230">
+        <ElTableColumn label="任务" min-width="280">
           <template #default="{ row }">
             <div class="task-title-cell">
               <ElTag v-if="isHigh(row.priority)" :type="row.priority === 'VERY_HIGH' ? 'danger' : 'warning'" effect="light">{{ priorityLabel(row.priority) }}</ElTag>
               <RouterLink class="task-title-cell__link" :to="`/tasks/${row.id}`" :title="row.title" @click.stop>{{ row.title }}</RouterLink>
             </div>
+            <div class="task-title-cell__meta">{{ row.id }} · {{ taskTypeLabel(row.task_type) }} · {{ categoryName(row.category_id) }}</div>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="编号" width="168">
-          <template #default="{ row }">
-            <RouterLink class="task-id-link" :to="`/tasks/${row.id}`" @click.stop>{{ row.id }}</RouterLink>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="类型" width="72">
-          <template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="分类" width="110" show-overflow-tooltip>
-          <template #default="{ row }">{{ categoryName(row.category_id) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="状态" width="168">
+        <ElTableColumn label="进展" min-width="220">
           <template #default="{ row }">
             <RuntimeStatusBadge :projection="taskObservation(row as Task)" :show-detail="false" />
-            <ElText v-if="taskObservation(row as Task).runtime_detail" class="task-status-reason" type="info" truncated :title="taskObservation(row as Task).runtime_detail">{{ taskObservation(row as Task).runtime_detail }}</ElText>
+            <ElText v-if="extraProgress(row as Task)" class="task-status-reason" type="info" :title="extraProgress(row as Task)">{{ extraProgress(row as Task) }}</ElText>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="Worker" width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ employeeName(row.worker_id || row.employee_id) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="责任员工" width="140" show-overflow-tooltip>
-          <template #default="{ row }">{{ ownerName(row.responsible_employee_id) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="当前进展" min-width="180">
+        <ElTableColumn label="谁来做" width="168">
           <template #default="{ row }">
-            <ElText type="info" truncated :title="progressCopy(row as Task)">{{ progressCopy(row as Task) }}</ElText>
+            <div class="task-who">
+              <span>{{ employeeName(row.worker_id || row.employee_id) }}</span>
+              <ElText type="info">问 {{ ownerName(row.responsible_employee_id) }}</ElText>
+            </div>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="更新时间" width="140">
-          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="200" fixed="right">
+        <ElTableColumn label="操作" width="132">
           <template #default="{ row }">
-            <ElSpace class="astra-row-actions" :size="4" @click.stop>
-              <ElTooltip content="查看" placement="top">
-                <ElButton circle type="primary" :icon="Eye" :aria-label="`查看 ${row.id}`" @click="openTask(row.id)" />
-              </ElTooltip>
-              <ElTooltip v-if="!isTerminal((row as Task).status)" content="编辑" placement="top">
-                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.id}`" @click="editTask = row as Task" />
-              </ElTooltip>
-              <ElTooltip v-for="item in actionsFor(row as Task)" :key="item.action" :content="item.tip" placement="top">
-                <ElButton circle :type="item.danger ? 'danger' : 'primary'" :icon="item.icon" :aria-label="`${item.tip} ${row.id}`" @click="onAction(row as Task, item)" />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu :primary="primaryFor(row as Task).label" :items="moreFor(row as Task)" @primary="runPrimary(row as Task)" @command="(command) => runCommand(row as Task, command)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -135,16 +109,17 @@
 </template>
 
 <script setup lang="ts">
-import { Ban, Eye, Pencil, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Trash2 } from 'lucide-vue-next'
+import { Ban, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Trash2 } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { ElButton, ElDialog, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElSpace, ElTable, ElTableColumn, ElTag, ElText, ElTooltip, vLoading } from 'element-plus'
+import { ElButton, ElDialog, ElEmpty, ElInput, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn, ElTag, ElText, vLoading } from 'element-plus'
 import { api } from '@/api/client'
 import type { Task, TaskPriority, TaskStatus } from '@/api/types'
 import { listEmployees } from '../api'
 import type { Employee as NexusEmployee } from '../types'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
 import AstraPageHeader from '@/components/astra/AstraPageHeader.vue'
+import RowMenu, { type RowMenuItem } from '@/components/astra/RowMenu.vue'
 import RuntimeStatusBadge from '@/components/runtime/RuntimeStatusBadge.vue'
 import TaskCreateDrawer from '@/components/task/TaskCreateDrawer.vue'
 import { notify } from '@/composables/useToast'
@@ -155,7 +130,7 @@ import {
   type RuntimeStatusFilter,
 } from '@/features/runtime/status'
 import { useAstraStore } from '@/stores/astra'
-import { employeeDisplayName, formatTime, platformCopy, priorityLabel, taskTypeLabel } from '@/utils/format'
+import { employeeDisplayName, platformCopy, priorityLabel, taskTypeLabel } from '@/utils/format'
 
 const store = useAstraStore()
 const route = useRoute()
@@ -209,6 +184,37 @@ const ownerName = (id: string | null) => owners.value.find((item) => item.id ===
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
 const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
+function extraProgress(task: Task) {
+  const progress = progressCopy(task)
+  const label = taskObservation(task).runtime_status_label
+  if (!progress || progress === '—' || progress === label) return ''
+  return progress
+}
+function primaryFor(task: Task): ActionItem {
+  if (task.status === 'PENDING') return actionsFor(task)[0]
+  if (task.status === 'FAILED') return actionsFor(task)[0]
+  return { action: 'start', tip: '查看', label: '查看', icon: Play }
+}
+function moreFor(task: Task): RowMenuItem[] {
+  const items: RowMenuItem[] = []
+  if (primaryFor(task).label !== '查看') items.push({ command: 'open', label: '查看详情' })
+  if (!isTerminal(task.status)) items.push({ command: 'edit', label: '编辑' })
+  for (const item of actionsFor(task)) {
+    if (item.label === primaryFor(task).label && item.action === primaryFor(task).action) continue
+    items.push({ command: item.action, label: item.label })
+  }
+  return items
+}
+function runPrimary(task: Task) {
+  if (primaryFor(task).label === '查看') openTask(task.id)
+  else onAction(task, primaryFor(task))
+}
+function runCommand(task: Task, command: string) {
+  if (command === 'open') { openTask(task.id); return }
+  if (command === 'edit') { editTask.value = task; return }
+  const item = actionsFor(task).find((entry) => entry.action === command)
+  if (item) onAction(task, item)
+}
 function taskObservation(task: Task): Task {
   if (task.runtime_connection === 'UNAVAILABLE' || task.session_status === 'UNKNOWN') {
     return { ...task, runtime_state: 'WAITING', runtime_status_label: '连接异常', runtime_detail: task.runtime_error || '状态待确认' }
@@ -313,9 +319,12 @@ async function onTaskSaved() {
 <style scoped>
 /* 页面骨架、标题区、筛选面板、表格面板与页脚统一走 styles/page-layout.css，
    这里只保留表格单元格内部的排版。 */
-.task-title-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.task-status-reason { display: block; max-width: 148px; font-size: var(--astra-font-helper); }
-.task-title-cell__link, .task-id-link { overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
-.task-id-link { font-weight: 400; }
+.task-title-cell { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.task-title-cell__link {
+  display: -webkit-box; overflow: hidden; color: var(--astra-text-primary); font-size: var(--astra-font-label);
+  font-weight: 700; line-height: 1.45; text-decoration: none; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.task-title-cell__meta, .task-status-reason { display: block; margin-top: 4px; color: var(--astra-text-muted); font-size: var(--astra-font-helper); line-height: 1.45; }
+.task-who { display: grid; gap: 2px; }
 .task-title-cell__link:hover, .task-id-link:hover { color: var(--astra-primary); }
 </style>

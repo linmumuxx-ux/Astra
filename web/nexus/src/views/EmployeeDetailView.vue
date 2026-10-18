@@ -1,7 +1,7 @@
 <template>
   <div v-if="employee" class="employee-detail" data-testid="employee-detail-page">
     <ElBreadcrumb separator="/" class="employee-detail__nav">
-      <ElBreadcrumbItem><RouterLink to="/workers">Agent Worker</RouterLink></ElBreadcrumbItem>
+      <ElBreadcrumbItem><RouterLink to="/workers">Worker</RouterLink></ElBreadcrumbItem>
       <ElBreadcrumbItem>{{ employeeDisplayName(employee.name) }}</ElBreadcrumbItem>
     </ElBreadcrumb>
 
@@ -24,18 +24,9 @@
       </div>
     </ElCard>
 
-    <section class="employee-detail__metrics" aria-label="今日工作摘要">
-      <ElCard v-for="metric in metrics" :key="metric.label" shadow="never">
-        <ElStatistic :title="metric.label" :value="metric.value as number"><template v-if="metric.unit" #suffix>{{ metric.unit }}</template></ElStatistic>
-        <p class="employee-detail__metric-hint">{{ metric.hint }}</p>
-      </ElCard>
-    </section>
-
-    <ElAlert v-if="usageError" type="error" show-icon :closable="false" :title="usageError">
-      <ElButton size="small" type="primary" @click="loadUsage">重试</ElButton>
-    </ElAlert>
-
-    <section class="employee-detail__panels">
+    <ElTabs v-model="detailSection" class="employee-detail__tabs">
+      <ElTabPane label="任务" name="tasks">
+    <section id="tasks" class="employee-detail__panels">
       <ElCard shadow="never">
         <template #header>
           <div class="employee-detail__card-header">
@@ -63,49 +54,58 @@
         <ElAlert v-if="latestError" class="employee-detail__inline-alert" type="warning" show-icon :closable="false" :title="latestErrorCopy" />
       </ElCard>
 
-      <ElCard shadow="never">
+      <ElCard shadow="never" class="employee-detail__panel--wide">
         <template #header>
-          <div class="employee-detail__card-title"><h3>工作范围</h3><ElText size="small" type="info">用于自动分配的任务类型和分类</ElText></div>
+          <div class="employee-detail__card-title"><h3>Worker 任务队列</h3><ElText size="small" type="info">当前任务优先，其后按优先级和创建时间</ElText></div>
         </template>
-        <div class="employee-detail__scope">
-          <div><ElText size="small" type="info">支持任务类型</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.task_types" :key="item" size="small" type="primary" effect="light">{{ taskTypeLabel(item) }}</ElTag><ElText v-if="!employee.task_types.length" size="small">—</ElText></div></div>
-          <div><ElText size="small" type="info">支持任务分类</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.category_ids" :key="item" size="small" type="primary" effect="light">{{ categoryName(item) }}</ElTag><ElText v-if="!employee.category_ids.length" size="small">—</ElText></div></div>
-        </div>
+        <ElTable :data="employeeQueue" size="small" @row-click="openTask">
+          <ElTableColumn label="顺序" width="70" align="right"><template #default="{ $index }">{{ $index + 1 }}</template></ElTableColumn>
+          <ElTableColumn label="任务" min-width="240">
+            <template #default="{ row }">
+              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
+          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
+          <ElTableColumn label="当前进展" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ platformCopy(row.current_progress) }}</template></ElTableColumn>
+          <template #empty><ElText size="small" type="info">当前队列为空</ElText></template>
+        </ElTable>
       </ElCard>
 
-      <ElCard shadow="never">
+      <ElCard shadow="never" class="employee-detail__panel--wide">
         <template #header>
-          <div class="employee-detail__card-header">
-            <div class="employee-detail__card-title"><h3>工作环境</h3><ElText size="small" type="info">Worker 长期复用的 Agent 工作空间</ElText></div>
-            <ElButton size="small" :icon="RefreshCw" :loading="checking" @click="testEnvironment">{{ checking ? '检查中' : '测试连接' }}</ElButton>
-          </div>
+          <div class="employee-detail__card-title"><h3>历史任务</h3><ElText size="small" type="info">已完成、未完成和已取消任务的消耗均会保留</ElText></div>
         </template>
-        <template v-if="employee.execution_environment">
-          <ElDescriptions :column="2" border size="small">
-            <ElDescriptionsItem label="环境名称">{{ employee.execution_environment.name }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="执行方式">{{ environmentLabel(employee.execution_environment) }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="服务器">{{ employee.execution_environment.mode === 'LINUX_REMOTE' ? `${employee.execution_environment.username}@${employee.execution_environment.host}:${employee.execution_environment.port}` : '本机' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="Agent">{{ employee.execution_environment.opencode_path }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="工作空间">{{ employee.execution_environment.workspace_root }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="环境状态"><ElTag size="small" :type="statusTagType(employee.channel_health.availability === 'offline' ? 'OFFLINE' : employee.execution_environment.status)">{{ employee.channel_health.availability === 'offline' ? '离线' : statusLabel(employee.execution_environment.status) }}</ElTag></ElDescriptionsItem>
-            <ElDescriptionsItem label="Worker">{{ employee.channel_health.worker_online ? '在线' : '离线' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="OpenCode">{{ employee.channel_health.opencode_reachable ? '可达' : '不可达' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="仓库">{{ employee.channel_health.repository_bound ? '已绑定' : '未绑定' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="执行">{{ employee.channel_health.executing ? '执行中' : '未在执行' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="人工">{{ employee.channel_health.waiting_human ? '等待人工' : '无需等待' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="最近检查" :span="2">{{ formatTime(employee.execution_environment.last_checked_at) }}</ElDescriptionsItem>
-          </ElDescriptions>
-          <div v-if="environmentChecks.length" class="employee-detail__checks">
-            <div v-for="check in environmentChecks" :key="check.name" class="employee-detail__check">
-              <CheckCircle2 v-if="check.passed" :size="14" class="employee-detail__check-icon is-passed" />
-              <CircleX v-else :size="14" class="employee-detail__check-icon is-failed" />
-              <div><strong>{{ check.name }}</strong><ElText size="small" type="info">{{ check.detail }}</ElText></div>
-            </div>
-          </div>
-        </template>
-        <ElText v-else size="small" type="info">尚未配置工作环境，可在“编辑”中添加。</ElText>
+        <ElTable :data="historicalTasks" size="small" @row-click="openTask">
+          <ElTableColumn label="任务" min-width="240">
+            <template #default="{ row }">
+              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="类型" width="80"><template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template></ElTableColumn>
+          <ElTableColumn label="分类" width="140" show-overflow-tooltip><template #default="{ row }">{{ categoryName(row.category_id) }}</template></ElTableColumn>
+          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
+          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
+          <ElTableColumn label="运行时长" width="130"><template #default="{ row }">{{ formatTaskDuration(row as Task) }}</template></ElTableColumn>
+          <template #empty><ElText size="small" type="info">暂无历史任务</ElText></template>
+        </ElTable>
       </ElCard>
+    </section>
+      </ElTabPane>
 
+      <ElTabPane label="用量" name="usage">
+    <section class="employee-detail__metrics" aria-label="今日工作摘要">
+      <ElCard v-for="metric in metrics" :key="metric.label" shadow="never">
+        <ElStatistic :title="metric.label" :value="metric.value as number"><template v-if="metric.unit" #suffix>{{ metric.unit }}</template></ElStatistic>
+        <p class="employee-detail__metric-hint">{{ metric.hint }}</p>
+      </ElCard>
+    </section>
+
+    <ElAlert v-if="usageError" type="error" show-icon :closable="false" :title="usageError">
+      <ElButton size="small" type="primary" @click="loadUsage">重试</ElButton>
+    </ElAlert>
+
+    <section class="employee-detail__panels">
       <ElCard shadow="never">
         <template #header>
           <div class="employee-detail__card-title"><h3>今日工作消耗</h3><ElText size="small" type="info">实际用量，缺失数据不估算</ElText></div>
@@ -173,44 +173,56 @@
           <template #empty><ElEmpty :image-size="56" description="暂无工具数据，Agent 返回工具事件后会在此汇总。" /></template>
         </ElTable>
       </ElCard>
+    </section>
+      </ElTabPane>
 
-      <ElCard shadow="never" class="employee-detail__panel--wide">
+      <ElTabPane label="配置" name="config">
+    <section class="employee-detail__panels">
+      <ElCard shadow="never">
         <template #header>
-          <div class="employee-detail__card-title"><h3>Worker 任务队列</h3><ElText size="small" type="info">当前任务优先，其后按优先级和创建时间</ElText></div>
+          <div class="employee-detail__card-title"><h3>工作范围</h3><ElText size="small" type="info">用于自动分配的任务类型和分类</ElText></div>
         </template>
-        <ElTable :data="employeeQueue" size="small" @row-click="openTask">
-          <ElTableColumn label="顺序" width="70" align="right"><template #default="{ $index }">{{ $index + 1 }}</template></ElTableColumn>
-          <ElTableColumn label="任务" min-width="240">
-            <template #default="{ row }">
-              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
-          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
-          <ElTableColumn label="当前进展" min-width="220" show-overflow-tooltip><template #default="{ row }">{{ platformCopy(row.current_progress) }}</template></ElTableColumn>
-          <template #empty><ElText size="small" type="info">当前队列为空</ElText></template>
-        </ElTable>
+        <div class="employee-detail__scope">
+          <div><ElText size="small" type="info">支持任务类型</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.task_types" :key="item" size="small" type="primary" effect="light">{{ taskTypeLabel(item) }}</ElTag><ElText v-if="!employee.task_types.length" size="small">—</ElText></div></div>
+          <div><ElText size="small" type="info">支持任务分类</ElText><div class="employee-detail__tags"><ElTag v-for="item in employee.category_ids" :key="item" size="small" type="primary" effect="light">{{ categoryName(item) }}</ElTag><ElText v-if="!employee.category_ids.length" size="small">—</ElText></div></div>
+        </div>
       </ElCard>
 
-      <ElCard shadow="never" class="employee-detail__panel--wide">
+      <ElCard shadow="never">
         <template #header>
-          <div class="employee-detail__card-title"><h3>历史任务</h3><ElText size="small" type="info">已完成、未完成和已取消任务的消耗均会保留</ElText></div>
+          <div class="employee-detail__card-header">
+            <div class="employee-detail__card-title"><h3>工作环境</h3><ElText size="small" type="info">Worker 长期复用的 Agent 工作空间</ElText></div>
+            <ElButton size="small" :icon="RefreshCw" :loading="checking" @click="testEnvironment">{{ checking ? '检查中' : '测试连接' }}</ElButton>
+          </div>
         </template>
-        <ElTable :data="historicalTasks" size="small" @row-click="openTask">
-          <ElTableColumn label="任务" min-width="240">
-            <template #default="{ row }">
-              <div class="employee-detail__task-cell"><strong>{{ row.title }}</strong><small>{{ row.id }}</small></div>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="类型" width="80"><template #default="{ row }">{{ taskTypeLabel(row.task_type) }}</template></ElTableColumn>
-          <ElTableColumn label="分类" width="140" show-overflow-tooltip><template #default="{ row }">{{ categoryName(row.category_id) }}</template></ElTableColumn>
-          <ElTableColumn label="优先级" width="90"><template #default="{ row }">{{ priorityLabel(row.priority) }}</template></ElTableColumn>
-          <ElTableColumn label="状态" width="120"><template #default="{ row }"><ElTag size="small" :type="statusTagType(row.runtime_state)">{{ row.runtime_status_label }}</ElTag></template></ElTableColumn>
-          <ElTableColumn label="运行时长" width="130"><template #default="{ row }">{{ formatTaskDuration(row as Task) }}</template></ElTableColumn>
-          <template #empty><ElText size="small" type="info">暂无历史任务</ElText></template>
-        </ElTable>
+        <template v-if="employee.execution_environment">
+          <ElDescriptions :column="2" border size="small">
+            <ElDescriptionsItem label="环境名称">{{ employee.execution_environment.name }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="执行方式">{{ environmentLabel(employee.execution_environment) }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="服务器">{{ employee.execution_environment.mode === 'LINUX_REMOTE' ? `${employee.execution_environment.username}@${employee.execution_environment.host}:${employee.execution_environment.port}` : '本机' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="Agent">{{ employee.execution_environment.opencode_path }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="工作空间">{{ employee.execution_environment.workspace_root }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="环境状态"><ElTag size="small" :type="statusTagType(employee.channel_health.availability === 'offline' ? 'OFFLINE' : employee.execution_environment.status)">{{ employee.channel_health.availability === 'offline' ? '离线' : statusLabel(employee.execution_environment.status) }}</ElTag></ElDescriptionsItem>
+            <ElDescriptionsItem label="Worker">{{ employee.channel_health.worker_online ? '在线' : '离线' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="OpenCode">{{ employee.channel_health.opencode_reachable ? '可达' : '不可达' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="仓库">{{ employee.channel_health.repository_bound ? '已绑定' : '未绑定' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="执行">{{ employee.channel_health.executing ? '执行中' : '未在执行' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="人工">{{ employee.channel_health.waiting_human ? '等待人工' : '无需等待' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="最近检查" :span="2">{{ formatTime(employee.execution_environment.last_checked_at) }}</ElDescriptionsItem>
+          </ElDescriptions>
+          <div v-if="environmentChecks.length" class="employee-detail__checks">
+            <div v-for="check in environmentChecks" :key="check.name" class="employee-detail__check">
+              <CheckCircle2 v-if="check.passed" :size="14" class="employee-detail__check-icon is-passed" />
+              <CircleX v-else :size="14" class="employee-detail__check-icon is-failed" />
+              <div><strong>{{ check.name }}</strong><ElText size="small" type="info">{{ check.detail }}</ElText></div>
+            </div>
+          </div>
+        </template>
+        <ElText v-else size="small" type="info">尚未配置工作环境，可在“编辑”中添加。</ElText>
       </ElCard>
     </section>
+      </ElTabPane>
+    </ElTabs>
 
     <EmployeeConfigModal :open="editOpen" :employee="employee" :creating="false" :categories="store.categories" @close="editOpen = false" @saved="onSaved" />
   </div>
@@ -223,9 +235,9 @@
 
 <script setup lang="ts">
 import { ArrowUpRight, CheckCircle2, CircleX, Pause, Play, RefreshCw, Settings2 } from 'lucide-vue-next'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { ElAlert, ElBreadcrumb, ElBreadcrumbItem, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElEmpty, ElRadioButton, ElRadioGroup, ElSpace, ElStatistic, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
+import { ElAlert, ElBreadcrumb, ElBreadcrumbItem, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElEmpty, ElRadioButton, ElRadioGroup, ElSpace, ElStatistic, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElText } from 'element-plus'
 import { api } from '@/api/client'
 import type { EmployeeUsage, Task } from '@/api/types'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
@@ -245,6 +257,18 @@ const days = ref(7)
 const checking = ref(false)
 const editOpen = ref(false)
 const environmentChecks = ref<Array<{ name: string; passed: boolean; detail: string }>>([])
+type DetailSection = 'tasks' | 'usage' | 'config'
+function sectionFromHash(hash: string): DetailSection {
+  const name = hash.replace('#', '')
+  return name === 'usage' || name === 'config' ? name : 'tasks'
+}
+const detailSection = ref<DetailSection>(sectionFromHash(route.hash))
+watch(() => route.hash, (hash) => { detailSection.value = sectionFromHash(hash) })
+watch(detailSection, (value) => {
+  const next = `#${value}`
+  if (route.hash === next) return
+  void router.replace({ hash: next })
+})
 
 const ACTIVE_STATUSES = ['PENDING', 'RUNNING', 'WAITING', 'FAILED']
 const PRIORITY_WEIGHT: Record<string, number> = { VERY_HIGH: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
@@ -310,7 +334,8 @@ async function testEnvironment() {
 </script>
 
 <style scoped>
-.employee-detail { display: grid; gap: 14px; padding: 20px 24px 24px; }
+.employee-detail { display: grid; gap: 14px; height: calc(100vh - 176px); min-height: 480px; padding: 20px 24px 24px; overflow: auto; }
+.employee-detail__tabs :deep(.el-tab-pane) { display: grid; gap: 14px; }
 .employee-detail__nav { font-size: var(--astra-font-label); }
 .employee-detail__nav :deep(.el-breadcrumb__inner a) { color: var(--astra-text-muted); }
 .employee-detail__nav :deep(.el-breadcrumb__inner.is-link a:hover), .employee-detail__nav :deep(.el-breadcrumb__inner.is-link):hover a { color: var(--astra-primary); }

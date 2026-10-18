@@ -46,6 +46,9 @@
         row-key="id"
         element-loading-text="正在加载资源池"
         data-testid="gateway-pool-table"
+        highlight-current-row
+        :row-class-name="poolRowClass"
+        @row-click="selectPool"
       >
         <ElTableColumn label="名称" min-width="220">
           <template #default="{ row }">
@@ -62,16 +65,9 @@
           </template>
         </ElTableColumn>
         <ElTableColumn label="排序" prop="sort_order" width="80" />
-        <ElTableColumn label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <ElSpace :size="4">
-              <ElTooltip content="编辑资源池" placement="top">
-                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.name}`" :disabled="busy" @click="openPoolEdit(row as GatewayPool)" />
-              </ElTooltip>
-              <ElTooltip content="删除资源池（被引用时无法删除）" placement="top">
-                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.name}`" :disabled="busy" @click="removePool(row as GatewayPool)" />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu primary="编辑" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openPoolEdit(row as GatewayPool)" @command="removePool(row as GatewayPool)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -97,17 +93,15 @@
       <template #header>
         <div class="gateway-pools-routes__card-head">
           <div class="gateway-pools-routes__card-title">
-            <h4>模型路由</h4>
-            <ElText type="info">每条路由把一个模型名指向一个资源池。</ElText>
+            <h4>{{ selectedPoolName ? `${selectedPoolName} 的路由` : '模型路由' }}</h4>
+            <ElText type="info">点上面的资源池，这里只显示它的路由，不用对照名称。</ElText>
           </div>
           <ElButton type="primary" :icon="Plus" data-testid="gateway-route-create" @click="openRouteCreate">新增路由</ElButton>
         </div>
       </template>
 
       <AstraFilterPanel label="路由筛选" testid="gateway-route-filter">
-        <ElSelect v-model="routeFilters.pool" class="astra-filter__select" data-testid="route-filter-pool" aria-label="路由资源池筛选" placeholder="资源池：全部" clearable>
-          <ElOption v-for="pool in pools" :key="pool.id" :value="pool.id" :label="pool.name" />
-        </ElSelect>
+        <ElButton text type="primary" data-testid="route-filter-pool" @click="showAllRoutes">{{ routeFilters.pool ? '查看全部路由' : '正在看全部路由' }}</ElButton>
         <ElSelect v-model="routeFilters.enabled" class="astra-filter__select" data-testid="route-filter-enabled" aria-label="路由启用筛选" placeholder="状态：全部" clearable>
           <ElOption value="enabled" label="启用" />
           <ElOption value="disabled" label="禁用" />
@@ -152,16 +146,9 @@
             <ElTag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="88" fixed="right">
+        <ElTableColumn label="操作" width="120">
           <template #default="{ row }">
-            <ElSpace :size="4">
-              <ElTooltip content="编辑路由" placement="top">
-                <ElButton circle type="primary" :icon="Pencil" :aria-label="`编辑 ${row.model}`" :disabled="busy" @click="openRouteEdit(row as GatewayRoute)" />
-              </ElTooltip>
-              <ElTooltip content="删除路由" placement="top">
-                <ElButton circle type="danger" :icon="Trash2" :aria-label="`删除 ${row.model}`" :disabled="busy" @click="removeRoute(row as GatewayRoute)" />
-              </ElTooltip>
-            </ElSpace>
+            <RowMenu primary="编辑" :disabled="busy" :items="[{ command: 'delete', label: '删除' }]" @primary="openRouteEdit(row as GatewayRoute)" @command="removeRoute(row as GatewayRoute)" />
           </template>
         </ElTableColumn>
         <template #empty>
@@ -286,7 +273,7 @@
 </template>
 
 <script setup lang="ts">
-import { Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
@@ -306,7 +293,6 @@ import {
   ElTableColumn,
   ElTag,
   ElText,
-  ElTooltip,
   vLoading,
 } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
@@ -317,6 +303,7 @@ import {
   type GatewayRoute,
 } from '@/api/gateway'
 import AstraFilterPanel from '@/components/astra/AstraFilterPanel.vue'
+import RowMenu from '@/components/astra/RowMenu.vue'
 import GatewayHeaderActions from '@/views/gateway/GatewayHeaderActions.vue'
 import { confirmDialog } from '@/composables/useConfirm'
 import { notify } from '@/composables/useToast'
@@ -355,6 +342,19 @@ const pageSize = 10
 
 const poolFilters = reactive({ keyword: '', enabled: '' })
 const routeFilters = reactive({ keyword: '', pool: '', enabled: '' })
+const poolPicked = ref(false)
+const selectedPoolName = computed(() => pools.value.find((pool) => pool.id === routeFilters.pool)?.name ?? '')
+function selectPool(row: GatewayPool) {
+  poolPicked.value = true
+  routeFilters.pool = row.id
+}
+function showAllRoutes() {
+  poolPicked.value = true
+  routeFilters.pool = ''
+}
+function poolRowClass({ row }: { row: GatewayPool }) {
+  return row.id === routeFilters.pool ? 'is-selected-pool' : ''
+}
 const poolPage = ref(1)
 const routePage = ref(1)
 
@@ -393,6 +393,9 @@ const routeEmptyText = computed(() => (routeHasFilters.value ? '没有匹配的�
 
 watch(poolFilters, () => { poolPage.value = 1 })
 watch(routeFilters, () => { routePage.value = 1 })
+watch(pools, (list) => {
+  if (!poolPicked.value && !routeFilters.pool && list.length) routeFilters.pool = list[0].id
+})
 watch(filteredPools, (list) => {
   const maxPage = Math.max(1, Math.ceil(list.length / pageSize))
   if (poolPage.value > maxPage) poolPage.value = maxPage
@@ -645,4 +648,5 @@ onMounted(load)
 .pool-cell__desc { overflow: hidden; color: var(--astra-text-muted); font-size: var(--astra-font-helper); text-overflow: ellipsis; white-space: nowrap; }
 .gateway-drawer__footer { display: flex; align-items: center; gap: 10px; }
 .gateway-drawer__spacer { flex: 1; }
+.gateway-pools-routes :deep(.is-selected-pool) { background: #f3faf6; }
 </style>

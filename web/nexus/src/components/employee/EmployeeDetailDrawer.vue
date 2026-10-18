@@ -66,7 +66,7 @@
         <template #header>
           <div class="employee-detail-drawer__card-header">
             <h3>最近任务</h3>
-            <RouterLink class="employee-detail-drawer__link" :to="`/workers/${model.employee.id}`">查看全部任务 <ArrowUpRight :size="14" /></RouterLink>
+            <RouterLink class="employee-detail-drawer__link" :to="`/workers/${model.employee.id}#tasks`">查看全部任务 <ArrowUpRight :size="14" /></RouterLink>
           </div>
         </template>
         <ElTable v-if="recentTasks.length" :data="recentTasks" size="small">
@@ -85,10 +85,7 @@
     </div>
 
     <template #footer>
-      <ElSpace v-if="model" :size="10">
-        <RouterLink :to="`/workers/${model.employee.id}`"><ElButton>查看全部任务</ElButton></RouterLink>
-        <ElButton type="primary" :icon="Settings2" @click="onEdit">编辑</ElButton>
-      </ElSpace>
+      <ElButton v-if="model" type="primary" :icon="Settings2" @click="onEdit">编辑</ElButton>
     </template>
   </ElDrawer>
 </template>
@@ -97,7 +94,7 @@
 import { ArrowUpRight, Settings2 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDrawer, ElSpace, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
+import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDrawer, ElTable, ElTableColumn, ElTag, ElText } from 'element-plus'
 import type { Employee, Task } from '@/api/types'
 import EmployeeAvatar from '@/components/employee/EmployeeAvatar.vue'
 import { toEmployeeViewModel } from '@/features/employees/presentation'

@@ -1,6 +1,6 @@
 <template>
   <ElContainer class="gateway-page" data-testid="gateway-page">
-    <AstraPageHeader title="API 中转" :description="sectionLine" testid="gateway-header">
+    <AstraPageHeader title="API 网关" :description="sectionLine" testid="gateway-header">
       <template #actions>
         <!-- 子页把自己的刷新与主操作 Teleport 到这里，全站按钮位置保持一致。 -->
         <div id="gateway-header-actions" class="gateway-header-actions" />
@@ -75,8 +75,8 @@ const sectionLine = computed(() => {
 
 <style scoped>
 .gateway-page {
-  display: flex; flex-direction: column; gap: 14px; min-height: calc(100vh - 260px);
-  padding: 0 0 96px; background: var(--astra-bg-base); --astra-text-muted: #3a524c;
+  display: flex; flex-direction: column; gap: 14px; height: calc(100vh - 176px); min-height: 480px;
+  padding: 0; overflow: hidden; background: var(--astra-bg-base); --astra-text-muted: #3a524c;
 }
 .gateway-page > .gateway-workspace { flex: 1 1 auto; }
 .gateway-header-actions { display: flex; align-items: center; gap: 8px; }
