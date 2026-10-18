@@ -109,9 +109,14 @@ PERMISSION_REPLY = re.compile(r"^/session/([^/]+)/permissions/([^/]+)$")
 OPENCODE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 RETIRED_WORKSPACE_UI = "版本未知/界面已退役"
 _SECRET_SEGMENTS = frozenset({"provider", "model", "config"})
-_SECRET_CONTAINERS = frozenset({"settings", "options", "headers"})
 _SECRET_FIELDS = frozenset(
     {"apikey", "api_key", "api-key", "x-api-key", "key", "token", "authorization", "password", "secret"}
+)
+_CONFIG_FILES = (
+    Path("opencode.json"),
+    Path("opencode.jsonc"),
+    Path(".opencode/opencode.json"),
+    Path(".opencode/opencode.jsonc"),
 )
 
 
@@ -125,23 +130,61 @@ def carries_provider_secrets(path: str) -> bool:
     return bool(_SECRET_SEGMENTS.intersection(normalize_proxy_path(path).split("/")))
 
 
-def redact_secret_fields(value: Any) -> Any:
-    """Drop secret fields nested under settings, options, and headers."""
-
+def _collect_configured_secrets(value: Any, found: set[str]) -> None:
     if isinstance(value, list):
         for item in value:
-            redact_secret_fields(item)
-        return value
+            _collect_configured_secrets(item, found)
+        return
     if not isinstance(value, dict):
-        return value
-    for key, item in list(value.items()):
-        if key.lower() in _SECRET_CONTAINERS:
-            if isinstance(item, dict):
-                for secret in [name for name in item if name.lower() in _SECRET_FIELDS]:
-                    item.pop(secret, None)
-            redact_secret_fields(item)
+        return
+    for key, item in value.items():
+        if str(key).lower() in _SECRET_FIELDS and isinstance(item, str) and len(item) >= 8:
+            found.add(item)
             continue
-        redact_secret_fields(item)
+        _collect_configured_secrets(item, found)
+
+
+def configured_secret_values(workspace: str) -> set[str]:
+    """Secret values written in this workspace's OpenCode config. Missing files add nothing."""
+
+    from app.worker_agent.jsonc import loads_jsonc
+
+    found: set[str] = set()
+    root = Path(workspace)
+    for name in _CONFIG_FILES:
+        path = root / name
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
+                continue
+            data = loads_jsonc(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        _collect_configured_secrets(data, found)
+    return found
+
+
+def redact_secret_fields(value: Any, configured: set[str] | None = None) -> Any:
+    """Drop secret-named fields at any depth, and any string equal to a configured key."""
+
+    secrets = configured or set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for key in [name for name in node if str(name).lower() in _SECRET_FIELDS]:
+            node.pop(key, None)
+        for key, item in list(node.items()):
+            if isinstance(item, str):
+                if item in secrets:
+                    node.pop(key, None)
+                continue
+            walk(item)
+
+    walk(value)
     return value
 
 
@@ -644,7 +687,7 @@ async def native_proxy(
                 return Response(content=upstream.content, media_type="text/x-diff")
             data = upstream.json() if upstream.content else None
             if carries_provider_secrets(native_path):
-                redact_secret_fields(data)
+                redact_secret_fields(data, configured_secret_values(workspace))
             shape = native_path.removeprefix("/api") if native_path.startswith("/api/") else native_path
             if shape == "/session":
                 data = _scope_session_list(data, allowed)

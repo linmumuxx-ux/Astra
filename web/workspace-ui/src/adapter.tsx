@@ -192,6 +192,10 @@ async function boot() {
 }
 boot().catch(error => {
   const message = String(error.message || error)
+  if (message.includes('不在线')) {
+    showOfflineNotice()
+    watchWorker('')
+    return
+  }
   root.textContent = message
-  if (message.includes('不在线')) watchWorker('')
 })

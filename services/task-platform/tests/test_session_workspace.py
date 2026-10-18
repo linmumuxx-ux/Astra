@@ -130,6 +130,11 @@ class NativeServer:
 
 @pytest.fixture
 async def runtime(tmp_path, monkeypatch):
+    from app.database import init_database
+
+    # Proxy path checks read worker_channel from the process database. Create it
+    # here so the lookup does not depend on an earlier test having migrated.
+    await init_database()
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -1408,6 +1413,54 @@ async def test_provider_model_and_config_responses_redact_gateway_keys(runtime, 
     assert secret not in v1_config.text
 
 
+async def test_v2_model_redacts_options_api_key_copied_into_request_body(runtime, monkeypatch):
+    secret = "gw-test-secret-value"
+    configured = "gw-workspace-config-key"
+    (runtime.workspace / "opencode.json").write_text(
+        json.dumps({"provider": {"liveprobe": {"options": {"apiKey": configured}}}}),
+        encoding="utf-8",
+    )
+    original = httpx.AsyncClient
+
+    def upstream(request):
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "opencode/deepseek-v4.1-flash-free",
+                        "request": {
+                            "headers": {"x-api-key": secret, "accept": "application/json"},
+                            "body": {
+                                "apiKey": secret,
+                                "model": "deepseek-v4.1-flash-free",
+                                "copied": configured,
+                            },
+                        },
+                    },
+                    {
+                        "id": "opencode/free-tier",
+                        "request": {"body": {"apiKey": "public", "model": "free-model"}},
+                    },
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "tests.test_session_workspace.httpx.AsyncClient",
+        lambda **kwargs: original(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    models = await runtime.api.get("/api/tasks/T1/opencode/ses_current/api/model")
+    assert models.status_code == 200, models.text
+    assert secret not in models.text
+    assert configured not in models.text
+    assert "public" not in models.text
+    body = models.json()["data"]
+    assert body[0]["request"]["headers"] == {"accept": "application/json"}
+    assert body[0]["request"]["body"] == {"model": "deepseek-v4.1-flash-free"}
+    assert body[1]["request"]["body"] == {"model": "free-model"}
+
+
 def test_redact_large_provider_catalog_stays_fast():
     secret = "gw-test-secret-value"
     catalog = {
@@ -1419,7 +1472,11 @@ def test_redact_large_provider_catalog_stays_fast():
                     "headers": {"authorization": secret},
                 },
                 "models": [
-                    {"id": f"m{item}", "api": {"settings": {"key": secret, "name": "keep"}}}
+                    {
+                        "id": f"m{item}",
+                        "api": {"settings": {"key": secret, "name": "keep"}},
+                        "request": {"body": {"apiKey": secret, "model": "keep-model"}},
+                    }
                     for item in range(20)
                 ],
             }
@@ -1432,6 +1489,7 @@ def test_redact_large_provider_catalog_stays_fast():
     assert secret not in json.dumps(catalog)
     assert catalog["data"][0]["api"]["settings"]["baseURL"] == "http://gw"
     assert catalog["data"][0]["models"][0]["api"]["settings"]["name"] == "keep"
+    assert catalog["data"][0]["models"][0]["request"]["body"] == {"model": "keep-model"}
 
 
 async def test_native_abort_accepts_empty_body(runtime):

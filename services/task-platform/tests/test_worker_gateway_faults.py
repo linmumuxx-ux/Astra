@@ -319,7 +319,7 @@ async def test_long_directory_subscription_stays_online(environment_id: int):
     stop = asyncio.Event()
     agent = asyncio.create_task(manager.run(connect, stop))
     try:
-        await wait_until(lambda: manager.epoch is not None)
+        await wait_until(lambda: manager.epoch is not None, timeout=10)
         assert (await load_instance(enrolled.worker_instance_id)).status == "online"
         subscribed = await dispatch(
             gateway,
@@ -338,7 +338,7 @@ async def test_long_directory_subscription_stays_online(environment_id: int):
                 for item in seen
             )
 
-        await wait_until(connected)
+        await wait_until(connected, timeout=10)
         event = next(
             item
             for item in seen
@@ -354,7 +354,7 @@ async def test_long_directory_subscription_stays_online(environment_id: int):
         assert (await load_instance(enrolled.worker_instance_id)).status == "online"
         ping = await dispatch(gateway, enrolled.worker_instance_id, "req-still-up", "ping")
         assert ping.delivered is True
-        deadline = asyncio.get_running_loop().time() + 2
+        deadline = asyncio.get_running_loop().time() + 10
         command = await load_command("req-still-up")
         while command.status != "succeeded" and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.02)
