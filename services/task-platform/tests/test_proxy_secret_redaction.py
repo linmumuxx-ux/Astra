@@ -550,10 +550,9 @@ async def test_partial_config_read_keeps_cached_secret_values(monkeypatch):
     cold = SimpleNamespace(mode="LINUX_REMOTE", id=23, worker_epoch=1)
     missing = await load_proxy_secrets("/srv/cold", cold, client)
     assert secret not in missing
-    quiet = client.reads
-    assert await load_proxy_secrets("/srv/cold", cold, client) == missing
-    assert client.reads == quiet
-    clock["now"] += 31
+    after_miss = client.reads
+    assert secret not in await load_proxy_secrets("/srv/cold", cold, client)
+    assert client.reads == after_miss + 2
     state["config"] = "ok"
     recovered = await load_proxy_secrets("/srv/cold", cold, client)
     assert secret in recovered

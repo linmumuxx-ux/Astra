@@ -194,6 +194,15 @@ def normalize_proxy_path(path: str) -> str:
     return "/" + "/".join(part for part in path.split("/") if part)
 
 
+def _workspace_file_body(path: str) -> bool:
+    """Proxied responses whose body is workspace diff or file content."""
+
+    shape = path.removeprefix("/api") if path.startswith("/api/") else path
+    if shape in {"/file/content", "/vcs/diff", "/vcs/diff/raw", "/find"}:
+        return True
+    return re.fullmatch(r"/session/[^/]+/diff(?:/.*)?", shape) is not None
+
+
 def carries_provider_secrets(path: str) -> bool:
     return bool(_SECRET_SEGMENTS.intersection(normalize_proxy_path(path).split("/")))
 
@@ -305,13 +314,13 @@ def _secret_cache_workspace(workspace: str) -> str:
 async def _secrets_from_opencode(client, workspace: str) -> tuple[set[str], bool] | None:
     """Read merged OpenCode config through the client already talking to the Worker.
 
-    ``None`` means no read parsed. The bool is true only when every read parsed.
-    A client with no exchange is a complete empty read. Values are not logged.
+    ``None`` means no read parsed. The bool is true only when merged ``/config``
+    parsed. Values are not logged.
     """
 
     exchange = getattr(client, "exchange", None)
     if exchange is None:
-        return set(), True
+        return set(), False
     found: set[str] = set()
     paths = ("/config", "/global/config")
 
@@ -324,8 +333,10 @@ async def _secrets_from_opencode(client, workspace: str) -> tuple[set[str], bool
         except Exception:
             return None
 
-    parsed = 0
-    for result in await asyncio.gather(*(read(path) for path in paths)):
+    config_parsed = False
+    any_parsed = False
+    results = await asyncio.gather(*(read(path) for path in paths))
+    for path, result in zip(paths, results, strict=True):
         if result is None:
             continue
         status, content, _headers = result
@@ -337,11 +348,14 @@ async def _secrets_from_opencode(client, workspace: str) -> tuple[set[str], bool
             data = json.loads(content)
         except (UnicodeError, ValueError):
             continue
-        parsed += 1
+        any_parsed = True
+        if path == "/config":
+            config_parsed = True
         _collect_configured_secrets(data, found)
-    if parsed == 0:
+    if not any_parsed:
         return None
-    return found, parsed == len(paths)
+    # The gateway key is in merged /config. /global/config alone does not make it known.
+    return found, config_parsed
 
 
 async def _worker_epoch(environment) -> int:
@@ -392,9 +406,9 @@ def _cached_remote_secrets(key: tuple[int, int, str] | None) -> set[str]:
 async def _remote_configured_secrets(environment, client, workspace: str) -> tuple[set[str], bool]:
     """Worker config values, reused per environment, epoch, and workspace for 30 seconds.
 
-    The bool is false only when this workspace has no cached values and every
-    config read failed. A partial read stores the merged values with a fresh
-    timestamp. Callers that already hold values still apply field-name redaction.
+    Known requires a parsed merged ``/config``, or a cache entry from one.
+    ``/global/config`` alone is not stored and is not known on a cold cache.
+    A later miss keeps a previous known entry and refreshes its timestamp.
     """
 
     key = await _remote_secret_cache_key(environment, workspace)
@@ -410,12 +424,14 @@ async def _remote_configured_secrets(environment, client, workspace: str) -> tup
         if cached is not None:
             return set(cached[1]), True
         return set(), False
-    values, complete = fetched
-    if not complete and cached is not None:
+    values, config_parsed = fetched
+    if cached is not None:
         values = set(cached[1]) | values
-    if key is not None:
-        _REMOTE_SECRET_CACHE[key] = (now, frozenset(values))
-    return set(values), True
+    if config_parsed or cached is not None:
+        if key is not None:
+            _REMOTE_SECRET_CACHE[key] = (now, frozenset(values))
+        return set(values), True
+    return set(values), False
 
 
 async def _load_proxy_secrets(workspace: str, environment=None, client=None) -> tuple[set[str], bool]:
@@ -1041,7 +1057,13 @@ async def native_proxy(
                     task_id=task.id,
                 )
             upstream = _Upstream(status, content, headers)
-            secrets = await load_proxy_secrets(workspace, environment, client)
+            secrets, known = await _load_proxy_secrets(workspace, environment, client)
+            if (
+                not known
+                and _needs_remote_secrets(environment, workspace)
+                and _workspace_file_body(native_path)
+            ):
+                raise HTTPException(503, _DIFF_UNAVAILABLE)
             if upstream.is_error:
                 return Response(
                     content=redact_upstream_body(upstream.content, secrets),
