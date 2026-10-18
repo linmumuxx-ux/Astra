@@ -77,7 +77,8 @@
           <ElText>心跳过期即标记不可用。实例状态不反推节点健康。</ElText>
         </div>
       </template>
-      <ElTable :data="instances" empty-text="暂无实例心跳。">
+      <ElAlert v-if="instanceError" type="warning" show-icon :closable="false" :title="instanceError" />
+      <ElTable v-else :data="instances" empty-text="暂无实例心跳。">
         <ElTableColumn label="实例" prop="instance_id" min-width="150" />
         <ElTableColumn label="状态" width="90">
           <template #default="{ row }"><ElTag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status === 'ACTIVE' ? '在线' : '已过期' }}</ElTag></template>
@@ -136,6 +137,7 @@ const pools = ref<GatewayPool[]>([])
 const instances = ref<GatewayInstance[]>([])
 const loading = ref(false)
 const error = ref('')
+const instanceError = ref('')
 const busyId = ref('')
 const drawerOpen = ref(false)
 const drawerNode = ref<GatewayNode | null>(null)
@@ -186,15 +188,19 @@ function clearFilters() {
 async function load() {
   loading.value = true
   error.value = ''
+  instanceError.value = ''
   try {
-    const [nodeList, poolList, instanceList] = await Promise.all([
-      gatewayApi.nodes(), gatewayApi.pools(), gatewayApi.instances(),
-    ])
+    const [nodeList, poolList] = await Promise.all([gatewayApi.nodes(), gatewayApi.pools()])
     nodes.value = nodeList
     pools.value = poolList
-    instances.value = instanceList
   } catch (reason) {
     error.value = errorMessage(reason, '节点列表加载失败')
+  }
+  try {
+    instances.value = await gatewayApi.instances()
+  } catch (reason) {
+    instances.value = []
+    instanceError.value = errorMessage(reason, '实例心跳加载失败')
   } finally {
     loading.value = false
   }

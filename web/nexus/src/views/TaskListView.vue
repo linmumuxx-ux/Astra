@@ -55,7 +55,7 @@
           <template #default="{ row }">
             <div class="task-who">
               <span>{{ employeeName(row.worker_id || row.employee_id) }}</span>
-              <ElText type="info">问 {{ ownerName(row.responsible_employee_id) }}</ElText>
+              <ElText type="info">{{ ownerLine(row.responsible_employee_id) }}</ElText>
             </div>
           </template>
         </ElTableColumn>
@@ -180,7 +180,12 @@ watch(totalPages, (value) => { currentPage.value = Math.min(currentPage.value, v
 
 const categoryName = (id: string | null) => store.categories.find((item) => item.id === id)?.name ?? '—'
 const employeeName = (id: string | null) => employeeDisplayName(store.employees.find((item) => item.id === id)?.name ?? '自动分配')
-const ownerName = (id: string | null) => owners.value.find((item) => item.id === id)?.name ?? (id || '—')
+const ownerName = (id: string | null) => owners.value.find((item) => item.id === id)?.name ?? ''
+function ownerLine(id: string | null) {
+  if (!id) return '还没指定要问的人'
+  const name = ownerName(id)
+  return name ? `问 ${name}` : '要问的人还没对上'
+}
 const isHigh = (priority: TaskPriority) => ['VERY_HIGH', 'HIGH'].includes(priority)
 const isTerminal = (status: TaskStatus) => terminalStatuses.includes(status)
 const progressCopy = (task: Task) => platformCopy(task.runtime_detail || task.current_progress) || '—'
