@@ -212,6 +212,12 @@ export function useGroupSession(options?: UseGroupSessionOptions) {
       const controller = new AbortController();
       channelAbort = controller;
       void followChannel(channelId, controller.signal, token);
+      stopMemberStream();
+      const memberController = new AbortController();
+      memberAbort = memberController;
+      void watchMembers(channelId, memberController.signal, token).then(() => {
+        if (memberAbort === memberController) memberAbort = null;
+      });
     } catch (error) {
       if (token !== sessionToken || currentChannelId.value !== channelId) return;
       notice.value = error instanceof Error ? error.message : "无法加载群组消息";
