@@ -1,6 +1,6 @@
 <template>
   <div class="astra-page" data-testid="category-page">
-    <AstraPageHeader title="任务分类" description="分类用于表示任务所属的业务领域；排序小的排在前面，提示词随分类下发给对应 Worker。" testid="category-header">
+    <AstraPageHeader title="任务分类" testid="category-header">
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="loading" data-testid="category-refresh" @click="load">刷新</ElButton>
         <ElButton type="primary" :icon="Plus" data-testid="category-create" @click="beginCreate">新增分类</ElButton>
@@ -78,7 +78,7 @@
             <ElButton :icon="RefreshCw" data-testid="category-empty-retry" @click="load">重新加载</ElButton>
           </ElEmpty>
           <ElEmpty v-else-if="!loading" :image-size="72" :description="categories.length ? '没有匹配的任务分类' : '暂无任务分类'">
-            <ElText type="info">{{ categories.length ? '调整状态或搜索条件后重试。' : '任务分类用于给任务归类，创建后即可分配给 Worker。' }}</ElText>
+            <ElText type="info">{{ categories.length ? '没有匹配的分类' : '暂无分类' }}</ElText>
           </ElEmpty>
         </template>
       </ElTable>

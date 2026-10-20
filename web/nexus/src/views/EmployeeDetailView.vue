@@ -1,7 +1,7 @@
 <template>
   <div v-if="employee" class="employee-detail" data-testid="employee-detail-page">
     <ElBreadcrumb separator="/" class="employee-detail__nav">
-      <ElBreadcrumbItem><RouterLink to="/workers">Worker</RouterLink></ElBreadcrumbItem>
+      <ElBreadcrumbItem><RouterLink to="/settings/workers">Worker</RouterLink></ElBreadcrumbItem>
       <ElBreadcrumbItem>{{ employeeDisplayName(employee.name) }}</ElBreadcrumbItem>
     </ElBreadcrumb>
 
@@ -30,7 +30,7 @@
       <ElCard shadow="never">
         <template #header>
           <div class="employee-detail__card-header">
-            <div class="employee-detail__card-title"><h3>当前工作</h3><ElText size="small" type="info">任务状态、实时进展和运行时长</ElText></div>
+            <div class="employee-detail__card-title"><h3>当前工作</h3></div>
             <RouterLink v-if="currentTask" class="employee-detail__link" :to="`/tasks/${currentTask.id}`">查看任务 <ArrowUpRight :size="13" /></RouterLink>
           </div>
         </template>
@@ -74,7 +74,7 @@
 
       <ElCard shadow="never" class="employee-detail__panel--wide">
         <template #header>
-          <div class="employee-detail__card-title"><h3>历史任务</h3><ElText size="small" type="info">已完成、未完成和已取消任务的消耗均会保留</ElText></div>
+          <div class="employee-detail__card-title"><h3>历史任务</h3></div>
         </template>
         <ElTable :data="historicalTasks" size="small" @row-click="openTask">
           <ElTableColumn label="任务" min-width="240">
@@ -170,7 +170,7 @@
           <ElTableColumn label="成功" prop="success_count" width="90" align="right" />
           <ElTableColumn label="失败" prop="failure_count" width="90" align="right" />
           <ElTableColumn label="调用次数" prop="call_count" width="100" align="right" />
-          <template #empty><ElEmpty :image-size="56" description="暂无工具数据，Agent 返回工具事件后会在此汇总。" /></template>
+          <template #empty><ElEmpty :image-size="56" description="暂无工具数据" /></template>
         </ElTable>
       </ElCard>
     </section>
@@ -228,7 +228,7 @@
   </div>
   <div v-else-if="!store.loading" class="employee-detail">
     <ElEmpty :image-size="80" description="未找到该 Worker，可能已被删除。">
-      <ElButton @click="router.push('/workers')">返回 Worker 列表</ElButton>
+      <ElButton @click="router.push('/settings/workers')">返回 Worker 列表</ElButton>
     </ElEmpty>
   </div>
 </template>

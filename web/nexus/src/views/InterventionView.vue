@@ -1,6 +1,6 @@
 <template>
   <div class="astra-page" data-testid="intervention-page">
-    <AstraPageHeader title="待处理" description="处理需要人工介入、长时间无活动或继续执行的任务。" testid="intervention-header">
+    <AstraPageHeader title="待处理" testid="intervention-header">
       <template #actions>
         <ElButton :icon="RefreshCw" :loading="store.loading" data-testid="intervention-refresh" @click="store.refresh()">刷新</ElButton>
       </template>

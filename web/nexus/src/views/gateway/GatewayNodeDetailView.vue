@@ -108,7 +108,7 @@
             <section v-show="showSection('tokens')" id="tokens" class="gateway-node-section" data-testid="gateway-node-section-tokens">
               <header class="gateway-node-section__bar">
                 <h3>用量</h3>
-                <ElText type="info">{{ windowLabel }}窗口。未知用量不估算为零。</ElText>
+                <ElText type="info">{{ windowLabel }}窗口</ElText>
                 <ElRadioGroup v-model="statsWindow" class="gateway-node-window" aria-label="统计窗口" data-testid="gateway-node-window">
                   <ElRadioButton v-for="item in windows" :key="item.id" :value="item.id">{{ item.label }}</ElRadioButton>
                 </ElRadioGroup>
@@ -174,7 +174,7 @@
             <section v-show="showSection('limits')" id="limits" class="gateway-node-section" data-testid="gateway-node-section-limits">
               <header class="gateway-node-section__bar">
                 <h3>限制</h3>
-                <ElText type="info">并发、权重与额度由节点配置决定，实际用量按自然窗口统计</ElText>
+                
               </header>
               <div class="gateway-node-grid">
                 <ElCard shadow="never" data-testid="gateway-node-scheduling-limits">
@@ -219,7 +219,7 @@
             <section v-show="showSection('health')" id="health" class="gateway-node-section" data-testid="gateway-node-section-health">
               <header class="gateway-node-section__bar">
                 <h3>健康</h3>
-                <ElText type="info">健康态由探测推导，调度态由管理员操作决定，两者互不覆盖</ElText>
+                
               </header>
               <div class="gateway-node-grid">
                 <ElCard shadow="never" data-testid="gateway-node-health-state">
@@ -364,7 +364,7 @@
             <section v-show="showSection('config')" id="config" class="gateway-node-section" data-testid="gateway-node-section-config">
               <header class="gateway-node-section__bar">
                 <h3>配置</h3>
-                <ElText type="info">配置、健康、调度分开看。改配置不会自动改健康或调度。</ElText>
+                
               </header>
               <ElCard shadow="never" data-testid="gateway-node-config">
                 <template #header>

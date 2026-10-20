@@ -243,7 +243,7 @@ def test_task_6_1_agent_sessions_sse_and_peer_wakeup():
         assert "contact_employee" in tool_names(caller_events), caller_events
         peer_text = deltas(peer_events)
         assert peer_text, peer_events
-        assert "已把消息交给对方" not in peer_text
+        assert '"status": "delivered"' not in peer_text
         assert "没有生成回复" not in peer_text
         stored_after = client.get(
             f"{NEXUS}/api/v1/conversations/{first['id']}",
@@ -823,7 +823,7 @@ def test_team_discussion_shows_peer_identities_and_stops_repeat_contact():
             )
             for hidden in hidden_names:
                 assert hidden not in ops_tool_list, ops_tool_list
-            delivered = "已把消息交给对方" in tool_fragments(collected[ops["id"]])
+            delivered = '"status": "delivered"' in tool_fragments(collected[ops["id"]])
             assert delivered, tool_fragments(collected[ops["id"]])[:500]
             assert eng["id"] in seen_sessions
             eng_tool_list = tool_names(collected[eng["id"]])

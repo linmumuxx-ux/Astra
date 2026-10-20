@@ -886,7 +886,9 @@ def test_peer_hint_returns_limit_text_without_delivering():
             "自动化失败了",
         )
     )
-    assert result == "已经把同样的话交给对方，不要再联系。"
+    assert json.loads(result) == {
+        "status": "failed", "employee": "自动化", "reason": "已经把同样的话交给对方，不要再联系。"
+    }
     assert seen["message"] == "自动化失败了"
     assert seen["name"] == "自动化"
 

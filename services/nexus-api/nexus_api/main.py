@@ -193,7 +193,7 @@ def system_prompt(body: EmployeeBody | dict[str, Any]) -> str:
         f"你是{name}，责任领域是{domain}。\n"
         f"职责说明：\n{description}\n"
         f"工作指令：\n{instructions}\n"
-        "需要其他员工协助时调用 contact_employee，不要代替对方编写答复。"
+        "需要其他员工协助时调用 contact_employee；同事的答复由同事本人发出，不要编造。"
     )
     skills = body.skills if isinstance(body, EmployeeBody) else list(body.get("skills") or [])
     employee_id = None if isinstance(body, EmployeeBody) else body.get("id")
