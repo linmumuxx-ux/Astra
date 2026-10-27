@@ -23,6 +23,11 @@ def should_wake(previous: TaskStatus, target: TaskStatus) -> bool:
 
 
 def wake_hint(task: Task, event: Event, target: TaskStatus) -> str:
+    from app.runtime.hitl_relay import hitl_wake_hint, is_hitl_waiting
+
+    if target is TaskStatus.WAITING and is_hitl_waiting(task.waiting_reason):
+        intervention = task.human_intervention if isinstance(task.human_intervention, dict) else None
+        return hitl_wake_hint(task.id, event.id, intervention)
     reason = (task.human_required_reason or "").strip()
     reason_text = f"原因：{reason}。" if target is TaskStatus.WAITING and reason else ""
     return (

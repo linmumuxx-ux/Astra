@@ -987,6 +987,9 @@ async def native_proxy(
         raise HTTPException(409, "任务已结束；请显式重新开始")
     if method != "GET" and session_id != task.current_session_id:
         raise HTTPException(403, "历史 Session 只读")
+    if pending:
+        # Humans answer only in digital-employee /chat; AgentWork is read-only for HITL.
+        raise HTTPException(403, "协作回答请在数字员工对话中提交")
     if method == "GET" and native_path in {"/global/event", "/event"}:
         await session.commit()
         return StreamingResponse(

@@ -4,6 +4,7 @@ import { configureWorkspaceCapabilities, workspaceCapabilities } from "./workspa
 describe("workspace capabilities", () => {
   test("defaults to session management enabled", () => {
     expect(workspaceCapabilities.sessionManagementEnabled).toBe(true)
+    expect(workspaceCapabilities.humanReplyEnabled).toBe(true)
   })
 
   test("disables session management and can be reset", () => {

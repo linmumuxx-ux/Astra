@@ -199,7 +199,7 @@ async function boot() {
     }),
   }
   // Astra owns session creation and lifecycle: the embedded workspace only shows the bound session.
-  configureWorkspaceCapabilities({ sessionManagementEnabled: false })
+  configureWorkspaceCapabilities({ sessionManagementEnabled: false, humanReplyEnabled: false })
   disposeApp = render(() => <PlatformProvider value={platform}><AppBaseProviders><AppInterface
     defaultServer={ServerConnection.Key.make(endpoint)} servers={[server]} router={HashRouter}
   ></AppInterface></AppBaseProviders></PlatformProvider>, root)

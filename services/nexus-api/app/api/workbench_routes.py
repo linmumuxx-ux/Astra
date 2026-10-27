@@ -85,7 +85,7 @@ async def workbench(
             "capabilities": {
                 "messages": True,
                 "tools": True,
-                "permissions": True,
+                "permissions": False,
                 "files": True,
                 "diff": True,
                 "reasoning": False,
@@ -137,9 +137,7 @@ class Permission(BaseModel):
 
 @router.post("/permission")
 async def permission(task_id: str, binding_id: str, body: Permission, session=Depends(get_session)):
-    _, _, _, client = await context(task_id, binding_id, body.native_session_id, session, write=True)
-    await guarded(client.reply_permission(permission_id=body.permission_id, option_id=body.option_id))
-    return {"accepted": True}
+    raise HTTPException(403, "协作回答请在数字员工对话中提交")
 
 
 class Action(BaseModel):
