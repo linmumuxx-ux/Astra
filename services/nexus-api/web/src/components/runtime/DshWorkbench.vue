@@ -47,14 +47,13 @@
         </form>
       </div>
       <aside class="dsh-workbench__interactions">
-        <h3>人工交互</h3>
+        <h3>协作状态</h3>
         <ElEmpty v-if="!permissions.length" :image-size="52" description="没有待处理的工具审批" />
         <article v-for="permission in permissions" :key="permission.id" class="dsh-permission">
           <strong>{{ permission.tool_call.title || '工具操作授权' }}</strong>
           <pre>{{ JSON.stringify(permission.tool_call.rawInput || permission.tool_call, null, 2) }}</pre>
-          <ElButton v-for="option in permission.options.filter(item => ['allow_once', 'reject_once'].includes(item.kind))" :key="option.optionId" :type="option.kind === 'reject_once' ? 'default' : 'warning'" :disabled="readonly || sending || Boolean(error)" @click="reply(permission.id, option.optionId)">{{ option.kind === 'allow_once' ? '本次允许' : '本次拒绝' }}</ElButton>
+          <ElText type="warning">待数字员工对话处理</ElText>
         </article>
-        <ElText type="info">此工作台支持消息、工具、审批和文件。DSH 原生计划、待办与终端尚未接入。</ElText>
       </aside>
     </div>
   </section>
@@ -83,7 +82,7 @@ const displayRecords = computed(() => {
   return records.value.map(item => item.kind === 'tool/call' && results.has(item.tool_call_id) ? { ...item, status: results.get(item.tool_call_id) || item.status } : item)
 })
 const canSend = computed(() => !props.readonly && !sending.value && !error.value && ['prepared', 'succeeded', 'stopped', 'interrupted'].includes(snapshot.value?.state || '') && !permissions.value.length)
-const stateLabel = computed(() => error.value ? '连接异常，状态待确认' : permissions.value.length ? '等待工具审批' : ({ prepared: '等待输入', running: '执行中', succeeded: props.readonly ? '当前轮已结束' : '当前轮已结束，等待验收', interrupted: '当前轮已中断', stopped: props.readonly ? '已停止' : '已停止，可继续', unknown: '状态未知' }[snapshot.value?.state || 'unknown']))
+const stateLabel = computed(() => error.value ? '连接异常，状态待确认' : permissions.value.length ? '等待协作处理' : ({ prepared: '等待输入', running: '执行中', succeeded: props.readonly ? '当前轮已结束' : '当前轮已结束，等待验收', interrupted: '当前轮已中断', stopped: props.readonly ? '已停止' : '已停止，可继续', unknown: '状态未知' }[snapshot.value?.state || 'unknown']))
 const lastReply = computed(() => [...records.value].reverse().find(item => item.kind === 'assistant/message')?.text)
 const base = `/api/tasks/${encodeURIComponent(props.taskId)}/workbench/${encodeURIComponent(props.bindingId)}`
 const query = `native_session_id=${encodeURIComponent(props.nativeSessionId)}`
@@ -143,12 +142,6 @@ async function send() {
     await request(`${base}/input`, { method: 'POST', body: JSON.stringify({ native_session_id: props.nativeSessionId, text: draft.value }) })
     if (alive) { draft.value = ''; emit('changed'); await refresh() }
   } catch (cause) { if (alive) error.value = String(cause instanceof Error ? cause.message : cause) }
-  finally { sending.value = false }
-}
-async function reply(permissionId: string, optionId: string) {
-  sending.value = true
-  try { await request(`${base}/permission`, { method: 'POST', body: JSON.stringify({ native_session_id: props.nativeSessionId, permission_id: permissionId, option_id: optionId }) }); await refresh() }
-  catch (cause) { if (alive) error.value = String(cause instanceof Error ? cause.message : cause) }
   finally { sending.value = false }
 }
 async function stopCurrent() {

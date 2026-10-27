@@ -87,6 +87,8 @@ def build_mcp_server() -> MCPServer:
         description="Agent Worker 查询和控制自己负责的工程任务。",
         instructions=(
             "工程执行才创建任务。收到任务状态提示后先调用 nexus_task_get。"
+            "若 waiting_reason 为 HITL_QUESTION 或 HITL_PERMISSION，能直接回答则调用 nexus_task_answer_hitl；"
+            "不能回答则在当前数字员工对话中向人类确认，收到回复后再调用 nexus_task_answer_hitl。"
             "总结和候选经验只读。非法操作会返回 ok=false，不要改口说已经成功。"
         ),
     )
@@ -218,6 +220,11 @@ def build_mcp_server() -> MCPServer:
     async def nexus_task_intervene(task_id: str, reason: str) -> dict[str, Any]:
         """把任务转为等待人工处理，并记下原因。"""
         return await _call("intervene", task_id=task_id, reason=reason)
+
+    @server.tool(name="nexus_task_answer_hitl", structured_output=True)
+    async def nexus_task_answer_hitl(task_id: str, answer: str) -> dict[str, Any]:
+        """把协作回答写回 AgentWork/OpenCode 待处理的问题或权限请求。"""
+        return await _call("answer_hitl", task_id=task_id, answer=answer)
 
     @server.tool(name="nexus_task_confirm", structured_output=True)
     async def nexus_task_confirm(task_id: str) -> dict[str, Any]:

@@ -469,6 +469,20 @@ class TaskTools:
         await self.session.refresh(task)
         return self._ok(task)
 
+    async def answer_hitl(self, task_id: str, answer: str) -> dict[str, Any]:
+        task = await self._owned(task_id)
+        if isinstance(task, dict):
+            return task
+        if task.status in _CONCLUDED:
+            return self._refuse(task, "已结束的任务不能写入协作回答")
+        text_answer = (answer or "").strip()
+        if not text_answer:
+            return self._refuse(task, "回答不能为空")
+        return await self._runtime(
+            task,
+            lambda: RuntimeService(self.session).answer_hitl(task.id, text_answer, source="digital-employee"),
+        )
+
     async def confirm(self, task_id: str) -> dict[str, Any]:
         task = await self._owned(task_id)
         if isinstance(task, dict):
@@ -570,8 +584,12 @@ class TaskTools:
             "worker_id": task.employee_id,
             "responsible_employee_id": task.responsible_employee_id,
             "source_session_id": task.source_session_id,
+            "source_conversation_id": task.source_conversation_id,
             "source_channel_id": task.source_channel_id,
             "current_progress": task.current_progress,
+            "waiting_reason": task.waiting_reason,
+            "human_required_reason": task.human_required_reason,
+            "human_intervention": task.human_intervention,
         }
 
 

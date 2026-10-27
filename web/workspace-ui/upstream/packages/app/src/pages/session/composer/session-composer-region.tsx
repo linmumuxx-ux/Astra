@@ -1,4 +1,5 @@
 import { Show, type JSX } from "solid-js"
+import { workspaceCapabilities } from "@/config/workspace-capabilities"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
 import { SessionPermissionDock } from "@/pages/session/composer/session-permission-dock"
@@ -39,7 +40,19 @@ export function SessionComposerRegion(props: {
         <Show when={controller.state.questionRequest()} keyed>
           {(request) => (
             <div>
-              <SessionQuestionDock request={request} onSubmit={controller.onResponseSubmit} />
+              <Show
+                when={workspaceCapabilities.humanReplyEnabled}
+                fallback={
+                  <div
+                    data-component="session-question-status"
+                    class="mb-2 rounded-md border border-border-weak-base bg-background-base px-3 py-2 text-14-regular text-text-weak"
+                  >
+                    {request.questions?.[0]?.question || language.t("session.question.pending")}
+                  </div>
+                }
+              >
+                <SessionQuestionDock request={request} onSubmit={controller.onResponseSubmit} />
+              </Show>
             </div>
           )}
         </Show>
@@ -47,14 +60,26 @@ export function SessionComposerRegion(props: {
         <Show when={controller.state.permissionRequest()} keyed>
           {(request) => (
             <div>
-              <SessionPermissionDock
-                request={request}
-                responding={controller.state.permissionResponding()}
-                onDecide={(response) => {
-                  controller.onResponseSubmit()
-                  controller.state.decide(response)
-                }}
-              />
+              <Show
+                when={workspaceCapabilities.humanReplyEnabled}
+                fallback={
+                  <div
+                    data-component="session-permission-status"
+                    class="mb-2 rounded-md border border-border-weak-base bg-background-base px-3 py-2 text-14-regular text-text-weak"
+                  >
+                    {String(request.permission || request.type || language.t("session.permission.title"))}
+                  </div>
+                }
+              >
+                <SessionPermissionDock
+                  request={request}
+                  responding={controller.state.permissionResponding()}
+                  onDecide={(response) => {
+                    controller.onResponseSubmit()
+                    controller.state.decide(response)
+                  }}
+                />
+              </Show>
             </div>
           )}
         </Show>

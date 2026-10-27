@@ -70,7 +70,21 @@ class NativeServer:
         return self.pending
 
     async def permissions(self, directory):
-        return []
+        return self.pending_permissions
+
+    async def reply_question(self, directory, request_id, answers):
+        self.pending = [item for item in self.pending if item.get("id") != request_id]
+        self.question_replies = getattr(self, "question_replies", [])
+        self.question_replies.append((request_id, answers))
+        return True
+
+    async def reply_permission(self, directory, request_id, reply):
+        self.pending_permissions = [
+            item for item in self.pending_permissions if item.get("id") != request_id
+        ]
+        self.permission_replies = getattr(self, "permission_replies", [])
+        self.permission_replies.append((request_id, reply))
+        return True
 
     async def children(self, directory, sid):
         return self.children_by_session.get(sid, [])
@@ -361,7 +375,7 @@ async def test_child_session_question_projects_task_waiting(runtime):
     await r.service.refresh("T1")
 
     assert r.task.status == "WAITING"
-    with pytest.raises(RuntimeStateError, match="Session 树"):
+    with pytest.raises(RuntimeStateError, match="数字员工对话"):
         await r.service.send("T1", {"parts": [{"type": "text", "text": "should block"}]})
 
 
@@ -1528,7 +1542,7 @@ async def test_gateway_rejects_workspace_override_and_foreign_question(runtime):
 
 
 async def test_native_permission_reply_is_allowed_only_for_task_session(runtime, monkeypatch):
-    """原生 UI 用 /session/{sid}/permissions/{id} 回答权限，必须可用且仍受任务边界约束。"""
+    """AgentWork 原生权限/问题答复入口关闭；人类只能在数字员工对话中协作。"""
 
     runtime.native.pending_permissions = [{"id": "per_foreign", "sessionID": "ses_other"}]
     response = await runtime.api.post(
@@ -1536,7 +1550,7 @@ async def test_native_permission_reply_is_allowed_only_for_task_session(runtime,
         json={"response": "once"},
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "请求不属于此任务 Session"
+    assert response.json()["detail"] == "协作回答请在数字员工对话中提交"
 
     response = await runtime.api.post(
         "/api/tasks/T1/opencode/ses_other/session/ses_other/permissions/per_foreign",
@@ -1545,30 +1559,19 @@ async def test_native_permission_reply_is_allowed_only_for_task_session(runtime,
     assert response.status_code == 404
 
     runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_current"}]
-    original = httpx.AsyncClient
-    sent = {}
-
-    def handler(request):
-        sent["method"] = request.method
-        sent["path"] = request.url.path
-        sent["query"] = dict(request.url.params)
-        sent["body"] = json.loads(request.content or b"{}")
-        return httpx.Response(200, json={"ok": True})
-
-    monkeypatch.setattr(
-        "tests.platform.test_session_workspace.httpx.AsyncClient",
-        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs),
-    )
     response = await runtime.api.post(
         "/api/tasks/T1/opencode/ses_current/session/ses_current/permissions/per_own",
         json={"response": "once"},
     )
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert sent["method"] == "POST"
-    assert sent["path"] == "/session/ses_current/permissions/per_own"
-    assert sent["body"] == {"response": "once"}
-    assert sent["query"]["directory"] == str(runtime.workspace)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "协作回答请在数字员工对话中提交"
+
+    response = await runtime.api.post(
+        "/api/tasks/T1/opencode/ses_current/question/q_own/reply",
+        json={"answers": [["yes"]]},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "协作回答请在数字员工对话中提交"
 
 
 @pytest.mark.parametrize("terminal", ["SUCCEEDED", "CANCELED"])
@@ -1613,10 +1616,14 @@ async def test_bound_historical_session_rejects_native_writes(runtime, path, cur
     assert response.json()["detail"] == "历史 Session 只读"
     assert not runtime.native.sent
 
-    # 对照：同一原生操作在当前 Session 上不是被路径形状拒绝，证明上面的 403 只来自历史绑定。
+    # 对照：当前 Session 上非 HITL 写入不被“历史只读”挡住；HITL 答复统一改走数字员工对话。
     runtime.native.pending_permissions = [{"id": "per_own", "sessionID": "ses_current"}]
     current = await runtime.api.post(f"/api/tasks/T1/opencode/ses_current/{current_path}", json={})
-    assert current.status_code != 403, current_path
+    if "permission" in current_path:
+        assert current.status_code == 403, current_path
+        assert current.json()["detail"] == "协作回答请在数字员工对话中提交"
+    else:
+        assert current.status_code != 403, current_path
 
 
 async def test_timeout_aborts_native_busy_but_waiting_does_not_timeout(runtime):

@@ -89,7 +89,7 @@ def _confirm_blocked(session_status: str) -> str:
     if session_status == RuntimeSessionStatus.RUNNING.value:
         return "Session 仍在执行，请先停止当前回复"
     if session_status == RuntimeSessionStatus.WAITING.value:
-        return "仍有问题或权限请求，请先在 Workspace 处理"
+        return "仍有问题或权限请求，请先在数字员工对话中处理"
     if session_status == RuntimeSessionStatus.UNKNOWN.value:
         return "连接异常，状态待确认，不能确认任务完成"
     return "当前轮尚未正常结束，不能确认任务完成"
@@ -212,7 +212,7 @@ def _cancel_closes_task(task: Task) -> bool:
     return bool(record.get("close"))
 
 
-_QUESTION_REASON = "请在 Workspace 回答问题或权限请求"
+_QUESTION_REASON = "等待协作回答"
 _RECOVERY_REASON = {
     SessionTerminalReason.ASSISTANT_ERROR.value: "OpenCode 返回执行错误，可在 Workspace 继续",
     SessionTerminalReason.NO_REPLY.value: "当前轮无回复，可在 Workspace 继续",
@@ -271,7 +271,10 @@ class RuntimeService:
             task.submitted_at = None
             task.confirmed_at = None
             task.human_required_reason = None
-            task.human_intervention = None
+            intervention = task.human_intervention if isinstance(task.human_intervention, dict) else None
+            # Keep a stamped digital-employee relay answer for audit; drop unanswered prompts.
+            if not (intervention and str(intervention.get("response") or "").strip()):
+                task.human_intervention = None
         await self.session.commit()
         if changed:
             await event_bus.publish({"type": "TASK_STATUS", "task_id": task.id, "status": task.status})
@@ -399,7 +402,9 @@ class RuntimeService:
             task.execution_error = None
             task.waiting_reason = "EXECUTION_RESULT_REVIEW"
         elif state.status == RuntimeSessionStatus.WAITING.value:
-            detail = _QUESTION_REASON
+            intervention = task.human_intervention if isinstance(task.human_intervention, dict) else None
+            requested = str((intervention or {}).get("requested_input") or "").strip()
+            detail = requested or _QUESTION_REASON
             task.failure_reason = None
             task.execution_error = None
             if state.hitl == "permission":
@@ -949,7 +954,7 @@ class RuntimeService:
             allowed_sessions = await session_tree(client, Path(workspace), submitted_session)
             pending = await client.questions(Path(workspace)) + await client.permissions(Path(workspace))
             if any(item.get("sessionID") in allowed_sessions for item in pending):
-                raise RuntimeStateError("请先在 Workspace 回答当前 Session 树中的问题或权限请求")
+                raise RuntimeStateError("请先在数字员工对话中回答当前 Session 的问题或权限请求")
 
         # Short transaction: revalidate the binding and reserve this submission.
         task = await self.lock_task(task_id)
@@ -1750,9 +1755,13 @@ class RuntimeService:
                 await self.session.rollback()
             raise
 
-        has_pending = any(
-            item.get("sessionID") in allowed_sessions for item in questions + permissions
-        )
+        pending_questions = [
+            item for item in questions if item.get("sessionID") in allowed_sessions
+        ]
+        pending_permissions = [
+            item for item in permissions if item.get("sessionID") in allowed_sessions
+        ]
+        has_pending = bool(pending_questions or pending_permissions)
         task_snapshot = await self.lock_task(task_id)
         if (task_snapshot.current_session_id != session_id or task_snapshot.last_message_id != observed_anchor
                 or task_snapshot.turn_started_at != observed_turn or _task_result_concluded(task_snapshot)):
@@ -1841,8 +1850,21 @@ class RuntimeService:
                 return task
             task.runtime_connection = "CONNECTED"
             task.runtime_error = None
-            observed = RuntimeSessionStatus.WAITING if has_pending else RuntimeSessionStatus.RUNNING
-            await self.apply_session_state(task, SessionState(status=observed.value))
+            if has_pending:
+                from app.runtime.hitl_relay import intervention_from_pending, merge_intervention
+
+                pending = intervention_from_pending(
+                    pending_questions, pending_permissions, allowed_sessions=allowed_sessions
+                )
+                task.human_intervention = merge_intervention(task.human_intervention, pending)
+                hitl = "question" if pending_questions else "permission"
+                await self.apply_session_state(
+                    task, SessionState(status=RuntimeSessionStatus.WAITING.value, hitl=hitl)
+                )
+            else:
+                await self.apply_session_state(
+                    task, SessionState(status=RuntimeSessionStatus.RUNNING.value)
+                )
             return task
         try:
             messages = await self._all_messages(client, directory, session_id)
@@ -1896,11 +1918,18 @@ class RuntimeService:
                 task.runtime_error = "输入尚未被 Session 确认，请核对后重试提交"
                 await self.session.commit()
                 return task
+        if has_pending:
+            from app.runtime.hitl_relay import intervention_from_pending, merge_intervention
+
+            pending = intervention_from_pending(
+                pending_questions, pending_permissions, allowed_sessions=allowed_sessions
+            )
+            task.human_intervention = merge_intervention(task.human_intervention, pending)
         state = derive_session_state(
             messages=messages,
             server_status=status,
-            has_pending_question=has_pending,
-            has_pending_permission=False,
+            has_pending_question=bool(pending_questions),
+            has_pending_permission=bool(pending_permissions) and not pending_questions,
             pending_ack=False,
             turn_anchor_id=task.last_message_id,
             turn_started_at=task.turn_started_at,
@@ -1909,6 +1938,76 @@ class RuntimeService:
         )
         await self.apply_session_state(task, state)
         return task
+
+    async def answer_hitl(self, task_id: str, answer: str, *, source: str = "digital-employee") -> Task:
+        """Relay a collaboration answer into the pending OpenCode question/permission."""
+
+        from app.runtime.hitl_relay import (
+            intervention_from_pending,
+            normalize_permission_reply,
+            stamped_response,
+        )
+        from pathlib import Path as _Path
+
+        text_answer = (answer or "").strip()
+        if not text_answer:
+            raise RuntimeStateError("回答不能为空")
+        task = await self.lock_task(task_id)
+        if task.status not in {TaskStatus.WAITING.value, TaskStatus.RUNNING.value}:
+            raise RuntimeStateError("当前状态不能写入协作回答")
+        if not task.current_session_id or not task.workspace:
+            raise RuntimeStateError("任务尚未绑定 Session")
+        session_id = task.current_session_id
+        workspace = task.workspace
+        await self.session.commit()
+        environment = await resolve_environment(self.session, task)
+        await self.session.commit()
+        async with connect(environment, start=True) as client:
+            directory = _Path(workspace)
+            allowed = await session_tree(client, directory, session_id)
+            questions = await client.questions(directory)
+            permissions = await client.permissions(directory)
+            pending = intervention_from_pending(
+                questions, permissions, allowed_sessions=allowed
+            )
+            if pending is None:
+                raise RuntimeStateError("当前没有待回答的问题或权限请求")
+            kind = str(pending.get("runtime_kind") or "")
+            request_id = str(pending.get("runtime_request_id") or "")
+            if not request_id:
+                raise RuntimeStateError("待回答请求缺少编号")
+            if kind == "question":
+                question_count = max(1, len(pending.get("runtime_questions") or []))
+                reply = getattr(client, "reply_question", None)
+                if reply is None:
+                    raise RuntimeStateError("当前执行环境不支持问题回答")
+                await reply(directory, request_id, [[text_answer] for _ in range(question_count)])
+            elif kind == "permission":
+                reply = getattr(client, "reply_permission", None)
+                if reply is None:
+                    raise RuntimeStateError("当前执行环境不支持权限回答")
+                await reply(directory, request_id, normalize_permission_reply(text_answer))
+            else:
+                raise RuntimeStateError("不支持的协作请求类型")
+            task = await self.lock_task(task_id)
+            if task.current_session_id != session_id:
+                await self.session.rollback()
+                raise RuntimeStateError("任务绑定已变化")
+            task.human_intervention = stamped_response(pending, text_answer, source=source)
+            await TaskService(self.session).add_event(
+                task,
+                "TASK_HITL_ANSWERED",
+                "work",
+                "协作回答已写入执行会话",
+                {
+                    "runtime_kind": kind,
+                    "runtime_request_id": request_id,
+                    "source": source,
+                },
+                commit=False,
+            )
+            await self.session.commit()
+            return await self.refresh(task_id, client=client)
 
     async def continue_task(self, task_id: str) -> Task:
         """人工继续沿用原来的 Worker、worktree 和 Session。"""
