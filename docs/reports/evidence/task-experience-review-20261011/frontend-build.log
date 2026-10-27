@@ -1,0 +1,12 @@
+> astra-console@0.4.0 build
+> npm run build:workspace && vue-tsc -b && vite build
+> astra-console@0.4.0 build:workspace
+> node ../scripts/workspace_ui.mjs build
+[workspace-ui] bun run build
+(!) /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/ui/src/theme/themes/oc-2.json is dynamically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/ui/src/theme/context.tsx but also statically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/ui/src/theme/context.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/ui/src/theme/default-themes.ts, dynamic import will not move module into another chunk.
+(!) /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/dialog-select-model.tsx is dynamically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/pages/session/use-composer-commands.tsx but also statically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/prompt-input-v2.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/prompt-input.tsx, dynamic import will not move module into another chunk.
+(!) /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/dialog-select-server.tsx is dynamically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/status-popover-body.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/status-popover-body.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/pages/layout.tsx but also statically imported by /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/settings-servers.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/settings-v2/dialog-server-v2.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/components/settings-v2/servers.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/pages/home/home-projects-controller.tsx, /Users/niuniu/程序/Astra/workspace-ui/upstream/packages/app/src/pages/home/legacy-home.tsx, dynamic import will not move module into another chunk.
+(!) Some chunks are larger than 500 kB after minification. Consider:
+✓ built in 8.36s
+(!) Some chunks are larger than 500 kB after minification. Consider:
+✓ built in 6.07s

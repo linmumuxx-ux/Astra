@@ -1,0 +1,15 @@
+# Runtime dependencies, pinned for reproducible installs.
+# FunASR is the primary inference framework; sherpa-onnx stays available as a
+# smaller ONNX-only alternative (provider: sherpa-onnx).
+fastapi==0.154.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+PyYAML==6.0.3
+numpy==2.5.4
+av==19.0.1
+funasr==1.4.16
+modelscope==1.40.2
+torch==2.14.1
+torchaudio==2.11.0
+sherpa-onnx==1.13.2
+sherpa-onnx-core==1.13.2

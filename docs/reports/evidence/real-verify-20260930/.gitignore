@@ -1,0 +1,12 @@
+# 原始证据只留本地，不入 Git。
+# 脱敏后的验收结论见同目录的 Markdown（README / acceptance-matrix / checks / fixes /
+# limits-and-risks / opt-in-summary）。以下为原始长日志、报告 JSON、临时注入 harness，
+# 可能包含本机路径、耗时明细与运行期标识，按范围要求仅本地保留。
+opt-in-phase1a/
+opt-in-phase1b/
+opt-in-redis/
+opt-in-timeout-ack/
+*.log
+*.json
+verify_injection.py
+__pycache__/

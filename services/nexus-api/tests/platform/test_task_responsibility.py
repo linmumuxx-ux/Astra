@@ -1,0 +1,524 @@
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.domain import RuntimeSessionStatus, TaskStatus
+from app.models import AgentWorker, Base, Event, RuntimeSession, Task, TaskWakeOutbox
+from app.runtime.lifecycle import RuntimeService
+from app.runtime.opencode_model import direct_model, gateway_model, route_model_id
+from app.schemas import TaskCreate
+from app.services import TaskService
+from app.task_tools import TaskTools
+from tests.platform.test_runtime import new_task
+
+
+@pytest.fixture
+async def session():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as value:
+        yield value
+    await engine.dispose()
+
+
+def _create(**overrides) -> TaskCreate:
+    return new_task(**overrides)
+
+
+async def test_same_idempotency_key_returns_the_existing_task(session):
+    service = TaskService(session)
+    first = await service.create(
+        _create(responsible_employee_id="emp_1", source_session_id="ses_1", idempotency_key="same-request")
+    )
+    second = await service.create(
+        _create(title="另一标题", responsible_employee_id="emp_1", idempotency_key="same-request")
+    )
+
+    assert second.id == first.id
+    assert second.title == first.title
+    events = (await session.scalars(select(Event).where(Event.task_id == first.id))).all()
+    assert [event.event_type for event in events] == ["TASK_CREATED", "TASK_PENDING"]
+
+
+async def test_failure_and_recovery_coalesce_pending_wakes(session):
+    task = await TaskService(session).create(
+        _create(responsible_employee_id="emp_1", source_session_id="ses_1")
+    )
+    await TaskService(session).transition(task, TaskStatus.FAILED)
+    pending = list(
+        (await session.scalars(select(TaskWakeOutbox).where(TaskWakeOutbox.status == "pending"))).all()
+    )
+    assert len(pending) == 1
+    assert "nexus_task_get" in pending[0].hint
+
+    await TaskService(session).transition(task, TaskStatus.RUNNING)
+    rows = list((await session.scalars(select(TaskWakeOutbox))).all())
+    assert sorted(row.status for row in rows) == ["pending", "superseded"]
+    assert task.status == TaskStatus.RUNNING
+
+
+async def test_task_without_responsible_employee_does_not_wake(session):
+    task = await TaskService(session).create(_create())
+    await TaskService(session).transition(task, TaskStatus.FAILED)
+    rows = list((await session.scalars(select(TaskWakeOutbox))).all())
+    assert rows == []
+
+
+async def test_illegal_control_leaves_concluded_status(session):
+    task = await TaskService(session).create(_create(responsible_employee_id="emp_1"))
+    task.status = TaskStatus.SUCCEEDED.value
+    await session.commit()
+    tools = TaskTools(session)
+
+    paused = await tools.pause(task.id)
+    terminated = await tools.terminate(task.id)
+    retried = await tools.retry(task.id)
+
+    assert paused["ok"] is False
+    assert terminated["ok"] is False
+    assert retried["ok"] is False
+    current = await session.get(Task, task.id)
+    assert current.status == TaskStatus.SUCCEEDED.value
+
+
+async def test_retry_pending_does_not_start(session):
+    task = await TaskService(session).create(_create())
+    result = await TaskTools(session).retry(task.id)
+    assert result["ok"] is False
+    current = await session.get(Task, task.id)
+    assert current.status == TaskStatus.PENDING.value
+
+
+async def test_refused_start_returns_ok_false_after_rollback(session):
+    from app.task_tools import nexus_employee_id
+
+    token = nexus_employee_id.set("emp_1")
+    try:
+        task = await TaskService(session).create(_create(responsible_employee_id="emp_1"))
+        result = await TaskTools(session).start(task.id)
+    finally:
+        nexus_employee_id.reset(token)
+
+    assert result["ok"] is False
+    assert result["task_id"] == task.id
+    assert "请先分配已配置运行环境的员工" in result["error"]
+    current = await session.get(Task, task.id)
+    assert current.status == TaskStatus.PENDING.value
+
+
+async def test_paused_finished_turn_stays_waiting(session):
+    started = datetime(2026, 10, 14, 12, 0, tzinfo=UTC)
+    session.add(AgentWorker(id="worker-1", name="执行员工", role="工程"))
+    session.add(
+        Task(
+            id="T-paused",
+            task_type="ISSUE",
+            title="登录修复",
+            status=TaskStatus.WAITING.value,
+            employee_id="worker-1",
+            workspace="/tmp/task-ws",
+            current_session_id="ses_done",
+            last_message_id="msg_done",
+            turn_started_at=started,
+        )
+    )
+    session.add(
+        RuntimeSession(
+            id="ses_done",
+            task_id="T-paused",
+            employee_id="worker-1",
+            workspace="/tmp/task-ws",
+            environment={},
+            status=RuntimeSessionStatus.SUCCEEDED.value,
+        )
+    )
+    await session.commit()
+
+    class IdleClient:
+        def __init__(self) -> None:
+            self.history_reads = 0
+
+        async def status(self, _directory, _session_id):
+            return "idle"
+
+        async def children(self, _directory, _session_id):
+            return []
+
+        async def questions(self, _directory):
+            return []
+
+        async def permissions(self, _directory):
+            return []
+
+        async def messages(self, _directory, _session_id):
+            self.history_reads += 1
+            raise AssertionError("暂停后的已完成回合不应再读历史")
+
+    client = IdleClient()
+    refreshed = await RuntimeService(session).refresh("T-paused", client=client)
+
+    assert client.history_reads == 0
+    assert refreshed.status == TaskStatus.WAITING.value
+
+
+def test_task_mcp_structured_output_accepts_dict_annotations():
+    from app.task_mcp import build_mcp_server
+
+    server = build_mcp_server()
+    tools = server._tool_manager.list_tools()
+    assert {tool.name for tool in tools} >= {"nexus_task_create", "nexus_task_get", "nexus_task_start"}
+    assert all(tool.output_schema for tool in tools)
+
+
+async def test_task_tools_require_owner_and_hide_transport_errors(session, monkeypatch):
+    from app.executors.errors import OpenCodeServerUnavailable
+    from app.task_tools import nexus_employee_id
+
+    mine = nexus_employee_id.set("emp_1")
+    try:
+        owned = await TaskService(session).create(_create(title="自己的", responsible_employee_id="emp_1"))
+        other = await TaskService(session).create(_create(title="别人的", responsible_employee_id="emp_2"))
+        listed = await TaskTools(session).list()
+        assert listed["ok"] is True
+        assert [item["task_id"] for item in listed["tasks"]] == [owned.id]
+        hidden = await TaskTools(session).get(other.id)
+        assert hidden == {"ok": False, "error": "任务不存在"}
+        updated = await TaskTools(session).update(other.id, title="改掉")
+        assert updated["ok"] is False
+        current = await session.get(Task, other.id)
+        assert current.title == "别人的"
+
+        async def explode(_self, _task_id):
+            raise OpenCodeServerUnavailable("ssh root@secret-host password=hunter2")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", explode)
+        failed = await TaskTools(session).start(owned.id)
+        assert failed["ok"] is False
+        assert failed["failure_code"] == "SSH_AUTH_FAILED"
+        assert failed["error"] == "SSH 认证失败"
+        rendered = str(failed)
+        assert "hunter2" not in rendered
+        assert "secret-host" not in rendered
+
+        async def time_out(_self, _task_id):
+            raise TimeoutError("password=hunter2 at 10.1.2.3")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", time_out)
+        timed = await TaskTools(session).start(owned.id)
+        assert timed["failure_code"] == "EXECUTION_TIMEOUT"
+        assert "hunter2" not in str(timed)
+
+        async def conflict(_self, _task_id):
+            raise RuntimeError("端口冲突：该 Serve 属于另一员工或工作空间 password=hunter2")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", conflict)
+        blocked = await TaskTools(session).start(owned.id)
+        assert blocked["failure_code"] == "WORKSPACE_CONFLICT"
+        assert "hunter2" not in str(blocked)
+
+        async def offline(_self, _task_id):
+            raise OpenCodeServerUnavailable("connection refused")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", offline)
+        unreachable = await TaskTools(session).start(owned.id)
+        assert unreachable["failure_code"] == "ENVIRONMENT_UNREACHABLE"
+        assert unreachable["hint"]
+
+        async def unknown(_self, _task_id):
+            raise RuntimeError("token=abc secret-host")
+
+        monkeypatch.setattr("app.runtime.lifecycle.RuntimeService.start", unknown)
+        generic = await TaskTools(session).start(owned.id)
+        assert generic["failure_code"] == "ENVIRONMENT_UNAVAILABLE"
+        assert generic["error"] == "执行环境暂时不可用"
+        assert "abc" not in str(generic)
+        assert "secret-host" not in str(generic)
+    finally:
+        nexus_employee_id.reset(mine)
+
+    anonymous = await TaskTools(session).list()
+    assert anonymous["ok"] is False
+    assert anonymous["tasks"] == []
+
+
+async def test_running_replaces_waiting_progress(session):
+    task = await TaskService(session).create(_create())
+    assert task.current_progress == "等待领取"
+    await TaskService(session).transition(task, TaskStatus.RUNNING)
+    assert task.current_progress == "执行中"
+
+
+def test_opencode_model_names():
+    assert route_model_id(None) == "default"
+    assert route_model_id("deepseek/deepseek-flash") == "deepseek-flash"
+    assert route_model_id("nexus-gateway/deepseek-flash") == "deepseek-flash"
+    assert gateway_model(None) == "nexus-gateway/default"
+    assert gateway_model("deepseek/deepseek-flash") == "nexus-gateway/deepseek-flash"
+    assert direct_model("opencode/glm-5.1", None) == "opencode/glm-5.1"
+    assert direct_model(None, "deepseek/deepseek-flash") == "deepseek/deepseek-flash"
+
+
+async def test_group_task_cannot_override_server_side_source(session):
+    from app.task_tools import nexus_channel_id, nexus_session_id
+
+    channel = nexus_channel_id.set("ch_group")
+    session_token = nexus_session_id.set("ses_group")
+    try:
+        for overrides in (
+            {"source_channel_id": "ch_other"},
+            {"source_session_id": "ses_other"},
+            {"source_conversation_id": "conv-other"},
+        ):
+            result = await TaskTools(None).create(
+                task_type="ENGINEERING",
+                category_id="cat",
+                title="标题",
+                description="描述",
+                **overrides,
+            )
+            assert result == {"ok": False, "error": "不能覆盖服务端群调用来源"}
+        allowed = await TaskTools(session).create(
+            task_type="ENGINEERING",
+            category_id="cat",
+            title="标题",
+            description="描述",
+            source_channel_id="ch_group",
+            source_session_id="ses_group",
+        )
+    finally:
+        nexus_session_id.reset(session_token)
+        nexus_channel_id.reset(channel)
+    # 允许的值继续进入分类校验，而不是被来源检查误伤。
+    assert allowed == {"ok": False, "error": "请选择已启用的任务分类"}
+
+
+async def test_task_categories_only_return_enabled_choices(session):
+    from app.models import TaskCategory
+
+    session.add_all(
+        [
+            TaskCategory(
+                id="visible-test", name="可用测试分类", description="测试说明", enabled=True, sort_order=1
+            ),
+            TaskCategory(id="hidden-test", name="停用分类", enabled=False),
+        ]
+    )
+    await session.commit()
+    result = await TaskTools(session).categories()
+    assert result["ok"] is True
+    assert any(c["id"] == "visible-test" and c["description"] == "测试说明" for c in result["categories"])
+    assert all(c["id"] != "hidden-test" and c["enabled"] for c in result["categories"])
+
+
+async def test_task_mcp_exposes_categories_and_enum_types():
+    from app.task_mcp import build_mcp_server
+
+    tools = {t.name: t for t in await build_mcp_server().list_tools()}
+    assert "nexus_task_categories" in tools
+    assert tools["nexus_task_create"].input_schema["properties"]["task_type"]["enum"] == [
+        "ISSUE",
+        "REQUIREMENT",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["worker", "explicit", "missing", "mismatch"])
+async def test_task_mcp_selects_executable_repository(session, mode):
+    from app.models import CodeRepository, OpenCodeExecutionEnvironment, TaskCategory
+    from app.task_tools import nexus_employee_id
+
+    session.add_all(
+        [
+            CodeRepository(id="repo-a", url="file:///qa/a", branch="main"),
+            CodeRepository(id="repo-b", url="file:///qa/b", branch="main"),
+            TaskCategory(id="qa-cat", name="QA"),
+            AgentWorker(
+                id="qa-worker", name="QA", role="QA", task_types=["REQUIREMENT"], category_ids=["qa-cat"]
+            ),
+        ]
+    )
+    await session.flush()
+    session.add(OpenCodeExecutionEnvironment(employee_id="qa-worker", repository_id="repo-a"))
+    await session.commit()
+    token = nexus_employee_id.set("qa-owner")
+    try:
+        kwargs = {"worker_id": "qa-worker"} if mode in ["worker", "mismatch"] else {}
+        if mode in ["explicit", "mismatch"]:
+            kwargs["repository_id"] = "repo-b"
+        result = await TaskTools(session).create(
+            task_type="REQUIREMENT", category_id="qa-cat", title="QA", description="QA", **kwargs
+        )
+        if mode in ["missing", "mismatch"]:
+            assert result["ok"] is False
+            assert await session.scalar(select(Task.id)) is None
+        else:
+            assert result["ok"] is True
+            task = await session.get(Task, result["task_id"])
+            assert task.repository_id == ("repo-a" if mode == "worker" else "repo-b")
+    finally:
+        nexus_employee_id.reset(token)
+
+
+async def test_repositories_do_not_leak_credentials_and_task_keys_include_target(session):
+    from app.models import CodeRepository, GitCredential, TaskCategory
+    from app.task_tools import nexus_employee_id, nexus_session_id
+
+    session.add_all(
+        [
+            CodeRepository(id="repo-a", url="file:///qa/a", branch="main"),
+            CodeRepository(id="repo-b", url="file:///qa/b", branch="release"),
+            GitCredential(repository_id="repo-a", token_ciphertext="private-ciphertext"),
+            TaskCategory(id="qa-cat", name="QA"),
+        ]
+    )
+    await session.commit()
+    repositories = await TaskTools(session).repositories()
+    assert repositories["repositories"] == [
+        {"id": "repo-a", "url": "file:///qa/a", "branch": "main"},
+        {"id": "repo-b", "url": "file:///qa/b", "branch": "release"},
+    ]
+    tokens = [
+        (nexus_employee_id, nexus_employee_id.set("qa-owner")),
+        (nexus_session_id, nexus_session_id.set("qa-session")),
+    ]
+    try:
+        tools = TaskTools(session)
+        a = await tools.create(
+            task_type="REQUIREMENT",
+            category_id="qa-cat",
+            title="same",
+            description="same",
+            repository_id="repo-a",
+        )
+        b = await tools.create(
+            task_type="REQUIREMENT",
+            category_id="qa-cat",
+            title="same",
+            description="same",
+            repository_id="repo-b",
+        )
+        repeat = await tools.create(
+            task_type="REQUIREMENT",
+            category_id="qa-cat",
+            title="same",
+            description="same",
+            repository_id="repo-a",
+        )
+        assert a["task_id"] != b["task_id"]
+        assert repeat["task_id"] == a["task_id"]
+        assert a["repository_id"] == "repo-a"
+    finally:
+        for var, token in tokens:
+            var.reset(token)
+
+
+async def test_task_reassignment_preserves_repository(session):
+    from app.models import CodeRepository, OpenCodeExecutionEnvironment
+    from app.task_tools import nexus_employee_id
+
+    session.add_all(
+        [
+            CodeRepository(id="repo-a", url="file:///qa/a", branch="main"),
+            CodeRepository(id="repo-b", url="file:///qa/b", branch="main"),
+            AgentWorker(
+                id="worker-b", name="B", role="QA", task_types=["REQUIREMENT"], category_ids=["qa-cat"]
+            ),
+        ]
+    )
+    await session.flush()
+    session.add(OpenCodeExecutionEnvironment(employee_id="worker-b", repository_id="repo-b"))
+    task = await TaskService(session).create(
+        _create(
+            task_type="REQUIREMENT",
+            category_id="qa-cat",
+            repository_id="repo-a",
+            responsible_employee_id="qa-owner",
+        )
+    )
+    token = nexus_employee_id.set("qa-owner")
+    try:
+        result = await TaskTools(session).assign(task.id, "worker-b")
+    finally:
+        nexus_employee_id.reset(token)
+    assert result["ok"] is False
+    assert task.repository_id == "repo-a"
+    assert task.employee_id is None
+
+
+async def test_summary_uses_real_review_and_preserves_ownership(session):
+    from app.models import ExperienceReviewJob, KnowledgeItem
+    from app.task_tools import nexus_channel_id, nexus_conversation_id, nexus_employee_id
+
+    task = await TaskService(session).create(
+        _create(responsible_employee_id="emp_1", source_channel_id="group-a", source_conversation_id="conv-a")
+    )
+    other = await TaskService(session).create(_create(responsible_employee_id="emp_2"))
+    token = nexus_employee_id.set("emp_1")
+    try:
+        tools = TaskTools(session)
+        assert (await tools.summary(task.id))["review"] is None
+        event = await session.scalar(select(Event).where(Event.task_id == task.id))
+        now = datetime.now(UTC)
+        session.add(
+            ExperienceReviewJob(
+                id="review-real",
+                confirmation_event_id=event.id,
+                review_key="review-real",
+                task_id=task.id,
+                task_id_snapshot=task.id,
+                root_session_id="native-1",
+                confirmed_at=now,
+                status="SUCCEEDED",
+                phase="WRITING",
+                candidate_ids=["know-own", "know-other"],
+                lease_token="never-expose-lease",
+                source_snapshot={"runtime_context": "never-expose-context"},
+            )
+        )
+        session.add_all(
+            [
+                KnowledgeItem(
+                    id="know-own",
+                    title="本任务经验",
+                    source_task_id=task.id,
+                    status="candidate",
+                    summary="尚待审核",
+                    created_by="tester",
+                    updated_by="tester",
+                ),
+                KnowledgeItem(
+                    id="know-other",
+                    title="其他任务经验",
+                    source_task_id=other.id,
+                    created_by="tester",
+                    updated_by="tester",
+                ),
+            ]
+        )
+        await session.commit()
+        result = await tools.summary(task.id)
+        assert result["review"]["status"] == "SUCCEEDED"
+        assert [k["id"] for k in result["candidates"]] == ["know-own"]
+        assert result["candidates"][0]["status"] == "candidate"
+        assert result["candidates"][0]["url"] == "/library?knowledge=know-own"
+        assert "never-expose" not in str(result)
+        assert not (await tools.summary(other.id))["ok"]
+        for context in (nexus_channel_id, nexus_conversation_id):
+            mismatch = context.set("foreign")
+            try:
+                assert not (await tools.summary(task.id))["ok"]
+            finally:
+                context.reset(mismatch)
+    finally:
+        nexus_employee_id.reset(token)
+
+
+async def test_summary_is_registered_as_a_readonly_task_tool():
+    from app.task_mcp import build_mcp_server
+
+    tools = {t.name: t for t in await build_mcp_server().list_tools()}
+    assert "nexus_task_summary" in tools
+    assert set(tools["nexus_task_summary"].input_schema["properties"]) == {"task_id"}

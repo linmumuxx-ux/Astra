@@ -1,0 +1,22 @@
+........................................................................ [ 14%]
+........................................................................ [ 29%]
+.................................ss..................................... [ 43%]
+.................F.ss................................................... [ 58%]
+........................................................................ [ 73%]
+........................................................................ [ 87%]
+...........................................................              [100%]
+=================================== FAILURES ===================================
+______________ test_gateway_tables_are_registered_as_astra_tables ______________
+
+    def test_gateway_tables_are_registered_as_astra_tables():
+        astra_tables = preflight.astra_table_names()
+>       assert GATEWAY_TABLES <= astra_tables
+E       AssertionError: assert {'gateway_aud...y_pools', ...} <= {'assistant_c...l_calls', ...}
+E
+E         Extra items in the left set:
+E         'gateway_config_versions'
+
+tests/test_preflight_database_isolation.py:41: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_preflight_database_isolation.py::test_gateway_tables_are_registered_as_astra_tables
+1 failed, 486 passed, 4 skipped, 2461 warnings in 74.43s (0:01:14)

@@ -1,0 +1,30 @@
+{
+  "root": "/var/folders/xd/jlp267wx0v5dmnn4l4h2_b_40000gn/T/astra-review-real-o1rros5m",
+  "model": "deepseek/deepseek-flash",
+  "checks": {
+    "T-REAL-1": {
+      "task_id": "T-REAL-1",
+      "source_session_id": "ses_ed749935affevRlD6AJ7Dl2Vk2",
+      "summary_id": "TS-0bb0bf4375f7",
+      "candidate_ids": [
+        "KNOW_EDB168C69134415B8FD4"
+      ]
+    },
+    "T-REAL-2": {
+      "task_id": "T-REAL-2",
+      "source_session_id": "ses_ed7491ed5ffeKQeXsK233JbmxE",
+      "summary_id": "TS-869e5bf94d42",
+      "candidate_ids": [
+        "KNOW_EDB168C69134415B8FD4"
+      ]
+    },
+    "cross_task_reuse": true,
+    "summary_count": 2,
+    "experience_count": 1,
+    "verified_experiences": 1,
+    "human_publish_http": true,
+    "viewer_publish_denied": true
+  },
+  "wiki_sync": "disabled_in_isolated_test",
+  "elapsed_seconds": 59.075
+}

@@ -1,0 +1,46 @@
+.DS_Store
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# secrets and local credentials — never commit
+.mcpkey
+.gwmaster
+.llmwikitoken
+.llmwikiproject
+.llmwiki*
+.sshpass
+.sshpass*
+
+# environments and generated runtime state
+.venv*
+.astra/
+workspaces/
+dump.rdb
+wiki/
+
+services/nexus-api/.venv/
+services/nexus-api/data/
+services/nexus-api/workspaces/
+services/nexus-api/celerybeat-schedule*
+services/agent-service/.venv-agentscope/
+services/agent-service/.venv-embedding/
+services/agent-service/data/
+services/agent-service/.env
+
+services/nexus-api/web/node_modules/
+services/nexus-api/chat-island/node_modules/
+# 聊天岛与前端打包产物直接入库：公司部署环境不一定能跑 npm build
+# （public/nexus-chat 是聊天岛产物，dist 是 web 的最终静态资源）
+
+web/workspace-ui/node_modules/
+ops/runtime/dsh/node_modules/
+web/workspace-ui/upstream/**/node_modules/
+
+# 运行时锁文件
+ops/env/*.lock
